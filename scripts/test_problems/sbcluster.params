@@ -1,0 +1,76 @@
+% Example compile-time options:
+%  (HYDRO_MESHLESS_FINITE_MASS is optional, replace with your
+%   choice of hydro/mhd options)
+%
+%        HYDRO_MESHLESS_FINITE_MASS
+%        BOX_PERIODIC
+%
+% The following parameters are recommended, but not strictly necessary: 
+%
+%        PMGRID=32
+%        PM_HIRES_REGION_CLIPPING=1000
+%        MULTIPLEDOMAINS=16
+%        ADAPTIVE_GRAVSOFT_FORGAS
+%
+% For the MHD version of the problem, be sure to enable:
+% 
+%        MAGNETIC
+%        MHD_B_SET_IN_PARAMS
+%
+%
+InitCondFile                       /panfs/ds06/sxs/phopkins/GIZMO_tests/sb_mhd_cluster/sbcluster_ics
+OutputDir                          /panfs/ds06/sxs/phopkins/GIZMO_tests/sb_mhd_cluster
+RestartFile                        restart
+SnapshotFileBase                   snapshot
+OutputListFilename                 output_times.txt
+ICFormat                           3
+SnapFormat                         3
+TimeLimitCPU                       100000
+CpuTimeBetRestartFile              3500
+ResubmitOn                         0
+ResubmitCommand                    my-scriptfile
+MaxMemSize                         1600
+PartAllocFactor                    5
+BufferSize                         100
+TimeBegin                          0.02
+TimeMax                            1
+ComovingIntegrationOn              1
+BoxSize                            1
+Omega0                             1
+OmegaLambda                        0
+OmegaBaryon                        0.1
+HubbleParam                        0.5
+OutputListOn                       0
+TimeBetSnapshot                    2
+TimeOfFirstSnapshot                0.02
+TimeBetStatistics                  0.5
+NumFilesPerSnapshot                1
+NumFilesWrittenInParallel          8
+MaxSizeTimestep                    0.01
+MinSizeTimestep                    1e-08
+TreeDomainUpdateFrequency          0.05
+DesNumNgb                          32
+BiniX                              0
+BiniY                              0
+BiniZ                              1e-08
+UnitLength_in_cm                   9.87417e+25
+UnitMass_in_g                      1.80886e+49
+UnitVelocity_in_cm_per_s           1.10567e+08
+UnitMagneticField_in_gauss         1
+GravityConstantInternal            0
+MaxHsml                            1e+10
+MinGasHsmlFractional               1
+SofteningGas                       0.0001
+SofteningHalo                      0.0005
+SofteningDisk                      0.0001
+SofteningBulge                     0.0001
+SofteningStars                     0.0001
+SofteningBndry                     0.0001
+SofteningGasMaxPhys                0.0001
+SofteningHaloMaxPhys               0.0005
+SofteningDiskMaxPhys               0.0001
+SofteningBulgeMaxPhys              0.0001
+SofteningStarsMaxPhys              0.0001
+SofteningBndryMaxPhys              0.0001
+InitGasTemp                        100
+MinGasTemp                         10

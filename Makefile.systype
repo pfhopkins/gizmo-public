@@ -1,0 +1,53 @@
+# Select Target Computer 
+#
+# Please copy this file to Makefile.systype and uncomment your
+# system. Don't commit changes to this file unless you add support for
+# a new system.
+#
+###########
+#
+# This file was originally part of the GADGET3 code developed by
+#   Volker Springel (volker.springel@h-its.org). 
+#
+#############
+
+
+SYSTYPE="Frontera"
+#SYSTYPE="Stampede2"
+#SYSTYPE="Wheeler"
+#SYSTYPE="MacBookPro"
+#SYSTYPE="Quest"
+#SYSTYPE="Quest-intel"
+#SYSTYPE="Iron"
+#SYSTYPE="Darter"
+#SYSTYPE="Comet"
+#SYSTYPE="Gordon"
+#SYSTYPE="odyssey"
+#SYSTYPE="antares"
+#SYSTYPE="Pleiades-Haswell"
+#SYSTYPE="Pleiades-SIBridge"
+#SYSTYPE="Mira"
+#SYSTYPE="Titan"
+#SYSTYPE="Edison"
+#SYSTYPE="SciNet"
+#SYSTYPE="Ranger_intel"
+#SYSTYPE="Ranger_pgi"
+#SYSTYPE="Darwin"
+#SYSTYPE="Magny"
+#SYSTYPE="Magny-Intel"
+#SYSTYPE="OpenSuse"
+#SYSTYPE="OpenSuse64"
+#SYSTYPE="HLRB2"
+#SYSTYPE="MPA"	
+#SYSTYPE="VIP"
+#SYSTYPE="Ubuntu"
+#SYSTYPE="MBM"
+#SYSTYPE="OpteronMPA-Gnu"
+#SYSTYPE="OpteronMPA-Intel"
+#SYSTYPE="Centos5-intel"
+#SYSTYPE="Kolob"
+#SYSTYPE="Centos5-Gnu"
+#SYSTYPE="OPA-Cluster64-Intel"
+#SYSTYPE="Stampede"
+#SYSTYPE="Zwicky"
+#SYSTYPE="BlueWaters"

@@ -1,0 +1,79 @@
+% Example compile-time options:
+%  (HYDRO_MESHLESS_FINITE_MASS is optional, replace with your
+%   choice of hydro/mhd options)
+%
+%        HYDRO_MESHLESS_FINITE_MASS
+%        BOX_SPATIAL_DIMENSION=2
+%        SELFGRAVITY_OFF 
+%        GRAVITY_ANALYTIC
+%        EOS_GAMMA=(7.0/5.0)
+%        ENERGY_ENTROPY_SWITCH_IS_ACTIVE
+%
+% Make sure you go into the file gravity/analytic_gravity.h and un-comment the line:
+%
+%  //GravAccel_KeplerianTestProblem(); // keplerian disk with boundaries for test problem
+%
+% within the routine “add_analytic_gravitational_forces”. Otherwise the code won’t know 
+% what to use for the analytic gravitational forces.
+%
+%
+InitCondFile                       /panfs/ds06/sxs/phopkins/GIZMO_tests/keplerian/keplerian_ics
+OutputDir                          /panfs/ds06/sxs/phopkins/GIZMO_tests/keplerian
+RestartFile                        restart
+SnapshotFileBase                   snapshot
+OutputListFilename                 output_times.txt
+ICFormat                           3
+SnapFormat                         3
+TimeLimitCPU                       100000
+CpuTimeBetRestartFile              3600
+ResubmitOn                         0
+ResubmitCommand                    my-scriptfile
+MaxMemSize                         1600
+PartAllocFactor                    5
+BufferSize                         100
+TimeBegin                          0
+TimeMax                            10
+ComovingIntegrationOn              0
+Omega0                             0
+OmegaLambda                        0
+OmegaBaryon                        0
+HubbleParam                        1
+BoxSize                            8
+OutputListOn                       0
+TimeBetSnapshot                    2.5
+TimeOfFirstSnapshot                0
+TimeBetStatistics                  0.01
+NumFilesPerSnapshot                1
+NumFilesWrittenInParallel          1
+ErrTolIntAccuracy                  0.002
+CourantFac                         0.025
+MaxRMSDisplacementFac              0.125
+MaxSizeTimestep                    0.1
+MinSizeTimestep                    1e-08
+ErrTolTheta                        0.7
+ErrTolForceAcc                     0.0025
+TreeDomainUpdateFrequency          0.005
+DesNumNgb                          20
+MaxNumNgbDeviation                 0.1
+ArtBulkViscConst                   1
+UnitLength_in_cm                   1
+UnitMass_in_g                      1
+UnitVelocity_in_cm_per_s           1
+GravityConstantInternal            1
+MaxHsml                            2000
+MinGasHsmlFractional               0
+SofteningGas                       0.05
+SofteningHalo                      0.07
+SofteningDisk                      0.003
+SofteningBulge                     0.003
+SofteningStars                     0.003
+SofteningBndry                     0.003
+SofteningGasMaxPhys                0.05
+SofteningHaloMaxPhys               0.07
+SofteningDiskMaxPhys               0.003
+SofteningBulgeMaxPhys              0.003
+SofteningStarsMaxPhys              0.003
+SofteningBndryMaxPhys              0.003
+InitGasTemp                        0
+MinGasTemp                         0
+

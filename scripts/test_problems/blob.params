@@ -1,0 +1,77 @@
+% Example compile-time options:
+%  (HYDRO_MESHLESS_FINITE_MASS is optional, replace with your
+%   choice of hydro/mhd options)
+%
+%        HYDRO_MESHLESS_FINITE_MASS
+%        BOX_PERIODIC  
+%        BOX_LONG_X=1  
+%        BOX_LONG_Y=1  
+%        BOX_LONG_Z=3  
+%        SELFGRAVITY_OFF  
+%        EOS_GAMMA=(5.0/3.0)
+%
+% recommended, but not required:
+%
+%        MULTIPLEDOMAINS=16
+%
+%
+InitCondFile                       /panfs/ds06/sxs/phopkins/GIZMO_tests/blob/blob_ics
+OutputDir                          /panfs/ds06/sxs/phopkins/GIZMO_tests/blob
+RestartFile                        restart
+SnapshotFileBase                   snapshot
+OutputListFilename                 output_times.txt
+ICFormat                           3
+SnapFormat                         3
+TimeLimitCPU                       50000
+CpuTimeBetRestartFile              3600
+ResubmitOn                         0
+ResubmitCommand                    my-scriptfile
+MaxMemSize                         3600
+PartAllocFactor                    3
+BufferSize                         250
+TimeBegin                          0
+TimeMax                            8
+ComovingIntegrationOn              0
+Omega0                             0
+OmegaLambda                        0
+OmegaBaryon                        0
+HubbleParam                        1
+BoxSize                            2000
+OutputListOn                       0
+TimeBetSnapshot                    0.1
+TimeOfFirstSnapshot                0
+TimeBetStatistics                  0.05
+NumFilesPerSnapshot                1
+NumFilesWrittenInParallel          1
+ErrTolIntAccuracy                  0.02
+CourantFac                         0.1
+MaxRMSDisplacementFac              0.25
+MaxSizeTimestep                    0.02
+MinSizeTimestep                    1e-08
+ErrTolTheta                        0.7
+ErrTolForceAcc                     0.0025
+TreeDomainUpdateFrequency          0.05
+DesNumNgb                          32
+MaxNumNgbDeviation                 0.1
+ArtBulkViscConst                   1
+UnitLength_in_cm                   3.08568e+21
+UnitMass_in_g                      1.989e+43
+UnitVelocity_in_cm_per_s           100000
+GravityConstantInternal            0
+MaxHsml                            2000
+MinGasHsmlFractional               0
+SofteningGas                       0.05
+SofteningHalo                      0.07
+SofteningDisk                      0.003
+SofteningBulge                     0.003
+SofteningStars                     0.003
+SofteningBndry                     0.003
+SofteningGasMaxPhys                0.05
+SofteningHaloMaxPhys               0.07
+SofteningDiskMaxPhys               0.003
+SofteningBulgeMaxPhys              0.003
+SofteningStarsMaxPhys              0.003
+SofteningBndryMaxPhys              0.003
+InitGasTemp                        0
+MinGasTemp                         0
+

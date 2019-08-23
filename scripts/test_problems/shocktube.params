@@ -1,0 +1,72 @@
+% Example compile-time options:
+%  (HYDRO_MESHLESS_FINITE_MASS is optional, replace with your
+%   choice of hydro/mhd options)
+%
+%        HYDRO_MESHLESS_FINITE_MASS
+%        BOX_SPATIAL_DIMENSION=1
+%        BOX_PERIODIC 
+%        SELFGRAVITY_OFF 
+%        EOS_GAMMA=(1.4)
+%        INPUT_IN_DOUBLEPRECISION
+%        OUTPUT_IN_DOUBLEPRECISION 
+%
+InitCondFile                       /panfs/ds06/sxs/phopkins/GIZMO_tests/shocktube/shocktube_ics_emass
+OutputDir                          /panfs/ds06/sxs/phopkins/GIZMO_tests/shocktube
+RestartFile                        restart
+SnapshotFileBase                   snapshot
+OutputListFilename                 output_times.txt
+ICFormat                           3
+SnapFormat                         3
+TimeLimitCPU                       100000
+CpuTimeBetRestartFile              7200
+ResubmitOn                         0
+ResubmitCommand                    my-scriptfile
+MaxMemSize                         1600
+PartAllocFactor                    3
+BufferSize                         100
+TimeBegin                          0
+TimeMax                            5
+ComovingIntegrationOn              0
+Omega0                             0
+OmegaLambda                        0
+OmegaBaryon                        0
+HubbleParam                        1
+BoxSize                            80
+OutputListOn                       0
+TimeBetSnapshot                    0.5
+TimeOfFirstSnapshot                0
+TimeBetStatistics                  0.5
+NumFilesPerSnapshot                1
+NumFilesWrittenInParallel          1
+ErrTolIntAccuracy                  0.0025
+CourantFac                         0.05
+MaxRMSDisplacementFac              0.125
+MaxSizeTimestep                    0.001
+MinSizeTimestep                    1e-08
+ErrTolTheta                        0.7
+ErrTolForceAcc                     0.0025
+TreeDomainUpdateFrequency          0.05
+DesNumNgb                          4
+MaxNumNgbDeviation                 0.1
+ArtBulkViscConst                   1
+UnitLength_in_cm                   1
+UnitMass_in_g                      1
+UnitVelocity_in_cm_per_s           1
+GravityConstantInternal            1
+MaxHsml                            2000
+MinGasHsmlFractional               0
+SofteningGas                       1
+SofteningHalo                      1
+SofteningDisk                      1
+SofteningBulge                     1
+SofteningStars                     1
+SofteningBndry                     1
+SofteningGasMaxPhys                1
+SofteningHaloMaxPhys               1
+SofteningDiskMaxPhys               1
+SofteningBulgeMaxPhys              1
+SofteningStarsMaxPhys              1
+SofteningBndryMaxPhys              1
+InitGasTemp                        0
+MinGasTemp                         0
+

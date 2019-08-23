@@ -1,0 +1,229 @@
+% Example compile-time options:
+%  (HYDRO_MESHLESS_FINITE_MASS and most other 
+%   choices below are optional, replace with your
+%   choice of hydro/mhd options). Here are some example of possible flags:
+%
+%        HYDRO_MESHLESS_FINITE_MASS
+%        COOLING
+%        MULTIPLEDOMAINS=64
+%        ADAPTIVE_GRAVSOFT_FORGAS
+%        METALS
+%        GALSF
+%        GALSF_SFR_MOLECULAR_CRITERION
+%        GALSF_SFR_VIRIAL_SF_CRITERION=0
+%        GALSF_SUBGRID_WINDS
+%
+% you should see the users guide - there are many combinations of 
+%   parameters (of varying degrees of complexity) you can enable. 
+%   the above corresponds to running with the full set of FIRE 
+%   physics turned on
+%
+% for the version of this problem with MHD, additionally enable:
+%        MAGNETIC
+%        MHD_B_SET_IN_PARAMS
+% and set Bini as below. You may want to experiment with 
+%   setting MHD_CONSTRAINED_GRADIENT=1 as well.
+% 
+
+%-------------------------------------------------------------------------
+%----  This file contains the input parameters needed at run-time for 
+%       simulations. It is based on and closely resembles the GADGET-3
+%       parameterfile (format of which and parsing routines written by 
+%       Volker Springel [volker.springel@h-its.org]). It has been updated
+%       with new naming conventions and additional variables as needed by 
+%       Phil Hopkins [phopkins@caltech.edu] for GIZMO.
+%-------------------------------------------------------------------------
+
+%----  Relevant files
+InitCondFile /panfs/ds06/sxs/phopkins/GIZMO_tests/iso_disk/iso_disk_ics
+OutputDir   /panfs/ds06/sxs/phopkins/GIZMO_tests/iso_disk
+
+%---- File formats 
+ICFormat    3  % 1=binary, 3=hdf5, 4=cluster 
+SnapFormat  3  % 1=binary, 3=hdf5 
+
+%---- Output parameters 
+RestartFile                 restart 
+SnapshotFileBase            snapshot 
+OutputListOn                0  % =1 to use list in "OutputListFilename" 
+OutputListFilename          output_times.txt  % list of times for snaps 
+NumFilesPerSnapshot         1 
+NumFilesWrittenInParallel   1  % must be < N_processors & power of 2
+
+%---- Output frequency 
+TimeOfFirstSnapshot     0.0
+TimeBetSnapshot         0.01 
+TimeBetStatistics       0.05 
+
+%---- CPU-time limits 
+TimeLimitCPU            50000  % in seconds 
+CpuTimeBetRestartFile   3500  	% in seconds 
+ResubmitOn              0 
+ResubmitCommand         my-scriptfile 
+
+%----- Memory alloction 
+MaxMemSize          1500    % sets maximum MPI process memory use in MByte 
+PartAllocFactor     2.0     % memory load allowed for better cpu balance 
+BufferSize          50     % in MByte 
+
+%---- Characteristics of run 
+TimeBegin   0.0    % Beginning of the simulation 
+TimeMax     1.0    % End of the simulation 
+
+%---- Cosmological parameters 
+ComovingIntegrationOn   0       % is it cosmological? (yes=1, no=0)
+BoxSize                 10000.  % in code units
+Omega0                  0.27    % =0 for non-cosmological
+OmegaLambda             0.73    % =0 for non-cosmological
+OmegaBaryon             0.044   % =0 for non-cosmological
+HubbleParam             1       % little 'h'; =1 for non-cosmological runs
+
+%---- Accuracy of time integration 
+MaxSizeTimestep         0.005   % in code units, set for your problem
+MinSizeTimestep         1.0e-12 % set this very low, or risk stability
+
+%---- Tree algorithm, force accuracy, domain update frequency 
+TreeDomainUpdateFrequency   0.1	% 0.0005-0.05, dept on core+particle number  
+
+%---- System of units 
+UnitLength_in_cm            3.085678e21     % 1.0 kpc/h
+UnitMass_in_g               1.989e43  	    % 1.0e10 solar masses/h
+UnitVelocity_in_cm_per_s    1.0e5   	    % 1 km/sec
+UnitMagneticField_in_gauss  1.0   	        % 1 gauss
+GravityConstantInternal     0		        % calculated by code if =0
+
+%---- Initial temperature & temperature floor 
+InitGasTemp     0	    % set by IC file if =0 
+MinGasTemp      10.	    % don't set <10 in explicit feedback runs, otherwise 0
+
+%---- Density/volume estimation (kernel) 
+DesNumNgb               32      % 32 for standard kernel, 60-114 for quintic 
+MaxHsml                 200.  % minimum gas kernel length (some very large value to prevent errors)
+MinGasHsmlFractional    0.01       % minimum kernel length relative to gas force softening (<= 1)
+
+%---- Gravitational softening lengths 
+%----- Softening lengths per particle type. If ADAPTIVE_GRAVSOFT is set, these  
+%-------- are the minimum softening allowed for each type ------- 
+%-------- (units are co-moving for cosmological integrations)
+SofteningGas    0.001    % gas (type=0) (in units above, =1 pc softening)
+SofteningHalo   0.050    % dark matter/collisionless particles (type=1)
+SofteningDisk   0.020    % collisionless particles (type=2)
+SofteningBulge  0.020    % collisionless particles (type=3)
+SofteningStars  0.005    % stars spawned from gas (type=4)
+SofteningBndry  0.005    % black holes (if active), or collisionless (type=5)
+%---- if these are set in cosmo runs, SofteningX switches from comoving to physical
+%------- units when the comoving value exceeds the choice here
+SofteningGasMaxPhys     0.001    % switch to 0.5pc physical below z=1 
+SofteningHaloMaxPhys    0.050 
+SofteningDiskMaxPhys    0.020 
+SofteningBulgeMaxPhys   0.020 
+SofteningStarsMaxPhys   0.005 
+SofteningBndryMaxPhys   0.005 
+%----- parameters for adaptive gravitational softening 
+AGS_DesNumNgb           32  % neighbor number for calculating adaptive gravsoft
+
+
+
+
+%-------------------------------------------------------------------------
+%-------------------------------------------------------------------------
+%---------- Physics Modules ----------------------------------------------
+%-------------------------------------------------------------------------
+%-------------------------------------------------------------------------
+
+
+%------------------------------------------------------------
+%------------------ Additional Fluid Physics ----------------
+%------------------------------------------------------------
+
+%---- Magneto-Hydrodynamics Parameters (MAGNETIC on)
+%--- Initial B-Field Strengths (if MHD_B_SET_IN_PARAMS on, otherwise read from IC file)
+BiniX   1.0e-8    % initial B_x, in code units
+BiniY   1.0e-8    % initial B_y, in code units
+BiniZ   1.0e-6    % initial B_z, in code units
+
+%---- Thermal Conduction (CONDUCTION on)
+%--- set coefficient kappa [code units] or, if CONDUCTION_SPITZER on, multiplies value
+ConductionCoeff  1.0  % set/multiply conduction coefficient
+
+%---- Navier-Stokes Viscosity (VISCOSITY on)
+%--- set coefficients eta,zeta [code units] or, if VISCOSITY_BRAGINSKII on, multiplies value
+ShearViscosityCoeff     1.0     % set/multiply shear viscosity coefficient
+BulkViscosityCoeff      1.0     % set/multiply bulk viscosity coefficient
+
+%---- Turbulent Diffusion Master Switch (TURB_DIFFUSION on)
+TurbDiffusionCoefficient 1.0    % Normalizes diffusion rates relative to Smagorinsky-Lilly theory (~0.5-2)
+
+%--- Cosmic Ray + Gas Fluids (COSMIC_RAYS)
+CosmicRayDiffusionCoeff     1.0     % multiplies anisotropic diffusion/streaming coefficients
+
+
+
+%-------------------------------------------------------------------------
+%------------------ Star, Black Hole, and Galaxy Formation ---------------
+%-------------------------------------------------------------------------
+
+
+%---- Star Formation parameters (GALSF on)
+CritPhysDensity     10.    %  critical physical density for star formation (cm^(-3))
+SfEffPerFreeFall    1.0     %  SFR/(Mgas/tfreefall) for gas which meets SF criteria
+
+
+%---- sub-grid (Springel+Hernquist/GADGET/AREPO) "effective equation of state"
+%------- star formation+feedback model (GALSF_EFFECTIVE_EQS on)
+MaxSfrTimescale     4.0         % code units (SF timescale at 2-phase threshold)
+TempSupernova       3.0e8       % in Kelvin (temp of hot gas in 2-phase model)
+TempClouds          1000.0      % in Kelvin (temp of cold gas in 2-phase model)
+FactorSN            0.1         % SNe coupling frac (frac of egy retained in hot)
+FactorEVP           3000.0      % controls Kennicutt normalization
+FactorForSofterEQS  1.0         % interpolate between 'stiff' and isothermal EOS
+%------- the sub-grid "decoupled winds" model (GALSF_SUBGRID_WINDS on)
+WindEfficiency          2.0     % mass-loading (Mdot_wind = SFR * WindEfficiency)
+WindEnergyFraction      0.06    % fraction of SNe energy in winds (sets velocity)
+WindFreeTravelMaxTime   0.1     % 'free-stream time' in units of t_Hubble(z)
+WindFreeTravelDensFac   0.1     % 'free-stream' until density < this * CritPhysDensity
+%------- alternative winds (set GALSF_SUBGRID_WIND_SCALING == 1 or 2)
+%------- (scaling with local dark matter properties, as Dave/Oppenheimer/Mannucci/Illustris)
+VariableWindVelFactor    1.0    % wind velocity relative to estimated halo v_escape
+VariableWindSpecMomentum 5000.  % wind momentum per unit stellar mass (code velocity units)
+
+
+
+%-------------- Black Hole accretion & formation (BLACK_HOLES on)
+%--- formation/seeding  
+MinFoFMassForNewSeed         10.	    % log(M_stars) for on-the-fly FoF seeding 
+TimeBetOnTheFlyFoF           200000     % time (in sec) between FoF searches 
+SeedBlackHoleMass            1.0e-7 	% initial mass (on-the-fly or single galaxy) 
+%--- accretion  
+BlackHoleAccretionFactor     1.0	    % multiplier for mdot 
+BlackHoleEddingtonFactor     1.0	    % fraction of eddington to cap (can be >1) 
+BlackHoleNgbFactor           3.0	    % multiplier for kernel neighbors for BH 
+BlackHoleMaxAccretionRadius  0.02	    % max radius for BH neighbor search/accretion 
+BlackHoleRadiativeEfficiency 0.1        % radiative efficiency 
+%--- feedback 
+BlackHoleFeedbackFactor      1.0	    % generic feedback strength multiplier 
+BH_FluxMomentumFactor        1.0	    % multiply radiation pressure (BH_PHOTONMOMENTUM) 
+BAL_f_accretion              0.5        % fraction of gas swallowed by BH (BH_BAL_WINDS) 
+BAL_v_outflow                30000	    % velocity (code units) of BAL outflow (BH_BAL_WINDS) 
+
+
+%-------------- Grackle UVB file (GRACKLE on)
+GrackleDataFile		     CloudyData_UVB=HM2012.h5
+
+
+%-------------------------------------------------------------------------
+%------------------ Driven Turbulence (Large-Eddy boxes) -----------------
+%-------------------------------------------------------------------------
+
+%-------------- Turbulent stirring parameters (TURB_DRIVING on)
+ST_decay       1.	    % decay time for driving-mode phase correlations
+ST_energy      0.0002   % energy of driving-scale modes: sets norm of turb
+ST_DtFreq      0.005    % time interval for driving updates (set by hand)
+ST_Kmin        6.27     % minimum driving-k: should be >=2.*M_PI/All.BoxSize
+ST_Kmax        12.57    % maximum driving-k: set to couple times Kmin or more if cascade desired
+ST_SolWeight   1.0      % fractional wt of solenoidal modes (wt*curl + (1-wt)*div)
+ST_AmplFac     1.0      % multiplies turb amplitudes
+ST_SpectForm   2        % driving pwr-spec: 0=Ek~const; 1=sharp-peak at kc; 2=Ek~k^(-5/3); 3=Ek~k^-2
+ST_Seed        42       % random number seed for modes (so you can reproduce it)
+IsoSoundSpeed  1.0      % initializes gas sound speed in box to this value
+TimeBetTurbSpectrum 0.5 % time (code units) between evaluations of turb pwrspec

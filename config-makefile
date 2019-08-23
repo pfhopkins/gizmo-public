@@ -1,0 +1,11 @@
+#########
+# This file was originally part of the GADGET3 code developed by
+# Volker Springel (volker.springel@h-its.org). The code has been modified
+# in part by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
+#########
+
+GIZMO_config.h:  $(CONFIG)
+	$(PERL) prepare-config.perl $(CONFIG)
+
+compile_time_info.c: $(CONFIG)
+	$(PERL) prepare-config.perl $(CONFIG)

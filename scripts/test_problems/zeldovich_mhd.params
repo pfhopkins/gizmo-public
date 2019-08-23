@@ -1,0 +1,75 @@
+% Example compile-time options:
+%  (HYDRO_MESHLESS_FINITE_MASS is optional, replace with your
+%   choice of hydro/mhd options)
+%
+%        HYDRO_MESHLESS_FINITE_MASS
+%        BOX_PERIODIC
+%        MAGNETIC
+%        MHD_B_SET_IN_PARAMS
+%
+% Also the parameters below are usually recommended (but not necessary)
+%
+%        PMGRID=128 
+%        MULTIPLEDOMAINS=16
+%        ADAPTIVE_GRAVSOFT_FORGAS
+%
+% The methods paper includes two versions of this test, with 'weak' and 'strong' 
+%   initial fields. This corresponds to setting BiniY=0.05517 or BiniY=3.395, 
+%   respectively. So change the example value below to reproduce both limits.
+%
+InitCondFile                       /panfs/ds06/sxs/phopkins/GIZMO_tests/zeldovich_mhd/zeldovich_mhd_ics
+OutputDir                          /panfs/ds06/sxs/phopkins/GIZMO_tests/zeldovich_mhd
+RestartFile                        restart
+SnapshotFileBase                   snapshot
+OutputListFilename                 output_times.txt
+ICFormat                           3
+SnapFormat                         3
+TimeLimitCPU                       100000
+CpuTimeBetRestartFile              3500
+ResubmitOn                         0
+ResubmitCommand                    my-scriptfile
+MaxMemSize                         1600
+PartAllocFactor                    5
+BufferSize                         100
+TimeBegin                          0.047619
+TimeMax                            1
+ComovingIntegrationOn              1
+Omega0                             1
+OmegaLambda                        0
+OmegaBaryon                        1
+HubbleParam                        1
+BoxSize                            1
+OutputListOn                       0
+TimeBetSnapshot                    1.15
+TimeOfFirstSnapshot                0.047619
+TimeBetStatistics                  1.5
+NumFilesPerSnapshot                1
+NumFilesWrittenInParallel          1
+MaxSizeTimestep                    0.01
+MinSizeTimestep                    1e-08
+TreeDomainUpdateFrequency          0.005
+DesNumNgb                          32
+BiniX                              0
+BiniY                              3.395
+BiniZ                              0
+UnitLength_in_cm                   1.97483e+26
+UnitMass_in_g                      1.44759e+50
+UnitVelocity_in_cm_per_s           3.6e+09
+UnitMagneticField_in_gauss         5.53268e-05
+GravityConstantInternal            0
+MaxHsml                            1e+09
+MinGasHsmlFractional               1
+SofteningGas                       0.00015
+SofteningHalo                      0.00015
+SofteningDisk                      5e-06
+SofteningBulge                     5e-06
+SofteningStars                     5e-06
+SofteningBndry                     5e-06
+SofteningGasMaxPhys                0.00015
+SofteningHaloMaxPhys               0.00015
+SofteningDiskMaxPhys               5e-06
+SofteningBulgeMaxPhys              5e-06
+SofteningStarsMaxPhys              5e-06
+SofteningBndryMaxPhys              5e-06
+InitGasTemp                        0
+MinGasTemp                         1e-20

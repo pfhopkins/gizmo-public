@@ -1,0 +1,77 @@
+% Example compile-time options:
+%  (HYDRO_MESHLESS_FINITE_MASS is optional, replace with your
+%   choice of hydro/mhd options)
+%
+%        HYDRO_MESHLESS_FINITE_MASS
+%        BOX_PERIODIC
+%        EOS_GAMMA=(5.0/3.0)
+%
+% Also the parameters below are usually recommended (but not necessary)
+%
+%        PMGRID=256
+%        MULTIPLEDOMAINS=16
+%        ADAPTIVE_GRAVSOFT_FORGAS
+%
+InitCondFile                       /panfs/ds06/sxs/phopkins/GIZMO_tests/zeldovich/zeldovich_ics
+OutputDir                          /panfs/ds06/sxs/phopkins/GIZMO_tests/zeldovich
+RestartFile                        restart
+SnapshotFileBase                   snapshot
+OutputListFilename                 output_times.txt
+ICFormat                           3
+SnapFormat                         3
+TimeLimitCPU                       100000
+CpuTimeBetRestartFile              7200
+ResubmitOn                         0
+ResubmitCommand                    my-scriptfile
+MaxMemSize                         1600
+PartAllocFactor                    3
+BufferSize                         100
+TimeBegin                          0.00990099
+TimeMax                            1
+ComovingIntegrationOn              1
+Omega0                             1
+OmegaLambda                        0
+OmegaBaryon                        1
+HubbleParam                        1
+BoxSize                            64000
+OutputListOn                       0
+TimeBetSnapshot                    1.05
+TimeOfFirstSnapshot                0.00990099
+TimeBetStatistics                  1.5
+NumFilesPerSnapshot                1
+NumFilesWrittenInParallel          1
+ErrTolIntAccuracy                  0.02
+CourantFac                         0.2
+MaxRMSDisplacementFac              0.25
+MaxSizeTimestep                    0.01
+MinSizeTimestep                    1e-08
+ErrTolTheta                        0.7
+ErrTolForceAcc                     0.0025
+TreeDomainUpdateFrequency          0.05
+DesNumNgb                          32
+MaxNumNgbDeviation                 0.05
+ArtBulkViscConst                   1
+ArtCondConstant                    0.25
+ViscosityAMin                      0.025
+ViscosityAMax                      2
+UnitLength_in_cm                   3.08568e+21
+UnitMass_in_g                      1.989e+43
+UnitVelocity_in_cm_per_s           100000
+GravityConstantInternal            0
+MaxHsml                            1e+09
+MinGasHsmlFractional               1
+SofteningGas                       100 % adjust me depending on adaptive softenings!
+SofteningHalo                      100
+SofteningDisk                      0.003
+SofteningBulge                     0.003
+SofteningStars                     0.003
+SofteningBndry                     0.003
+SofteningGasMaxPhys                100 % adjust me depending on adaptive softenings!
+SofteningHaloMaxPhys               100
+SofteningDiskMaxPhys               0.003
+SofteningBulgeMaxPhys              0.003
+SofteningStarsMaxPhys              0.003
+SofteningBndryMaxPhys              0.003
+InitGasTemp                        0
+MinGasTemp                         0.001
+

@@ -1,0 +1,84 @@
+GIZMO HDF5 VisIt Plugin
+-----------------------
+
+This is a VisIt plugin for importing GIZMO HDF5 snapshot files into VisIt.
+
+
+- DEPENDENCIES -
+
+This plugin was created/tested using
+
+* cmake  2.8.8  works for me
+* HDF5   1.8.11 works for me
+* VisIt  2.7.1  works for me
+
+Other versions might work as well.
+
+
+
+- INSTALL -
+
+To install, first create a CMakeLists.txt file using the xml2cmake utility
+bundled with VisIt
+
+$ xml2cmake -clobber ZelmaniTracers.xml
+
+Create a build folder for cmake, i.e., from the visit plugin directory:
+
+$ mkdir build
+
+Change into the build directory
+
+$ cd build
+
+Run cmake
+
+$ cmake ..
+
+If successful this should have generated a Makefile. To compile/install do:
+
+$ make
+
+This will install the plugin to
+
+${HOME}/.visit/${VISIT_VERSION}/${VISIT_ARCH}/plugins
+
+
+
+- INDEX FILE -
+
+This is a STSD (Single Time Single Domain) plugin. This means that the plugin,
+by itself, is only able to read a single snapshot file. To deal with chunked
+output and/or with multiple times, you need to create a VisIt index file. This
+should be an ASCII file with extension ``.visit'' having the following format
+(with no indentation):
+
+  !NBLOCKS 2
+  snapshot.000.0.hdf5
+  snapshot.000.1.hdf5
+  snapshot.001.0.hdf5
+  snapshot.001.1.hdf5
+  ...
+
+The ``NBLOCKS'' field specifies the number of chunks of the data (number of
+files for each iteration). This is followed by the list of all of the files for
+the first iteration, followed by the ones for the second iteration and so on
+and so forth. VisIt is able to read this file and figure out how to combine the
+different HDF5 files.
+
+You can create an index file using the script ``make_visit_index.sh'' contained
+in this directory, as follows
+
+$ /bin/bash ./make_visit_index.sh ${nchunks} ${list_of_snapshots}
+
+For example, to create an index file for an unchunked run out of all of the
+HDF5 files, one can do
+
+$ /bin/bash ./make_visit_index.sh 1 *.hdf5 > snapshot.visit 
+
+
+
+- CURRENT STATUS -
+
+This plugin is still EXPERIMENTAL. I would not be surprised if it fails to read
+your data.

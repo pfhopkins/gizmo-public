@@ -1,0 +1,73 @@
+% Example compile-time options:
+%  (HYDRO_MESHLESS_FINITE_MASS is optional, replace with your
+%   choice of hydro/mhd options)
+%
+%        HYDRO_MESHLESS_FINITE_MASS
+%        BOX_BND_PARTICLES 
+%        BOX_SPATIAL_DIMENSION=1
+%        BOX_REFLECT_X
+%        SELFGRAVITY_OFF  
+%        EOS_GAMMA=(1.4)
+%        OUTPUT_IN_DOUBLEPRECISION
+%        INPUT_IN_DOUBLEPRECISION  
+%
+InitCondFile                       /panfs/ds06/sxs/phopkins/GIZMO_tests/interacting_blastwaves/interactblast_ics
+OutputDir                          /panfs/ds06/sxs/phopkins/GIZMO_tests/interacting_blastwaves/
+RestartFile                        restart
+SnapshotFileBase                   snapshot
+OutputListFilename                 output_times.txt
+ICFormat                           3
+SnapFormat                         3
+TimeLimitCPU                       100000
+CpuTimeBetRestartFile              3600
+ResubmitOn                         0
+ResubmitCommand                    my-scriptfile
+MaxMemSize                         1600
+PartAllocFactor                    50
+BufferSize                         100
+TimeBegin                          0
+TimeMax                            0.038
+ComovingIntegrationOn              0
+Omega0                             0
+OmegaLambda                        0
+OmegaBaryon                        0
+HubbleParam                        1
+BoxSize                            1
+OutputListOn                       0
+TimeBetSnapshot                    0.0038
+TimeOfFirstSnapshot                0
+TimeBetStatistics                  0.01
+NumFilesPerSnapshot                1
+NumFilesWrittenInParallel          1
+ErrTolIntAccuracy                  0.002
+CourantFac                         0.01
+MaxRMSDisplacementFac              0.05
+MaxSizeTimestep                    2e-07
+MinSizeTimestep                    2e-07
+ErrTolTheta                        0.7
+ErrTolForceAcc                     0.001
+TreeDomainUpdateFrequency          0.005
+DesNumNgb                          4
+MaxNumNgbDeviation                 0.1
+ArtBulkViscConst                   1
+UnitLength_in_cm                   1
+UnitMass_in_g                      1
+UnitVelocity_in_cm_per_s           1
+GravityConstantInternal            1
+MaxHsml                            2000
+MinGasHsmlFractional               0
+SofteningGas                       0.1
+SofteningHalo                      0.1
+SofteningDisk                      0.1
+SofteningBulge                     0.1
+SofteningStars                     0.1
+SofteningBndry                     0.1
+SofteningGasMaxPhys                0.1
+SofteningHaloMaxPhys               0.1
+SofteningDiskMaxPhys               0.1
+SofteningBulgeMaxPhys              0.1
+SofteningStarsMaxPhys              0.1
+SofteningBndryMaxPhys              0.1
+InitGasTemp                        0
+MinGasTemp                         0
+

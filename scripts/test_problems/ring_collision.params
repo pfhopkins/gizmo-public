@@ -1,0 +1,77 @@
+% Example compile-time options: 
+%
+%        HYDRO_MESHLESS_FINITE_MASS
+%        BOX_SPATIAL_DIMENSION=2
+%        SELFGRAVITY_OFF
+%        EOS_TILLOTSON
+%        EOS_ELASTIC
+%        KERNEL_FUNCTION=5
+%
+% (The choice of KERNEL_FUNCTION=5 is optional here. Experiment with different kernels. 
+%   But be sure to set DesNumNgb accordingly; for e.g. KERNEL_FUNCTION=5 or 7, use 40, =3 or 5, use 20)
+%
+InitCondFile                       ICs/ring_collision_ics % choose IC and resolution
+OutputDir                          output
+DesNumNgb                          40    % 20 for cubic spline, 40 for quintic
+TimeMax                            300
+TimeBetSnapshot                    5
+%--- parameters here make EOS: P=cs*cs*(rho-rho_0), where cs=rho_0=1 in code units ---%
+Tillotson_EOS_params_a             0
+Tillotson_EOS_params_b             0
+Tillotson_EOS_params_u_0           1e+20
+Tillotson_EOS_params_rho_0         1
+Tillotson_EOS_params_A             1
+Tillotson_EOS_params_B             0
+Tillotson_EOS_params_u_s           1e+20
+Tillotson_EOS_params_u_s_prime     1e+20
+Tillotson_EOS_params_alpha         0
+Tillotson_EOS_params_beta          0
+Tillotson_EOS_params_mu            0.22
+Tillotson_EOS_params_Y0            1e+20
+MaxSizeTimestep                    0.004
+MinSizeTimestep                    1e-12
+ICFormat                           3
+SnapFormat                         3
+RestartFile                        restart
+SnapshotFileBase                   snapshot
+OutputListOn                       0
+OutputListFilename                 output_times.txt
+NumFilesPerSnapshot                1
+NumFilesWrittenInParallel          1
+TimeOfFirstSnapshot                0
+TimeBetStatistics                  1e+10
+TimeLimitCPU                       100000
+CpuTimeBetRestartFile              7200
+ResubmitOn                         0
+ResubmitCommand                    my-scriptfile
+TimeBegin                          0
+UnitLength_in_cm                   1
+UnitMass_in_g                      1
+UnitVelocity_in_cm_per_s           1
+GravityConstantInternal            0
+ComovingIntegrationOn              0
+BoxSize                            0
+Omega0                             0
+OmegaLambda                        0
+OmegaBaryon                        0
+HubbleParam                        1
+MaxMemSize                         1600
+PartAllocFactor                    5
+BufferSize                         100
+TreeDomainUpdateFrequency          0.005
+InitGasTemp                        0
+MinGasTemp                         0
+MaxHsml                            1e+10
+MinGasHsmlFractional               0
+SofteningGas                       0.001
+SofteningHalo                      0.001
+SofteningDisk                      0.001
+SofteningBulge                     0.001
+SofteningStars                     0.001
+SofteningBndry                     0.001
+SofteningGasMaxPhys                0.001
+SofteningHaloMaxPhys               0.001
+SofteningDiskMaxPhys               0.001
+SofteningBulgeMaxPhys              0.001
+SofteningStarsMaxPhys              0.001
+SofteningBndryMaxPhys              0.001

@@ -1,0 +1,100 @@
+% Example compile-time options:
+%  (HYDRO_MESHLESS_FINITE_MASS is optional, replace with your
+%   choice of hydro/mhd options)
+%
+%        HYDRO_MESHLESS_FINITE_MASS
+%        BOX_PERIODIC
+%        EOS_GAMMA=(5.0/3.0)
+%        EOS_ENFORCE_ADIABAT=(1.0)
+%        GRAVITY_NOT_PERIODIC
+%        MAGNETIC
+%        MHD_B_SET_IN_PARAMS
+%        
+% strongly recommended, but not strictly required: 
+%
+%        MULTIPLEDOMAINS=16
+%        ADAPTIVE_GRAVSOFT_FORGAS
+%
+% the initial field value is set by BiniZ below. For the default 
+%  value given, this corresponds to the mu=10 simulations 
+%  in the methods paper. These runs use ~64^3 total particles, with 
+%  ~50^3 in the initial spherical region which will collapse (the rest 
+%  are effectively 'boundary zone' particles)
+%
+% The test problems in the paper require a special (non-standard) equation 
+%  of state, which is not simply set by a code flag. To enable this for a 
+%  proper comparison, you must change one line of the source code before 
+%  compilation. In the file "eos.c", find the lines:
+%
+% #ifdef EOS_ENFORCE_ADIABAT
+%      press = EOS_ENFORCE_ADIABAT * pow(SphP[i].Density, GAMMA);
+% #endif
+% 
+% Obviously, this line enforces a typical adiabatic equation of state. 
+%   We just need to replace this particular press = .... line with the following:
+%
+% #ifdef EOS_ENFORCE_ADIABAT
+%  press = 0.04*SphP[i].Density*sqrt(1.+pow(SphP[i].Density/1.47705e8 ,4./3.));
+% #endif
+% 
+%  This will use the specific barytropic equation of state from the paper, instead. 
+%   Note that this is hard-coded to a certain assumed set of units (corresponding 
+%   to the example choices below).
+%
+%
+InitCondFile                       /panfs/ds06/sxs/phopkins/GIZMO_tests/mhd_core/core_ics
+OutputDir                          /panfs/ds06/sxs/phopkins/GIZMO_tests/mhd_core
+RestartFile                        restart
+SnapshotFileBase                   snapshot
+OutputListFilename                 output_times.txt
+ICFormat                           3
+SnapFormat                         3
+TimeLimitCPU                       100000
+CpuTimeBetRestartFile              3500
+ResubmitOn                         0
+ResubmitCommand                    my-scriptfile
+MaxMemSize                         1600
+PartAllocFactor                    5
+BufferSize                         100
+TimeBegin                          0
+TimeMax                            0.25
+ComovingIntegrationOn              0
+Omega0                             0
+OmegaLambda                        0
+OmegaBaryon                        0
+HubbleParam                        1
+BoxSize                            0.15
+OutputListOn                       0
+TimeBetSnapshot                    0.001
+TimeOfFirstSnapshot                0
+TimeBetStatistics                  0.1
+NumFilesPerSnapshot                1
+NumFilesWrittenInParallel          1
+MaxSizeTimestep                    5e-05
+MinSizeTimestep                    1e-11
+TreeDomainUpdateFrequency          0.005
+DesNumNgb                          32
+BiniX                              0
+BiniY                              0
+BiniZ                              6.1019e-05
+UnitLength_in_cm                   3.08568e+18
+UnitMass_in_g                      1.9891e+33
+UnitVelocity_in_cm_per_s           100000
+UnitMagneticField_in_gauss         1
+GravityConstantInternal            0
+MaxHsml                            100
+MinGasHsmlFractional               1
+SofteningGas                       5e-06
+SofteningHalo                      5e-06
+SofteningDisk                      5e-06
+SofteningBulge                     5e-06
+SofteningStars                     5e-06
+SofteningBndry                     5e-06
+SofteningGasMaxPhys                5e-06
+SofteningHaloMaxPhys               5e-06
+SofteningDiskMaxPhys               5e-06
+SofteningBulgeMaxPhys              5e-06
+SofteningStarsMaxPhys              5e-06
+SofteningBndryMaxPhys              5e-06
+InitGasTemp                        0
+MinGasTemp                         0

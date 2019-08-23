@@ -1,0 +1,64 @@
+% Example compile-time options:
+%  (HYDRO_MESHLESS_FINITE_MASS is optional, replace with your
+%   choice of hydro/mhd options)
+%
+%        BOX_PERIODIC
+%        BOX_SPATIAL_DIMENSION=2
+%        HYDRO_MESHLESS_FINITE_MASS
+%        MAGNETIC
+%        SELFGRAVITY_OFF
+%        INPUT_IN_DOUBLEPRECISION
+%
+InitCondFile                       /panfs/ds06/sxs/phopkins/GIZMO_tests/orszag_tang/orszag_tang_ics
+OutputDir                          /panfs/ds06/sxs/phopkins/GIZMO_tests/orszag_tang
+RestartFile                        restart
+SnapshotFileBase                   snapshot
+OutputListFilename                 output_times.txt
+ICFormat                           3
+SnapFormat                         3
+TimeLimitCPU                       100000
+CpuTimeBetRestartFile              7200
+ResubmitOn                         0
+ResubmitCommand                    my-scriptfile
+MaxMemSize                         1600
+PartAllocFactor                    5
+BufferSize                         100
+TimeBegin                          0
+TimeMax                            0.5
+ComovingIntegrationOn              0
+Omega0                             0
+OmegaLambda                        0
+OmegaBaryon                        0
+HubbleParam                        1
+BoxSize                            1
+OutputListOn                       0
+TimeBetSnapshot                    0.1
+TimeOfFirstSnapshot                0
+TimeBetStatistics                  0.1
+NumFilesPerSnapshot                1
+NumFilesWrittenInParallel          1
+MaxSizeTimestep                    0.1
+MinSizeTimestep                    2e-09
+TreeDomainUpdateFrequency          0.5
+DesNumNgb                          20
+UnitMagneticField_in_gauss         3.54491
+UnitLength_in_cm                   1
+UnitMass_in_g                      1
+UnitVelocity_in_cm_per_s           1
+GravityConstantInternal            1
+MaxHsml                            2000
+MinGasHsmlFractional               0
+SofteningGas                       0.05
+SofteningHalo                      0.07
+SofteningDisk                      0.003
+SofteningBulge                     0.003
+SofteningStars                     0.003
+SofteningBndry                     0.003
+SofteningGasMaxPhys                0.05
+SofteningHaloMaxPhys               0.07
+SofteningDiskMaxPhys               0.003
+SofteningBulgeMaxPhys              0.003
+SofteningStarsMaxPhys              0.003
+SofteningBndryMaxPhys              0.003
+InitGasTemp                        0
+MinGasTemp                         0
