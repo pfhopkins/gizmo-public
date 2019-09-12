@@ -28,6 +28,7 @@
 
 #ifdef DM_SIDM
 
+
 double prob_of_interaction(double mass, double r, double h_si, double dV[3], integertime dt_step)
 {
     double dVmag = sqrt(dV[0]*dV[0]+dV[1]*dV[1]+dV[2]*dV[2]) / All.cf_atime; // velocity in physical
@@ -35,9 +36,25 @@ double prob_of_interaction(double mass, double r, double h_si, double dV[3], int
     double rho_eff = mass / (h_si*h_si*h_si) * All.cf_a3inv; // density in physical
     double cx_eff = All.DM_InteractionCrossSection * g_geo(r/h_si); // effective cross section (physical) scaled to cgs
     double units = All.UnitDensity_in_cgs * All.UnitLength_in_cm * All.HubbleParam; // needed to convert everything to cgs
-    if(All.DM_InteractionVelocityDependence>0) {cx_eff *= pow(dVmag * All.UnitVelocity_in_cm_per_s / 1.0e5, All.DM_InteractionVelocityDependence);} // take appropriate velocity dependence
+    if(All.DM_InteractionVelocityScale>0) {double x=dVmag/All.DM_InteractionVelocityScale; cx_eff/=1+x*x*x*x;} // take velocity dependence
     return rho_eff * cx_eff * dVmag * dt * units; // dimensionless probability
 }
+
+/*! This routine sets the kicks for each particle after it has been decided that they will
+ *  interact. It uses an algorithm tha conserves energy and momentum but picks a random direction so it does not conserves angular momentum. */
+#if !defined(GRAIN_COLLISIONS) /* if using the 'grain collisions' module, these functions will be defined elsewhere [in the grains subroutines] */
+void calculate_interact_kick(double dV[3], double kick[3], double m)
+{
+    double dVmag = (1-All.DM_DissipationFactor)*sqrt(dV[0]*dV[0]+dV[1]*dV[1]+dV[2]*dV[2]);
+    if(dVmag<0) {dVmag=0;}
+    if(All.DM_KickPerCollision>0) {double v0=All.DM_KickPerCollision; dVmag=sqrt(dVmag*dVmag+v0*v0);}
+    double cos_theta = 2.0*gsl_rng_uniform(random_generator)-1.0, sin_theta = sqrt(1.-cos_theta*cos_theta), phi = gsl_rng_uniform(random_generator)*2.0*M_PI;
+    kick[0] = 0.5*(dV[0] + dVmag*sin_theta*cos(phi));
+    kick[1] = 0.5*(dV[1] + dVmag*sin_theta*sin(phi));
+    kick[2] = 0.5*(dV[2] + dVmag*cos_theta);
+}
+#endif
+
 
 /*! This function returns the value of the geometrical factor needed for the calculation of the interaction probability. */
 double g_geo(double r)
@@ -46,19 +63,6 @@ double g_geo(double r)
     if(i >= GEOFACTOR_TABLE_LENGTH) {i = GEOFACTOR_TABLE_LENGTH - 1;}
     if(i <= 1) {f = 0.992318  + (GeoFactorTable[0] - 0.992318)*u;} else {f = GeoFactorTable[i - 1] + (GeoFactorTable[i] - GeoFactorTable[i - 1]) * (u - i);}
     return f;
-}
-
-/*! This routine sets the kicks for each particle after it has been decided that they will
- *  interact. It uses an algorithm tha conserves energy and momentum but picks a random direction so it does not conserves angular momentum. */
-void calculate_interact_kick(double dV[3], double kick[3], double m)
-{
-    double dVmag = (1-All.DM_DissipationFactor)*sqrt(dV[0]*dV[0]+dV[1]*dV[1]+dV[2]*dV[2]);
-    if(dVmag<0) {dVmag=0;}
-    if(All.DM_KickPerCollision>0) {double v0=All.DM_KickPerCollision*1.e5/All.UnitVelocity_in_cm_per_s; dVmag=sqrt(dVmag*dVmag+v0*v0);}
-    double cos_theta = 2.0*gsl_rng_uniform(random_generator)-1.0, sin_theta = sqrt(1.-cos_theta*cos_theta), phi = gsl_rng_uniform(random_generator)*2.0*M_PI;
-    kick[0] = 0.5*(dV[0] + dVmag*sin_theta*cos(phi));
-    kick[1] = 0.5*(dV[1] + dVmag*sin_theta*sin(phi));
-    kick[2] = 0.5*(dV[2] + dVmag*cos_theta);
 }
 
 /*! This routine initializes the table that will be used to get the geometrical factor
@@ -105,7 +109,7 @@ double geofactor_angle_integ(double u, void * params)
     return wk;
 }
 
-
+/*! This function simply initializes some variables to prevent memory errors */
 void init_self_interactions()
 {
     int i; for(i = 0; i < NumPart; i++) {P[i].dt_step_sidm = 0; P[i].NInteractions = 0;}

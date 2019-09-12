@@ -348,10 +348,11 @@ static inline void kernel_main(double u, double hinv3, double hinv4,
 /* this defines the kernel for the short-range gravitational softening, 
  which does not have to correspond to that of the gas (although for the gas
  itself, it should). dwk is the force kernel, wk is the potential kernel
-  Call with mode 0 to calculate only dphi_dh (for zeta correction)
-  Call with mode -1 to calculate only phi
-  Call with mode +1 to calculate only (1/u) * dphi_du */
-
+  mode= 0 to calculate dphi_dh  (for zeta correction to adaptive forces)
+  mode= -1 to calculate phi  (for potential)
+  mode= 1 to calculate (1/u)*dphi_du  (for acceleration/force)
+  mode= 2 to calculate -(1/u)*d[(1/u)*dphi_du]/du  (for tidal tensor)
+*/
 
 static inline double kernel_gravity(double u, double hinv, double hinv3, int mode)
 {
@@ -361,6 +362,7 @@ static inline double kernel_gravity(double u, double hinv, double hinv3, int mod
         if(mode ==  0) return 0;
         if(mode ==  1) return hinv3/(u*u*u);
         if(mode == -1) return -hinv/u;
+        if(mode ==  2) return 3.*hinv3*hinv*hinv/(u*u*u*u*u);
     }
     double wk;
 
@@ -376,10 +378,15 @@ static inline double kernel_gravity(double u, double hinv, double hinv3, int mod
         wk = -2 + u*u*(2-u);
         return wk * hinv;
     }
-    else
+    else if(mode == 0)
     {
         wk = 2*(1-u)*(1-u)*(1+2*u);
         return wk * hinv * hinv;
+    }
+    else if(mode == 2)
+    {
+        wk = 3./u;
+        return wk * hinv3*hinv*hinv;
     }
 #endif
 
@@ -396,11 +403,16 @@ static inline double kernel_gravity(double u, double hinv, double hinv3, int mod
         wk = -2.5 + 5.*uu*(1.-u) + 1.5*uu*uu;
         return wk * hinv;
     }
-    else
+    else if(mode == 0)
     {
         double uu = 1 - u;
         wk = 2.5 * uu*uu*uu * (1. + 3.*u);
         return wk * hinv * hinv;
+    }
+    else if(mode == 2)
+    {
+        wk = 15./u-12.;
+        return wk * hinv3*hinv*hinv;
     }
 #endif
 
@@ -424,13 +436,21 @@ static inline double kernel_gravity(double u, double hinv, double hinv3, int mod
                                                       u * (-16.0 + u * (9.6 - 2.133333333333 * u)));
         return wk * hinv;
     }
-    else
+    else if(mode == 0)
     {
         if(u < 0.5)
             wk = 2.8 + 16.0 * u * u * (-1.0 + 3.0 * u * u * (1.0 - 0.8 * u));
         else
             wk = 3.2 + 32.0 * u * u * (-1.0 + u * (2.0 - 1.5 * u + 0.4 * u * u));
         return wk * hinv * hinv;
+    }
+    else if(mode == 2)
+    {
+        if(u < 0.5)
+            wk = 76.8 - 96.0 * u;
+        else
+            wk = -0.2 / (u*u*u*u*u) + 48.0 / u - 76.8 + 32.0 * u;
+        return wk * hinv3*hinv*hinv;
     }
 #endif /* cubic spline */
 
@@ -459,7 +479,7 @@ static inline double kernel_gravity(double u, double hinv, double hinv3, int mod
                 wk = (874. + 3125.*u*(-7. + u2*(35. + u*(-70. + u*(63. + u*(-28. + 5.*u)))))) / (5376.*u);
         return wk * hinv;
     }
-    else
+    else if(mode == 0)
     {
         if(u < 0.2)
             wk = (1199. - 375.*u2*(23. - 75.*u2 + 125.*u2*u2)) / 384.;
@@ -472,6 +492,17 @@ static inline double kernel_gravity(double u, double hinv, double hinv3, int mod
                 wk = (3125./768.) * u2*u2*um * (1. + 5.*u);
             }
         return wk * hinv * hinv;
+    }
+    else if(mode == 2)
+    {
+        if(u < 0.2)
+            wk = 2500. * (63. - 225.*u2) / 1344.;
+        else
+            if(u < 0.6)
+                wk = (1. + 3125.*u2*u2*(-7.+2.*u*(84.+25.*u*(-7.+4.*u)))) / (2240.*u2*u2*u);
+            else
+                wk = -(437. + 3125.*u2*u2*(-35. + 2.*u*(42. + 5.*u*(-7. + 2.*u)))) / (896.*u2*u2*u);
+        return wk * hinv3*hinv*hinv;
     }
 #endif /* quartic spline */
     
@@ -501,7 +532,7 @@ static inline double kernel_gravity(double u, double hinv, double hinv3, int mod
                 wk = (169.-729*u*(4.+(-2.+u)*u2*(14.+u*(-28.+u*(28.+u*(-14.+3.*u)))))) / (560.*u);
         return wk * hinv;
     }
-    else
+    else if(mode == 0)
     {
         if(u < 1./3.)
             wk = (239.+27.*u2*(-77.+45.*u2*(7.+3.*u2*(-7.+6.*u)))) / 70.;
@@ -514,6 +545,17 @@ static inline double kernel_gravity(double u, double hinv, double hinv3, int mod
                 wk = (729./140.) * um * (1.+6.*u);
             }
         return wk * hinv * hinv;
+    }
+    else if(mode == 2)
+    {
+        if(u < 1./3.)
+            wk = 972./5. + 2187.*u2*(35.*u-32.)/56.;
+        else
+            if(u < 2./3.)
+                wk = (5. - 81.*u2*u2*(350. + 3.*u*(-1568. + 15.*u*(280. + 3.*u*(-96. + 35.*u))))) / (560 * u2*u2*u);
+            else
+                wk = (-507. + 2187.*u2*u2*(70. + u*(-224. + 5.*u*(56. + u*(-32. + 7.*u))))) / (560 * u2*u2*u);
+        return wk * hinv3*hinv*hinv;
     }
 #endif /* quintic spline */
 
@@ -530,12 +572,17 @@ static inline double kernel_gravity(double u, double hinv, double hinv3, int mod
         wk = -3. + uu * (7. + uu * (-21. + u * (28. + 3. * (-5. + u) * u)));
         return wk * hinv;
     }
-    else
+    else if(mode == 0)
     {
         double t1 = 1 - u;
         double t2 = t1*t1; t2 *= t2; t2 *= t1;
         wk = 3. * t2 * (1. + u * (5. + 8. * u));
         return wk * hinv * hinv;
+    }
+    else if(mode == 2)
+    {
+        wk = 168. + u * (-420. + (360. - 105. u) * u);
+        return wk * hinv3*hinv*hinv;
     }
 #endif
 
@@ -553,12 +600,18 @@ static inline double kernel_gravity(double u, double hinv, double hinv3, int mod
         wk = 0.0625 * (-55 + uu*(165 + uu*(-462 + uu*(1650 + u*(-2640 + u*(1925 + u*(-704 + 105*u)))))));
         return wk * hinv;
     }
-    else
+    else if(mode == 0)
     {
         double t1 = 1 - u;
         double t2 = t1*t1*t1; t2 *= t2; t2 *= t1;
         wk = (55./16.) * t2 * (1 + 3*u) * (1 + u*(4 + 7*u));
         return wk * hinv * hinv;
+    }
+    else if(mode == 2)
+    {
+        double uu = u*u;
+        wk = 231. + uu * (-2475. + u * (5775. + u * (-5775. + (2772. - 525. * u) * u)));
+        return wk * hinv3*hinv*hinv;
     }
 #endif
     

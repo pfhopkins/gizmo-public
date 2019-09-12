@@ -567,7 +567,7 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
                     // dust absorption and re-emission brings T_rad towards T_dust: //
                     double dE_abs = -e0 * (1. - exp(a0*dt_entr)); // change in energy from absorption
                     double T_max = DMAX(SphP[i].Radiation_Temperature , SphP[i].Dust_Temperature); // should not exceed either initial temperature //
-                    SphP[i].Radiation_Temperature = (e0 + dE_abs + total_emission_rate*dt_entr) / ((e0 + dE_abs) / SphP[i].Radiation_Temperature + total_emission_rate*dt_entr / SphP[i].Dust_Temperature);
+                    SphP[i].Radiation_Temperature = (e0 + dE_abs + total_emission_rate*dt_entr) / (MIN_REAL_NUMBER + (e0 + dE_abs) / SphP[i].Radiation_Temperature + total_emission_rate*dt_entr / SphP[i].Dust_Temperature);
                     SphP[i].Radiation_Temperature = DMIN(SphP[i].Radiation_Temperature, T_max);
                 }
                 if(SphP[i].Radiation_Temperature < T_cmb) {SphP[i].Radiation_Temperature = T_cmb;} // radiation temperature shouldn't be below CMB

@@ -63,9 +63,9 @@ PERL     =  /usr/bin/perl
 RESULT     := $(shell CONFIG=$(CONFIG) PERL=$(PERL) make -f config-makefile)
 CONFIGVARS := $(shell cat GIZMO_config.h)
 
-HG_COMMIT := $(shell hg id 2>/dev/null)
-HG_REPO := $(shell hg path default)
-HG_BRANCH := $(shell hg branch)
+HG_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null)
+HG_REPO := $(shell git config --get remote.origin.url)
+HG_BRANCH := $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null)
 BUILDINFO = "Build on $(HOSTNAME) by $(USER) from $(HG_BRANCH):$(HG_COMMIT) at $(HG_REPO)"
 #OPT += -DBUILDINFO='$(BUILDINFO)'
 
@@ -275,11 +275,11 @@ endif
 HDF5INCL = -I$(TACC_HDF5_INC) -DH5_USE_16_API
 HDF5LIB  = -L$(TACC_HDF5_LIB) -lhdf5 -lz
 MPICHLIB =
-OPT     += -DUSE_MPI_IN_PLACE #-DNO_ISEND_IRECV_IN_DOMAIN
+OPT     += -DUSE_MPI_IN_PLACE -DNO_ISEND_IRECV_IN_DOMAIN
 ##
 # IMPORTANT: presently must use intel/18.x versions. 19.x versions compile and work, but lots of problems (+slower), esp. for high Ntasks or OpenMP
-#  e.g.: module load intel/18.0.5 impi hdf5 fftw3
-#  also at present, GSL module does -not- support intel/18.x, so need to build it yourself (support will come, hopefully?). example instructions below:
+#  e.g.: module load intel/18.0.5 impi hdf5 fftw3 gsl
+#  until recently, GSL module did -not- support intel/18.x, so needed to build it yourself (see update below). example instructions below:
 #    -- 1. get newest GSL: ftp://ftp.gnu.org/gnu/gsl/gsl-latest.tar.gz
 #       2. unpack, 3. then in folder run: "./configure --prefix=$HOME/gsl-2.5 CC=icc" followed by 4. "make" and 5. "make all"
 #           (here I'm setting "$HOME/gsl-2.5" as the local install directory, you set yours appropriately)
@@ -287,6 +287,7 @@ OPT     += -DUSE_MPI_IN_PLACE #-DNO_ISEND_IRECV_IN_DOMAIN
 #           "export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$HOME_GSL_DIR:$HOME_GSL_DIR/.libs:$HOME_GSL_DIR/cblas/.libs"
 #           (obviously if you use a different parent install directory, change the directory name here accordingly).
 #       7. when you submit jobs, make sure you include a "source $HOME/.bashrc" in your run script or the export flags above, to link the libraries
+# [update: GSL module is now installed for intel/18.0.5, so you can simply load the module. but I'll keep the install instructions above, they can be useful]
 # As usual include "umask 022" and "ulimit -s unlimited" in your .bashrc file to save headaches later
 # fftw2/3 work equally well. usual intuition re: multipledomains, pmgrid, treedomainfreq, etc, apply.
 # The different code optimizations above make very tiny differences. for stability I am for now using -O2 -xCORE-AVX2, nothing 'fancy' but this doesn't cost us
@@ -1225,6 +1226,10 @@ endif
 
 ifeq (DM_SIDM,$(findstring DM_SIDM,$(CONFIGVARS)))
 OBJS    +=  sidm/sidm_core.o 
+endif
+
+ifeq (GRAIN_COLLISIONS,$(findstring GRAIN_COLLISIONS,$(CONFIGVARS)))
+OBJS    +=  sidm/sidm_core.o
 endif
 
 ifeq (NUCLEAR_NETWORK,$(findstring NUCLEAR_NETWORK,$(CONFIGVARS)))

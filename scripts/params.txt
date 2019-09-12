@@ -77,6 +77,8 @@ MinGasTemp      10.	    % don't set <10 in explicit feedback runs, otherwise 0
 DesNumNgb               32      % domain-reconstruction kernel number: 32 standard, 60-114 for quintic
 MaxHsml                 1.0e10  % minimum gas kernel length (some very large value to prevent errors)
 MinGasHsmlFractional    0       % minimum kernel length relative to gas force softening (<= 1)
+%----- adaptive grav softening or other kernel-interactions for non-gas elements
+AGS_DesNumNgb             32  % neighbor number for calculating interaction kernel
 
 
 %---- Gravitational softening lengths 
@@ -98,8 +100,6 @@ SofteningDiskMaxPhys    0.075
 SofteningBulgeMaxPhys   0.250 
 SofteningStarsMaxPhys   0.0005 
 SofteningBndryMaxPhys   0.0005 
-%----- parameters for adaptive gravitational softening 
-AGS_DesNumNgb           32  % neighbor number for calculating adaptive gravsoft
 
 
 
@@ -141,6 +141,11 @@ Grain_Internal_Density      1.0     % internal/material density of grains in g/c
 Grain_Size_Min              1.e-6   % minimum grain size in cm
 Grain_Size_Max              1.e-4   % maximum grain size in cm
 Grain_Size_Spectrum_Powerlaw  0.5   % power-law distribution of grain sizes (dm/dlnr~r^x)
+%-------------- parameters for grain-grain collisions/scattering/sticking/shattering (GRAIN_COLLISONS on)
+Grain_InteractionRenormalization 1     % coefficient to re-normalize cross-section (otherwise hard-sphere assumed; default=1)
+Grain_InteractionVelocityScale 0       % velocity [code units]: if>0, cross-section scales ~1/(1+(v/v0)^4) above this "v0"
+Grain_DissipationFactor 0              % 0=elastic, 1=pure dissipative (fractional dissipation of kinetic energy in event)
+Grain_KickPerCollision  0              % velocity 'kick' [code units] per collision (this^2=specific energy/mass released)
 
 
 %-------------------------------------------------------------------------
@@ -257,9 +262,9 @@ TabulatedCosmologyFile    CosmoTbl  % table with cosmological parameters
 
 %-------------- Parameters for self-interacting dark matter (DM_SIDM on)
 DM_InteractionCrossSection 1        % cross-section per unit mass in cm^2/g (normalized at 1 km/s, if vel-dependent)
-DM_InteractionVelocityDependence 0  % scaling: sigma=InteractionCrossSection*(dv/kms)^DM_InteractionVelocityDependence
+DM_InteractionVelocityScale 0       % velocity [code units]: if>0, cross-section scales ~1/(1+(v/v0)^4) above this "v0"
 DM_DissipationFactor 0              % 0=elastic, 1=pure dissipative (fractional dissipation of kinetic energy in event)
-DM_KickPerCollision  0              % kick in km/s per collision (this^2 = specific energy/mass to kinetic per 'event')
+DM_KickPerCollision  0              % velocity 'kick' [code units] per collision (this^2=specific energy/mass released)
 
 %-------------- Parameters for scalar-field dark matter (DM_FUZZY on)
 FuzzyDM_Mass_in_eV 1e-22            % boson mass in eV for SFDM/Fuzzy DM module

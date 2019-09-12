@@ -56,7 +56,7 @@
 
 #define DO_PREPROCESSOR_EXPAND_(VAL)  VAL ## 1
 #define EXPAND_PREPROCESSOR_(VAL)     DO_PREPROCESSOR_EXPAND_(VAL) /* checks for a NON-ZERO value of this parameter */
-
+#define CHECK_IF_PREPROCESSOR_HAS_NUMERICAL_VALUE_(VAL) !(EXPAND_PREPROCESSOR_(VAL) == 1) /* returns True if a non-zero int value of VAL is set */
 
 #if !defined(SLOPE_LIMITER_TOLERANCE)
 #if defined(AGGRESSIVE_SLOPE_LIMITERS)
@@ -164,8 +164,8 @@
 #define BOX_SHEARING_Q SHEARING_BOX_Q
 #endif
 #ifdef ANALYTIC_GRAVITY
-#if !(EXPAND_PREPROCESSOR_(ANALYTIC_GRAVITY) == 1)
-#define GRAVITY_ANALYTIC 1
+#if CHECK_IF_PREPROCESSOR_HAS_NUMERICAL_VALUE_(ANALYTIC_GRAVITY)
+#define GRAVITY_ANALYTIC ANALYTIC_GRAVITY
 #else
 #define GRAVITY_ANALYTIC
 #endif
@@ -178,16 +178,18 @@
 #include "eos/eos.h"
 
 
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(DM_FUZZY) || defined(DM_SIDM)
-#ifndef ADAPTIVE_GRAVSOFT_FORALL
-#define ADAPTIVE_GRAVSOFT_FORALL 100000
-#endif
-#endif
-
 #if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(DM_FUZZY)
 #define AGS_FACE_CALCULATION_IS_ACTIVE
 #endif
 
+
+#if defined(GRAIN_COLLISIONS)
+#define DM_SIDM 8 /* use the SIDM module to handle scattering of otherwise-collisionless particles against each other -- set to Particle Type=3 here */
+#endif
+
+#if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(DM_FUZZY) || defined(AGS_FACE_CALCULATION_IS_ACTIVE) || defined(DM_SIDM)
+#define AGS_HSML_CALCULATION_IS_ACTIVE
+#endif
 
 
 
@@ -198,7 +200,6 @@
 #ifdef PROTECT_FROZEN_FIRE
 #define GALSF_USE_SNE_ONELOOP_SCHEME // set to use the 'base' FIRE-2 SNe coupling. if commented out, will user newer version that more accurately manages the injected energy with neighbors moving to inject a specific target
 #endif
-
 
 
 
@@ -228,13 +229,15 @@
 #define BH_DEBUG_DISABLE_MERGERS
 #define BH_ALPHADISK_ACCRETION (1.2)
 #else
-#define SLOPE1_SINKS //Slope1 sinks, this gives a top heavy IMF in isoT sims
 #define BH_ALPHADISK_ACCRETION (1.0e6)
 #endif
 #ifdef MAGNETIC
 #define MHD_CONSTRAINED_GRADIENT 1
 #endif
 #define RT_DISABLE_R15_GRADIENTFIX
+#ifdef RT_INFRARED
+#define COOL_LOWTEMP_THIN_ONLY // Don't want to double-count trapping of radiation if we're doing it self-consistently
+#endif
 #endif // SINGLE_STAR_SINK_DYNAMICS_MG_DG_TEST_PACKAGE
 
 
@@ -566,7 +569,7 @@
 
 
 #if defined(GRAVITY_ANALYTIC)
-#if !(EXPAND_PREPROCESSOR_(GRAVITY_ANALYTIC) == 1)
+#if CHECK_IF_PREPROCESSOR_HAS_NUMERICAL_VALUE_(GRAVITY_ANALYTIC)
 #if (GRAVITY_ANALYTIC > 0)
 #define GRAVITY_ANALYTIC_ANCHOR_TO_PARTICLE /* ok, analytic gravity is defined with a numerical value > 0, indicating we should use this flag */
 #ifndef BH_CALC_DISTANCES
@@ -653,7 +656,7 @@ static MPI_Datatype MPI_TYPE_TIME = MPI_INT;
                                          *   to 2^29
                                          */
 
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
+#ifdef AGS_HSML_CALCULATION_IS_ACTIVE
 #define AGS_OUTPUTGRAVSOFT 1  /*! output softening to snapshots */
 //#define AGS_OUTPUTZETA 1 /*! output correction zeta term to snapshots */
 #endif
@@ -749,7 +752,7 @@ static MPI_Datatype MPI_TYPE_TIME = MPI_INT;
 #define  NODELISTLENGTH      8
 
 
-#define EPSILON_FOR_TREERND_SUBNODE_SPLITTING (1.0e-3) /* define some number << 1; particles with less than this separation will trigger randomized sub-node splitting in the tree.
+#define EPSILON_FOR_TREERND_SUBNODE_SPLITTING (1.0e-4) /* define some number << 1; particles with less than this separation will trigger randomized sub-node splitting in the tree.
                                                             we set it to a global value here so that other sub-routines will know not to force particle separations below this */
 
 #ifdef GALSF_SFR_IMF_VARIATION
@@ -1057,7 +1060,7 @@ typedef MyDouble MyBigFloat;
 
 
 #define PPP P
-#if defined(ADAPTIVE_GRAVSOFT_FORALL)
+#ifdef AGS_HSML_CALCULATION_IS_ACTIVE
 #define PPPZ P
 #else
 #define PPPZ SphP
@@ -1407,11 +1410,11 @@ extern struct global_data_all_processes
 #endif
 
     
-#ifdef DM_SIDM
+#if defined(DM_SIDM)
     MyDouble DM_InteractionCrossSection;  /*!< self-interaction cross-section in [cm^2/g]*/
     MyDouble DM_DissipationFactor;  /*!< dimensionless parameter governing efficiency of dissipation (1=dissipative, 0=elastic) */
-    MyDouble DM_KickPerCollision;  /*!< for exo-thermic DM reactions, this determines the energy gain 'per event': kick in km/s (equivalent to specific energy in erg/g) associated 'per event' */
-    MyDouble DM_InteractionVelocityDependence; /*!< power-law slope of velocity dependence of DM interaction cross-section */
+    MyDouble DM_KickPerCollision;  /*!< for exo-thermic DM reactions, this determines the energy gain 'per event': kick in code units (equivalent to specific energy) associated 'per event' */
+    MyDouble DM_InteractionVelocityScale; /*!< scale above which the scattering becomes velocity-dependent */
 #endif
     
   int MaxPart;			/*!< This gives the maxmimum number of particles that can be stored on one processor. */
@@ -1882,7 +1885,7 @@ extern struct global_data_all_processes
 #endif
 
 
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
+#ifdef AGS_HSML_CALCULATION_IS_ACTIVE
   double AGS_DesNumNgb;
   double AGS_MaxNumNgbDeviation;
 #endif
@@ -2032,10 +2035,6 @@ extern ALIGN(32) struct particle_data
 #ifdef GRAIN_LORENTZFORCE
     MyFloat Gas_B[3];
 #endif
-#ifdef GRAIN_COLLISIONS
-    MyFloat Grain_Density;
-    MyFloat Grain_Velocity[3];
-#endif
 #endif
     
 #if defined(BLACK_HOLES)
@@ -2095,7 +2094,7 @@ extern ALIGN(32) struct particle_data
 #endif
 
     
-#ifdef DM_SIDM
+#if defined(DM_SIDM)
     integertime dt_step_sidm; /*!< timestep used if self-interaction probabilities greater than 0.2 are found */
     long unsigned int NInteractions; /*!< Total number of interactions */
 #endif
@@ -2107,7 +2106,7 @@ extern ALIGN(32) struct particle_data
     integertime dt_step;
 #endif
     
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
+#ifdef AGS_HSML_CALCULATION_IS_ACTIVE
     MyDouble AGS_Hsml;          /*!< smoothing length (for gravitational forces) */
     MyFloat AGS_zeta;           /*!< factor in the correction term */
     MyDouble AGS_vsig;          /*!< signal velocity of particle approach, to properly time-step */
@@ -2258,8 +2257,8 @@ extern struct sph_particle_data
 #ifdef HYDRO_PRESSURE_SPH
     MyDouble EgyWtDensity;          /*!< 'effective' rho to use in hydro equations */
 #endif
-    
-#if defined(ADAPTIVE_GRAVSOFT_FORGAS) && !defined(ADAPTIVE_GRAVSOFT_FORALL)
+
+#if defined(ADAPTIVE_GRAVSOFT_FORGAS) && !defined(AGS_HSML_CALCULATION_IS_ACTIVE)
     MyFloat AGS_zeta;               /*!< correction term for adaptive gravitational softening lengths */
 #endif
     
@@ -2428,7 +2427,7 @@ extern struct sph_particle_data
 #endif
     
     
-#if defined(WAKEUP) && !defined(ADAPTIVE_GRAVSOFT_FORALL)
+#if defined(WAKEUP) && !defined(AGS_HSML_CALCULATION_IS_ACTIVE)
     short int wakeup;                     /*!< flag to wake up particle */
 #endif
     
@@ -2664,6 +2663,10 @@ extern struct blackhole_temp_particle_data       // blackholedata_topass
 #endif
 #if defined(BH_FOLLOW_ACCRETED_ANGMOM)
     MyLongDouble accreted_J[3];               /*!< accreted angular momentum */
+#endif
+#if defined(BH_RETURN_ANGMOM_TO_GAS)
+    MyFloat angmom_prepass_sum_for_passback[3]; /*!< Normalization term for angular momentum feedback kicks, see denominator of Eq 22 of Hubber 2013 */
+    MyFloat angmom_norm_topass_in_swallowloop;  /*!< corresponding scalar normalization calculated from the vector above */
 #endif
 
 }
@@ -3043,7 +3046,7 @@ extern int FB_Seed;
 
 
 
-#ifdef DM_SIDM
+#if defined(DM_SIDM)
 #define GEOFACTOR_TABLE_LENGTH 1000    /*!< length of the table used for the geometric factor spline */
 extern MyDouble GeoFactorTable[GEOFACTOR_TABLE_LENGTH];
 #endif

@@ -133,6 +133,9 @@ void drift_particle(int i, integertime time1)
     
     double divv_fac = P[i].Particle_DivVel * dt_drift;
     double divv_fac_max = 0.3; //1.5; // don't allow Hsml to change too much in predict-step //
+#ifdef AGS_HSML_CALCULATION_IS_ACTIVE
+    if(ags_density_isactive(i) && P[i].Type>0) {divv_fac_max=4;} // can [should] allow larger changes when using adapting soft for all
+#endif
     if(divv_fac > +divv_fac_max) divv_fac = +divv_fac_max;
     if(divv_fac < -divv_fac_max) divv_fac = -divv_fac_max;
     
@@ -145,18 +148,14 @@ void drift_particle(int i, integertime time1)
     }
 #endif
 
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
-    if(P[i].Type>0)
+#ifdef AGS_HSML_CALCULATION_IS_ACTIVE
+    if(ags_density_isactive(i) && (dt_drift>0)) /* particle is AGS-active */
     {
-        if(dt_drift>0)
-        {
-            double minsoft = ags_return_minsoft(i);
-            double maxsoft = ags_return_maxsoft(i);
-            PPP[i].AGS_Hsml *= exp((double)divv_fac / ((double)NUMDIMS));
-            if(PPP[i].AGS_Hsml < minsoft) {PPP[i].AGS_Hsml = minsoft;}
-            if(PPP[i].AGS_Hsml > maxsoft) {PPP[i].AGS_Hsml = maxsoft;}
-        }
-    }
+        double minsoft = ags_return_minsoft(i), maxsoft = ags_return_maxsoft(i);
+        PPP[i].AGS_Hsml *= exp((double)divv_fac / ((double)NUMDIMS));
+        if(PPP[i].AGS_Hsml < minsoft) {PPP[i].AGS_Hsml = minsoft;}
+        if(PPP[i].AGS_Hsml > maxsoft) {PPP[i].AGS_Hsml = maxsoft;}
+    } else {PPP[i].AGS_Hsml = All.ForceSoftening[P[i].Type];} /* non-AGS-active particles use fixed softening */
 #endif
     
 #ifdef DM_FUZZY
@@ -218,7 +217,7 @@ void drift_particle(int i, integertime time1)
             if(PPP[i].Hsml < All.MinHsml) {PPP[i].Hsml = All.MinHsml;}
             if(PPP[i].Hsml > All.MaxHsml) {PPP[i].Hsml = All.MaxHsml;}
 #ifdef ADAPTIVE_GRAVSOFT_FORALL
-            PPP[i].AGS_Hsml = PPP[i].Hsml;
+            if(1 & ADAPTIVE_GRAVSOFT_FORALL) {PPP[i].AGS_Hsml = PPP[i].Hsml;} /* gas is AGS-active, so needs to be set here to match updated Hsml */
 #endif
 #endif
             drift_sph_extra_physics(i, time0, time1, dt_entr);

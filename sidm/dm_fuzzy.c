@@ -16,7 +16,7 @@
  *         This file was written by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
  */
 
-#define DM_FUZZY_USE_SIMPLER_HLL_SOLVER 0    /* determines which solver will be used for DM_FUZZY=0; =1 is the newer, simpler, but more diffusive solver */
+
 
 #ifdef DM_FUZZY
 
@@ -26,7 +26,7 @@
  Actual evaluation of fluxes from the quantum pressure tensor
  -------------------------------------------------------------------------- */
 
-#if (DM_FUZZY_USE_SIMPLER_HLL_SOLVER == 1)
+
 
 void do_dm_fuzzy_flux_computation(double HLLwt, double dt, double prev_a, double dv[3],
                                   double GradRho_L[3], double GradRho_R[3],
@@ -57,9 +57,9 @@ void do_dm_fuzzy_flux_computation(double HLLwt, double dt, double prev_a, double
     return;
 }
 
-#else
 
-void do_dm_fuzzy_flux_computation(double HLLwt, double dt, double m0, double prev_a, double dp[3], double dv[3],
+
+void do_dm_fuzzy_flux_computation_old(double HLLwt, double dt, double m0, double prev_a, double dp[3], double dv[3],
                                   double GradRho_L[3], double GradRho_R[3],
                                   double GradRho2_L[3][3], double GradRho2_R[3][3],
                                   double rho_L, double rho_R, double dv_Right_minus_Left,
@@ -142,7 +142,7 @@ void do_dm_fuzzy_flux_computation(double HLLwt, double dt, double m0, double pre
     return;
 }
 
-#endif
+
 
 
 /* kicks for fuzzy-dm integration: just put relevant drift-kick operators here to keep the code clean

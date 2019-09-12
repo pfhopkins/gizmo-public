@@ -24,7 +24,7 @@ static struct blackholedata_in
     MyFloat Mdot;
     MyFloat Dt;
     MyFloat Hsml;
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
+#if (ADAPTIVE_GRAVSOFT_FORALL & 32)
     MyFloat AGS_Hsml;
 #endif    
     MyFloat Mass;
@@ -50,6 +50,10 @@ static struct blackholedata_in
 #endif
 #if defined(BH_GRAVCAPTURE_GAS)
     MyFloat mass_to_swallow_edd;
+#endif
+#if defined(BH_RETURN_ANGMOM_TO_GAS)
+    MyFloat BH_Specific_AngMom[3];
+    MyFloat angmom_norm_topass_in_swallowloop;
 #endif
 
 }

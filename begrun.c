@@ -174,7 +174,7 @@ void begrun(void)
     init_turb();
 #endif
 
-#ifdef DM_SIDM
+#if defined(DM_SIDM)
     init_geofactor_table();
 #endif
 
@@ -283,7 +283,7 @@ void begrun(void)
 #endif
         
       All.MaxNumNgbDeviation = all.MaxNumNgbDeviation;
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
+#ifdef AGS_HSML_CALCULATION_IS_ACTIVE
       /* Allow the tolerance over the number of neighbours to vary during the run:
        * If it was initially set to a very strict value, convergence in ngb-iteration may at some point fail */
       All.AGS_MaxNumNgbDeviation = all.AGS_MaxNumNgbDeviation;
@@ -1023,6 +1023,23 @@ void read_parameter_file(char *fname)
         
         
 #ifdef DM_SIDM
+#ifdef GRAIN_COLLISIONS
+        strcpy(tag[nt], "Grain_InteractionRenormalization");
+        addr[nt] = &All.DM_InteractionCrossSection;
+        id[nt++] = REAL;
+        
+        strcpy(tag[nt], "Grain_DissipationFactor");
+        addr[nt] = &All.DM_DissipationFactor;
+        id[nt++] = REAL;
+        
+        strcpy(tag[nt], "Grain_KickPerCollision");
+        addr[nt] = &All.DM_KickPerCollision;
+        id[nt++] = REAL;
+        
+        strcpy(tag[nt], "Grain_InteractionVelocityScale");
+        addr[nt] = &All.DM_InteractionVelocityScale;
+        id[nt++] = REAL;
+#else
         strcpy(tag[nt], "DM_InteractionCrossSection");
         addr[nt] = &All.DM_InteractionCrossSection;
         id[nt++] = REAL;
@@ -1035,10 +1052,12 @@ void read_parameter_file(char *fname)
         addr[nt] = &All.DM_KickPerCollision;
         id[nt++] = REAL;
 
-        strcpy(tag[nt], "DM_InteractionVelocityDependence");
-        addr[nt] = &All.DM_InteractionVelocityDependence;
+        strcpy(tag[nt], "DM_InteractionVelocityScale");
+        addr[nt] = &All.DM_InteractionVelocityScale;
         id[nt++] = REAL;
 #endif
+#endif
+        
 
 
 
@@ -1518,7 +1537,7 @@ void read_parameter_file(char *fname)
         id[nt++] = REAL;
 #endif
 
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
+#ifdef AGS_HSML_CALCULATION_IS_ACTIVE
         strcpy(tag[nt], "AGS_DesNumNgb");
         addr[nt] = &All.AGS_DesNumNgb;
         id[nt++] = REAL;
@@ -1810,7 +1829,7 @@ void read_parameter_file(char *fname)
 #ifdef EOS_ELASTIC
     All.MaxNumNgbDeviation /= 5.0;
 #endif
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
+#ifdef AGS_HSML_CALCULATION_IS_ACTIVE
     All.AGS_MaxNumNgbDeviation = All.AGS_DesNumNgb / 640.;
 #ifdef GALSF
     All.AGS_MaxNumNgbDeviation = All.AGS_DesNumNgb / 64.;
@@ -1939,7 +1958,7 @@ void read_parameter_file(char *fname)
             endrun(1);
         }
     }
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
+#ifdef AGS_HSML_CALCULATION_IS_ACTIVE
     if((All.AGS_MaxNumNgbDeviation<=0)||(All.AGS_MaxNumNgbDeviation>0.1*All.AGS_DesNumNgb))
     {
         if(ThisTask==0)

@@ -85,7 +85,7 @@ static struct densdata_out
     MyLongDouble EgyRho;
 #endif
 
-#if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS)
+#if defined(ADAPTIVE_GRAVSOFT_FORGAS) || (ADAPTIVE_GRAVSOFT_FORALL & 1)
     MyFloat AGS_zeta;
 #endif
 
@@ -168,7 +168,7 @@ void out2particle_density(struct densdata_out *out, int i, int mode)
         ASSIGN_ADD(SphP[i].DhsmlHydroSumFactor, out->DhsmlHydroSumFactor, mode);
 #endif
 
-#if defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(ADAPTIVE_GRAVSOFT_FORALL)
+#if defined(ADAPTIVE_GRAVSOFT_FORGAS) || (ADAPTIVE_GRAVSOFT_FORALL & 1)
         ASSIGN_ADD(PPPZ[i].AGS_zeta, out->AGS_zeta,   mode);
 #endif
 
@@ -590,8 +590,8 @@ void density(void)
                 } else {
                     PPP[i].NumNgb = PPP[i].DhsmlNgbFactor = P[i].Particle_DivVel = 0;
                 }
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
-                if(P[i].Type > 0) {PPP[i].Particle_DivVel = 0;}
+#if defined(ADAPTIVE_GRAVSOFT_FORALL) /* if particle is AGS-active and non-gas, set DivVel to zero because it will be reset in ags_hsml routine */
+                if(ags_density_isactive(i) && (P[i].Type > 0)) {PPP[i].Particle_DivVel = 0;}
 #endif
                 
                 // inverse of SPH volume element (to satisfy constraint implicit in Lagrange multipliers)
@@ -744,13 +744,13 @@ void density(void)
                 redo_particle = 0;
                 
                 /* check if we are in the 'normal' range between the max/min allowed values */
-                if((PPP[i].NumNgb < (desnumngb - desnumngbdev) && PPP[i].Hsml < 0.99*maxsoft) ||
-                   (PPP[i].NumNgb > (desnumngb + desnumngbdev) && PPP[i].Hsml > 1.01*minsoft))
+                if((PPP[i].NumNgb < (desnumngb - desnumngbdev) && PPP[i].Hsml < 0.999*maxsoft) ||
+                   (PPP[i].NumNgb > (desnumngb + desnumngbdev) && PPP[i].Hsml > 1.001*minsoft))
                     redo_particle = 1;
                 
                 /* check maximum kernel size allowed */
                 particle_set_to_maxhsml_flag = 0;
-                if((PPP[i].Hsml >= 0.99*maxsoft) && (PPP[i].NumNgb < (desnumngb - desnumngbdev)))
+                if((PPP[i].Hsml >= 0.999*maxsoft) && (PPP[i].NumNgb < (desnumngb - desnumngbdev)))
                 {
                     redo_particle = 0;
                     if(PPP[i].Hsml == maxsoft)
@@ -767,7 +767,7 @@ void density(void)
                 
                 /* check minimum kernel size allowed */
                 particle_set_to_minhsml_flag = 0;
-                if((PPP[i].Hsml <= 1.01*minsoft) && (PPP[i].NumNgb > (desnumngb + desnumngbdev)))
+                if((PPP[i].Hsml <= 1.001*minsoft) && (PPP[i].NumNgb > (desnumngb + desnumngbdev)))
                 {
                     redo_particle = 0;
                     if(PPP[i].Hsml == minsoft)
@@ -981,8 +981,7 @@ void density(void)
     /* mark as active again */
     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
     {
-        if(P[i].TimeBin < 0)
-            P[i].TimeBin = -P[i].TimeBin - 1;
+        if(P[i].TimeBin < 0) {P[i].TimeBin = -P[i].TimeBin - 1;}
     }
     
     
@@ -1111,7 +1110,7 @@ void density(void)
 #endif
             
             
-#if defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(ADAPTIVE_GRAVSOFT_FORALL)
+#if defined(ADAPTIVE_GRAVSOFT_FORGAS) || (ADAPTIVE_GRAVSOFT_FORALL & 1)
             /* non-gas particles are handled separately, in the ags_hsml routine */
             if(P[i].Type==0)
             {
@@ -1121,7 +1120,7 @@ void density(void)
                 {
                     /* the zeta terms ONLY control errors if we maintain the 'correct' neighbor number: for boundary
                         particles, it can actually be worse. so we need to check whether we should use it or not */
-                    if((PPP[i].Hsml > 1.01*All.MinHsml) && (PPP[i].Hsml < 0.99*All.MaxHsml) &&
+                    if((PPP[i].Hsml > 1.001*All.MinHsml) && (PPP[i].Hsml < 0.999*All.MaxHsml) &&
                         (fabs(PPP[i].NumNgb-All.DesNumNgb)/All.DesNumNgb < 0.05))
                     {
                         double ndenNGB = PPP[i].NumNgb / ( NORM_COEFF * pow(PPP[i].Hsml,NUMDIMS) );
@@ -1268,7 +1267,7 @@ int density_evaluate(int target, int mode, int *exportflag, int *exportnodecount
                     out.DhsmlHydroSumFactor += -mass_eff * (NUMDIMS * kernel.hinv * kernel.wk + u * kernel.dwk);
 #endif
                     
-#if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS)
+#if defined(ADAPTIVE_GRAVSOFT_FORGAS) || (ADAPTIVE_GRAVSOFT_FORALL & 1)
                     if(local.Type == 0) {out.AGS_zeta += mass_j * kernel_gravity(u, kernel.hinv, kernel.hinv3, 0);}
 #endif
                     /* for everything below, we do NOT include the particle self-contribution! */
@@ -1428,7 +1427,8 @@ void density_evaluate_extra_physics_gas(struct densdata_in *local, struct densda
         if(local->Type == 5)
         {
             P[j].SwallowID = 0;  // this way we don't have to do a global loop over local particles in blackhole_accretion() to reset these quantities...
-            if(out->BH_TimeBinGasNeighbor > P[j].TimeBin) {out->BH_TimeBinGasNeighbor = P[j].TimeBin;}
+            short int TimeBin_j = P[j].TimeBin; if(TimeBin_j < 0) {TimeBin_j = -TimeBin_j - 1;} // need to make sure we correct for the fact that TimeBin is used as a 'switch' here to determine if a particle is active for iteration, otherwise this gives nonsense!
+            if(out->BH_TimeBinGasNeighbor > TimeBin_j) {out->BH_TimeBinGasNeighbor = TimeBin_j;}
 #if (SINGLE_STAR_SINK_FORMATION & 8)
 	    P[j].BH_Ngb_Flag = 1;
 #endif

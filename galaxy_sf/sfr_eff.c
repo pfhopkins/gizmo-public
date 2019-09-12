@@ -281,7 +281,7 @@ double get_starformation_rate(int i)
         }
     }
     /* add thermal support, although it is almost always irrelevant on large scales */
-    double cs_eff = Particle_effective_soundspeed_i(i);
+    double cs_eff = Particle_effective_soundspeed_i(i);    
     double k_cs = cs_eff / (Get_Particle_Size(i)*All.cf_atime);
     
 #ifdef SINGLE_STAR_SINK_FORMATION
@@ -291,7 +291,7 @@ double get_starformation_rate(int i)
     k_cs = cs_eff / (Get_Particle_Size(i)*All.cf_atime);
 #endif
     double press_grad_length = 0; for(k=0;k<3;k++) {press_grad_length += SphP[i].Gradients.Pressure[k]*SphP[i].Gradients.Pressure[k];}
-    press_grad_length = All.cf_atime * DMAX(Get_Particle_Size(i) , SphP[i].Pressure / (1.e-37 + sqrt(press_grad_length));
+    press_grad_length = All.cf_atime * DMAX(Get_Particle_Size(i) , SphP[i].Pressure / (1.e-37 + sqrt(press_grad_length)));
     k_cs = DMAX( k_cs , cs_eff / press_grad_length );
 #ifdef MAGNETIC
     double bmag=0; for(k=0;k<3;k++) {bmag+=Get_Particle_BField(i,k)*Get_Particle_BField(i,k);}
@@ -299,7 +299,7 @@ double get_starformation_rate(int i)
     k_cs = cs_b / (Get_Particle_Size(i)*All.cf_atime);
 #endif
 #endif
-    
+                                            
     dv2abs += 2.*k_cs*k_cs; // account for thermal pressure with standard Jeans criterion (k^2*cs^2 vs 4pi*G*rho) //
     double alpha_vir = dv2abs / (8. * M_PI * All.G * SphP[i].Density * All.cf_a3inv); // 1/4 or 1/8 -- going more careful here //
 #if (GALSF_SFR_VIRIAL_SF_CRITERION > 0)
@@ -511,7 +511,7 @@ void star_formation_parent_routine(void)
                 P[i].BH_Mass_AlphaDisk = All.SeedAlphaDiskMass;
 #endif
 #if defined(BH_FOLLOW_ACCRETED_ANGMOM)
-                double bh_mu=DMAX(0,2*get_random_number(P[i].ID+3)-1), bh_phi=2*M_PI*get_random_number(P[i].ID+4), bh_sin=sqrt(1-bh_mu*bh_mu);
+                double bh_mu=2.0*get_random_number(P[i].ID+3)-1.0, bh_phi=2*M_PI*get_random_number(P[i].ID+4), bh_sin=sqrt(1-bh_mu*bh_mu);
                 double spin_prefac = All.G * P[i].BH_Mass / (C/All.UnitVelocity_in_cm_per_s); // assume initially maximally-spinning BH with random orientation
                 P[i].BH_Specific_AngMom[0]=spin_prefac * bh_sin*cos(bh_phi); P[i].BH_Specific_AngMom[1]=spin_prefac * bh_sin*sin(bh_phi); P[i].BH_Specific_AngMom[2]=spin_prefac * bh_mu;
 #endif
@@ -569,7 +569,7 @@ void star_formation_parent_routine(void)
                 P[i].BH_Mass_AlphaDisk = DMAX(DMAX(0, P[i].Mass-P[i].BH_Mass), All.SeedAlphaDiskMass);
 #endif
 #if defined(BH_FOLLOW_ACCRETED_ANGMOM)		
-                double bh_mu=DMAX(0,2*get_random_number(P[i].ID+3)-1), bh_phi=2*M_PI*get_random_number(P[i].ID+4), bh_sin=sqrt(1-bh_mu*bh_mu);
+                double bh_mu=2.0*get_random_number(P[i].ID+3)-1.0, bh_phi=2*M_PI*get_random_number(P[i].ID+4), bh_sin=sqrt(1-bh_mu*bh_mu);
                 double spin_prefac = All.G * P[i].BH_Mass / (C/All.UnitVelocity_in_cm_per_s); // assume initially maximally-spinning BH with random orientation
 #ifdef SLOPE2_SINKS
                 spin_prefac = sqrt(All.G * P[i].Mass * All.ForceSoftening[5]); // assume material is initially in a circular orbit at the resolution limit

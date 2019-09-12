@@ -85,8 +85,8 @@ void blackhole_feed_loop(void)
 #endif	    
 #endif
             BlackholeDataIn[j].Hsml = PPP[place].Hsml;
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
-            BlackholeDataIn[j].AGS_Hsml = PPP[place].AGS_Hsml;	    
+#if (ADAPTIVE_GRAVSOFT_FORALL & 32)
+            BlackholeDataIn[j].AGS_Hsml = PPP[place].AGS_Hsml;
 #endif	    
             BlackholeDataIn[j].Mass = P[place].Mass;
             BlackholeDataIn[j].BH_Mass = BPP(place).BH_Mass;
@@ -222,7 +222,7 @@ int blackhole_feed_evaluate(int target, int mode, int *nexport, int *nSend_local
         dt = P[target].dt_step * All.Timebase_interval / All.cf_hubble_a;
 #endif
         h_i = PPP[target].Hsml;
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
+#if (ADAPTIVE_GRAVSOFT_FORALL & 32)
 	    ags_h_i = PPP[target].AGS_Hsml;
 #endif	
         mass = P[target].Mass;
@@ -257,7 +257,7 @@ int blackhole_feed_evaluate(int target, int mode, int *nexport, int *nSend_local
         mdot = BlackholeDataGet[target].Mdot;
         dt = BlackholeDataGet[target].Dt;
         h_i = BlackholeDataGet[target].Hsml;
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
+#if (ADAPTIVE_GRAVSOFT_FORALL & 32)
 	    ags_h_i = BlackholeDataGet[target].AGS_Hsml;
 #endif	
         mass = BlackholeDataGet[target].Mass;

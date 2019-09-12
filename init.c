@@ -366,9 +366,6 @@ void init(void)
 #ifdef GRAIN_BACKREACTION
             P[i].Grain_DeltaMomentum[0]=P[i].Grain_DeltaMomentum[1]=P[i].Grain_DeltaMomentum[2]=0;
 #endif
-#ifdef GRAIN_COLLISIONS
-            P[i].Grain_Density=P[i].Grain_Velocity[0]=P[i].Grain_Velocity[1]=P[i].Grain_Velocity[2]=0;
-#endif
 #ifdef GRAIN_LORENTZFORCE
             P[i].Gas_B[0]=P[i].Gas_B[1]=P[i].Gas_B[2]=0;
 #endif
@@ -436,7 +433,7 @@ void init(void)
                 BPP(i).BH_Mass_AlphaDisk = All.SeedAlphaDiskMass;
 #endif
 #ifdef BH_FOLLOW_ACCRETED_ANGMOM
-                double bh_mu=DMAX(0,2*get_random_number(P[i].ID+3)-1), bh_phi=2*M_PI*get_random_number(P[i].ID+4), bh_sin=sqrt(1-bh_mu*bh_mu);
+                double bh_mu=2*get_random_number(P[i].ID+3)-1, bh_phi=2*M_PI*get_random_number(P[i].ID+4), bh_sin=sqrt(1-bh_mu*bh_mu);
                 double spin_prefac = All.G * P[i].BH_Mass / (C/All.UnitVelocity_in_cm_per_s); // assume initially maximally-spinning BH with random orientation
                 P[i].BH_Specific_AngMom[0]=spin_prefac*bh_sin*cos(bh_phi); P[i].BH_Specific_AngMom[1]=spin_prefac*bh_sin*sin(bh_phi); P[i].BH_Specific_AngMom[2]=spin_prefac*bh_mu;
 #endif		
@@ -485,10 +482,10 @@ void init(void)
         for(j=0;j<3;j++) SphP[i].GravWorkTerm[j] = 0;
 #endif
         
-#if defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(ADAPTIVE_GRAVSOFT_FORALL)
+#if defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(AGS_HSML_CALCULATION_IS_ACTIVE)
         PPPZ[i].AGS_zeta = 0;
 #ifdef ADAPTIVE_GRAVSOFT_FORALL
-        PPP[i].AGS_Hsml = PPP[i].Hsml;
+        if(1 & ADAPTIVE_GRAVSOFT_FORALL) {PPP[i].AGS_Hsml = PPP[i].Hsml;} else {PPP[i].AGS_Hsml = All.ForceSoftening[0];}
 #endif
 #endif
         
@@ -685,35 +682,28 @@ void init(void)
     if(RestartFlag != 3 && RestartFlag != 5)
         setup_smoothinglengths();
     
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
-    if(RestartFlag != 3 && RestartFlag != 5)
-        ags_setup_smoothinglengths();
+#ifdef AGS_HSML_CALCULATION_IS_ACTIVE
+    if(RestartFlag != 3 && RestartFlag != 5) {ags_setup_smoothinglengths();}
 #endif
     
 #ifdef GALSF_SUBGRID_WINDS
 #if (GALSF_SUBGRID_WIND_SCALING==2)
-    if(RestartFlag != 3 && RestartFlag != 5)
-        disp_setup_smoothinglengths();
+    if(RestartFlag != 3 && RestartFlag != 5) {disp_setup_smoothinglengths();}
 #endif
 #endif
     
 #if defined GALSF_SFR_IMF_VARIATION
-    for(i = 0; i < NumPart; i++)
-    {
-        P[i].IMF_Mturnover = 2.0; // reset to normal IMF
-    }
+    for(i = 0; i < NumPart; i++) {P[i].IMF_Mturnover = 2.0;} // reset to normal IMF
 #endif
     
-#if defined(WAKEUP) && defined(ADAPTIVE_GRAVSOFT_FORALL)
+#if defined(WAKEUP) && defined(AGS_HSML_CALCULATION_IS_ACTIVE)
     for(i=0;i<NumPart;i++) {P[i].wakeup=0;}
 #endif
 
 #if defined(TURB_DRIVING)
     {
-        double mass = 0, glob_mass;
-        int i;
-        for(i=0; i< N_gas; i++)
-            mass += P[i].Mass;
+        double mass = 0, glob_mass; int i;
+        for(i=0; i< N_gas; i++) {mass += P[i].Mass;}
         MPI_Allreduce(&mass, &glob_mass, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
         All.RefDensity = glob_mass / (boxSize_X*boxSize_Y*boxSize_Z);
         All.RefInternalEnergy = All.IsoSoundSpeed*All.IsoSoundSpeed / (GAMMA*GAMMA_MINUS1);
@@ -759,7 +749,7 @@ void init(void)
         SphP[i].MassTrue = P[i].Mass;
         for(j=0;j<3;j++) SphP[i].GravWorkTerm[j] = 0;
 #endif
-#if defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(ADAPTIVE_GRAVSOFT_FORALL)
+#if defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(AGS_HSML_CALCULATION_IS_ACTIVE)
         PPPZ[i].AGS_zeta = 0;
 #endif
 #ifdef WAKEUP
@@ -840,12 +830,10 @@ void init(void)
     if(RestartFlag == 3)
     {
         
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
-        if(ThisTask == 0)
-            printf("*ADAPTIVE_GRAVSOFT_FORALL* Computation of softening lengths... \n");
+#ifdef AGS_HSML_CALCULATION_IS_ACTIVE
+        if(ThisTask == 0) {printf("*AGS_HSML_CALCULATION_IS_ACTIVE* Computation of softening lengths... \n");}
         ags_setup_smoothinglengths();
-        if(ThisTask == 0)
-            printf("*ADAPTIVE_GRAVSOFT_FORALL* Computation of softening lengths done. \n");
+        if(ThisTask == 0) {printf("*AGS_HSML_CALCULATION_IS_ACTIVE* Computation of softening lengths done. \n");}
 #endif
         
 #ifdef FOF
@@ -1088,7 +1076,7 @@ void assign_unique_ids(void)
 }
 
 
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
+#ifdef AGS_HSML_CALCULATION_IS_ACTIVE
 void ags_setup_smoothinglengths(void)
 {
     int i, no, p;
@@ -1098,24 +1086,28 @@ void ags_setup_smoothinglengths(void)
         {
             P[i].Particle_DivVel = 0;
             PPPZ[i].AGS_zeta = 0;
-            if(P[i].Type > 0)
+            if(ags_density_isactive(i) || P[i].Type==0) // type is AGS-active //
             {
-                no = Father[i];
-                while(10 * All.AGS_DesNumNgb * P[i].Mass > Nodes[no].u.d.mass)
+                if(P[i].Type > 0)
                 {
-                    p = Nodes[no].u.d.father;
-                    if(p < 0)
-                        break;
-                    no = p;
-                }
-                PPP[i].AGS_Hsml = 2. * pow(1.0/NORM_COEFF * All.AGS_DesNumNgb * P[i].Mass / Nodes[no].u.d.mass, 1.0/NUMDIMS) * Nodes[no].len;
-                if(All.SofteningTable[P[i].Type] != 0)
-                {
-                    if((PPP[i].AGS_Hsml>ADAPTIVE_GRAVSOFT_FORALL*All.SofteningTable[P[i].Type])||(PPP[i].AGS_Hsml<=0.01*All.SofteningTable[P[i].Type])||(Nodes[no].u.d.mass<=0)||(Nodes[no].len<=0))
-                        PPP[i].AGS_Hsml = sqrt(ADAPTIVE_GRAVSOFT_FORALL) * All.SofteningTable[P[i].Type];
+                    no = Father[i];
+                    while(10 * All.AGS_DesNumNgb * P[i].Mass > Nodes[no].u.d.mass)
+                    {
+                        p = Nodes[no].u.d.father;
+                        if(p < 0) break;
+                        no = p;
+                    }
+                    PPP[i].AGS_Hsml = 2. * pow(1.0/NORM_COEFF * All.AGS_DesNumNgb * P[i].Mass / Nodes[no].u.d.mass, 1.0/NUMDIMS) * Nodes[no].len;
+                    if(All.SofteningTable[P[i].Type] != 0)
+                    {
+                        if((PPP[i].AGS_Hsml>1e6*All.ForceSoftening[P[i].Type])||(PPP[i].AGS_Hsml<=1e-3*All.ForceSoftening[P[i].Type])||(Nodes[no].u.d.mass<=0)||(Nodes[no].len<=0))
+                            PPP[i].AGS_Hsml = 1e2 * All.ForceSoftening[P[i].Type]; /* random guess to get things started here, thats all */
+                    }
+                } else {
+                    PPP[i].AGS_Hsml = PPP[i].Hsml;
                 }
             } else {
-                PPP[i].AGS_Hsml = PPP[i].Hsml;
+                PPP[i].AGS_Hsml = All.ForceSoftening[P[i].Type]; /* not AGS-active, use fixed softening */
             }
         }
     }
@@ -1124,7 +1116,7 @@ void ags_setup_smoothinglengths(void)
     do_dm_fuzzy_initialization();
 #endif
 }
-#endif // ADAPTIVE_GRAVSOFT_FORALL
+#endif // AGS_HSML_CALCULATION_IS_ACTIVE
 
 
 #if defined(GALSF_SUBGRID_WINDS)

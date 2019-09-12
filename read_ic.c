@@ -539,14 +539,14 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
             
             /* adaptive softening parameters */
         case IO_AGS_SOFT:
-#if defined (ADAPTIVE_GRAVSOFT_FORALL) && defined(AGS_OUTPUTGRAVSOFT)
+#if defined (AGS_HSML_CALCULATION_IS_ACTIVE) && defined(AGS_OUTPUTGRAVSOFT)
             for(n = 0; n < pc; n++)
                 PPP[offset + n].AGS_Hsml = *fp++;
 #endif
             break;
 
         case IO_AGS_ZETA:
-#if defined (ADAPTIVE_GRAVSOFT_FORALL) && defined(AGS_OUTPUTZETA)
+#if defined (AGS_HSML_CALCULATION_IS_ACTIVE) && defined(AGS_OUTPUTZETA)
             for(n = 0; n < pc; n++)
                 PPPZ[offset + n].AGS_Zeta = *fp++;
 #endif
@@ -954,7 +954,7 @@ void read_file(char *fname, int readTask, int lastTask)
 #endif
             
             
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
+#ifdef AGS_HSML_CALCULATION_IS_ACTIVE
 #ifndef AGS_OUTPUTGRAVSOFT
             if(blocknr == IO_AGS_SOFT)
                 continue;

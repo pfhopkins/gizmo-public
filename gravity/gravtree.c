@@ -376,14 +376,8 @@ void gravity_tree(void)
                     if((P[place].Type == 0) && (PPP[place].Hsml > All.ForceSoftening[P[place].Type])) {GravDataIn[j].AGS_zeta = PPPZ[place].AGS_zeta;} else {GravDataIn[j].AGS_zeta = 0;}
 #endif
 #ifdef ADAPTIVE_GRAVSOFT_FORALL
-                    if(PPP[place].AGS_Hsml > All.ForceSoftening[P[place].Type])
-                    {
-                        GravDataIn[j].Soft = PPP[place].AGS_Hsml;
-                        GravDataIn[j].AGS_zeta = PPPZ[place].AGS_zeta;
-                    } else {
-                        GravDataIn[j].Soft = All.ForceSoftening[P[place].Type];
-                        GravDataIn[j].AGS_zeta = 0;
-                    }
+                    GravDataIn[j].Soft = PPP[place].AGS_Hsml;
+                    GravDataIn[j].AGS_zeta = PPPZ[place].AGS_zeta;
 #endif
                     memcpy(GravDataIn[j].NodeList,DataNodeList[DataIndexTable[j].IndexGet].NodeList, NODELISTLENGTH * sizeof(int));
                 }

@@ -101,6 +101,10 @@ void blackhole_swallow_and_kick_loop(void)
             BlackholeDataIn[j].ID = P[place].ID;
             BlackholeDataIn[j].Mass = P[place].Mass;
             BlackholeDataIn[j].BH_Mass = BPP(place).BH_Mass;
+#if defined(BH_RETURN_ANGMOM_TO_GAS)
+            for(k=0; k<3; k++) BlackholeDataIn[j].BH_Specific_AngMom[k] = BPP(place).BH_Specific_AngMom[k];
+            BlackholeDataIn[j].angmom_norm_topass_in_swallowloop = BlackholeTempInfo[P[place].IndexMapToTempStruc].angmom_norm_topass_in_swallowloop;
+#endif
 #ifdef BH_ALPHADISK_ACCRETION
             BlackholeDataIn[j].BH_Mass_AlphaDisk = BPP(place).BH_Mass_AlphaDisk;
 #endif
@@ -239,6 +243,9 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *nexport, int 
 #if defined(BH_FOLLOW_ACCRETED_ANGMOM)
     MyLongDouble accreted_J[3]={0};
 #endif
+#if defined(BH_RETURN_ANGMOM_TO_GAS)
+    MyFloat *BH_Specific_AngMom, angmom_norm_topass_in_swallowloop;
+#endif
     MyFloat *pos, *vel, h_i, bh_mass;
 #if (defined(BH_WIND_CONTINUOUS) && !defined(BH_WIND_KICK))
     MyFloat hinv, hinv3;
@@ -306,6 +313,10 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *nexport, int 
         BH_disk_hr = P[target].BH_disk_hr;
         BH_angle_weighted_kernel_sum = BlackholeTempInfo[P[target].IndexMapToTempStruc].BH_angle_weighted_kernel_sum;
 #endif
+#if defined(BH_RETURN_ANGMOM_TO_GAS)
+        BH_Specific_AngMom = P[target].BH_Specific_AngMom;
+        angmom_norm_topass_in_swallowloop = BlackholeTempInfo[P[target].IndexMapToTempStruc].angmom_norm_topass_in_swallowloop;
+#endif
         mod_index = P[target].IndexMapToTempStruc;  /* the index of the BlackholeTempInfo should we modify*/
     }
     else
@@ -331,6 +342,10 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *nexport, int 
 #if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)
         BH_disk_hr = BlackholeDataGet[target].BH_disk_hr;
         BH_angle_weighted_kernel_sum = BlackholeDataGet[target].BH_angle_weighted_kernel_sum;
+#endif
+#if defined(BH_RETURN_ANGMOM_TO_GAS)
+        BH_Specific_AngMom = BlackholeDataGet[target].BH_Specific_AngMom;
+        angmom_norm_topass_in_swallowloop = BlackholeDataGet[target].angmom_norm_topass_in_swallowloop;
 #endif
     }
 
@@ -385,6 +400,14 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *nexport, int 
 #endif
 
                 
+#if defined(BH_RETURN_ANGMOM_TO_GAS) /* this should go here [right before the loop that accretes it back onto the BH] */
+                if(P[j].Type == 0)
+                {
+                    double dlv[3]; dlv[0]=BH_Specific_AngMom[1]*dP[2]-BH_Specific_AngMom[2]*dP[1]; dlv[1]=BH_Specific_AngMom[2]*dP[0]-BH_Specific_AngMom[0]*dP[2]; dlv[2]=BH_Specific_AngMom[0]*dP[1]-BH_Specific_AngMom[1]*dP[0];
+                    for(k=0;k<3;k++) {dlv[k] *= angmom_norm_topass_in_swallowloop; P[j].Vel[k]+=dlv[k]; SphP[j].VelPred[k]+=dlv[k]; accreted_momentum[k]-=P[j].Mass*dlv[k];}
+                    accreted_J[0]-=P[j].Mass*(dP[1]*dlv[2] - dP[2]*dlv[1]); accreted_J[1]-=P[j].Mass*(dP[2]*dlv[0] - dP[0]*dlv[2]); accreted_J[2]-=P[j].Mass*(dP[0]*dlv[1] - dP[1]*dlv[0]);
+                }
+#endif
                 
                 /* we've found a particle to be swallowed.  This could be a BH merger, DM particle, or baryon w/ feedback */
                 if(P[j].SwallowID == id && P[j].Mass > 0)
@@ -863,7 +886,7 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_sph_i_to_clone, int nu
 #endif
         BPP(i).unspawned_wind_mass -= P[j].Mass; /* remove the mass successfully spawned, to update the remaining unspawned mass */
         /* positions: uniformly sample unit sphere, and rotate into preferred coordinate system for use below */
-        double phi=2.*M_PI*get_random_number(j+1+ThisTask), cos_theta=2.*(get_random_number(j+3+2*ThisTask)-0.5), sin_theta=sqrt(1-cos_theta*cos_theta), dx[3], sin_phi=sin(phi), cos_phi=cos(phi);
+        double phi=2.*M_PI*get_random_number(j+1+ThisTask), cos_theta=2.*(get_random_number(j+3+2*ThisTask)-0.5), sin_theta=sqrt(1-cos_theta*cos_theta), sin_phi=sin(phi), cos_phi=cos(phi);
         for(k=0;k<3;k++) {P[j].Pos[k]=P[i].Pos[k] + (sin_theta*cos_phi*jx[k] + sin_theta*sin_phi*jy[k] + cos_theta*jz[k])*d_r;} // actually lay down position (in code coordinates)
 
         /* velocities (determined by wind velocity) */
@@ -890,7 +913,7 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_sph_i_to_clone, int nu
         double dEcr = All.BH_CosmicRay_Injection_Efficiency * P[j].Mass * (All.BAL_f_accretion/(1.-All.BAL_f_accretion)) * (C / All.UnitVelocity_in_cm_per_s)*(C / All.UnitVelocity_in_cm_per_s);
         SphP[j].CosmicRayEnergy=dEcr; SphP[j].CosmicRayEnergyPred=dEcr;
 #ifdef COSMIC_RAYS_M1
-        dEcr*=COSMIC_RAYS_M1; for(k=0;k<3;k++) {SphP[j].CosmicRayFlux[k]=dEcr*dx[k]; SphP[j].CosmicRayFluxPred[k]=SphP[j].CosmicRayFlux[k];}
+        dEcr*=COSMIC_RAYS_M1; for(k=0;k<3;k++) {SphP[j].CosmicRayFlux[k]=dEcr*(veldir[0]*jx[k]+veldir[1]*jy[k]+veldir[2]*jz[k]); SphP[j].CosmicRayFluxPred[k]=SphP[j].CosmicRayFlux[k];}
 #endif
 #endif
         /* Note: New tree construction can be avoided because of  `force_add_star_to_tree()' */

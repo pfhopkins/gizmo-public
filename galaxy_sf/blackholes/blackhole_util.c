@@ -171,6 +171,9 @@ void out2particle_blackhole(struct blackhole_temp_particle_data *out, int target
 #if defined(BH_GRAVCAPTURE_GAS)
     ASSIGN_ADD(BlackholeTempInfo[target].mass_to_swallow_edd, out->mass_to_swallow_edd, mode);
 #endif
+#if defined(BH_RETURN_ANGMOM_TO_GAS)
+    for(k=0;k<3;k++) {ASSIGN_ADD(BlackholeTempInfo[target].angmom_prepass_sum_for_passback[k],out->angmom_prepass_sum_for_passback[k],mode);}
+#endif
 
 }
 

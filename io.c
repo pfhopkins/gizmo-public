@@ -1276,7 +1276,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
         case IO_CHEM:
             break;
         case IO_AGS_SOFT:		/* Adaptive Gravitational Softening: softening */
-#if defined(ADAPTIVE_GRAVSOFT_FORALL) && defined(AGS_OUTPUTGRAVSOFT)
+#if defined(AGS_HSML_CALCULATION_IS_ACTIVE) && defined(AGS_OUTPUTGRAVSOFT)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
@@ -1286,7 +1286,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
 #endif
             break;
         case IO_AGS_RHO:        /* Adaptive Gravitational Softening: density */
-#if defined(ADAPTIVE_GRAVSOFT_FORALL) && defined(DM_FUZZY)
+#if defined(AGS_HSML_CALCULATION_IS_ACTIVE) && defined(DM_FUZZY)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
@@ -1296,7 +1296,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
 #endif
             break;
         case IO_AGS_QPT:        /* quantum potential (Q) */
-#if defined(ADAPTIVE_GRAVSOFT_FORALL) && defined(DM_FUZZY)
+#if defined(AGS_HSML_CALCULATION_IS_ACTIVE) && defined(DM_FUZZY)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
@@ -1309,7 +1309,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
 #endif
             break;
         case IO_AGS_PSI_RE:        /* real part of wavefunction */
-#if defined(ADAPTIVE_GRAVSOFT_FORALL) && defined(DM_FUZZY)
+#if defined(AGS_HSML_CALCULATION_IS_ACTIVE) && defined(DM_FUZZY)
 #if (DM_FUZZY > 0)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
@@ -1321,7 +1321,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
 #endif
             break;
         case IO_AGS_PSI_IM:        /* imaginary part of wavefunction */
-#if defined(ADAPTIVE_GRAVSOFT_FORALL) && defined(DM_FUZZY)
+#if defined(AGS_HSML_CALCULATION_IS_ACTIVE) && defined(DM_FUZZY)
 #if (DM_FUZZY > 0)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
@@ -1333,7 +1333,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
 #endif
             break;
         case IO_AGS_ZETA:		/* Adaptive Gravitational Softening: zeta */
-#if defined(ADAPTIVE_GRAVSOFT_FORALL) && defined(AGS_OUTPUTZETA)
+#if defined(AGS_HSML_CALCULATION_IS_ACTIVE) && defined(AGS_OUTPUTZETA)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
@@ -2816,7 +2816,7 @@ int blockpresent(enum iofields blocknr)
             break;
             
         case IO_AGS_SOFT:
-#if defined (ADAPTIVE_GRAVSOFT_FORALL) && defined(AGS_OUTPUTGRAVSOFT)
+#if defined (AGS_HSML_CALCULATION_IS_ACTIVE) && defined(AGS_OUTPUTGRAVSOFT)
             return 1;
 #else
             return 0;
@@ -2825,7 +2825,7 @@ int blockpresent(enum iofields blocknr)
 
         case IO_AGS_RHO:
         case IO_AGS_QPT:
-#if defined (ADAPTIVE_GRAVSOFT_FORALL) && defined(DM_FUZZY)
+#if defined (AGS_HSML_CALCULATION_IS_ACTIVE) && defined(DM_FUZZY)
             return 1;
 #else
             return 0;
@@ -2834,7 +2834,7 @@ int blockpresent(enum iofields blocknr)
 
         case IO_AGS_PSI_RE:
         case IO_AGS_PSI_IM:
-#if defined (ADAPTIVE_GRAVSOFT_FORALL) && defined(DM_FUZZY)
+#if defined (AGS_HSML_CALCULATION_IS_ACTIVE) && defined(DM_FUZZY)
 #if (DM_FUZZY > 0)
             return 1;
 #else
@@ -2846,7 +2846,7 @@ int blockpresent(enum iofields blocknr)
             break;
 
         case IO_AGS_ZETA:
-#if defined (ADAPTIVE_GRAVSOFT_FORALL) && defined(AGS_OUTPUTZETA)
+#if defined (AGS_HSML_CALCULATION_IS_ACTIVE) && defined(AGS_OUTPUTZETA)
             return 1;
 #else
             return 0;

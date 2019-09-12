@@ -42,13 +42,16 @@ static struct blackholedata_in
     MyFloat Jstar[3];
 #endif
     MyFloat Hsml;
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
+#if (ADAPTIVE_GRAVSOFT_FORALL & 32)
     MyFloat AGS_Hsml;
 #endif    
     MyIDType ID;
     int NodeList[NODELISTLENGTH];
 #ifdef BH_WAKEUP_GAS
     MyFloat TimeBin;
+#endif
+#if defined(BH_RETURN_ANGMOM_TO_GAS)
+    MyFloat BH_Specific_AngMom[3];
 #endif
 }
 *BlackholeDataIn, *BlackholeDataGet;
@@ -114,13 +117,16 @@ void blackhole_environment_loop(void)
             BlackholeDataIn[j].SinkRadius = P[place].SinkRadius;
 #endif	    
 #endif
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
+#if (ADAPTIVE_GRAVSOFT_FORALL & 32)
             BlackholeDataIn[j].AGS_Hsml = PPP[place].AGS_Hsml;
 #endif	    
             BlackholeDataIn[j].Hsml = PPP[place].Hsml;	    
             BlackholeDataIn[j].ID = P[place].ID;
 #ifdef BH_WAKEUP_GAS
 	        BlackholeDataIn[j].TimeBin = P[place].TimeBin;
+#endif
+#if defined(BH_RETURN_ANGMOM_TO_GAS)
+            BlackholeDataIn[j].BH_Specific_AngMom[0] = P[place].BH_Specific_AngMom[0];BlackholeDataIn[j].BH_Specific_AngMom[1] = P[place].BH_Specific_AngMom[1];BlackholeDataIn[j].BH_Specific_AngMom[2] = P[place].BH_Specific_AngMom[2];
 #endif
             memcpy(BlackholeDataIn[j].NodeList, DataNodeList[DataIndexTable[j].IndexGet].NodeList, NODELISTLENGTH * sizeof(int));
         }
@@ -224,6 +230,9 @@ int blackhole_environment_evaluate(int target, int mode, int *nexport, int *nSen
     out.BH_dr_to_NearestGasNeighbor = MAX_REAL_NUMBER; // initialize large value
 #endif
 #endif
+#if defined(BH_RETURN_ANGMOM_TO_GAS)
+    MyFloat *BH_Specific_AngMom;
+#endif
     
     /* these are the BH properties */
     if(mode == 0)
@@ -237,13 +246,16 @@ int blackhole_environment_evaluate(int target, int mode, int *nexport, int *nSen
         pos = P[target].Pos;
         vel = P[target].Vel;
         h_i = PPP[target].Hsml;
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
+#if (ADAPTIVE_GRAVSOFT_FORALL & 32)
 	    ags_h_i = PPP[target].AGS_Hsml;
 #endif	
         id = P[target].ID;
         mod_index = P[target].IndexMapToTempStruc;  /* the index of the BlackholeTempInfo should we modify*/
 #ifdef BH_WAKEUP_GAS
 	    bh_timebin = P[target].TimeBin;
+#endif
+#if defined(BH_RETURN_ANGMOM_TO_GAS)
+        BH_Specific_AngMom = P[target].BH_Specific_AngMom;
 #endif
     }
     else
@@ -257,7 +269,7 @@ int blackhole_environment_evaluate(int target, int mode, int *nexport, int *nSen
         pos = BlackholeDataGet[target].Pos;
         vel = BlackholeDataGet[target].Vel;
         h_i = BlackholeDataGet[target].Hsml;
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
+#if (ADAPTIVE_GRAVSOFT_FORALL & 32)
 	    ags_h_i = BlackholeDataGet[target].AGS_Hsml;
 #endif	
         id = BlackholeDataGet[target].ID;
@@ -265,6 +277,9 @@ int blackhole_environment_evaluate(int target, int mode, int *nexport, int *nSen
 #ifdef BH_WAKEUP_GAS
 	    bh_timebin = BlackholeDataGet[target].TimeBin;
 #endif 
+#if defined(BH_RETURN_ANGMOM_TO_GAS)
+        BH_Specific_AngMom = BlackholeDataGet[target].BH_Specific_AngMom;
+#endif
     }
     
     if(h_i < 0) return -1;
@@ -352,6 +367,10 @@ int blackhole_environment_evaluate(int target, int mode, int *nexport, int *nSen
 #endif
 #if defined(BH_BONDI) || defined(BH_DRAG) || (BH_GRAVACCRETION >= 5)
                         for(k=0;k<3;k++) {out.BH_SurroundingGasVel[k] += wt*dv[k];}
+#endif
+#if defined(BH_RETURN_ANGMOM_TO_GAS) /* We need a normalization factor for angular momentum feedback so we will go over all the neighbours */
+                        double r2j=dP[0]*dP[0]+dP[1]*dP[1]+dP[2]*dP[2], Lrj=BH_Specific_AngMom[0]*dP[0]+BH_Specific_AngMom[1]*dP[1]+BH_Specific_AngMom[2]*dP[2];
+                        for(k=0;k<3;k++) {out.angmom_prepass_sum_for_passback[k] += wt*(BH_Specific_AngMom[k]*r2j - dP[k]*Lrj);}
 #endif
 #if (BH_GRAVACCRETION == 8)
                         u=0; for(k=0;k<3;k++) {u+=dP[k]*dP[k];}
@@ -525,7 +544,7 @@ void blackhole_environment_second_loop(void)
                 BlackholeDataIn[j].Jstar[k] = BlackholeTempInfo[mod_index].Jstar_in_Kernel[k];
             }
             BlackholeDataIn[j].Hsml = PPP[place].Hsml;
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
+#if (ADAPTIVE_GRAVSOFT_FORALL & 32)
             BlackholeDataIn[j].AGS_Hsml = PPP[place].AGS_Hsml;
 #endif	    
             BlackholeDataIn[j].ID = P[place].ID;
