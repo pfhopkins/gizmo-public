@@ -1,7 +1,7 @@
 /* this file contains the definitions for the kernel functions */
 /*
  * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org). The code has been modified
+ * Volker Springel. The code has been modified
  * substantially by Phil Hopkins (phopkins@caltech.edu) for GIZMO (added the 
  * calls to this for other uses of the kernel in-code in areas like gravity;
  * also added new kernels here)
@@ -186,9 +186,10 @@ static inline void kernel_hinv(double h, double *hinv, double *hinv3, double *hi
    Call with mode -1 to calculate only wk
    Call with mode +1 to calculate only dwk */
 
-static inline void kernel_main(double u, double hinv3, double hinv4, 
-        double *wk, double *dwk, int mode)
+static inline void kernel_main(double u, double hinv3, double hinv4, double *wk, double *dwk, int mode)
 {
+    if(u>=1) {*wk=0; *dwk=0; return;} /* currently fully-redundant, but better safety for various subroutines calling this */
+    
 #if (KERNEL_FUNCTION == 1) /* linear ramp */
     if(mode >= 0)
         *dwk = -1;
@@ -336,11 +337,9 @@ static inline void kernel_main(double u, double hinv3, double hinv4,
 #endif
     
     
-  if(mode >= 0) 
-      *dwk *= KERNEL_NORM * hinv4;
-  if(mode <= 0) 
-      *wk *= KERNEL_NORM * hinv3;
-
+  if(mode >= 0) {*dwk *= KERNEL_NORM * hinv4;}
+  if(mode <= 0) {*wk *= KERNEL_NORM * hinv3;}
+    
   return;
 }
 

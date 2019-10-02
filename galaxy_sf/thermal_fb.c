@@ -7,19 +7,6 @@
 #include "../allvars.h"
 #include "../proto.h"
 #include "../kernel.h"
-#ifdef PTHREADS_NUM_THREADS
-#include <pthread.h>
-#endif
-#ifdef PTHREADS_NUM_THREADS
-extern pthread_mutex_t mutex_nexport;
-extern pthread_mutex_t mutex_partnodedrift;
-#define LOCK_NEXPORT     pthread_mutex_lock(&mutex_nexport);
-#define UNLOCK_NEXPORT   pthread_mutex_unlock(&mutex_nexport);
-#else
-#define LOCK_NEXPORT
-#define UNLOCK_NEXPORT
-#endif
-
 
 
 /* Routines for pure thermal/scalar feedback/enrichment models: these are intended to represent
@@ -49,10 +36,18 @@ void determine_where_addthermalFB_events_occur(void)
     } // for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) //
 }
 
+struct kernel_addthermalFB {double dp[3], r, wk, dwk, hinv, hinv3, hinv4;};
+
+
+#define MASTER_FUNCTION_NAME addthermalFB_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define INPUTFUNCTION_NAME particle2in_addthermalFB    /* name of the function which loads the element data needed (for e.g. broadcast to other processors, neighbor search) */
+#define OUTPUTFUNCTION_NAME out2particle_addthermalFB  /* name of the function which takes the data returned from other processors and combines it back to the original elements */
+#define CONDITIONFUNCTION_FOR_EVALUATION if(addthermalFB_evaluate_active_check(i)) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
+#include "../system/code_block_xchange_initialize.h" /* pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
 
 
 /* define structures to use below */
-struct addthermalFBdata_in
+struct INPUT_STRUCT_NAME
 {
     MyDouble Pos[3], Hsml, Msne, Esne, wt_sum;
 #ifdef METALS
@@ -60,16 +55,14 @@ struct addthermalFBdata_in
 #endif
     int NodeList[NODELISTLENGTH];
 }
-*addthermalFBDataIn, *addthermalFBDataGet;
+*DATAIN_NAME, *DATAGET_NAME;
 
-           
 /* define properties to be injected. these must be scalar-only -- the simple routine below will not conserve vector inputs/ejecta (e.g. momentum) */
-void particle2in_addthermalFB(struct addthermalFBdata_in *in, int i);
-void particle2in_addthermalFB(struct addthermalFBdata_in *in, int i)
+void particle2in_addthermalFB(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
 {
     if((P[i].SNe_ThisTimeStep<=0)||(P[i].DensAroundStar<=0)) {in->Msne=0; return;} // trap for no sne
     int k; in->Hsml=PPP[i].Hsml; in->wt_sum=P[i].DensAroundStar; for(k=0;k<3;k++) {in->Pos[k]=P[i].Pos[k];} // simple kernel-weighted deposition
-    struct addFBdata_in local; particle2in_addFB_fromstars(&local,i,0); // get feedback properties from generic routine //
+    struct addFB_evaluate_data_in_ local; particle2in_addFB_fromstars(&local,i,0); // get feedback properties from generic routine //
     in->Msne = local.Msne; in->Esne = 0.5 * local.Msne * local.SNe_v_ejecta*local.SNe_v_ejecta; // assign mass and energy to be used below
 #ifdef METALS
     for(k=0;k<NUM_METAL_SPECIES;k++) {in->yields[k]=local.yields[k];} // assign yields //
@@ -77,36 +70,43 @@ void particle2in_addthermalFB(struct addthermalFBdata_in *in, int i)
 }
 
 
-
-struct addthermalFBdata_out
+struct OUTPUT_STRUCT_NAME
 {
     MyFloat M_coupled;
 }
-*addthermalFBDataResult, *addthermalFBDataOut;
+*DATARESULT_NAME, *DATAOUT_NAME;
 
-void out2particle_addthermalFB(struct addthermalFBdata_out *out, int i, int mode);
-void out2particle_addthermalFB(struct addthermalFBdata_out *out, int i, int mode)
+void out2particle_addthermalFB(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration)
 {
     P[i].Mass -= out->M_coupled;
     if((P[i].Mass<0)||(isnan(P[i].Mass))) {P[i].Mass=0;}
 }
 
-struct kernel_addthermalFB {double dp[3], r, wk, dwk, hinv, hinv3, hinv4;};
+
+int addthermalFB_evaluate_active_check(int i);
+int addthermalFB_evaluate_active_check(int i)
+{
+    if(P[i].Type != 4) return 0;
+    if(P[i].Mass <= 0) return 0;
+    if(PPP[i].Hsml <= 0) return 0;
+    if(PPP[i].NumNgb <= 0) return 0;
+    if(P[i].SNe_ThisTimeStep>0) {return 1;}
+    return 0;
+}
 
 
-
-int addthermalFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist)
+int addthermalFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
 {
     int startnode, numngb_inbox, listindex = 0, j, k, n;
     double u,r2,h2,kernel_zero,wk;
     struct kernel_addthermalFB kernel;
-    struct addthermalFBdata_in local;
-    struct addthermalFBdata_out out;
-    memset(&out, 0, sizeof(struct addthermalFBdata_out));
-    kernel_main(0.0,1.0,1.0,&kernel_zero,&wk,-1);
+    struct INPUT_STRUCT_NAME local;
+    struct OUTPUT_STRUCT_NAME out;
+    memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME));
+    kernel_main(0.0,1.0,1.0,&kernel_zero,&wk,-1); wk=0;
     
     /* Load the data for the particle injecting feedback */
-    if(mode == 0) {particle2in_addthermalFB(&local, target);} else {local = addthermalFBDataGet[target];}
+    if(mode == 0) {particle2in_addthermalFB(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];}
     if(local.Msne<=0) return 0; // no SNe for the master particle! nothing to do here //
     if(local.Hsml<=0) return 0; // zero-extent kernel, no particles //
     h2 = local.Hsml*local.Hsml;
@@ -119,7 +119,7 @@ int addthermalFB_evaluate(int target, int mode, int *exportflag, int *exportnode
     }
     else
     {
-        startnode = addthermalFBDataGet[target].NodeList[0];
+        startnode = DATAGET_NAME[target].NodeList[0];
         startnode = Nodes[startnode].u.d.nextnode;    /* open it */
     }
     while(startnode >= 0)
@@ -144,7 +144,7 @@ int addthermalFB_evaluate(int target, int mode, int *exportflag, int *exportnode
                 kernel.r = sqrt(r2);
                 if(kernel.r <= 0) continue;
                 u = kernel.r * kernel.hinv;
-                kernel_main(u, kernel.hinv3, kernel.hinv4, &kernel.wk, &kernel.dwk, 0);
+                if(u<1) {kernel_main(u, kernel.hinv3, kernel.hinv4, &kernel.wk, &kernel.dwk, 0);} else {kernel.wk=kernel.dwk=0;}
                 if((kernel.wk <= 0)||(isnan(kernel.wk))) continue;
                 wk = P[j].Mass * kernel.wk / local.wt_sum; // normalized weight function
                 
@@ -181,13 +181,13 @@ int addthermalFB_evaluate(int target, int mode, int *exportflag, int *exportnode
             listindex++;
             if(listindex < NODELISTLENGTH)
 {
-                startnode = addthermalFBDataGet[target].NodeList[listindex];
+                startnode = DATAGET_NAME[target].NodeList[listindex];
                 if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;}    /* open it */
             }
         } // if(mode == 1)
     } // while(startnode >= 0)
     /* Now collect the result at the right place */
-    if(mode == 0) {out2particle_addthermalFB(&out, target, 0);} else {addthermalFBDataResult[target] = out;}
+    if(mode == 0) {out2particle_addthermalFB(&out, target, 0, 0);} else {DATARESULT_NAME[target] = out;}
     return 0;
 } // int addthermalFB_evaluate
 
@@ -195,219 +195,12 @@ int addthermalFB_evaluate(int target, int mode, int *exportflag, int *exportnode
 
 void thermal_fb_calc(void)
 {
-    int j, k, ngrp, ndone, ndone_flag, recvTask, place, save_NextParticle;
-    long long n_exported = 0;
-    /* allocate buffers to arrange communication */
-    long long NTaskTimesNumPart;
-    NTaskTimesNumPart = maxThreads * NumPart;
-    Ngblist = (int *) mymalloc("Ngblist", NTaskTimesNumPart * sizeof(int));
-    size_t MyBufferSize = All.BufferSize;
-    All.BunchSize = (int) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) + sizeof(struct addthermalFBdata_in) + sizeof(struct addthermalFBdata_out) + sizemax(sizeof(struct addthermalFBdata_in),sizeof(struct addthermalFBdata_out))));
-    DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
-    DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
-    NextParticle = FirstActiveParticle;	/* begin with this index */
-    do
-    {
-        BufferFullFlag = 0;
-        Nexport = 0;
-        save_NextParticle = NextParticle;
-        for(j = 0; j < NTask; j++)
-        {
-            Send_count[j] = 0;
-            Exportflag[j] = -1;
-        }
-        /* do local particles and prepare export list */
-#ifdef PTHREADS_NUM_THREADS
-        pthread_t mythreads[PTHREADS_NUM_THREADS - 1];
-        int threadid[PTHREADS_NUM_THREADS - 1];
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-        pthread_mutex_init(&mutex_nexport, NULL);
-        pthread_mutex_init(&mutex_partnodedrift, NULL);
-        TimerFlag = 0;
-        for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++)
-        {
-            threadid[j] = j + 1;
-            pthread_create(&mythreads[j], &attr, addthermalFB_evaluate_primary, &threadid[j]);
-        }
-#endif
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-        {
-#ifdef _OPENMP
-            int mainthreadid = omp_get_thread_num();
-#else
-            int mainthreadid = 0;
-#endif
-            addthermalFB_evaluate_primary(&mainthreadid);	/* do local particles and prepare export list */
-        }
-        
-#ifdef PTHREADS_NUM_THREADS
-        for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++) pthread_join(mythreads[j], NULL);
-#endif
-        if(BufferFullFlag)
-        {
-            int last_nextparticle = NextParticle;
-            NextParticle = save_NextParticle;
-            while(NextParticle >= 0)
-            {
-                if(NextParticle == last_nextparticle) break;
-                if(ProcessedFlag[NextParticle] != 1) break;
-                ProcessedFlag[NextParticle] = 2;
-                NextParticle = NextActiveParticle[NextParticle];
-            }
-            if(NextParticle == save_NextParticle) {endrun(116608);} /* in this case, the buffer is too small to process even a single particle */
-            int new_export = 0;
-            for(j = 0, k = 0; j < Nexport; j++)
-                if(ProcessedFlag[DataIndexTable[j].Index] != 2)
-                {
-                    if(k < j + 1) k = j + 1;
-                    
-                    for(; k < Nexport; k++)
-                        if(ProcessedFlag[DataIndexTable[k].Index] == 2)
-                        {
-                            int old_index = DataIndexTable[j].Index;
-                            DataIndexTable[j] = DataIndexTable[k];
-                            DataNodeList[j] = DataNodeList[k];
-                            DataIndexTable[j].IndexGet = j;
-                            new_export++;
-                            DataIndexTable[k].Index = old_index;
-                            k++;
-                            break;
-                        }
-                }
-                else {new_export++;}
-            Nexport = new_export;
-        }
-        n_exported += Nexport;
-        for(j = 0; j < NTask; j++) Send_count[j] = 0;
-        for(j = 0; j < Nexport; j++) Send_count[DataIndexTable[j].Task]++;
-        MYSORT_DATAINDEX(DataIndexTable, Nexport, sizeof(struct data_index), data_index_compare);
-        MPI_Alltoall(Send_count, 1, MPI_INT, Recv_count, 1, MPI_INT, MPI_COMM_WORLD);
-        for(j = 0, Nimport = 0, Recv_offset[0] = 0, Send_offset[0] = 0; j < NTask; j++)
-        {
-            Nimport += Recv_count[j];
-            if(j > 0)
-            {
-                Send_offset[j] = Send_offset[j - 1] + Send_count[j - 1];
-                Recv_offset[j] = Recv_offset[j - 1] + Recv_count[j - 1];
-            }
-        }
-        /* prepare particle data for export */
-        addthermalFBDataGet = (struct addthermalFBdata_in *) mymalloc("addthermalFBDataGet", Nimport * sizeof(struct addthermalFBdata_in));
-        addthermalFBDataIn = (struct addthermalFBdata_in *) mymalloc("addthermalFBDataIn", Nexport * sizeof(struct addthermalFBdata_in));
-        for(j = 0; j < Nexport; j++)
-        {
-            place = DataIndexTable[j].Index;
-            particle2in_addthermalFB(&addthermalFBDataIn[j], place);
-            memcpy(addthermalFBDataIn[j].NodeList, DataNodeList[DataIndexTable[j].IndexGet].NodeList, NODELISTLENGTH * sizeof(int));
-        }
-        /* exchange particle data */
-        int TAG_TO_USE = TAG_FBLOOP_1A;
-        for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-        {
-            recvTask = ThisTask ^ ngrp;
-            if(recvTask < NTask)
-            {
-                if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
-                {
-                    /* get the particles */
-                    MPI_Sendrecv(&addthermalFBDataIn[Send_offset[recvTask]], Send_count[recvTask] * sizeof(struct addthermalFBdata_in), MPI_BYTE, recvTask, TAG_TO_USE,
-                                 &addthermalFBDataGet[Recv_offset[recvTask]], Recv_count[recvTask] * sizeof(struct addthermalFBdata_in), MPI_BYTE, recvTask, TAG_TO_USE, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                }
-            }
-        }
-        myfree(addthermalFBDataIn);
-        addthermalFBDataResult = (struct addthermalFBdata_out *) mymalloc("addthermalFBDataResult", Nimport * sizeof(struct addthermalFBdata_out));
-        addthermalFBDataOut = (struct addthermalFBdata_out *) mymalloc("addthermalFBDataOut", Nexport * sizeof(struct addthermalFBdata_out));
-        /* now do the particles that were sent to us */
-        NextJ = 0;
-#ifdef PTHREADS_NUM_THREADS
-        for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++)
-            pthread_create(&mythreads[j], &attr, addthermalFB_evaluate_secondary, &threadid[j]);
-#endif
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-        {
-#ifdef _OPENMP
-            int mainthreadid = omp_get_thread_num();
-#else
-            int mainthreadid = 0;
-#endif
-            addthermalFB_evaluate_secondary(&mainthreadid);
-        }
-#ifdef PTHREADS_NUM_THREADS
-        for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++) pthread_join(mythreads[j], NULL);
-        pthread_mutex_destroy(&mutex_partnodedrift);
-        pthread_mutex_destroy(&mutex_nexport);
-        pthread_attr_destroy(&attr);
-#endif
-        if(NextParticle < 0) {ndone_flag = 1;} else {ndone_flag = 0;}
-        MPI_Allreduce(&ndone_flag, &ndone, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-        /* get the result */
-        TAG_TO_USE = TAG_FBLOOP_1B;
-        for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-        {
-            recvTask = ThisTask ^ ngrp;
-            if(recvTask < NTask)
-            {
-                if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
-                {
-                    /* send the results */
-                    MPI_Sendrecv(&addthermalFBDataResult[Recv_offset[recvTask]], Recv_count[recvTask] * sizeof(struct addthermalFBdata_out), MPI_BYTE, recvTask, TAG_TO_USE,
-                                 &addthermalFBDataOut[Send_offset[recvTask]], Send_count[recvTask] * sizeof(struct addthermalFBdata_out), MPI_BYTE, recvTask, TAG_TO_USE, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                }
-            }
-        }
-        /* add the result to the local particles */
-        for(j = 0; j < Nexport; j++)
-        {
-            place = DataIndexTable[j].Index;
-            out2particle_addthermalFB(&addthermalFBDataOut[j], place, 1);
-        }
-        myfree(addthermalFBDataOut);
-        myfree(addthermalFBDataResult);
-        myfree(addthermalFBDataGet);
-    }
-    while(ndone < NTask);
-    myfree(DataNodeList);
-    myfree(DataIndexTable);
-    myfree(Ngblist);
+    PRINT_STATUS(" ..depositing thermal feedback to gas\n");
+    #include "../system/code_block_xchange_perform_ops_malloc.h" /* this calls the large block of code which contains the memory allocations for the MPI/OPENMP/Pthreads parallelization block which must appear below */
+    #include "../system/code_block_xchange_perform_ops.h" /* this calls the large block of code which actually contains all the loops, MPI/OPENMP/Pthreads parallelization */
+    #include "../system/code_block_xchange_perform_ops_demalloc.h" /* this de-allocates the memory for the MPI/OPENMP/Pthreads parallelization block which must appear above */
 }
-
-
-
-int addthermalFB_evaluate_active_check(int i);
-int addthermalFB_evaluate_active_check(int i)
-{
-    if(P[i].Type != 4) return 0;
-    if(P[i].Mass <= 0) return 0;
-    if(PPP[i].Hsml <= 0) return 0;
-    if(PPP[i].NumNgb <= 0) return 0;
-    if(P[i].SNe_ThisTimeStep>0) {return 1;}
-    return 0;
-}
-
-
-void *addthermalFB_evaluate_primary(void *p)
-{
-#define CONDITION_FOR_EVALUATION if(addthermalFB_evaluate_active_check(i)==1)
-#define EVALUATION_CALL addthermalFB_evaluate(i, 0, exportflag, exportnodecount, exportindex, ngblist)
-#include "../system/code_block_primary_loop_evaluation.h"
-#undef CONDITION_FOR_EVALUATION
-#undef EVALUATION_CALL
-}
-void *addthermalFB_evaluate_secondary(void *p)
-{
-#define EVALUATION_CALL addthermalFB_evaluate(j, 1, &dummy, &dummy, &dummy, ngblist);
-#include "../system/code_block_secondary_loop_evaluation.h"
-#undef EVALUATION_CALL
-}
-
-
+#include "../system/code_block_xchange_finalize.h" /* de-define the relevant variables and macros to avoid compilation errors and memory leaks */
 
 
 

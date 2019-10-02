@@ -188,9 +188,7 @@ void rt_diffusion_cg_solve(void)
             
             /* broadcast and decide if we need to keep iterating */
             MPI_Allreduce(&maxrel, &glob_maxrel, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-#ifndef IO_REDUCED_MODE
-            if(ThisTask == 0) {printf("CG iteration: iter=%3d  |res|/|x|=%12.6g  maxrel=%12.6g  |x|=%12.6g |res|=%12.6g\n", iter, res / sum, glob_maxrel, sum, res); //fflush(stdout);}
-#endif
+            PRINT_STATUS("CG iteration: iter=%3d  |res|/|x|=%12.6g  maxrel=%12.6g  |x|=%12.6g |res|=%12.6g\n", iter, res / sum, glob_maxrel, sum, res);
             if(iter >= 1 && (res <= ACCURACY * sum || iter >= MAX_ITER)) {done_key[k]=1; ndone++;}
         }
         iter++;
@@ -199,9 +197,7 @@ void rt_diffusion_cg_solve(void)
     while(ndone < N_RT_FREQ_BINS);
     
     /* success! */
-#ifndef IO_REDUCED_MODE
-    if(ThisTask == 0) {printf("%d iterations performed\n", iter); //fflush(stdout);}
-#endif
+    PRINT_STATUS("%d iterations performed\n", iter);
     /* update the intensity */
     for(j = 0; j < N_gas; j++)
         if(P[j].Type == 0)
@@ -417,32 +413,24 @@ void rt_diffusion_cg_matrix_multiply(double **matrixmult_in, double **matrixmult
         myfree(rt_cg_DataGet);
     }
     while(ndone < NTask);
-    
-    /* do final operations on results */
-    double dt = (All.Radiation_Ti_endstep - All.Radiation_Ti_begstep) * All.Timebase_interval / All.cf_hubble_a;
-    int i;
-    for(i = 0; i < N_gas; i++)
-        if(P[i].Type == 0)
-        {
-            for(k = 0; k < N_RT_FREQ_BINS; k++)
-            {
-                double fac_i = dt * rt_absorption_rate(i,k); 
-                if((1 + fac_i + matrixmult_sum[k][i]) < 0)
-                {
-                    printf("1 + matrixmult_sum + rate= %g   matrixmult_sum=%g rate=%g i =%d\n", 1 + fac_i + matrixmult_sum[k][i], matrixmult_sum[k][i], fac_i, i);
-                    endrun(11111111);
-                }
-                /* the "1" here accounts for the fact that we must start from the previous photon number (the matrix includes only the "dt" term); 
-                    the fac_i term here accounts for sinks [here, the rate of photon absorption]; the in*sum part below accounts for the re-arrangement 
-                    of indices [swapping indices i and j in the relevant equations so we account for both sides of the difference terms */
-                matrixmult_sum[k][i] += 1.0 + fac_i;
-                matrixmult_out[k][i] += matrixmult_in[k][i] * matrixmult_sum[k][i];
-            }
-        }
     /* free memory */
     myfree(DataNodeList);
     myfree(DataIndexTable);
     myfree(Ngblist);
+
+    
+    /* do final operations on results */
+    {double dt = (All.Radiation_Ti_endstep - All.Radiation_Ti_begstep) * All.Timebase_interval / All.cf_hubble_a; int i;
+    for(i = 0; i < N_gas; i++)
+        if(P[i].Type == 0) {
+            for(k = 0; k < N_RT_FREQ_BINS; k++) {
+                double fac_i = dt * rt_absorption_rate(i,k); 
+                if((1 + fac_i + matrixmult_sum[k][i]) < 0) {printf("1 + matrixmult_sum + rate= %g   matrixmult_sum=%g rate=%g i =%d\n", 1 + fac_i + matrixmult_sum[k][i], matrixmult_sum[k][i], fac_i, i); endrun(11111111);}
+                /* the "1" here accounts for the fact that we must start from the previous photon number (the matrix includes only the "dt" term); 
+                    the fac_i term here accounts for sinks [here, the rate of photon absorption]; the in*sum part below accounts for the re-arrangement 
+                    of indices [swapping indices i and j in the relevant equations so we account for both sides of the difference terms */
+                matrixmult_sum[k][i] += 1.0 + fac_i; matrixmult_out[k][i] += matrixmult_in[k][i] * matrixmult_sum[k][i];
+            }}}
 }
 
 

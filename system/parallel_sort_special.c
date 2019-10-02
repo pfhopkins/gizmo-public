@@ -14,11 +14,10 @@
 
 
 /*
- * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org).
+ * This file was originally part of the GADGET3 code by Volker Springel.
  */
 
-#if defined(FLAG_NOT_IN_PUBLIC_CODE_READ_FOF) || defined(FLAG_NOT_IN_PUBLIC_CODE_RESHUFFLE_CATALOGUE)
+#if defined(IO_SUBFIND_READFOF_FROMIC)
 
 static struct aux_data
 {

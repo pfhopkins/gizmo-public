@@ -5,8 +5,7 @@
 #   GIZMO_config.h         to be included in each source file (via allvars.h)
 #   compile_time_info.c    code to be compiled in, which will print the configuration 
 #
-# This file was originally part of the GADGET3 code developed by
-#   Volker Springel (volker.springel@h-its.org).
+# This file was originally part of GADGET3 by Volker Springel.
 #
 
 if(@ARGV[0])

@@ -288,7 +288,7 @@ void InitGrackle(void)
     // Second, create a chemistry object for parameters and rate data.
     if (set_default_chemistry_parameters() == 0) {
         fprintf(stderr, "Error in set_default_chemistry_parameters.\n");
-        exit(ENDRUNVAL);
+        endrun(ENDRUNVAL);
     }
     // Third, set parameter values for chemistry & cooling
     
@@ -368,7 +368,7 @@ void InitGrackle(void)
     // Finally, initialize the chemistry object.
     if (initialize_chemistry_data(&All.GrackleUnits, a_value) == 0) {
         fprintf(stderr, "Error in initialize_chemistry_data.\n");
-        exit(ENDRUNVAL);
+        endrun(ENDRUNVAL);
     }
     
     if(ThisTask == 0)

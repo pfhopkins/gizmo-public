@@ -10,7 +10,7 @@
  */
 /*
  * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org). The code has been modified
+ * Volker Springel. The code has been modified
  * slightly by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
  */
 
@@ -191,7 +191,7 @@ void pm_init_periodic(void)
 
 
   if(ThisTask == 0)
-    printf("\nAllocated %g MByte for rhogrid.\n\n", bytes_tot / (1024.0 * 1024.0));
+    printf("Allocated %g MByte for rhogrid.\n", bytes_tot / (1024.0 * 1024.0));
 
   fft_of_rhogrid = (fftw_complex *) rhogrid;
 
@@ -266,7 +266,7 @@ void pm_init_periodic_allocate(void)
 
 
   if(ThisTask == 0)
-    printf("Using %g MByte for periodic FFT computation. (presently allocated=%g MB)\n",
+    printf(" ..using %g MByte for periodic FFT computation. (presently allocated=%g MB)\n",
 	   bytes_tot / (1024.0 * 1024.0), AllocatedBytes / (1024.0 * 1024.0));
 
   workspace = forcegrid;
@@ -350,14 +350,7 @@ void pmforce_periodic(int mode, int *typelist)
   kscreening2 = pow(All.BoxSize / All.ScalarScreeningLength / (2 * M_PI), 2);
 #endif
  
-  if(ThisTask == 0)
-    {
-      printf("Starting periodic PM calculation.  (presently allocated=%g MB)\n", AllocatedBytes / (1024.0 * 1024.0));
-#ifndef IO_REDUCED_MODE
-      fflush(stdout);
-#endif
-    }
-    
+  PRINT_STATUS("Starting periodic PM calculation.  (presently allocated=%g MB)", AllocatedBytes / (1024.0 * 1024.0));
   asmth2 = (2 * M_PI) * All.Asmth[0] / All.BoxSize;
   asmth2 *= asmth2;
 
@@ -1035,13 +1028,7 @@ void pmpotential_periodic(void)
   d_fftw_real *localfield_d_data, *import_d_data;
   fftw_real *localfield_data, *import_data;
 
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("Starting periodic PM-potential calculation.  (presently allocated=%g MB)\n", AllocatedBytes / (1024.0 * 1024.0));
-      //fflush(stdout);
-    }
-#endif
+  PRINT_STATUS("Starting periodic PM-potential calculation.  (presently allocated=%g MB)", AllocatedBytes / (1024.0 * 1024.0));
   asmth2 = (2 * M_PI) * All.Asmth[0] / All.BoxSize;
   asmth2 *= asmth2;
 
@@ -1437,14 +1424,7 @@ void pmpotential_periodic(void)
   myfree(localfield_globalindex);
 
   pm_init_periodic_free();
- 
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("done PM-Potential.\n");
-      fflush(stdout);
-    }
-#endif
+  PRINT_STATUS(" ..done PM-Potential");
 }
 
 
@@ -1783,14 +1763,7 @@ void pmtidaltensor_periodic_diff(void)
   kscreening2 = pow(All.BoxSize / All.ScalarScreeningLength / (2 * M_PI), 2);
 #endif
  
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("Starting periodic PM-TIDAL calculation.  (presently allocated=%g MB)\n", AllocatedBytes / (1024.0 * 1024.0));
-      fflush(stdout);
-    }
-#endif
-    
+  PRINT_STATUS("Starting periodic PM-TIDAL calculation.  (presently allocated=%g MB)", AllocatedBytes / (1024.0 * 1024.0));
   asmth2 = (2 * M_PI) * All.Asmth[0] / All.BoxSize;
   asmth2 *= asmth2;
 
@@ -2489,13 +2462,7 @@ void pmtidaltensor_periodic_diff(void)
 #endif
 
   pm_init_periodic_free();
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("done PM-TIDAL.\n");
-      fflush(stdout);
-    }
-#endif
+  PRINT_STATUS(" ..done PM-TIDAL");
 }
 
 
@@ -2531,14 +2498,7 @@ void pmtidaltensor_periodic_fourier(int component)
   d_fftw_real *localfield_d_data, *import_d_data;
   fftw_real *localfield_data, *import_data;
  
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("Starting periodic PM-Tidaltensor (component=%d) calculation.  (presently allocated=%g MB)\n",
-	     component, AllocatedBytes / (1024.0 * 1024.0));
-      fflush(stdout);
-    }
-#endif
+  PRINT_STATUS("Starting periodic PM-Tidaltensor (component=%d) calculation.  (presently allocated=%g MB)",component, AllocatedBytes / (1024.0 * 1024.0));
   asmth2 = (2 * M_PI) * All.Asmth[0] / All.BoxSize;
   asmth2 *= asmth2;
 
@@ -2995,13 +2955,7 @@ void pmtidaltensor_periodic_fourier(int component)
 
   pm_init_periodic_free();
 
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("done PM-Tidaltensor (component=%d).\n", component);
-      fflush(stdout);
-    }
-#endif
+  PRINT_STATUS(" ..done PM-Tidaltensor (component=%d).", component);
 }
 
 #endif /*COMPUTE_TIDAL_TENSOR_IN_GRAVTREE*/
@@ -3035,14 +2989,7 @@ void powerspec(int flag, int *typeflag)
   long long *countbuf;
   double tstart, tend;
 
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("begin power spectrum. (step=%d)  POWERSPEC_FOLDFAC=%d\n", flag, POWERSPEC_FOLDFAC);
-      fflush(stdout);
-    }
-#endif
-
+  PRINT_STATUS("begin power spectrum. (step=%d)  POWERSPEC_FOLDFAC=%d", flag, POWERSPEC_FOLDFAC);
   tstart = my_second();
 
   for(i = 0, mass = 0; i < NumPart; i++)
@@ -3236,14 +3183,7 @@ void powerspec(int flag, int *typeflag)
     }
 
   tend = my_second();
-
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("end power spectrum. (step=%d) took %g seconds\n", flag, timediff(tstart, tend));
-      fflush(stdout);
-    }
-#endif
+  PRINT_STATUS("end power spectrum. (step=%d) took %g seconds", flag, timediff(tstart, tend));
 }
 
 double PowerSpec_Efstathiou(double k)
@@ -3347,13 +3287,7 @@ void foldonitself(int *typelist)
   MyFloat *pos_sendbuf, *pos_recvbuf, *pos;
   MPI_Status status;
 
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("begin folding for power spectrum estimation...\n");
-      fflush(stdout);
-    }
-#endif
+  PRINT_STATUS("begin folding for power spectrum estimation...");
   tstart0 = tstart = my_second();
 
   nsend_local = (int *) mymalloc("nsend_local", NTask * sizeof(int));
@@ -3462,13 +3396,7 @@ void foldonitself(int *typelist)
       MPI_Allgather(nsend_local, NTask, MPI_INT, nsend, NTask, MPI_INT, MPI_COMM_WORLD);
 
       t1 = my_second();
-#ifndef IO_REDUCED_MODE
-      if(ThisTask == 0)
-	{
-	  printf("buffer filled (took %g sec)\n", timediff(t0, t1));
-	  fflush(stdout);
-	}
-#endif
+	  PRINT_STATUS("buffer filled (took %g sec)", timediff(t0, t1));
       t0 = my_second();
       for(level = 0; level < (1 << PTask); level++)	/* note: for level=0, target is the same task */
 	{
@@ -3559,25 +3487,12 @@ void foldonitself(int *typelist)
       iter++;
 
       t1 = my_second();
-#ifndef IO_REDUCED_MODE
-      if(ThisTask == 0)
-	{
-	  printf("particles exchanged and binned. (took %g sec) max-rest=%d\n", timediff(t0, t1), rest);
-	  fflush(stdout);
-	}
-#endif
+	  PRINT_STATUS("particles exchanged and binned. (took %g sec) max-rest=%d", timediff(t0, t1), rest);
     }
   while(rest > 0);
 
   tend = my_second();
-
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("folded density field assembled (took %g seconds, iter=%d)\n", timediff(tstart, tend), iter);
-      fflush(stdout);
-    }
-#endif
+  PRINT_STATUS("folded density field assembled (took %g seconds, iter=%d)", timediff(tstart, tend), iter);
   tstart = my_second();
 
   /* Do the FFT of the self-folded density field */
@@ -3589,13 +3504,7 @@ void foldonitself(int *typelist)
 
   tend = my_second();
 
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("FFT for folded density done (took %g seconds)\n", timediff(tstart, tend));
-      fflush(stdout);
-    }
-#endif
+  PRINT_STATUS("FFT for folded density done (took %g seconds)", timediff(tstart, tend));
   myfree(nsend);
   myfree(nsend_offset);
   myfree(nsend_local);
@@ -3615,15 +3524,8 @@ void dump_potential(void)
 
   tstart = my_second();
 
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("Start dumping potential\n");
-      fflush(stdout);
-    }
-#endif
-  sprintf(buf, "%s/snapdir_%03d/potential_%03d.%d", All.OutputDir, All.PowerSpecFlag - 1,
-	  All.PowerSpecFlag - 1, ThisTask);
+  PRINT_STATUS("Start dumping potential");
+  sprintf(buf, "%s/snapdir_%03d/potential_%03d.%d", All.OutputDir, All.PowerSpecFlag - 1, All.PowerSpecFlag - 1, ThisTask);
 
   nprocgroup = NTask / All.NumFilesWrittenInParallel;
 
@@ -3679,16 +3581,8 @@ void dump_potential(void)
 
 
   MPI_Barrier(MPI_COMM_WORLD);
-
   tend = my_second();
-
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("finished writing potential (took=%g sec)\n", timediff(tstart, tend));
-      fflush(stdout);
-    }
-#endif
+  PRINT_STATUS("finished writing potential (took=%g sec)", timediff(tstart, tend));
 }
 #endif
 

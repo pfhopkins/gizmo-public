@@ -1,416 +1,185 @@
 /*! \file blackhole_swallow_and_kick.c
- *  \brief routines for gas accretion onto black holes, and black hole mergers
- */
-/*
- * This file is largely written by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
- *   It was based on a similar file in GADGET3 by Volker Springel (volker.springel@h-its.org),
- *   but the physical modules for black hole accretion and feedback have been
- *   replaced, and the algorithm for their coupling is new to GIZMO.  This file was modified
- *   on 1/9/15 by Paul Torrey (ptorrey@mit.edu) for clarity by parsing the existing code into
- *   smaller files and routines. Some communication and black hole structures were modified
- *   to reduce memory usage. Cleanup, de-bugging, and consolidation of routines by Xiangcheng Ma
- *   (xchma@caltech.edu) followed on 05/15/15; re-integrated by PFH.
- */
-
+*  \brief routines for gas accretion onto black holes, and black hole mergers
+*/
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "../../allvars.h"
 #include "../../proto.h"
 #include "../../kernel.h"
-#include "blackhole_local.h"
-
-#ifdef BH_ALPHADISK_ACCRETION
-#define accreted_BH_mass_alphaornot accreted_BH_mass_alphadisk
-#else
-#define accreted_BH_mass_alphaornot accreted_BH_mass
-#endif
-
+/*
+* This file is largely written by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
+* see notes in blackhole.c for details on code history.
+*/
 
 static int N_gas_swallowed, N_star_swallowed, N_dm_swallowed, N_BH_swallowed;
 
-void blackhole_swallow_and_kick_loop(void)
-{
-    int i, j, k;
-    int ndone_flag, ndone;
-    int ngrp, recvTask, place, nexport, nimport, dummy;
-    MPI_Status status;
-    
-    int Ntot_gas_swallowed, Ntot_star_swallowed, Ntot_dm_swallowed, Ntot_BH_swallowed;
-    
-    /* allocate buffers to arrange communication */
-    size_t MyBufferSize = All.BufferSize;
-    Ngblist = (int *) mymalloc("Ngblist", NumPart * sizeof(int));
-    All.BunchSize = (int) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
-                                                             sizeof(struct blackholedata_in) + sizeof(struct blackholedata_out) +
-                                                             sizemax(sizeof(struct blackholedata_in),sizeof(struct blackholedata_out))));
-    DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
-    DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
-    
-    N_gas_swallowed = N_star_swallowed = N_dm_swallowed = N_BH_swallowed = 0;
-    Ntot_gas_swallowed = Ntot_star_swallowed = Ntot_dm_swallowed = Ntot_BH_swallowed = 0;
-    
-    i = FirstActiveParticle;	/* first particle for this task */
-    do
-    {
-        for(j = 0; j < NTask; j++)
-        {
-            Send_count[j] = 0;
-            Exportflag[j] = -1;
-        }
-        /* do local particles and prepare export list */
-        for(nexport = 0; i >= 0; i = NextActiveParticle[i])
-            if(P[i].Type == 5)
-                if(P[i].SwallowID == 0)     /* this particle not being swallowed */
-                    if(blackhole_swallow_and_kick_evaluate(i, 0, &nexport, Send_count) < 0)
-                        break;
-        
-        qsort(DataIndexTable, nexport, sizeof(struct data_index), data_index_compare);
-        MPI_Alltoall(Send_count, 1, MPI_INT, Recv_count, 1, MPI_INT, MPI_COMM_WORLD);
-        for(j = 0, nimport = 0, Recv_offset[0] = 0, Send_offset[0] = 0; j < NTask; j++)
-        {
-            nimport += Recv_count[j];
-            if(j > 0)
-            {
-                Send_offset[j] = Send_offset[j - 1] + Send_count[j - 1];
-                Recv_offset[j] = Recv_offset[j - 1] + Recv_count[j - 1];
-            }
-        }
-        BlackholeDataGet = (struct blackholedata_in *) mymalloc("BlackholeDataGet", nimport * sizeof(struct blackholedata_in));
-        BlackholeDataIn = (struct blackholedata_in *) mymalloc("BlackholeDataIn", nexport * sizeof(struct blackholedata_in));
-        
-        
-        /* populate the struct to be exported */
-        for(j = 0; j < nexport; j++)
-        {
-            place = DataIndexTable[j].Index;
-            
-            for(k = 0; k < 3; k++)
-            {
-                BlackholeDataIn[j].Pos[k] = P[place].Pos[k];
-                BlackholeDataIn[j].Vel[k] = P[place].Vel[k];
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK)
-#if defined(BH_FOLLOW_ACCRETED_ANGMOM)
-                BlackholeDataIn[j].Jgas_in_Kernel[k] = P[place].BH_Specific_AngMom[k];
+#ifdef BH_ALPHADISK_ACCRETION
+#define out_accreted_BH_Mass_alphaornot out.accreted_BH_Mass_alphadisk
 #else
-                BlackholeDataIn[j].Jgas_in_Kernel[k] = BlackholeTempInfo[P[place].IndexMapToTempStruc].Jgas_in_Kernel[k];
+#define out_accreted_BH_Mass_alphaornot out.accreted_BH_Mass
 #endif
-#endif
-            }
-            BlackholeDataIn[j].Hsml = PPP[place].Hsml;
-            BlackholeDataIn[j].ID = P[place].ID;
-            BlackholeDataIn[j].Mass = P[place].Mass;
-            BlackholeDataIn[j].BH_Mass = BPP(place).BH_Mass;
-#if defined(BH_RETURN_ANGMOM_TO_GAS)
-            for(k=0; k<3; k++) BlackholeDataIn[j].BH_Specific_AngMom[k] = BPP(place).BH_Specific_AngMom[k];
-            BlackholeDataIn[j].angmom_norm_topass_in_swallowloop = BlackholeTempInfo[P[place].IndexMapToTempStruc].angmom_norm_topass_in_swallowloop;
+
+
+#define MASTER_FUNCTION_NAME blackhole_swallow_and_kick_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define CONDITIONFUNCTION_FOR_EVALUATION if(P[i].Type==5 && P[i].SwallowID==0) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
+#include "../../system/code_block_xchange_initialize.h" /* pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
+
+
+/* this structure defines the variables that need to be sent -from- the 'searching' element */
+struct INPUT_STRUCT_NAME
+{
+    int NodeList[NODELISTLENGTH]; MyDouble Pos[3]; MyFloat Vel[3], Hsml, Mass, BH_Mass, Dt, Mdot; MyIDType ID;
+#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK)
+    MyFloat Jgas_in_Kernel[3];
 #endif
 #ifdef BH_ALPHADISK_ACCRETION
-            BlackholeDataIn[j].BH_Mass_AlphaDisk = BPP(place).BH_Mass_AlphaDisk;
+    MyFloat BH_Mass_AlphaDisk;
 #endif
 #if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)
-            BlackholeDataIn[j].BH_disk_hr = P[place].BH_disk_hr;
-            BlackholeDataIn[j].BH_angle_weighted_kernel_sum = BlackholeTempInfo[P[place].IndexMapToTempStruc].BH_angle_weighted_kernel_sum;
+    MyFloat BH_disk_hr, BH_angle_weighted_kernel_sum;
 #endif
-            BlackholeDataIn[j].Mdot = BPP(place).BH_Mdot;
-#ifndef WAKEUP
-            BlackholeDataIn[j].Dt = (P[place].TimeBin ? (((integertime) 1) << P[place].TimeBin) : 0) * All.Timebase_interval / All.cf_hubble_a;
+#if defined(BH_RETURN_ANGMOM_TO_GAS)
+    MyFloat BH_Specific_AngMom[3], angmom_norm_topass_in_swallowloop;
+#endif
+}
+*DATAIN_NAME, *DATAGET_NAME; /* dont mess with these names, they get filled-in by your definitions automatically */
+
+/* this subroutine assigns the values to the variables that need to be sent -from- the 'searching' element */
+static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
+{
+    int k, j_tempinfo; j_tempinfo = P[i].IndexMapToTempStruc; /* link to the location in the shared structure where this is stored */
+    for(k=0;k<3;k++) {in->Pos[k]=P[i].Pos[k]; in->Vel[k]=P[i].Vel[k];} /* good example - always needed */
+    in->Hsml = PPP[i].Hsml; in->Mass = P[i].Mass; in->BH_Mass = BPP(i).BH_Mass; in->ID = P[i].ID; in->Mdot = BPP(i).BH_Mdot;
+#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)
+#if defined(BH_FOLLOW_ACCRETED_ANGMOM)
+    for(k=0;k<3;k++) {in->Jgas_in_Kernel[k] = P[i].BH_Specific_AngMom[k];}
 #else
-            BlackholeDataIn[j].Dt = P[place].dt_step * All.Timebase_interval / All.cf_hubble_a;
+    for(k=0;k<3;k++) {in->Jgas_in_Kernel[k] = BlackholeTempInfo[j_tempinfo].Jgas_in_Kernel[k];}
 #endif
-            memcpy(BlackholeDataIn[j].NodeList,DataNodeList[DataIndexTable[j].IndexGet].NodeList, NODELISTLENGTH * sizeof(int));
-        }
-        
-        
-        /* exchange particle data */
-        for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-        {
-            recvTask = ThisTask ^ ngrp;
-            
-            if(recvTask < NTask)
-            {
-                if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
-                {
-                    /* get the particles */
-                    MPI_Sendrecv(&BlackholeDataIn[Send_offset[recvTask]],
-                                 Send_count[recvTask] * sizeof(struct blackholedata_in), MPI_BYTE,
-                                 recvTask, TAG_BH_G,
-                                 &BlackholeDataGet[Recv_offset[recvTask]],
-                                 Recv_count[recvTask] * sizeof(struct blackholedata_in), MPI_BYTE,
-                                 recvTask, TAG_BH_G, MPI_COMM_WORLD, &status);
-                }
-            }
-        }
-        myfree(BlackholeDataIn);
-        BlackholeDataResult = (struct blackholedata_out *) mymalloc("BlackholeDataResult", nimport * sizeof(struct blackholedata_out));
-        BlackholeDataOut = (struct blackholedata_out *) mymalloc("BlackholeDataOut", nexport * sizeof(struct blackholedata_out));
-        
-        /* do the particles that were sent to us */
-        for(j = 0; j < nimport; j++)
-            blackhole_swallow_and_kick_evaluate(j, 1, &dummy, &dummy);  /* set BlackholeDataResult based on BlackholeDataGet */
-        
-        if(i < 0)
-            ndone_flag = 1;
-        else
-            ndone_flag = 0;
-        
-        MPI_Allreduce(&ndone_flag, &ndone, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-        /* get the result */
-        for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-        {
-            recvTask = ThisTask ^ ngrp;
-            if(recvTask < NTask)
-            {
-                if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
-                {
-                    /* send the results */
-                    MPI_Sendrecv(&BlackholeDataResult[Recv_offset[recvTask]],
-                                 Recv_count[recvTask] * sizeof(struct blackholedata_out),
-                                 MPI_BYTE, recvTask, TAG_BH_H,
-                                 &BlackholeDataOut[Send_offset[recvTask]],
-                                 Send_count[recvTask] * sizeof(struct blackholedata_out),
-                                 MPI_BYTE, recvTask, TAG_BH_H, MPI_COMM_WORLD, &status);
-                }
-            }
-        }
-        /* add the result to the particles */
-        for(j = 0; j < nexport; j++)
-        {
-            place = DataIndexTable[j].Index;
-            
-            BlackholeTempInfo[P[place].IndexMapToTempStruc].accreted_Mass += BlackholeDataOut[j].accreted_Mass;
-            BlackholeTempInfo[P[place].IndexMapToTempStruc].accreted_BH_Mass += BlackholeDataOut[j].accreted_BH_Mass;
+#endif
 #ifdef BH_ALPHADISK_ACCRETION
-            BlackholeTempInfo[P[place].IndexMapToTempStruc].accreted_BH_mass_alphadisk += BlackholeDataOut[j].accreted_BH_mass_alphadisk;
+    in->BH_Mass_AlphaDisk = BPP(i).BH_Mass_AlphaDisk;
 #endif
-            for(k = 0; k < 3; k++)
-            {
+#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)
+    in->BH_disk_hr = P[i].BH_disk_hr;
+    in->BH_angle_weighted_kernel_sum = BlackholeTempInfo[j_tempinfo].BH_angle_weighted_kernel_sum;
+#endif
+#ifndef WAKEUP
+    in->Dt = (P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0) * All.Timebase_interval / All.cf_hubble_a;
+#else
+    in->Dt = P[i].dt_step * All.Timebase_interval / All.cf_hubble_a;
+#endif
+#if defined(BH_RETURN_ANGMOM_TO_GAS)
+    for(k=0;k<3;k++) {in->BH_Specific_AngMom[k] = BPP(i).BH_Specific_AngMom[k];}
+    in->angmom_norm_topass_in_swallowloop = BlackholeTempInfo[j_tempinfo].angmom_norm_topass_in_swallowloop;
+#endif
+}
+
+
+/* this structure defines the variables that need to be sent -back to- the 'searching' element */
+struct OUTPUT_STRUCT_NAME
+{ /* define variables below as e.g. "double X;" */
+    MyDouble accreted_Mass, accreted_BH_Mass, accreted_BH_Mass_alphadisk;
 #if defined(BH_FOLLOW_ACCRETED_MOMENTUM)
-                BlackholeTempInfo[P[place].IndexMapToTempStruc].accreted_momentum[k] += BlackholeDataOut[j].accreted_momentum[k];
+    MyDouble accreted_momentum[3];
 #endif
 #if defined(BH_FOLLOW_ACCRETED_COM)
-                BlackholeTempInfo[P[place].IndexMapToTempStruc].accreted_centerofmass[k] += BlackholeDataOut[j].accreted_centerofmass[k];
+    MyDouble accreted_centerofmass[3];
 #endif
 #if defined(BH_FOLLOW_ACCRETED_ANGMOM)
-                BlackholeTempInfo[P[place].IndexMapToTempStruc].accreted_J[k] += BlackholeDataOut[j].accreted_J[k];
-#endif		
-            }
+    MyDouble accreted_J[3];
+#endif
 #ifdef BH_COUNTPROGS
-            BPP(place).BH_CountProgs += BlackholeDataOut[j].BH_CountProgs;
+    int BH_CountProgs;
 #endif
 #ifdef GALSF
-            if(P[place].StellarAge > BlackholeDataOut[j].Accreted_Age)
-                P[place].StellarAge = BlackholeDataOut[j].Accreted_Age;
+    MyFloat Accreted_Age;
 #endif
-        }
-        myfree(BlackholeDataOut);
-        myfree(BlackholeDataResult);
-        myfree(BlackholeDataGet);
-    }
-    while(ndone < NTask);
-    
-    myfree(DataNodeList);
-    myfree(DataIndexTable);
-    myfree(Ngblist);
-    
-    
-    MPI_Reduce(&N_gas_swallowed, &Ntot_gas_swallowed, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&N_BH_swallowed, &Ntot_BH_swallowed, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&N_star_swallowed, &Ntot_star_swallowed, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&N_dm_swallowed, &Ntot_dm_swallowed, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
-    
-    if((ThisTask == 0)&&(Ntot_gas_swallowed+Ntot_star_swallowed+Ntot_dm_swallowed+Ntot_BH_swallowed>0))
-    {
-        printf("Accretion done: swallowed %d gas, %d star, %d dm, and %d BH particles\n",
-               Ntot_gas_swallowed, Ntot_star_swallowed, Ntot_dm_swallowed, Ntot_BH_swallowed);
-    }
-    
+}
+*DATARESULT_NAME, *DATAOUT_NAME; /* dont mess with these names, they get filled-in by your definitions automatically */
+
+#define ASSIGN_ADD_PRESET(x,y,mode) (mode == 0 ? (x=y) : (x+=y))
+/* this subroutine assigns the values to the variables that need to be sent -back to- the 'searching' element */
+static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration)
+{
+    int k, target = P[i].IndexMapToTempStruc;
+    ASSIGN_ADD_PRESET(BlackholeTempInfo[target].accreted_Mass, out->accreted_Mass, mode);
+    ASSIGN_ADD_PRESET(BlackholeTempInfo[target].accreted_BH_Mass, out->accreted_BH_Mass, mode);
+    ASSIGN_ADD_PRESET(BlackholeTempInfo[target].accreted_BH_Mass_alphadisk, out->accreted_BH_Mass_alphadisk, mode);
+#if defined(BH_FOLLOW_ACCRETED_MOMENTUM)
+    for(k=0;k<3;k++) {ASSIGN_ADD_PRESET(BlackholeTempInfo[target].accreted_momentum[k], out->accreted_momentum[k], mode);}
+#endif
+#if defined(BH_FOLLOW_ACCRETED_COM)
+    for(k=0;k<3;k++) {ASSIGN_ADD_PRESET(BlackholeTempInfo[target].accreted_centerofmass[k], out->accreted_centerofmass[k], mode);}
+#endif
+#if defined(BH_FOLLOW_ACCRETED_ANGMOM)
+    for(k=0;k<3;k++) {ASSIGN_ADD_PRESET(BlackholeTempInfo[target].accreted_J[k], out->accreted_J[k], mode);}
+#endif
+#ifdef BH_COUNTPROGS
+    BPP(i).BH_CountProgs += out->BH_CountProgs;
+#endif
+#ifdef GALSF
+    if(P[i].StellarAge > out->Accreted_Age) P[i].StellarAge = out->Accreted_Age;
+#endif
 }
 
 
 
-
-int blackhole_swallow_and_kick_evaluate(int target, int mode, int *nexport, int *nSend_local)
+int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration);
+int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
 {
-    int startnode, numngb, j, k, n, bin, listindex = 0;
-    MyIDType id;
-#if defined(BH_FOLLOW_ACCRETED_MOMENTUM)
-    MyLongDouble accreted_momentum[3]={0};
+    int startnode, numngb, listindex = 0, j, k, n, bin; struct INPUT_STRUCT_NAME local; struct OUTPUT_STRUCT_NAME out; memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME)); /* define variables and zero memory and import data for local target*/
+    if(mode == 0) {INPUTFUNCTION_NAME(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];} /* imports the data to the correct place and names */
+    double h_i = local.Hsml, hinv=h_i, hinv3, f_accreted; hinv3=hinv*hinv*hinv; f_accreted=0;
+#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)
+    double kernel_zero,dwk; kernel_main(0.0,1.0,1.0,&kernel_zero,&dwk,-1); dwk=0;
 #endif
-#if defined(BH_FOLLOW_ACCRETED_COM)
-    MyLongDouble accreted_centerofmass[3]={0};
-#endif
-#if defined(BH_FOLLOW_ACCRETED_ANGMOM)
-    MyLongDouble accreted_J[3]={0};
-#endif
-#if defined(BH_RETURN_ANGMOM_TO_GAS)
-    MyFloat *BH_Specific_AngMom, angmom_norm_topass_in_swallowloop;
-#endif
-    MyFloat *pos, *vel, h_i, bh_mass;
-#if (defined(BH_WIND_CONTINUOUS) && !defined(BH_WIND_KICK))
-    MyFloat hinv, hinv3;
-#endif
-    MyFloat f_accreted=0;
-#if defined(BH_WIND_KICK) || defined(BH_OUTPUT_GASSWALLOW)
-    MyFloat mass;
-#ifdef BH_WIND_KICK
-    MyFloat v_kick=0;
-    MyFloat bh_mass_withdisk;
+#if defined(BH_WIND_KICK)
+    double bh_mass_withdisk=local.BH_Mass;
 #ifdef BH_ALPHADISK_ACCRETION
-    MyFloat bh_mass_alphadisk;     // DAA: we need bh_mass_alphadisk for BH_WIND_KICK winds below
+    bh_mass_withdisk += local.BH_Mass_AlphaDisk;
 #endif
-#endif
-#endif
-#if (defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS))
-    MyFloat mdot,dt;
-#endif
-    
-    MyFloat dir[3], norm, mom;
-    mom=0; norm=0; dir[0]=0;
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK) 
-    MyFloat J_dir[3];
 #endif
 #if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)
-    double BH_angle_weighted_kernel_sum, mom_wt;
-    MyFloat BH_disk_hr,kernel_zero,dwk;
-    kernel_main(0.0,1.0,1.0,&kernel_zero,&dwk,-1);
-#endif
-#ifdef GALSF
-    double accreted_age = 1;
-#endif
-    
-    int mod_index = 0;
-    
-    if(mode == 0)
-    {
-        pos = P[target].Pos;
-        vel = P[target].Vel;
-        h_i = PPP[target].Hsml;
-        id = P[target].ID;
-#if defined(BH_WIND_KICK) || defined(BH_OUTPUT_GASSWALLOW)
-        mass = P[target].Mass;    
-#endif
-#if defined(BH_ALPHADISK_ACCRETION) && defined(BH_WIND_KICK)
-        bh_mass_alphadisk = BPP(target).BH_Mass_AlphaDisk;
-#endif
-        bh_mass = BPP(target).BH_Mass;
-#if (defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS))
-        mdot = BPP(target).BH_Mdot;
-#ifndef WAKEUP
-        dt = (P[target].TimeBin ? (((integertime) 1) << P[target].TimeBin) : 0) * All.Timebase_interval / All.cf_hubble_a;
-#else
-        dt = P[target].dt_step * All.Timebase_interval / All.cf_hubble_a;
-#endif
+    double mom = bh_lum_bol(local.Mdot, local.BH_Mass, -1) * local.Dt / (C / All.UnitVelocity_in_cm_per_s), mom_wt = 0;
 #endif
 #if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK)
-#if defined(BH_FOLLOW_ACCRETED_ANGMOM)
-        for(k=0;k<3;k++) {J_dir[k] = P[target].BH_Specific_AngMom[k];}
-#else
-        for(k=0;k<3;k++) {J_dir[k] = BlackholeTempInfo[P[target].IndexMapToTempStruc].Jgas_in_Kernel[k];}
-#endif
-#endif
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)
-        BH_disk_hr = P[target].BH_disk_hr;
-        BH_angle_weighted_kernel_sum = BlackholeTempInfo[P[target].IndexMapToTempStruc].BH_angle_weighted_kernel_sum;
-#endif
-#if defined(BH_RETURN_ANGMOM_TO_GAS)
-        BH_Specific_AngMom = P[target].BH_Specific_AngMom;
-        angmom_norm_topass_in_swallowloop = BlackholeTempInfo[P[target].IndexMapToTempStruc].angmom_norm_topass_in_swallowloop;
-#endif
-        mod_index = P[target].IndexMapToTempStruc;  /* the index of the BlackholeTempInfo should we modify*/
-    }
-    else
-    {
-        pos = BlackholeDataGet[target].Pos;
-        vel = BlackholeDataGet[target].Vel;
-        h_i = BlackholeDataGet[target].Hsml;
-        id = BlackholeDataGet[target].ID;
-#if defined(BH_WIND_KICK) || defined(BH_OUTPUT_GASSWALLOW)
-        mass = BlackholeDataGet[target].Mass;
-#if defined(BH_ALPHADISK_ACCRETION) && defined(BH_WIND_KICK)
-        bh_mass_alphadisk = BlackholeDataGet[target].BH_Mass_AlphaDisk;      
-#endif
-#endif
-        bh_mass = BlackholeDataGet[target].BH_Mass;
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)
-        mdot = BlackholeDataGet[target].Mdot;
-        dt = BlackholeDataGet[target].Dt;
-#endif
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK)
-        for(k=0;k<3;k++) {J_dir[k] = BlackholeDataGet[target].Jgas_in_Kernel[k];}
-#endif
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)
-        BH_disk_hr = BlackholeDataGet[target].BH_disk_hr;
-        BH_angle_weighted_kernel_sum = BlackholeDataGet[target].BH_angle_weighted_kernel_sum;
-#endif
-#if defined(BH_RETURN_ANGMOM_TO_GAS)
-        BH_Specific_AngMom = BlackholeDataGet[target].BH_Specific_AngMom;
-        angmom_norm_topass_in_swallowloop = BlackholeDataGet[target].angmom_norm_topass_in_swallowloop;
-#endif
-    }
-
-#ifdef BH_WIND_KICK
-    bh_mass_withdisk = bh_mass;
-#ifdef BH_ALPHADISK_ACCRETION
-    bh_mass_withdisk += bh_mass_alphadisk;
-#endif
-#endif
-    MyLongDouble accreted_mass = 0, accreted_BH_mass = 0, accreted_BH_mass_alphadisk = 0;
-#ifdef BH_COUNTPROGS
-    int accreted_BH_progs = 0;
-#endif
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)
-    mom = bh_lum_bol(mdot, bh_mass, -1) * dt / (C / All.UnitVelocity_in_cm_per_s); mom_wt = 0;
-#endif
-#if defined(BH_WIND_CONTINUOUS) && !defined(BH_WIND_KICK)
-    hinv=h_i; hinv3=hinv*hinv*hinv;
-#endif
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK)
-    norm=0; for(k=0;k<3;k++) {norm+=J_dir[k]*J_dir[k];}
+    double J_dir[3]; for(k=0;k<3;k++) {J_dir[k] = local.Jgas_in_Kernel[k];}
+    double norm=0; for(k=0;k<3;k++) {norm+=J_dir[k]*J_dir[k];}
     if(norm>0) {norm=1/sqrt(norm); for(k=0;k<3;k++) {J_dir[k]*=norm;}} else {J_dir[0]=J_dir[1]=0; J_dir[2]=1;}
 #endif
+#ifdef GALSF
+    out.Accreted_Age = MAX_REAL_NUMBER;
+#endif
     
-    if(mode == 0)
-    {
-        startnode = All.MaxPart;	/* root node */
-    }
-    else
-    {
-        startnode = BlackholeDataGet[target].NodeList[0];
-        startnode = Nodes[startnode].u.d.nextnode;	/* open it */
-    }
-    
-    while(startnode >= 0)
-    {
-        while(startnode >= 0)
-        {
-            numngb = ngb_treefind_pairs_targeted(pos, h_i, target, &startnode, mode, nexport, nSend_local, BH_NEIGHBOR_BITFLAG); // BH_NEIGHBOR_BITFLAG defines which types of particles we search for
+    /* Now start the actual neighbor computation for this particle */
+    if(mode == 0) {startnode = All.MaxPart; /* root node */} else {startnode = DATAGET_NAME[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode;    /* open it */}
+    while(startnode >= 0) {
+        while(startnode >= 0) {
+            numngb = ngb_treefind_pairs_threads_targeted(local.Pos, h_i, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist, BH_NEIGHBOR_BITFLAG);
             if(numngb < 0) return -1;
             for(n = 0; n < numngb; n++)
             {
-                j = Ngblist[n]; MyIDType OriginallyMarkedSwallowID = P[j].SwallowID; // record this to help prevent double-counting below
-                double dP[3]={0},dv[3]={0}; for(k=0;k<3;k++) {dP[k]=P[j].Pos[k]-pos[k];}
-#ifdef BOX_PERIODIC
-                NEAREST_XYZ(dP[0],dP[1],dP[2],-1); /*  find the closest image in the given box size  */
-#endif
-                dv[0] = P[j].Vel[0]-vel[0]; dv[1] = P[j].Vel[1]-vel[1]; dv[2] = P[j].Vel[2]-vel[2];
+                j = ngblist[n]; MyIDType OriginallyMarkedSwallowID; OriginallyMarkedSwallowID = P[j].SwallowID; // record this to help prevent double-counting below
+                double dpos[3]={0},dvel[3]={0}; for(k=0;k<3;k++) {dpos[k]=P[j].Pos[k]-local.Pos[k]; dvel[k]=P[j].Vel[k]-local.Vel[k];}
+                NEAREST_XYZ(dpos[0],dpos[1],dpos[2],-1); /*  find the closest image in the given box size  */
 #ifdef BOX_SHEARING
-                if(pos[0] - P[j].Pos[0] > +boxHalf_X) {dv[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;}
-                if(pos[0] - P[j].Pos[0] < -boxHalf_X) {dv[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;}
+                if(local.Pos[0] - P[j].Pos[0] > +boxHalf_X) {dvel[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;}
+                if(local.Pos[0] - P[j].Pos[0] < -boxHalf_X) {dvel[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;}
 #endif
 
-                
 #if defined(BH_RETURN_ANGMOM_TO_GAS) /* this should go here [right before the loop that accretes it back onto the BH] */
                 if(P[j].Type == 0)
                 {
-                    double dlv[3]; dlv[0]=BH_Specific_AngMom[1]*dP[2]-BH_Specific_AngMom[2]*dP[1]; dlv[1]=BH_Specific_AngMom[2]*dP[0]-BH_Specific_AngMom[0]*dP[2]; dlv[2]=BH_Specific_AngMom[0]*dP[1]-BH_Specific_AngMom[1]*dP[0];
-                    for(k=0;k<3;k++) {dlv[k] *= angmom_norm_topass_in_swallowloop; P[j].Vel[k]+=dlv[k]; SphP[j].VelPred[k]+=dlv[k]; accreted_momentum[k]-=P[j].Mass*dlv[k];}
-                    accreted_J[0]-=P[j].Mass*(dP[1]*dlv[2] - dP[2]*dlv[1]); accreted_J[1]-=P[j].Mass*(dP[2]*dlv[0] - dP[0]*dlv[2]); accreted_J[2]-=P[j].Mass*(dP[0]*dlv[1] - dP[1]*dlv[0]);
+                    double dlv[3]; dlv[0]=local.BH_Specific_AngMom[1]*dpos[2]-local.BH_Specific_AngMom[2]*dpos[1]; dlv[1]=local.BH_Specific_AngMom[2]*dpos[0]-local.BH_Specific_AngMom[0]*dpos[2]; dlv[2]=local.BH_Specific_AngMom[0]*dpos[1]-local.BH_Specific_AngMom[1]*dpos[0];
+                    for(k=0;k<3;k++) {dlv[k] *= local.angmom_norm_topass_in_swallowloop; P[j].Vel[k]+=dlv[k]; SphP[j].VelPred[k]+=dlv[k]; out.accreted_momentum[k]-=P[j].Mass*dlv[k];}
+                    out.accreted_J[0]-=P[j].Mass*(dpos[1]*dlv[2] - dpos[2]*dlv[1]); out.accreted_J[1]-=P[j].Mass*(dpos[2]*dlv[0] - dpos[0]*dlv[2]); out.accreted_J[2]-=P[j].Mass*(dpos[0]*dlv[1] - dpos[1]*dlv[0]);
                 }
 #endif
                 
                 /* we've found a particle to be swallowed.  This could be a BH merger, DM particle, or baryon w/ feedback */
-                if(P[j].SwallowID == id && P[j].Mass > 0)
+                if(P[j].SwallowID == local.ID && P[j].Mass > 0)
                 {   /* accreted quantities to be added [regardless of particle type] */
                     f_accreted = 1; /* default to accreting entire particle */
 #ifdef BH_WIND_KICK
@@ -419,7 +188,7 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *nexport, int 
                         f_accreted = All.BAL_f_accretion; /* if particle is gas, only a fraction gets accreted in these particular modules */
 #ifndef BH_GRAVCAPTURE_GAS
                         if((All.BlackHoleFeedbackFactor > 0) && (All.BlackHoleFeedbackFactor != 1.)) {f_accreted /= All.BlackHoleFeedbackFactor;} else {if(All.BAL_v_outflow > 0) f_accreted = 1./(1. + fabs(1.*BH_WIND_KICK)*All.BlackHoleRadiativeEfficiency*(C/All.UnitVelocity_in_cm_per_s)/(All.BAL_v_outflow));}
-                        if((bh_mass_withdisk - mass) <= 0) {f_accreted=0;} // DAA: no need to accrete gas particle to enforce mass conservation (we will simply kick),  note that here the particle mass P.Mass is larger than the physical BH mass P.BH_Mass
+                        if((bh_mass_withdisk - local.Mass) <= 0) {f_accreted=0;} // DAA: no need to accrete gas particle to enforce mass conservation (we will simply kick),  note that here the particle mass P.Mass is larger than the physical BH mass P.BH_Mass
 #endif
                     }
 #endif
@@ -433,51 +202,49 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *nexport, int 
 #endif
 #endif
 #if defined(BH_FOLLOW_ACCRETED_MOMENTUM)
-                    for(k=0;k<3;k++) {accreted_momentum[k] += FLT( mcount_for_conserve * dv[k]);}
+                    for(k=0;k<3;k++) {out.accreted_momentum[k] += FLT( mcount_for_conserve * dvel[k]);}
 #endif
 #if defined(BH_FOLLOW_ACCRETED_COM)
-                    for(k=0;k<3;k++) {accreted_centerofmass[k] += FLT(mcount_for_conserve * dP[k]);}
+                    for(k=0;k<3;k++) {out.accreted_centerofmass[k] += FLT(mcount_for_conserve * dpos[k]);}
 #endif
 #if defined(BH_FOLLOW_ACCRETED_ANGMOM)
-                    accreted_J[0] += FLT(mcount_for_conserve * ( dP[1]*dv[2] - dP[2]*dv[1] ));
-                    accreted_J[1] += FLT(mcount_for_conserve * ( dP[2]*dv[0] - dP[0]*dv[2] ));
-                    accreted_J[2] += FLT(mcount_for_conserve * ( dP[0]*dv[1] - dP[1]*dv[0] ));
-                    if(P[j].Type==5) {for(k=0;k<3;k++) {accreted_J[k] += FLT(mcount_for_conserve * BPP(j).BH_Specific_AngMom[k]);}}
+                    out.accreted_J[0] += FLT(mcount_for_conserve * ( dpos[1]*dvel[2] - dpos[2]*dvel[1] ));
+                    out.accreted_J[1] += FLT(mcount_for_conserve * ( dpos[2]*dvel[0] - dpos[0]*dvel[2] ));
+                    out.accreted_J[2] += FLT(mcount_for_conserve * ( dpos[0]*dvel[1] - dpos[1]*dvel[0] ));
+                    if(P[j].Type==5) {for(k=0;k<3;k++) {out.accreted_J[k] += FLT(mcount_for_conserve * BPP(j).BH_Specific_AngMom[k]);}}
 #endif
-
-                    
 
                     if(P[j].Type == 5)  /* this is a BH-BH merger */
                     {
 #ifdef BH_OUTPUT_MOREINFO
-                        fprintf(FdBhMergerDetails,"%g  %u %g %2.7f %2.7f %2.7f  %u %g %2.7f %2.7f %2.7f\n", All.Time,  id,bh_mass,pos[0],pos[1],pos[2],  P[j].ID,BPP(j).BH_Mass,P[j].Pos[0],P[j].Pos[1],P[j].Pos[2]);
+                        fprintf(FdBhMergerDetails,"%g  %u %g %2.7f %2.7f %2.7f  %u %g %2.7f %2.7f %2.7f\n", All.Time,  local.ID,local.BH_Mass,local.Pos[0],local.Pos[1],local.Pos[2],  P[j].ID,BPP(j).BH_Mass,P[j].Pos[0],P[j].Pos[1],P[j].Pos[2]);
 #else
 #ifndef IO_REDUCED_MODE
-                        fprintf(FdBlackHolesDetails,"ThisTask=%d, time=%g: id=%u swallows %u (%g %g)\n", ThisTask, All.Time, id, P[j].ID, bh_mass, BPP(j).BH_Mass);
+                        fprintf(FdBlackHolesDetails,"ThisTask=%d, time=%g: id=%u swallows %u (%g %g)\n", ThisTask, All.Time, local.ID, P[j].ID, local.BH_Mass, BPP(j).BH_Mass);
 #endif
 #endif
 #ifdef BH_INCREASE_DYNAMIC_MASS
                         /* the true dynamical mass of the merging BH is P[j].Mass/BH_INCREASE_DYNAMIC_MASS unless exceeded by physical growth
                          - in the limit BPP(j).BH_Mass > BH_INCREASE_DYNAMIC_MASS x m_b, then bh_mass=P[j].Mass on average and we are good as well  */
-                        accreted_mass    += FLT( DMAX(BPP(j).BH_Mass, P[j].Mass/BH_INCREASE_DYNAMIC_MASS) );
+                        out.accreted_Mass    += FLT( DMAX(BPP(j).BH_Mass, P[j].Mass/BH_INCREASE_DYNAMIC_MASS) );
 #else
-                        accreted_mass    += FLT(P[j].Mass);
+                        out.accreted_Mass    += FLT(P[j].Mass);
 #endif
-                        accreted_BH_mass += FLT(BPP(j).BH_Mass);
+                        out.accreted_BH_Mass += FLT(BPP(j).BH_Mass);
 #ifdef BH_ALPHADISK_ACCRETION
-                        accreted_BH_mass_alphadisk += FLT(BPP(j).BH_Mass_AlphaDisk);
+                        out.accreted_BH_Mass_alphadisk += FLT(BPP(j).BH_Mass_AlphaDisk);
 #endif
 #ifdef BH_WIND_SPAWN
-                        accreted_BH_mass_alphaornot += FLT(BPP(j).unspawned_wind_mass);
+                        out_accreted_BH_Mass_alphaornot += FLT(BPP(j).unspawned_wind_mass);
 #endif
 #ifdef BH_COUNTPROGS
-                        accreted_BH_progs += BPP(j).BH_CountProgs;
+                        out.BH_CountProgs += BPP(j).BH_CountProgs;
 #endif
                         bin = P[j].TimeBin; TimeBin_BH_mass[bin] -= BPP(j).BH_Mass; TimeBin_BH_dynamicalmass[bin] -= P[j].Mass; TimeBin_BH_Mdot[bin] -= BPP(j).BH_Mdot;
                         if(BPP(j).BH_Mass > 0) {TimeBin_BH_Medd[bin] -= BPP(j).BH_Mdot / BPP(j).BH_Mass;}
                         P[j].Mass = 0; BPP(j).BH_Mass = 0; BPP(j).BH_Mdot = 0;
 #ifdef GALSF
-                        accreted_age = P[j].StellarAge;
+                        out.Accreted_Age = P[j].StellarAge;
 #endif
                         N_BH_swallowed++;
                     } // if(P[j].Type == 5) -- BH + BH merger
@@ -486,15 +253,13 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *nexport, int 
 #ifdef BH_GRAVCAPTURE_NONGAS /* DM and star particles can only be accreted ifdef BH_GRAVCAPTURE_NONGAS */
                     if((P[j].Type == 1) || (All.ComovingIntegrationOn && (P[j].Type==2||P[j].Type==3)) )
                     {   /* this is a DM particle: In this case, no kick, so just zero out the mass and 'get rid of' the particle (preferably by putting it somewhere irrelevant) */
-#ifndef IO_REDUCED_MODE
-                        printf("BH_swallow_DM: j %d Type(j) %d  M(j) %g V(j).xyz %g/%g/%g P(j).xyz %g/%g/%g p(i).xyz %g/%g/%g \n", j,P[j].Type,P[j].Mass,P[j].Vel[0],P[j].Vel[1],P[j].Vel[2],P[j].Pos[0],P[j].Pos[1],P[j].Pos[2],pos[0],pos[1],pos[2]);
-#endif
-                        accreted_mass += FLT(P[j].Mass); accreted_BH_mass += FLT(P[j].Mass); P[j].Mass = 0;
+                        PRINT_STATUS(" ..BH_swallow_DM: j %d Type(j) %d  M(j) %g V(j).xyz %g/%g/%g P(j).xyz %g/%g/%g p(i).xyz %g/%g/%g \n", j,P[j].Type,P[j].Mass,P[j].Vel[0],P[j].Vel[1],P[j].Vel[2],P[j].Pos[0],P[j].Pos[1],P[j].Pos[2],local.Pos[0],local.Pos[1],local.Pos[2]);
+                        out.accreted_Mass += FLT(P[j].Mass); out.accreted_BH_Mass += FLT(P[j].Mass); P[j].Mass = 0;
                         N_dm_swallowed++;
                     }
                     if((P[j].Type==4) || ((P[j].Type==2||P[j].Type==3) && !(All.ComovingIntegrationOn) ))
                     {   /* this is a star particle: If there is an alpha-disk, we let them go to the disk. If there is no alpha-disk, stars go to the BH directly and won't affect feedback. (Can be simply modified if we need something different.) */
-                        accreted_mass += FLT(P[j].Mass); accreted_BH_mass_alphaornot += FLT(P[j].Mass); P[j].Mass = 0;
+                        out.accreted_Mass += FLT(P[j].Mass); out_accreted_BH_Mass_alphaornot += FLT(P[j].Mass); P[j].Mass = 0;
                         N_star_swallowed++;
                     }
 #endif // #ifdef BH_GRAVCAPTURE_NONGAS -- BH + DM or Star merger
@@ -504,9 +269,9 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *nexport, int 
                      the only difference with BH_ALPHADISK_ACCRETION should be that the mass goes first to the alphadisk */
                     if(P[j].Type == 0)                    
                     {
-                        accreted_mass += FLT(f_accreted*P[j].Mass);
+                        out.accreted_Mass += FLT(f_accreted*P[j].Mass);
 #ifdef BH_GRAVCAPTURE_GAS
-                        accreted_BH_mass_alphaornot += FLT(f_accreted*P[j].Mass);
+                        out_accreted_BH_Mass_alphaornot += FLT(f_accreted*P[j].Mass);
 #endif
                         P[j].Mass *= (1-f_accreted);
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
@@ -514,7 +279,7 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *nexport, int 
 #endif
 
 #ifdef BH_WIND_KICK     /* BAL kicking operations. NOTE: we have two separate BAL wind models, particle kicking and smooth wind model. This is where we do the particle kicking BAL model. This should also work when there is alpha-disk. */
-                        v_kick=All.BAL_v_outflow; for(k=0;k<3;k++) {dir[k]=dP[k];} // DAA: default direction is radially outwards
+                        double v_kick=All.BAL_v_outflow, dir[3]; for(k=0;k<3;k++) {dir[k]=dpos[k];} // DAA: default direction is radially outwards
 #if defined(BH_COSMIC_RAYS) /* inject cosmic rays alongside wind injection */
                         double dEcr = All.BH_CosmicRay_Injection_Efficiency * P[j].Mass * (All.BAL_f_accretion/(1.-All.BAL_f_accretion)) * (C / All.UnitVelocity_in_cm_per_s)*(C / All.UnitVelocity_in_cm_per_s); SphP[j].CosmicRayEnergy+=dEcr; SphP[j].CosmicRayEnergyPred+=dEcr;
 #ifdef COSMIC_RAYS_M1
@@ -529,11 +294,9 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *nexport, int 
 #ifdef GALSF_SUBGRID_WINDS // if sub-grid galactic winds are decoupled from the hydro, we decouple the BH kick winds as well
                         SphP[j].DelayTime = All.WindFreeTravelMaxTimeFactor / All.cf_hubble_a;
 #endif
-#ifndef IO_REDUCED_MODE
-                        printf("BAL kick: P[j].ID %llu ID %llu Type(j) %d f_acc %g M(j) %g V(j).xyz %g/%g/%g P(j).xyz %g/%g/%g p(i).xyz %g/%g/%g v_out %g \n",(unsigned long long) P[j].ID, (unsigned long long) P[j].SwallowID,P[j].Type, All.BAL_f_accretion,P[j].Mass,P[j].Vel[0],P[j].Vel[1],P[j].Vel[2],P[j].Pos[0],P[j].Pos[1],P[j].Pos[2],pos[0],pos[1],pos[2],v_kick);
-#endif
+                        PRINT_STATUS(" ..BAL kick: P[j].ID %llu ID %llu Type(j) %d f_acc %g M(j) %g V(j).xyz %g/%g/%g P(j).xyz %g/%g/%g p(i).xyz %g/%g/%g v_out %g \n",(unsigned long long) P[j].ID, (unsigned long long) P[j].SwallowID,P[j].Type, All.BAL_f_accretion,P[j].Mass,P[j].Vel[0],P[j].Vel[1],P[j].Vel[2],P[j].Pos[0],P[j].Pos[1],P[j].Pos[2],local.Pos[0],local.Pos[1],local.Pos[2],v_kick);
 #ifdef BH_OUTPUT_MOREINFO
-                        fprintf(FdBhWindDetails,"%g  %u %g  %2.7f %2.7f %2.7f  %2.7f %2.7f %2.7f  %g %g %g  %u  %2.7f %2.7f %2.7f\n",All.Time, P[j].ID, P[j].Mass,  P[j].Pos[0],P[j].Pos[1],P[j].Pos[2],  P[j].Vel[0],P[j].Vel[1],P[j].Vel[2],dir[0]/norm,dir[1]/norm,dir[2]/norm, id, pos[0],pos[1],pos[2]);
+                        fprintf(FdBhWindDetails,"%g  %u %g  %2.7f %2.7f %2.7f  %2.7f %2.7f %2.7f  %g %g %g  %u  %2.7f %2.7f %2.7f\n",All.Time, P[j].ID, P[j].Mass,  P[j].Pos[0],P[j].Pos[1],P[j].Pos[2],  P[j].Vel[0],P[j].Vel[1],P[j].Vel[2],dir[0]/norm,dir[1]/norm,dir[2]/norm, local.ID, local.Pos[0],local.Pos[1],local.Pos[2]);
 #endif
 #endif // #ifdef BH_WIND_KICK
                         N_gas_swallowed++;
@@ -542,7 +305,7 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *nexport, int 
 #ifdef MAGNETIC
                         tempB[0]=SphP[j].B[0];tempB[1]=SphP[j].B[1];tempB[2]=SphP[j].B[2]; //use particle magnetic field
 #endif
-                        fprintf(FdBhSwallowDetails,"%g  %u %g %2.7f %2.7f %2.7f  %u %g %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f\n", All.Time,  id,mass,pos[0],pos[1],pos[2],  P[j].ID, P[j].Mass, (P[j].Pos[0]-pos[0]),(P[j].Pos[1]-pos[1]),(P[j].Pos[2]-pos[2]), (P[j].Vel[0]-vel[0]),(P[j].Vel[1]-vel[1]),(P[j].Vel[2]-vel[2]), SphP[j].InternalEnergy, tempB[0], tempB[1], tempB[2]);
+                        fprintf(FdBhSwallowDetails,"%g  %u %g %2.7f %2.7f %2.7f  %u %g %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f\n", All.Time, local.ID,local.Mass,local.Pos[0],local.Pos[1],local.Pos[2],  P[j].ID, P[j].Mass, (P[j].Pos[0]-local.Pos[0]),(P[j].Pos[1]-local.Pos[1]),(P[j].Pos[2]-local.Pos[2]), (P[j].Vel[0]-local.Vel[0]),(P[j].Vel[1]-local.Vel[1]),(P[j].Vel[2]-local.Vel[2]), SphP[j].InternalEnergy, tempB[0], tempB[1], tempB[2]);
 #endif
                     }  // if(P[j].Type == 0)
 
@@ -551,32 +314,32 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *nexport, int 
 
 #if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)                
                 /* now, do any other feedback "kick" operations (which used the previous loops to calculate weights) */
-                if(mom>0 && mdot>0 && dt>0 && OriginallyMarkedSwallowID==0 && P[j].SwallowID==0 && P[j].Mass>0 && P[j].Type==0) // particles NOT being swallowed!
+                if(mom>0 && local.Mdot>0 && local.Dt>0 && OriginallyMarkedSwallowID==0 && P[j].SwallowID==0 && P[j].Mass>0 && P[j].Type==0) // particles NOT being swallowed!
                 {
-                    double r=0; for(k=0;k<3;k++) {dir[k]=dP[k]; r+=dir[k]*dir[k];} // should be away from BH
+                    double r=0, dir[3]; for(k=0;k<3;k++) {dir[k]=dpos[k]; r+=dir[k]*dir[k];} // should be away from BH
                     if(r>0)
                     {
                         r=sqrt(r); for(k=0;k<3;k++) {dir[k]/=r;} /* cos_theta with respect to disk of BH is given by dot product of r and Jgas */
                         for(norm=0,k=0;k<3;k++) {norm+=dir[k]*J_dir[k];}
-                        mom_wt = bh_angleweight_localcoupling(j,BH_disk_hr,norm,r,h_i) / BH_angle_weighted_kernel_sum;
-                        if(BH_angle_weighted_kernel_sum<=0) mom_wt=0;
+                        mom_wt = bh_angleweight_localcoupling(j,local.BH_disk_hr,norm,r,h_i) / local.BH_angle_weighted_kernel_sum;
+                        if(local.BH_angle_weighted_kernel_sum<=0) mom_wt=0;
                                 
 #if defined(BH_COSMIC_RAYS) && defined(BH_WIND_CONTINUOUS) /* inject cosmic rays alongside continuous wind injection */
-                        double dEcr = All.BH_CosmicRay_Injection_Efficiency * mom_wt * (C / All.UnitVelocity_in_cm_per_s)*(C / All.UnitVelocity_in_cm_per_s) * mdot*dt;
+                        double dEcr = All.BH_CosmicRay_Injection_Efficiency * mom_wt * (C / All.UnitVelocity_in_cm_per_s)*(C / All.UnitVelocity_in_cm_per_s) * local.Mdot*local.Dt;
                         SphP[j].CosmicRayEnergy+=dEcr; SphP[j].CosmicRayEnergyPred+=dEcr;
 #ifdef COSMIC_RAYS_M1
                         dEcr*=COSMIC_RAYS_M1; for(k=0;k<3;k++) {SphP[j].CosmicRayFlux[k]+=dEcr*dir[k]; SphP[j].CosmicRayFluxPred[k]+=dEcr*dir[k];}
 #endif
 #endif
 #if defined(BH_WIND_CONTINUOUS) && !defined(BH_WIND_KICK) /* inject BAL winds, this is the more standard smooth feedback model */
-                        double m_wind = mom_wt * (1-All.BAL_f_accretion)/(All.BAL_f_accretion) * mdot*dt; /* mass to couple */
-                        if(BH_angle_weighted_kernel_sum<=0) m_wind=0;
+                        double m_wind = mom_wt * (1-All.BAL_f_accretion)/(All.BAL_f_accretion) * local.Mdot*local.Dt; /* mass to couple */
+                        if(local.BH_angle_weighted_kernel_sum<=0) m_wind=0;
                         //1. check if (Vw-V0)*rhat <= 0   [ equivalently, check if   |Vw| <= V0*rhat ]
                         //2. if (1) is False, the wind will catch the particle, couple mass, momentum, energy, according to the equations above
                         //3. if (1) is True, the wind will not catch the particle, or will only asymptotically catch it. For the sake of mass conservation in the disk, I think it is easiest to treat this like the 'marginal' case where the wind barely catches the particle. In this case, add the mass normally, but no momentum, and no energy, giving:
                         //dm = m_wind, dV = 0, du = -mu*u0   [decrease the thermal energy slightly to account for adding more 'cold' material to it]
                         double dvr_gas_to_bh, dr_gas_to_bh;
-                        for(dvr_gas_to_bh=dr_gas_to_bh=0, k=0;k<3;k++) {dvr_gas_to_bh += dv[k]*dP[k]; dr_gas_to_bh  += dP[k]*dP[k];}
+                        for(dvr_gas_to_bh=dr_gas_to_bh=0, k=0;k<3;k++) {dvr_gas_to_bh += dvel[k]*dpos[k]; dr_gas_to_bh  += dpos[k]*dpos[k];}
                         dvr_gas_to_bh /= dr_gas_to_bh ;
                         
                         /* add wind mass to particle, correcting density as needed */
@@ -596,7 +359,7 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *nexport, int 
                             double e_wind = 0;
                             for(k=0;k<3;k++)
                             {
-                                norm = All.cf_atime*All.BAL_v_outflow*dir[k] - dv[k]; // relative wind-particle velocity (in code units) including BH-particle motion;
+                                norm = All.cf_atime*All.BAL_v_outflow*dir[k] - dvel[k]; // relative wind-particle velocity (in code units) including BH-particle motion;
                                 P[j].Vel[k] += All.BlackHoleFeedbackFactor * norm * m_wind/P[j].Mass; // momentum conservation gives updated velocity
                                 SphP[j].VelPred[k] += All.BlackHoleFeedbackFactor * norm * m_wind/P[j].Mass;
                                 e_wind += (norm/All.cf_atime)*(norm/All.cf_atime); // -specific- shocked wind energy
@@ -610,72 +373,37 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *nexport, int 
                     } // r > 0
                 } // (check if valid gas neighbor of interest)
 #endif // defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)                
-                
-
             } // for(n = 0; n < numngb; n++)
         } // while(startnode >= 0)
-        
-        if(mode == 1)
-        {
-            listindex++;
-            if(listindex < NODELISTLENGTH)
-            {
-                startnode = BlackholeDataGet[target].NodeList[listindex];
-                if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;}	/* open it */
-            }
-        }
-    } // while(startnode >= 0)
-    
-    /* Now collect the result at the right place */
-    if(mode == 0)
-    {
-        BlackholeTempInfo[mod_index].accreted_Mass = accreted_mass;
-        BlackholeTempInfo[mod_index].accreted_BH_Mass = accreted_BH_mass;
-#ifdef BH_ALPHADISK_ACCRETION
-        BlackholeTempInfo[mod_index].accreted_BH_mass_alphadisk = accreted_BH_mass_alphadisk;
-#endif
-#if defined(BH_FOLLOW_ACCRETED_MOMENTUM)
-        for(k=0;k<3;k++) {BlackholeTempInfo[mod_index].accreted_momentum[k] = accreted_momentum[k];}
-#endif
-#if defined(BH_FOLLOW_ACCRETED_COM)
-        for(k=0;k<3;k++) {BlackholeTempInfo[mod_index].accreted_centerofmass[k] = accreted_centerofmass[k];}
-#endif
-#if defined(BH_FOLLOW_ACCRETED_ANGMOM)
-        for(k=0;k<3;k++) {BlackholeTempInfo[mod_index].accreted_J[k] = accreted_J[k];}
-#endif
-#ifdef BH_COUNTPROGS
-        BPP(target).BH_CountProgs += accreted_BH_progs;
-#endif
-#ifdef GALSF
-        if(P[target].StellarAge > accreted_age) {P[target].StellarAge = accreted_age;}
-#endif
-    }
-    else
-    {
-        BlackholeDataResult[target].accreted_Mass = accreted_mass;
-        BlackholeDataResult[target].accreted_BH_Mass = accreted_BH_mass;
-#ifdef BH_ALPHADISK_ACCRETION
-        BlackholeDataResult[target].accreted_BH_mass_alphadisk = accreted_BH_mass_alphadisk;
-#endif
-#if defined(BH_FOLLOW_ACCRETED_MOMENTUM)
-        for(k=0;k<3;k++) {BlackholeDataResult[target].accreted_momentum[k] = accreted_momentum[k];}
-#endif
-#if defined(BH_FOLLOW_ACCRETED_COM)
-        for(k=0;k<3;k++) {BlackholeDataResult[target].accreted_centerofmass[k] = accreted_centerofmass[k];}
-#endif	    
-#if defined(BH_FOLLOW_ACCRETED_ANGMOM)
-        for(k=0;k<3;k++) {BlackholeDataResult[target].accreted_J[k] = accreted_J[k];}
-#endif
-#ifdef BH_COUNTPROGS
-        BlackholeDataResult[target].BH_CountProgs = accreted_BH_progs;
-#endif
-#ifdef GALSF
-        BlackholeDataResult[target].Accreted_Age = accreted_age;
-#endif
-    }
-    
+        if(mode == 1) {listindex++; if(listindex < NODELISTLENGTH) {startnode = DATAGET_NAME[target].NodeList[listindex]; if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode; /* open it */}}} /* continue to open leaves if needed */
+    } // while(startnode >= 0) (outer of the double-loop)
+    if(mode == 0) {OUTPUTFUNCTION_NAME(&out, target, 0, loop_iteration);} else {DATARESULT_NAME[target] = out;} /* collects the result at the right place */
     return 0;
-} /* closes bh_evaluate_swallow */
+} /* closes bh_evaluate_swallow routine */
+
+
+
+void blackhole_swallow_and_kick_loop(void)
+{
+    N_gas_swallowed = N_star_swallowed = N_dm_swallowed = N_BH_swallowed = 0;
+    #include "../../system/code_block_xchange_perform_ops_malloc.h" /* this calls the large block of code which contains the memory allocations for the MPI/OPENMP/Pthreads parallelization block which must appear below */
+    #include "../../system/code_block_xchange_perform_ops.h" /* this calls the large block of code which actually contains all the loops, MPI/OPENMP/Pthreads parallelization */
+    #include "../../system/code_block_xchange_perform_ops_demalloc.h" /* this de-allocates the memory for the MPI/OPENMP/Pthreads parallelization block which must appear above */
+    /* collect and print results on any swallow operations in this pass */
+    int Ntot_gas_swallowed=0, Ntot_star_swallowed=0, Ntot_dm_swallowed=0, Ntot_BH_swallowed=0;
+    MPI_Reduce(&N_gas_swallowed, &Ntot_gas_swallowed, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&N_BH_swallowed, &Ntot_BH_swallowed, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&N_star_swallowed, &Ntot_star_swallowed, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&N_dm_swallowed, &Ntot_dm_swallowed, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+    if((ThisTask == 0)&&(Ntot_gas_swallowed+Ntot_star_swallowed+Ntot_dm_swallowed+Ntot_BH_swallowed>0))
+    {
+        printf("Accretion done: swallowed %d gas, %d star, %d dm, and %d BH particles\n",
+               Ntot_gas_swallowed, Ntot_star_swallowed, Ntot_dm_swallowed, Ntot_BH_swallowed);
+    }
+}
+#include "../../system/code_block_xchange_finalize.h" /* de-define the relevant variables and macros to avoid compilation errors and memory leaks */
+
+
 
 
 
@@ -718,8 +446,7 @@ void spawn_bh_wind_feedback(void)
         }
     }
     MPI_Allreduce(&n_particles_split, &MPI_n_particles_split, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-    if(MPI_n_particles_split>0){TreeReconstructFlag = 1;}
-    if(ThisTask == 0) {printf("Particle BH spawn check: %d particles spawned \n", MPI_n_particles_split);}
+    if(MPI_n_particles_split>0){TreeReconstructFlag = 1; if(ThisTask == 0) {printf(" ..BH-Spawn Event: %d particles spawned \n", MPI_n_particles_split);}}
 
     /* rearrange_particle_sequence -must- be called immediately after this routine! */
     All.TotNumPart += (long long)MPI_n_particles_split;
@@ -744,22 +471,14 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_sph_i_to_clone, int nu
     /* here is where the details of the split are coded, the rest is bookkeeping */
     //double mass_of_new_particle = total_mass_in_winds / n_particles_split; /* don't do this, as can produce particles with extremely large masses; instead wait to spawn */
     double mass_of_new_particle = All.BAL_wind_particle_mass;
-#ifndef IO_REDUCED_MODE
-    printf("Task %d wants to create %g mass in wind with %d new particles each of mass %g \n", ThisTask,total_mass_in_winds, n_particles_split, mass_of_new_particle);
-    printf(" splitting BH %d using SphP particle %d\n", i, dummy_sph_i_to_clone);
-#endif
+    PRINT_STATUS("Task %d wants to create %g mass in wind with %d new particles each of mass %g \n", ThisTask,total_mass_in_winds, n_particles_split, mass_of_new_particle);
+    PRINT_STATUS(" .. splitting BH %d using hydro element %d\n", i, dummy_sph_i_to_clone);
     int k=0; long j;
     if(NumPart + num_already_spawned + n_particles_split >= All.MaxPart)
     {
-        printf ("On Task=%d with NumPart=%d (+N_spawned=%d) we tried to split a particle, but there is no space left...(All.MaxPart=%d). Try using more nodes, or raising PartAllocFac, or changing the split conditions to avoid this.\n", ThisTask, NumPart, num_already_spawned, All.MaxPart);
+        printf("On Task=%d with NumPart=%d (+N_spawned=%d) we tried to split a particle, but there is no space left...(All.MaxPart=%d). Try using more nodes, or raising PartAllocFac, or changing the split conditions to avoid this.\n", ThisTask, NumPart, num_already_spawned, All.MaxPart);
         fflush(stdout); endrun(8888);
     }
-    
-#ifndef WAKEUP
-    double dt = (P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0) * All.Timebase_interval / All.cf_hubble_a;
-#else
-    double dt = P[i].dt_step * All.Timebase_interval / All.cf_hubble_a;
-#endif
     double d_r = 0.25 * KERNEL_CORE_SIZE*PPP[i].Hsml; // needs to be epsilon*Hsml where epsilon<<1, to maintain stability //
     double r2=0; for(k=0;k<3;k++) {r2+=(P[dummy_sph_i_to_clone].Pos[k]-P[i].Pos[k])*(P[dummy_sph_i_to_clone].Pos[k]-P[i].Pos[k]);}
     d_r = DMIN(d_r, 0.5*sqrt(r2));

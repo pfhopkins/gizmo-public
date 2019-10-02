@@ -30,7 +30,7 @@
 
 /*
  * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org). The code has been modified
+ * Volker Springel. The code has been modified
  * in part by Phil Hopkins (phopkins@caltech.edu) for GIZMO. The modifications 
  * mostly center on added functionality for new modules, elimination of unnecessary
  * variables, implementing the DEVELOPER_MODE options, and re-organizing the read order 
@@ -61,8 +61,8 @@ void begrun(void)
       }
 #endif
 
-      printf("Size of particle structure       %d  [bytes]\n", (int) sizeof(struct particle_data));
-      printf("\nSize of sph particle structure   %d  [bytes]\n", (int) sizeof(struct sph_particle_data));
+      printf("\nSize of particle structure       %d  [bytes]\n", (int) sizeof(struct particle_data));
+      printf("Size of hydro-cell structure   %d  [bytes]\n\n", (int) sizeof(struct sph_particle_data));
 
     }
 
@@ -156,6 +156,9 @@ void begrun(void)
     long_range_init();
 #endif
 
+#ifdef SUBFIND
+  GrNr = -1;
+#endif
 
 #ifdef EOS_TABULATED
     int ierr = eos_init(All.EosTable);
@@ -521,8 +524,7 @@ void open_outputfiles(void)
   MPI_Barrier(MPI_COMM_WORLD);
 
 #ifdef BLACK_HOLES
-//#ifndef IO_REDUCED_MODE  DAA-IO: BH_OUTPUT_MOREINFO overrides IO_REDUCED_MODE
-#if !defined(IO_REDUCED_MODE) || defined(BH_OUTPUT_MOREINFO)
+#if defined(BH_OUTPUT_MOREINFO) || defined(BH_OUTPUT_GASSWALLOW)
   /* Note: This is done by everyone */
   if(ThisTask == 0)
     {
@@ -530,13 +532,14 @@ void open_outputfiles(void)
       mkdir(buf, 02755);
     }
   MPI_Barrier(MPI_COMM_WORLD);
-
+#if !defined(IO_REDUCED_MODE) || defined(BH_OUTPUT_MOREINFO)
   sprintf(buf, "%sblackhole_details/blackhole_details_%d.txt", All.OutputDir, ThisTask);
   if(!(FdBlackHolesDetails = fopen(buf, mode)))
     {
       printf("error in opening file '%s'\n", buf);
       endrun(1);
     }
+#endif
 #ifdef BH_OUTPUT_GASSWALLOW
   sprintf(buf, "%sblackhole_details/bhswallow_%d.txt", All.OutputDir, ThisTask); 
   if(!(FdBhSwallowDetails = fopen(buf, mode)))
@@ -1059,8 +1062,6 @@ void read_parameter_file(char *fname)
 #endif
         
 
-
-
         strcpy(tag[nt], "MinGasHsmlFractional");
         addr[nt] = &All.MinGasHsmlFractional;
         id[nt++] = REAL;
@@ -1083,6 +1084,11 @@ void read_parameter_file(char *fname)
         id[nt++] = REAL;
 
 
+#ifdef SUBFIND
+      strcpy(tag[nt], "DesLinkNgb");
+      addr[nt] = &All.DesLinkNgb;
+      id[nt++] = INT;
+#endif
 
 #ifdef DEVELOPER_MODE
         strcpy(tag[nt], "MaxNumNgbDeviation");
@@ -1694,10 +1700,9 @@ void read_parameter_file(char *fname)
                     else
                     {
 #ifdef ALLOWEXTRAPARAMS
-                        fprintf(stdout, "WARNING from file %s:   Tag '%s' ignored !\n", fname, buf1);
+                        fprintf(stdout, "Possible warning to be aware of from file %s:   Tag '%s' was specified, but it is being ignored -- make sure this is intended!\n", fname, buf1);
 #else
-                        fprintf(stdout, "Error in file %s:   Tag '%s' not allowed or multiple defined.\n",
-                                fname, buf1);
+                        fprintf(stdout, "Error in file %s:   Tag '%s' not allowed or multiple defined.\n", fname, buf1);
                         errorFlag = 1;
 #endif
                     }
@@ -2108,7 +2113,7 @@ void readjust_timebase(double TimeMax_old, double TimeMax_new)
   if(ThisTask == 0)
     {
       printf("\nAll.TimeMax has been changed in the parameterfile\n");
-      printf("Need to adjust integer timeline\n\n\n");
+      printf("Need to adjust integer timeline\n\n");
     }
 
   if(TimeMax_new < TimeMax_old)

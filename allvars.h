@@ -16,9 +16,9 @@
 
 /*
  * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org). The code has been modified
- * in part by Phil Hopkins (phopkins@caltech.edu) for GIZMO (new variables, 
- * and different naming conventions for some old variables)
+ * Volker Springel. The code has been modified
+ * in part by Phil Hopkins (phopkins@caltech.edu) for GIZMO (many new variables,
+ * structures, and different naming conventions for some old variables)
  */
 
 
@@ -224,7 +224,8 @@
 #define SINGLE_STAR_SINK_FORMATION (0+1+2+4+8+16+32) // 0=density threshold, 1=virial criterion, 2=convergent flow, 4=local extremum, 8=no sink in kernel, 16=not falling into sink, 32=hill (tidal) criterion
 #define BH_ACCRETE_NEARESTFIRST
 #define DEVELOPER_MODE
-#define IO_SUPPRESS_TIMEBIN_STDOUT 10 //only prints outputs to log file if the highest active timebin index is within n of the highest timebin (dt_bin=2^(-N)*dt_bin,max)
+#define IO_SUPPRESS_TIMEBIN_STDOUT 14 //only prints outputs to log file if the highest active timebin index is within n of the highest timebin (dt_bin=2^(-N)*dt_bin,max)
+#define BH_OUTPUT_GASSWALLOW //save accretion histories
 #ifdef SLOPE2_SINKS //Slope2 sinks, this should give dN/dM~M^-2 in isoT sims
 #define BH_DEBUG_DISABLE_MERGERS
 #define BH_ALPHADISK_ACCRETION (1.2)
@@ -306,6 +307,11 @@
 #endif
 
 
+#if (SINGLE_STAR_TIMESTEPPING > 0) /* if single-star timestepping is on, need to make sure the binary-identification flag is active */
+#ifndef SINGLE_STAR_FIND_BINARIES
+#define SINGLE_STAR_FIND_BINARIES
+#endif
+#endif
 
 #ifdef MHD_CONSTRAINED_GRADIENT
 /* make sure mid-point gradient calculation for cleaning terms is enabled */
@@ -343,12 +349,9 @@
 #define RT_USE_GRAVTREE
 #endif
 
-#ifdef RT_FLUXLIMITEDDIFFUSION
-#define RT_OTVET /* for FLD, we use the OTVET architecture, but then just set the tensor to isotropic */
-#endif
 
-/* options for OTVET module */
-#if defined(RT_OTVET)
+/* options for FLD or OTVET or M1 modules */
+#if defined(RT_OTVET) || defined(RT_FLUXLIMITEDDIFFUSION) || defined(RT_M1)
 // RADTRANSFER is ON, obviously
 #ifndef RADTRANSFER
 #define RADTRANSFER
@@ -357,39 +360,29 @@
 #ifndef RT_DIFFUSION
 #define RT_DIFFUSION
 #endif
-// use gravity tree for Eddington tensor
-#define RT_USE_GRAVTREE
-// and be sure to track luminosity locations 
-#ifndef RT_SEPARATELY_TRACK_LUMPOS
-#define RT_SEPARATELY_TRACK_LUMPOS
-#endif
 // need source injection enabled to define emissivity
 #define RT_SOURCE_INJECTION
+// default to explicit solutins. note, at the moment, M1 only works for explicit solutions
 #if !defined(RT_DIFFUSION_IMPLICIT) && !defined(RT_DIFFUSION_EXPLICIT)
 #define RT_DIFFUSION_EXPLICIT // default to explicit (more accurate) solver //
 #endif
-#endif
+//
+#endif /* end of otvet or fld or m1 options */
 
-/* options for M1 module */
+/* OTVET-specific options [uses the gravity tree to calculate the Eddington tensor] */
+#if defined(RT_OTVET)
+// use gravity tree for Eddington tensor
+#define RT_USE_GRAVTREE
+// and be sure to track luminosity locations
+#ifndef RT_SEPARATELY_TRACK_LUMPOS
+#define RT_SEPARATELY_TRACK_LUMPOS
+#endif
+#endif /* end of otvet-specific options */
+
+/* M1-specific options: need to evolve fluxes */
 #if defined(RT_M1)
-// RADTRANSFER is ON, obviously
-#ifndef RADTRANSFER
-#define RADTRANSFER
-#endif
-// need to solve a diffusion equation
-#ifndef RT_DIFFUSION
-#define RT_DIFFUSION
-#endif
-// need source injection enabled to define emissivity
-#define RT_SOURCE_INJECTION
-// and need to evolve fluxes
 #define RT_EVOLVE_FLUX
-// at the moment, this only works for explicit solutions, so set this on
-#ifndef RT_DIFFUSION_EXPLICIT
-#define RT_DIFFUSION_EXPLICIT
 #endif
-#endif
-
 
 /* options for direct/exact Jiang et al. method for direct evolution on an intensity grid */
 
@@ -635,7 +628,7 @@
 
 
 
-#define  GIZMO_VERSION   "2017"	/*!< code version string */
+#define  GIZMO_VERSION   "2019"	/*!< code version string */
 
 #ifndef  GALSF_GENERATIONS
 #define  GALSF_GENERATIONS     1	/*!< Number of star particles that may be created per gas particle */
@@ -771,7 +764,6 @@ typedef unsigned long long peanokey;
 
 
 
-#define  terminate(x) {char termbuf[2000]; sprintf(termbuf, "code termination on task=%d, function '%s()', file '%s', line %d: '%s'\n", ThisTask, __FUNCTION__, __FILE__, __LINE__, x); printf("%s", termbuf); fflush(stdout); MPI_Abort(MPI_COMM_WORLD, 1); exit(0);}
 
 #ifndef DISABLE_MEMORY_MANAGER
 #define  mymalloc(x, y)            mymalloc_fullinfo(x, y, __FUNCTION__, __FILE__, __LINE__)
@@ -921,13 +913,19 @@ typedef unsigned long long peanokey;
 #define LINKLENGTH 0.2
 #endif
 
-#ifndef FOF_GROUP_MIN_LEN
-#define FOF_GROUP_MIN_LEN 32
+#ifndef FOF_GROUP_MIN_SIZE
+#ifdef FOF_GROUP_MIN_LEN
+#define FOF_GROUP_MIN_SIZE FOF_GROUP_MIN_LEN
+#else
+#define FOF_GROUP_MIN_SIZE 32
+#endif
+#endif
+#ifndef SUBFIND_ADDIO_NUMOVERDEN
+#define SUBFIND_ADDIO_NUMOVERDEN 1
 #endif
 
+
 #define MINRESTFAC 0.05
-
-
 
 
 #ifndef GDE_TYPES 
@@ -1162,6 +1160,23 @@ z=((z)>boxHalf_Z)?((z)-boxSize_Z):(((z)<-boxHalf_Z)?((z)+boxSize_Z):(z)))
 
 
 
+/*****************************************************************/
+/*  Utility functions used for printing status, warning, endruns */
+/*****************************************************************/
+
+#define terminate(x) {char termbuf[2000]; sprintf(termbuf, "TERMINATE issued on task=%d, function '%s()', file '%s', line %d: '%s'\n", ThisTask, __FUNCTION__, __FILE__, __LINE__, x); fflush(stdout); printf("%s", termbuf); fflush(stdout); MPI_Abort(MPI_COMM_WORLD, 1); exit(0);}
+#define endrun(x) {if(x==0) {MPI_Finalize(); exit(0);} else {char termbuf[2000]; sprintf(termbuf, "ENDRUN issued on task=%d, function '%s()', file '%s', line %d: error level %d\n", ThisTask, __FUNCTION__, __FILE__, __LINE__, x); fflush(stdout); printf("%s", termbuf); fflush(stdout); MPI_Abort(MPI_COMM_WORLD, x); exit(0);}}
+#define PRINT_WARNING(...) {char termbuf1[1000], termbuf2[1000]; sprintf(termbuf1, "WARNING issued on task=%d, function %s(), file %s, line %d", ThisTask, __FUNCTION__, __FILE__, __LINE__); sprintf(termbuf2, __VA_ARGS__); fflush(stdout); printf("%s: %s\n", termbuf1, termbuf2); fflush(stdout);}
+#ifdef IO_REDUCED_MODE
+#define PRINT_STATUS(...) {if(All.HighestActiveTimeBin == All.HighestOccupiedTimeBin) {if(ThisTask==0) {fflush(stdout); printf( __VA_ARGS__ ); printf("\n"); fflush(stdout);}}}
+#else
+#define PRINT_STATUS(...) {if(ThisTask==0) {fflush(stdout); printf( __VA_ARGS__ ); printf("\n"); fflush(stdout);}}
+#endif
+
+#define MACRO_NAME_CONCATENATE(A, B) MACRO_NAME_CONCATENATE_(A, B)
+#define MACRO_NAME_CONCATENATE_(A, B) A##B
+
+
 /*********************************************************/
 /*  Global variables                                     */
 /*********************************************************/
@@ -1325,6 +1340,21 @@ extern double RndTable[RNDTABLE];
 #endif
 
 
+#ifdef SUBFIND
+extern int GrNr;
+extern int NumPartGroup;
+extern struct Subfind_DensityOtherPropsEval_data_out
+{
+    MyOutputFloat M200, R200;
+#ifdef SUBFIND_ADDIO_VELDISP
+    MyOutputFloat V200[3], Disp200;
+#endif
+#ifdef SUBFIND_ADDIO_BARYONS
+    MyOutputFloat gas_mass, star_mass, temp, xlum;
+#endif
+}
+*Subfind_DensityOtherPropsEval_DataResult, *Subfind_DensityOtherPropsEval_DataOut, *Subfind_DensityOtherPropsEval_GlobalPasser;
+#endif
 
 
 
@@ -1361,11 +1391,11 @@ extern FILE *FdSneIIHeating;	/*!< file handle for SNIIheating.txt log-file */
 
 #ifdef BLACK_HOLES
 extern FILE *FdBlackHoles;	/*!< file handle for blackholes.txt log-file. */
-#if !defined(IO_REDUCED_MODE) || defined(BH_OUTPUT_MOREINFO)
-extern FILE *FdBlackHolesDetails;
 #ifdef BH_OUTPUT_GASSWALLOW
 extern FILE *FdBhSwallowDetails;
 #endif
+#if !defined(IO_REDUCED_MODE) || defined(BH_OUTPUT_MOREINFO)
+extern FILE *FdBlackHolesDetails;
 #ifdef BH_OUTPUT_MOREINFO
 extern FILE *FdBhMergerDetails;
 #ifdef BH_WIND_KICK
@@ -1448,6 +1478,9 @@ extern struct global_data_all_processes
   /* some SPH parameters */
 
   double DesNumNgb;		/*!< Desired number of SPH neighbours */
+#ifdef SUBFIND
+  int DesLinkNgb;       /*! < Number of neighbors used for linking and density estimation in SUBFIND */
+#endif
 
   double MaxNumNgbDeviation;	/*!< Maximum allowed deviation neighbour number */
 
@@ -2069,7 +2102,7 @@ extern ALIGN(32) struct particle_data
 #endif
     MyFloat BH_Mdot;
     int BH_TimeBinGasNeighbor;
-#if defined(BH_ACCRETE_NEARESTFIRST) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if defined(BH_ACCRETE_NEARESTFIRST) || defined(SINGLE_STAR_TIMESTEPPING)
     MyFloat BH_dr_to_NearestGasNeighbor;
 #endif
 #if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)
@@ -2084,13 +2117,23 @@ extern ALIGN(32) struct particle_data
 #ifdef BH_CALC_DISTANCES
     MyFloat min_dist_to_bh;
     MyFloat min_xyz_to_bh[3];
-#if defined(SINGLE_STAR_FIND_BINARIES) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if defined(SINGLE_STAR_FIND_BINARIES) || defined(SINGLE_STAR_TIMESTEPPING)
     MyDouble min_bh_t_orbital; //orbital time for binary
     MyDouble comp_dx[3]; //position offset of binary companion - this will be evolved in the Kepler solution while we use the Pos attribute to track the binary COM
     MyDouble comp_dv[3]; //velocity offset of binary companion - this will be evolved in the Kepler solution while we use the Vel attribute to track the binary COM velocity
     MyDouble comp_Mass; //mass of binary companion
     int is_in_a_binary; // flag whether star is in a binary or not
 #endif
+#ifdef SINGLE_STAR_TIMESTEPPING
+    MyFloat min_bh_freefall_time;
+    MyFloat min_bh_periastron;
+    MyFloat min_bh_approach_time;
+#if (SINGLE_STAR_TIMESTEPPING > 0)
+    int SuperTimestepFlag; // >=2 if allowed to super-timestep (increases with each drift/kick), 1 if a candidate for super-timestepping, 0 otherwise
+    MyDouble COM_dt_tidal; //timescale from tidal tensor evaluated at the center of mass without contribution from the companion
+    MyDouble COM_GravAccel[3]; //gravitational acceleration evaluated at the center of mass without contribution from the companion
+#endif
+#endif  
 #endif
 
     
@@ -2099,6 +2142,31 @@ extern ALIGN(32) struct particle_data
     long unsigned int NInteractions; /*!< Total number of interactions */
 #endif
 
+#if defined(SUBFIND)
+    int GrNr;
+    int SubNr;
+    int DM_NumNgb;
+    unsigned short targettask, origintask2;
+    int origintask, submark, origindex;
+    MyFloat DM_Hsml;
+    union
+    {
+        MyFloat DM_Density;
+        MyFloat DM_Potential;
+    } u;
+    union
+    {
+        MyFloat DM_VelDisp;
+        MyFloat DM_BindingEnergy;
+    } v;
+#ifdef FOF_DENSITY_SPLIT_TYPES
+    union
+    {
+        MyFloat int_energy;
+        MyFloat density_sum;
+    } w;
+#endif
+#endif
     
     float GravCost[GRAVCOSTLEVELS];   /*!< weight factor used for balancing the work-load */
     
@@ -2532,6 +2600,9 @@ extern struct gravdata_in
 #if defined(RT_USE_GRAVTREE) || defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS)
     MyFloat Mass;
 #endif
+#ifdef SINGLE_STAR_TIMESTEPPING
+    MyFloat Vel[3];
+#endif  
     int Type;
 #if defined(RT_USE_GRAVTREE) || defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS)
     MyFloat Soft;
@@ -2546,6 +2617,9 @@ extern struct gravdata_in
     MyDouble comp_Mass;         /*!< mass of binary companion */
     int is_in_a_binary;
 #endif    
+#if (SINGLE_STAR_TIMESTEPPING > 0)
+    int SuperTimestepFlag;  /*!< 2 if allowed to super-timestep, 1 if a candidate for super-timestepping, 0 otherwise */
+#endif
     MyFloat OldAcc;
     int NodeList[NODELISTLENGTH];
 }
@@ -2582,6 +2656,17 @@ extern struct gravdata_out
     MyDouble comp_Mass; //mass of binary companion
     int is_in_a_binary; // 1 if star is in a binary, 0 otherwise
 #endif    
+#ifdef SINGLE_STAR_TIMESTEPPING
+    MyFloat min_bh_freefall_time;    // minimum value of sqrt(R^3 / G(M_BH + M_particle)) as calculated from the tree-walk
+    MyFloat min_bh_approach_time; // smallest approach time t_a = |v_radial|/r
+    MyFloat min_bh_periastron; // closest anticipated periastron passage
+#if (SINGLE_STAR_TIMESTEPPING > 0)
+    MyLongDouble COM_tidal_tensorps[3][3]; //tidal tensor evaluated at the center of mass without contribution from the companion
+    MyDouble COM_GravAccel[3]; //gravitational acceleration evaluated at the center of mass without contribution from the companion
+    int COM_calc_flag; //flag that tells whether this was only a rerun to get the acceleration ad the tidal tenor at the center of mass of a binary
+    int SuperTimestepFlag; // 2 if allowed to super-timestep, 1 if a candidate for super-timestepping, 0 otherwise
+#endif
+#endif  
 #endif
 }
  *GravDataResult,		/*!< holds the partial results computed for imported particles. Note: We use GravDataResult = GravDataGet, such that the result replaces the imported data */
@@ -2606,72 +2691,6 @@ extern struct info_block
 *InfoBlock;
 
 
-#ifdef BLACK_HOLES
-#define BHPOTVALUEINIT 1.0e30
-
-extern int N_active_loc_BHs;    /*!< number of active black holes on the LOCAL processor */
-
-extern struct blackhole_temp_particle_data       // blackholedata_topass
-{
-    MyIDType index;
-    MyFloat BH_InternalEnergy;
-    MyLongDouble accreted_Mass;
-    MyLongDouble accreted_BH_Mass;
-    MyLongDouble accreted_BH_mass_alphadisk;
-    MyLongDouble Mgas_in_Kernel;                 // mass/angular momentum for GAS/STAR/TOTAL components computed always now
-    MyLongDouble Mstar_in_Kernel;
-    MyLongDouble Malt_in_Kernel;
-    MyLongDouble Sfr_in_Kernel;
-    MyLongDouble Jgas_in_Kernel[3];
-    MyLongDouble Jstar_in_Kernel[3];
-    MyLongDouble Jalt_in_Kernel[3];
-#if defined(BH_GRAVACCRETION) && (BH_GRAVACCRETION == 0)
-    MyLongDouble MgasBulge_in_Kernel;
-    MyLongDouble MstarBulge_in_Kernel;
-#endif
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)
-    MyLongDouble GradRho_in_Kernel[3];
-    MyFloat BH_angle_weighted_kernel_sum;
-#endif
-#ifdef BH_DYNFRICTION
-    MyFloat DF_mean_vel[3];
-    MyFloat DF_rms_vel;
-    MyFloat DF_mmax_particles;
-#endif
-#if defined(BH_BONDI) || defined(BH_DRAG) || (BH_GRAVACCRETION >= 5)
-    MyFloat BH_SurroundingGasVel[3];
-#endif
-#if (BH_GRAVACCRETION == 8)
-    MyFloat hubber_mdot_vr_estimator;
-    MyFloat hubber_mdot_disk_estimator;
-    MyFloat hubber_mdot_bondi_limiter;
-#endif
-#if defined(BH_ALPHADISK_ACCRETION)
-    MyFloat mdot_alphadisk;             /*!< gives mdot of mass going into alpha disk */
-#endif
-#if defined(BH_GRAVCAPTURE_GAS)
-    MyFloat mass_to_swallow_edd;        /*!< gives the mass we want to swallow that contributes to eddington */
-#if defined(BH_ACCRETE_NEARESTFIRST)
-    MyFloat BH_dr_to_NearestGasNeighbor;      /*!< this needs to be here for looping over neighbors to restrict to <=1 accreted per timestep */
-#endif
-#endif
-#if defined(BH_FOLLOW_ACCRETED_MOMENTUM)
-    MyLongDouble accreted_momentum[3];        /*!< accreted linear momentum */
-#endif
-#if defined(BH_FOLLOW_ACCRETED_COM)
-    MyLongDouble accreted_centerofmass[3];    /*!< accreted center-of-mass */
-#endif
-#if defined(BH_FOLLOW_ACCRETED_ANGMOM)
-    MyLongDouble accreted_J[3];               /*!< accreted angular momentum */
-#endif
-#if defined(BH_RETURN_ANGMOM_TO_GAS)
-    MyFloat angmom_prepass_sum_for_passback[3]; /*!< Normalization term for angular momentum feedback kicks, see denominator of Eq 22 of Hubber 2013 */
-    MyFloat angmom_norm_topass_in_swallowloop;  /*!< corresponding scalar normalization calculated from the vector above */
-#endif
-
-}
-*BlackholeTempInfo, *BlackholeDataPasserResult, *BlackholeDataPasserOut;
-#endif
 
 
 
@@ -2811,11 +2830,6 @@ enum iofields
   IO_SHEET_ORIENTATION,
   IO_INIT_DENSITY,
   IO_CAUSTIC_COUNTER,
-  IO_DMHSML,                    /* for 'SUBFIND_RESHUFFLE_CATALOGUE' option */
-  IO_DMDENSITY,
-  IO_DMVELDISP,
-  IO_DMHSML_V,                
-  IO_DMDENSITY_V,
   IO_VRMS,
   IO_VBULK,
   IO_VRAD,
@@ -2863,19 +2877,13 @@ enum siofields
   SIO_GOFF,
   SIO_MTOT,
   SIO_GPOS,
-  SIO_MMEA,
-  SIO_RMEA,
-  SIO_MCRI,
-  SIO_RCRI,
-  SIO_MTOP,
-  SIO_RTOP,
-  SIO_DMEA,
-  SIO_DCRI,
-  SIO_DTOP,
-  SIO_MGAS,
-  SIO_MSTR,
-  SIO_TGAS,
-  SIO_LGAS,
+  SIO_DELTA_MSUB,
+  SIO_DELTA_RSUB,
+  SIO_DELTA_DISPSUB,
+  SIO_DELTA_MGASSUB,
+  SIO_DELTA_MSTSUB,
+  SIO_DELTA_TEMPSUB,
+  SIO_DELTA_LXSUB,
   SIO_NCON,
   SIO_MCON,
   SIO_BGPOS,
@@ -2909,7 +2917,6 @@ enum siofields
   SIO_PVEL,
   SIO_PTYP,
   SIO_PMAS,
-  SIO_PAGE,
   SIO_PID,
 
   SIO_LASTENTRY
@@ -2964,6 +2971,10 @@ extern ALIGN(32) struct NODE
 #ifdef BH_CALC_DISTANCES
   MyFloat bh_mass;      /*!< holds the BH mass in the node.  Used for calculating tree based dist to closest bh */
   MyFloat bh_pos[3];    /*!< holds the mass-weighted position of the the actual black holes within the node */
+#if defined(SINGLE_STAR_TIMESTEPPING)
+  MyFloat bh_vel[3];    /*!< holds the mass-weighted avg. velocity of black holes in the node */
+  int N_BH;             /*!< holds the number of BH particles in the node. Used for refinement/search criteria */
+#endif  
 #endif
     
 #ifdef RT_SEPARATELY_TRACK_LUMPOS
@@ -2977,7 +2988,7 @@ extern ALIGN(32) struct NODE
   MyFloat mass_dm;
 #endif
 }
- *Nodes_base,			/*!< points to the actual memory allocted for the nodes */
+ *Nodes_base,			/*!< points to the actual memory allocated for the nodes */
  *Nodes;			/*!< this is a pointer used to access the nodes which is shifted such that Nodes[All.MaxPart]
 				   gives the first allocated node */
 

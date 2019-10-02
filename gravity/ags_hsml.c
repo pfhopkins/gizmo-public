@@ -7,18 +7,6 @@
 #include "../allvars.h"
 #include "../proto.h"
 #include "../kernel.h"
-#ifdef PTHREADS_NUM_THREADS
-#include <pthread.h>
-#endif
-#ifdef PTHREADS_NUM_THREADS
-extern pthread_mutex_t mutex_nexport;
-extern pthread_mutex_t mutex_partnodedrift;
-#define LOCK_NEXPORT     pthread_mutex_lock(&mutex_nexport);
-#define UNLOCK_NEXPORT   pthread_mutex_unlock(&mutex_nexport);
-#else
-#define LOCK_NEXPORT
-#define UNLOCK_NEXPORT
-#endif
 
 /*! \file ags_hsml.c
  *  \brief kernel length determination for non-gas particles
@@ -79,9 +67,18 @@ int ags_gravity_kernel_shared_BITFLAG(short int particle_type_primary)
 
 #ifdef AGS_HSML_CALCULATION_IS_ACTIVE
 
-/*! Structure for communication during the density computation. Holds data that is sent to other processors.
- */
-static struct ags_densdata_in
+#define MASTER_FUNCTION_NAME ags_density_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define INPUTFUNCTION_NAME ags_particle2in_density    /* name of the function which loads the element data needed (for e.g. broadcast to other processors, neighbor search) */
+#define OUTPUTFUNCTION_NAME ags_out2particle_density  /* name of the function which takes the data returned from other processors and combines it back to the original elements */
+#define CONDITIONFUNCTION_FOR_EVALUATION if(ags_density_isactive(i)) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
+#include "../system/code_block_xchange_initialize.h" /* pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
+
+struct kernel_density 
+{
+    double dp[3],dv[3],r, wk, dwk, hinv, hinv3, hinv4; /*! Structure for communication during the density computation. Holds data that is sent to other processors */
+};
+
+static struct INPUT_STRUCT_NAME
 {
   MyDouble Pos[3];
   MyFloat Vel[3];
@@ -89,9 +86,18 @@ static struct ags_densdata_in
   int NodeList[NODELISTLENGTH];
   int Type;
 }
- *AGS_DensDataIn, *AGS_DensDataGet;
+ *DATAIN_NAME, *DATAGET_NAME;
 
-static struct ags_densdata_out
+void ags_particle2in_density(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration);
+void ags_particle2in_density(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
+{
+    int k; for(k=0;k<3;k++) {in->Pos[k]=P[i].Pos[k]; in->Vel[k]=P[i].Vel[k];}
+    in->AGS_Hsml = PPP[i].AGS_Hsml;
+    in->Type = P[i].Type;
+}
+
+
+static struct OUTPUT_STRUCT_NAME
 {
     MyLongDouble Ngb;
     MyLongDouble DhsmlNgb;
@@ -102,24 +108,10 @@ static struct ags_densdata_out
     MyLongDouble NV_T[3][3];
 #endif
 }
- *AGS_DensDataResult, *AGS_DensDataOut;
+ *DATARESULT_NAME, *DATAOUT_NAME;
 
-void ags_particle2in_density(struct ags_densdata_in *in, int i);
-void ags_out2particle_density(struct ags_densdata_out *out, int i, int mode);
-
-void ags_particle2in_density(struct ags_densdata_in *in, int i)
-{
-    int k;
-    for(k = 0; k < 3; k++)
-    {
-        in->Pos[k] = P[i].Pos[k];
-        in->Vel[k] = P[i].Vel[k];
-    }
-    in->AGS_Hsml = PPP[i].AGS_Hsml;
-    in->Type = P[i].Type;
-}
-
-void ags_out2particle_density(struct ags_densdata_out *out, int i, int mode)
+void ags_out2particle_density(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration);
+void ags_out2particle_density(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration)
 {
     ASSIGN_ADD(PPP[i].NumNgb, out->Ngb, mode);
     ASSIGN_ADD(PPPZ[i].AGS_zeta, out->AGS_zeta,   mode);
@@ -131,678 +123,25 @@ void ags_out2particle_density(struct ags_densdata_out *out, int i, int mode)
 #endif
 }
 
-struct kernel_density
-{
-    double dp[3],dv[3],r;
-    double wk, dwk;
-    double hinv, hinv3, hinv4;
-};
-
-
-void ags_density(void)
-{
-  MyFloat *Left, *Right, *AGS_Prev;
-  int i, j, k, ndone, ndone_flag, npleft, iter = 0;
-  int ngrp, recvTask, place;
-  long long ntot;
-  double fac, fac_lim;
-  double timeall = 0, timecomp1 = 0, timecomp2 = 0, timecommsumm1 = 0, timecommsumm2 = 0, timewait1 = 0, timewait2 = 0;
-  double timecomp, timecomm, timewait;
-  double tstart, tend, t0, t1;
-  double desnumngb, desnumngbdev;
-  int save_NextParticle;
-  long long n_exported = 0;
-  int redo_particle;
-  int particle_set_to_minhsml_flag = 0;
-  int particle_set_to_maxhsml_flag = 0;
-
-  CPU_Step[CPU_AGSDENSMISC] += measure_time();
-  AGS_Prev = (MyFloat *) mymalloc("AGS_Prev", NumPart * sizeof(MyFloat));
-    
-  long long NTaskTimesNumPart;
-  NTaskTimesNumPart = maxThreads * NumPart;
-  Ngblist = (int *) mymalloc("Ngblist", NTaskTimesNumPart * sizeof(int));
-
-  Left = (MyFloat *) mymalloc("Left", NumPart * sizeof(MyFloat));
-  Right = (MyFloat *) mymalloc("Right", NumPart * sizeof(MyFloat));
-
-  for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
-    {
-      if(ags_density_isactive(i))
-      {
-          Left[i] = Right[i] = 0;
-          AGS_Prev[i] = PPP[i].AGS_Hsml;
-          PPP[i].AGS_vsig = 0;
-#ifdef WAKEUP
-          P[i].wakeup = 0;
-#endif
-      }
-    }
-
-  /* allocate buffers to arrange communication */
-  size_t MyBufferSize = All.BufferSize;
-  All.BunchSize = (int) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
-					     sizeof(struct ags_densdata_in) + sizeof(struct ags_densdata_out) +
-					     sizemax(sizeof(struct ags_densdata_in),sizeof(struct ags_densdata_out))));
-  DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
-  DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
-
-  t0 = my_second();
-
-  /* we will repeat the whole thing for those particles where we didn't find enough neighbours */
-  do
-    {
-
-      NextParticle = FirstActiveParticle;	/* begin with this index */
-
-      do
-	{
-	  BufferFullFlag = 0;
-	  Nexport = 0;
-	  save_NextParticle = NextParticle;
-
-	  tstart = my_second();
-
-#ifdef PTHREADS_NUM_THREADS
-	  pthread_t mythreads[PTHREADS_NUM_THREADS - 1];
-
-	  int threadid[PTHREADS_NUM_THREADS - 1];
-
-	  pthread_attr_t attr;
-
-	  pthread_attr_init(&attr);
-	  pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-	  pthread_mutex_init(&mutex_nexport, NULL);
-	  pthread_mutex_init(&mutex_partnodedrift, NULL);
-
-	  TimerFlag = 0;
-
-	  for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++)
-	    {
-	      threadid[j] = j + 1;
-	      pthread_create(&mythreads[j], &attr, ags_density_evaluate_primary, &threadid[j]);
-	    }
-#endif
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-	  {
-#ifdef _OPENMP
-	    int mainthreadid = omp_get_thread_num();
-#else
-	    int mainthreadid = 0;
-#endif
-	    ags_density_evaluate_primary(&mainthreadid);	/* do local particles and prepare export list */
-	  }
-
-#ifdef PTHREADS_NUM_THREADS
-	  for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++)
-	    pthread_join(mythreads[j], NULL);
-#endif
-
-	  tend = my_second();
-	  timecomp1 += timediff(tstart, tend);
-
-	  if(BufferFullFlag)
-	    {
-	      int last_nextparticle = NextParticle;
-
-	      NextParticle = save_NextParticle;
-
-	      while(NextParticle >= 0)
-		{
-		  if(NextParticle == last_nextparticle)
-		    break;
-
-		  if(ProcessedFlag[NextParticle] != 1)
-		    break;
-
-		  ProcessedFlag[NextParticle] = 2;
-
-		  NextParticle = NextActiveParticle[NextParticle];
-		}
-
-	      if(NextParticle == save_NextParticle)
-		{
-		  /* in this case, the buffer is too small to process even a single particle */
-		  printf("ags-Task %d: Type=%d pos=(%g,%g,%g) mass=%g\n",ThisTask,P[NextParticle].Type,
-			 P[NextParticle].Pos[0],P[NextParticle].Pos[1],P[NextParticle].Pos[2],P[NextParticle].Mass);
-
-		  endrun(111008);
-		}
-
-
-	      int new_export = 0;
-
-	      for(j = 0, k = 0; j < Nexport; j++)
-		if(ProcessedFlag[DataIndexTable[j].Index] != 2)
-		  {
-		    if(k < j + 1)
-		      k = j + 1;
-
-		    for(; k < Nexport; k++)
-		      if(ProcessedFlag[DataIndexTable[k].Index] == 2)
-			{
-			  int old_index = DataIndexTable[j].Index;
-
-			  DataIndexTable[j] = DataIndexTable[k];
-			  DataNodeList[j] = DataNodeList[k];
-			  DataIndexTable[j].IndexGet = j;
-			  new_export++;
-
-			  DataIndexTable[k].Index = old_index;
-			  k++;
-			  break;
-			}
-		  }
-		else
-		  new_export++;
-
-	      Nexport = new_export;
-
-	    }
-
-
-	  n_exported += Nexport;
-
-	  for(j = 0; j < NTask; j++)
-	    Send_count[j] = 0;
-	  for(j = 0; j < Nexport; j++)
-	    Send_count[DataIndexTable[j].Task]++;
-
-	  MYSORT_DATAINDEX(DataIndexTable, Nexport, sizeof(struct data_index), data_index_compare);
-
-	  tstart = my_second();
-
-	  MPI_Alltoall(Send_count, 1, MPI_INT, Recv_count, 1, MPI_INT, MPI_COMM_WORLD);
-
-	  tend = my_second();
-	  timewait1 += timediff(tstart, tend);
-
-	  for(j = 0, Nimport = 0, Recv_offset[0] = 0, Send_offset[0] = 0; j < NTask; j++)
-	    {
-	      Nimport += Recv_count[j];
-
-	      if(j > 0)
-		{
-		  Send_offset[j] = Send_offset[j - 1] + Send_count[j - 1];
-		  Recv_offset[j] = Recv_offset[j - 1] + Recv_count[j - 1];
-		}
-	    }
-
-	  AGS_DensDataGet = (struct ags_densdata_in *) mymalloc("AGS_DensDataGet", Nimport * sizeof(struct ags_densdata_in));
-	  AGS_DensDataIn = (struct ags_densdata_in *) mymalloc("AGS_DensDataIn", Nexport * sizeof(struct ags_densdata_in));
-
-	  /* prepare particle data for export */
-	  for(j = 0; j < Nexport; j++)
-	    {
-	      place = DataIndexTable[j].Index;
-
-	      ags_particle2in_density(&AGS_DensDataIn[j], place);
-
-	      memcpy(AGS_DensDataIn[j].NodeList,
-		     DataNodeList[DataIndexTable[j].IndexGet].NodeList, NODELISTLENGTH * sizeof(int));
-	    }
-	  /* exchange particle data */
-	  tstart = my_second();
-	  for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-	    {
-	      recvTask = ThisTask ^ ngrp;
-
-	      if(recvTask < NTask)
-		{
-		  if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
-		    {
-		      /* get the particles */
-		      MPI_Sendrecv(&AGS_DensDataIn[Send_offset[recvTask]],
-				   Send_count[recvTask] * sizeof(struct ags_densdata_in), MPI_BYTE,
-				   recvTask, TAG_AGS_DENS_A,
-				   &AGS_DensDataGet[Recv_offset[recvTask]],
-				   Recv_count[recvTask] * sizeof(struct ags_densdata_in), MPI_BYTE,
-				   recvTask, TAG_AGS_DENS_A, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		    }
-		}
-	    }
-	  tend = my_second();
-	  timecommsumm1 += timediff(tstart, tend);
-
-	  myfree(AGS_DensDataIn);
-	  AGS_DensDataResult = (struct ags_densdata_out *) mymalloc("AGS_DensDataResult", Nimport * sizeof(struct ags_densdata_out));
-	  AGS_DensDataOut = (struct ags_densdata_out *) mymalloc("AGS_DensDataOut", Nexport * sizeof(struct ags_densdata_out));
-
-	  /* now do the particles that were sent to us */
-
-	  tstart = my_second();
-
-	  NextJ = 0;
-
-#ifdef PTHREADS_NUM_THREADS
-	  for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++)
-	    pthread_create(&mythreads[j], &attr, ags_density_evaluate_secondary, &threadid[j]);
-#endif
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-	  {
-#ifdef _OPENMP
-	    int mainthreadid = omp_get_thread_num();
-#else
-	    int mainthreadid = 0;
-#endif
-	    ags_density_evaluate_secondary(&mainthreadid);
-	  }
-
-#ifdef PTHREADS_NUM_THREADS
-	  for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++)
-	    pthread_join(mythreads[j], NULL);
-
-	  pthread_mutex_destroy(&mutex_partnodedrift);
-	  pthread_mutex_destroy(&mutex_nexport);
-	  pthread_attr_destroy(&attr);
-#endif
-
-	  tend = my_second();
-	  timecomp2 += timediff(tstart, tend);
-
-	  if(NextParticle < 0)
-	    ndone_flag = 1;
-	  else
-	    ndone_flag = 0;
-
-	  tstart = my_second();
-	  MPI_Allreduce(&ndone_flag, &ndone, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-	  tend = my_second();
-	  timewait2 += timediff(tstart, tend);
-
-
-	  /* get the result */
-	  tstart = my_second();
-	  for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-	    {
-	      recvTask = ThisTask ^ ngrp;
-	      if(recvTask < NTask)
-		{
-		  if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
-		    {
-		      /* send the results */
-		      MPI_Sendrecv(&AGS_DensDataResult[Recv_offset[recvTask]],
-				   Recv_count[recvTask] * sizeof(struct ags_densdata_out),
-				   MPI_BYTE, recvTask, TAG_AGS_DENS_B,
-				   &AGS_DensDataOut[Send_offset[recvTask]],
-				   Send_count[recvTask] * sizeof(struct ags_densdata_out),
-				   MPI_BYTE, recvTask, TAG_AGS_DENS_B, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		    }
-		}
-
-	    }
-	  tend = my_second();
-	  timecommsumm2 += timediff(tstart, tend);
-
-
-	  /* add the result to the local particles */
-	  tstart = my_second();
-	  for(j = 0; j < Nexport; j++)
-	    {
-	      place = DataIndexTable[j].Index;
-	      ags_out2particle_density(&AGS_DensDataOut[j], place, 1);
-	    }
-	  tend = my_second();
-	  timecomp1 += timediff(tstart, tend);
-
-
-	  myfree(AGS_DensDataOut);
-	  myfree(AGS_DensDataResult);
-	  myfree(AGS_DensDataGet);
-	}
-      while(ndone < NTask);
-
-
-      /* do check on whether we have enough neighbors, and iterate for density-hsml solution */
-        tstart = my_second();
-        for(i = FirstActiveParticle, npleft = 0; i >= 0; i = NextActiveParticle[i])
-        {
-            if(ags_density_isactive(i))
-            {
-#ifdef DM_FUZZY
-                P[i].AGS_Density = P[i].Mass * PPP[i].NumNgb;
-#endif
-                if(PPP[i].NumNgb > 0)
-                {
-                    PPP[i].DhsmlNgbFactor *= PPP[i].AGS_Hsml / (NUMDIMS * PPP[i].NumNgb);
-                    P[i].Particle_DivVel /= PPP[i].NumNgb;
-                    /* spherical volume of the Kernel (use this to normalize 'effective neighbor number') */
-                    PPP[i].NumNgb *= NORM_COEFF * pow(PPP[i].AGS_Hsml,NUMDIMS);
-                } else {
-                    PPP[i].NumNgb = PPP[i].DhsmlNgbFactor = P[i].Particle_DivVel = 0;
-                }
-                
-                // inverse of SPH volume element (to satisfy constraint implicit in Lagrange multipliers)
-                if(PPP[i].DhsmlNgbFactor > -0.9)	/* note: this would be -1 if only a single particle at zero lag is found */
-                    PPP[i].DhsmlNgbFactor = 1 / (1 + PPP[i].DhsmlNgbFactor);
-                else
-                    PPP[i].DhsmlNgbFactor = 1;
-                P[i].Particle_DivVel *= PPP[i].DhsmlNgbFactor;
-                
-                /* now check whether we have enough neighbours */
-                redo_particle = 0;
-                
-                double minsoft = ags_return_minsoft(i);
-                double maxsoft = ags_return_maxsoft(i);
-                if(All.Time > All.TimeBegin)
-                {
-                    minsoft = DMAX(minsoft , AGS_Prev[i]*AGS_DSOFT_TOL);
-                    maxsoft = DMIN(maxsoft , AGS_Prev[i]/AGS_DSOFT_TOL);
-                }
-                desnumngb = All.AGS_DesNumNgb;
-                desnumngbdev = All.AGS_MaxNumNgbDeviation;
-                /* allow the neighbor tolerance to gradually grow as we iterate, so that we don't spend forever trapped in a narrow iteration */
-#if defined(AGS_FACE_CALCULATION_IS_ACTIVE)
-                double ConditionNumber = do_cbe_nvt_inversion_for_faces(i); // right now we don't do anything with this, but could use to force expansion of search, as in hydro
-                if(ConditionNumber > MAX_REAL_NUMBER) {printf("CNUM warning for CBE: ThisTask=%d i=%d ConditionNumber=%g desnumngb=%g NumNgb=%g iter=%d NVT=%g/%g/%g/%g/%g/%g AGS_Hsml=%g \n",ThisTask,i,ConditionNumber,desnumngb,PPP[i].NumNgb,iter,P[i].NV_T[0][0],P[i].NV_T[1][1],P[i].NV_T[2][2],P[i].NV_T[0][1],P[i].NV_T[0][2],P[i].NV_T[1][2],PPP[i].AGS_Hsml);}
-                if(iter > 10) {desnumngbdev = DMIN( 0.25*desnumngb , desnumngbdev * exp(0.1*log(desnumngb/(16.*desnumngbdev))*((double)iter - 9.)) );}
-#else
-                if(iter > 4) {desnumngbdev = DMIN( 0.25*desnumngb , desnumngbdev * exp(0.1*log(desnumngb/(16.*desnumngbdev))*((double)iter - 3.)) );}
-#endif
-                if(All.Time<=All.TimeBegin) {if(desnumngbdev > 0.0005) desnumngbdev=0.0005; if(iter > 50) {desnumngbdev = DMIN( 0.25*desnumngb , desnumngbdev * exp(0.1*log(desnumngb/(16.*desnumngbdev))*((double)iter - 49.)) );}}
-
-
-                
-                /* check if we are in the 'normal' range between the max/min allowed values */
-                if((PPP[i].NumNgb < (desnumngb - desnumngbdev) && PPP[i].AGS_Hsml < 0.999*maxsoft) ||
-                   (PPP[i].NumNgb > (desnumngb + desnumngbdev) && PPP[i].AGS_Hsml > 1.001*minsoft))
-                    redo_particle = 1;
-                
-                /* check maximum kernel size allowed */
-                particle_set_to_maxhsml_flag = 0;
-                if((PPP[i].AGS_Hsml >= 0.999*maxsoft) && (PPP[i].NumNgb < (desnumngb - desnumngbdev)))
-                {
-                    redo_particle = 0;
-                    if(PPP[i].AGS_Hsml == maxsoft)
-                    {
-                        /* iteration at the maximum value is already complete */
-                        particle_set_to_maxhsml_flag = 0;
-                    } else {
-                        /* ok, the particle needs to be set to the maximum, and (if gas) iterated one more time */
-                        redo_particle = 1;
-                        PPP[i].AGS_Hsml = maxsoft;
-                        particle_set_to_maxhsml_flag = 1;
-                    }
-                }
-                
-                /* check minimum kernel size allowed */
-                particle_set_to_minhsml_flag = 0;
-                if((PPP[i].AGS_Hsml <= 1.001*minsoft) && (PPP[i].NumNgb > (desnumngb + desnumngbdev)))
-                {
-                    redo_particle = 0;
-                    if(PPP[i].AGS_Hsml == minsoft)
-                    {
-                        /* this means we've already done an iteration with the MinHsml value, so the
-                         neighbor weights, etc, are not going to be wrong; thus we simply stop iterating */
-                        particle_set_to_minhsml_flag = 0;
-                    } else {
-                        /* ok, the particle needs to be set to the minimum, and (if gas) iterated one more time */
-                        redo_particle = 1;
-                        PPP[i].AGS_Hsml = minsoft;
-                        particle_set_to_minhsml_flag = 1;
-                    }
-                }
-                
-                if(redo_particle)
-                {
-                    if(iter >= MAXITER - 10)
-                    {
-#ifndef IO_REDUCED_MODE
-                        printf("AGS: i=%d task=%d ID=%llu Type=%d Hsml=%g dhsml=%g Left=%g Right=%g Ngbs=%g Right-Left=%g maxh_flag=%d minh_flag=%d  minsoft=%g maxsoft=%g desnum=%g desnumtol=%g redo=%d pos=(%g|%g|%g)\n",
-                               i, ThisTask, (unsigned long long) P[i].ID, P[i].Type, PPP[i].AGS_Hsml, PPP[i].DhsmlNgbFactor, Left[i], Right[i],
-                               (float) PPP[i].NumNgb, Right[i] - Left[i], particle_set_to_maxhsml_flag, particle_set_to_minhsml_flag, minsoft,
-                               maxsoft, desnumngb, desnumngbdev, redo_particle, P[i].Pos[0], P[i].Pos[1], P[i].Pos[2]);
-                        fflush(stdout);
-#endif
-                    }
-                    
-                    /* need to redo this particle */
-                    npleft++;
-                    
-                    if(Left[i] > 0 && Right[i] > 0)
-                        if((Right[i] - Left[i]) < 1.0e-3 * Left[i])
-                        {
-                            /* this one should be ok */
-                            npleft--;
-                            P[i].TimeBin = -P[i].TimeBin - 1;	/* Mark as inactive */
-                            continue;
-                        }
-                    
-                    if((particle_set_to_maxhsml_flag==0)&&(particle_set_to_minhsml_flag==0))
-                    {
-                        if(PPP[i].NumNgb < (desnumngb - desnumngbdev))
-                        {
-                            Left[i] = DMAX(PPP[i].AGS_Hsml, Left[i]);
-                        }
-                        else
-                        {
-                            if(Right[i] != 0)
-                            {
-                                if(PPP[i].AGS_Hsml < Right[i])
-                                    Right[i] = PPP[i].AGS_Hsml;
-                            }
-                            else
-                                Right[i] = PPP[i].AGS_Hsml;
-                        }
-                        
-                        // right/left define upper/lower bounds from previous iterations
-                        if(Right[i] > 0 && Left[i] > 0)
-                        {
-                            // geometric interpolation between right/left //
-                            double maxjump=0;
-                            if(iter>1) {maxjump = 0.2*log(Right[i]/Left[i]);}
-                            if(PPP[i].NumNgb > 1)
-                            {
-                                double jumpvar = PPP[i].DhsmlNgbFactor * log( desnumngb / PPP[i].NumNgb ) / NUMDIMS;
-                                if(iter>1) {if(fabs(jumpvar) < maxjump) {if(jumpvar<0) {jumpvar=-maxjump;} else {jumpvar=maxjump;}}}
-                                PPP[i].AGS_Hsml *= exp(jumpvar);
-                            } else {
-                                PPP[i].AGS_Hsml *= 2.0;
-                            }
-                            if((PPP[i].AGS_Hsml<Right[i])&&(PPP[i].AGS_Hsml>Left[i]))
-                            {
-                                if(iter > 1)
-                                {
-                                    double hfac = exp(maxjump);
-                                    if(PPP[i].AGS_Hsml > Right[i] / hfac) {PPP[i].AGS_Hsml = Right[i] / hfac;}
-                                    if(PPP[i].AGS_Hsml < Left[i] * hfac) {PPP[i].AGS_Hsml = Left[i] * hfac;}
-                                }
-                            } else {
-                                if(PPP[i].AGS_Hsml>Right[i]) PPP[i].AGS_Hsml=Right[i];
-                                if(PPP[i].AGS_Hsml<Left[i]) PPP[i].AGS_Hsml=Left[i];
-                                PPP[i].AGS_Hsml = pow(PPP[i].AGS_Hsml * Left[i] * Right[i] , 1.0/3.0);
-                            }
-                        }
-                        else
-                        {
-                            if(Right[i] == 0 && Left[i] == 0)
-                            {
-                                char buf[1000];
-                                sprintf(buf, "AGS: Right[i] == 0 && Left[i] == 0 && PPP[i].AGS_Hsml=%g\n", PPP[i].AGS_Hsml);
-                                terminate(buf);
-                            }
-                            
-                            if(Right[i] == 0 && Left[i] > 0)
-                            {
-                                if (PPP[i].NumNgb > 1)
-                                    fac_lim = log( desnumngb / PPP[i].NumNgb ) / NUMDIMS; // this would give desnumgb if constant density (+0.231=2x desnumngb)
-                                else
-                                    fac_lim = 1.4; // factor ~66 increase in N_NGB in constant-density medium
-                                
-                                if((PPP[i].NumNgb < 2*desnumngb)&&(PPP[i].NumNgb > 0.1*desnumngb))
-                                {
-                                    double slope = PPP[i].DhsmlNgbFactor;
-                                    if(iter>2 && slope<1) slope = 0.5*(slope+1);
-                                    fac = fac_lim * slope; // account for derivative in making the 'corrected' guess
-                                    if(iter>=4)
-                                        if(PPP[i].DhsmlNgbFactor==1) fac *= 10; // tries to help with being trapped in small steps
-                                    
-                                    if(fac < fac_lim+0.231)
-                                    {
-                                        PPP[i].AGS_Hsml *= exp(fac); // more expensive function, but faster convergence
-                                    }
-                                    else
-                                    {
-                                        PPP[i].AGS_Hsml *= exp(fac_lim+0.231);
-                                        // fac~0.26 leads to expected doubling of number if density is constant,
-                                        //   insert this limiter here b/c we don't want to get *too* far from the answer (which we're close to)
-                                    }
-                                }
-                                else
-                                    PPP[i].AGS_Hsml *= exp(fac_lim); // here we're not very close to the 'right' answer, so don't trust the (local) derivatives
-                            }
-                            
-                            if(Right[i] > 0 && Left[i] == 0)
-                            {
-                                if (PPP[i].NumNgb > 1)
-                                    fac_lim = log( desnumngb / PPP[i].NumNgb ) / NUMDIMS; // this would give desnumgb if constant density (-0.231=0.5x desnumngb)
-                                else
-                                    fac_lim = 1.4; // factor ~66 increase in N_NGB in constant-density medium
-                                
-                                if (fac_lim < -1.535) fac_lim = -1.535; // decreasing N_ngb by factor ~100
-                                
-                                if((PPP[i].NumNgb < 2*desnumngb)&&(PPP[i].NumNgb > 0.1*desnumngb))
-                                {
-                                    double slope = PPP[i].DhsmlNgbFactor;
-                                    if(iter>2 && slope<1) slope = 0.5*(slope+1);
-                                    fac = fac_lim * slope; // account for derivative in making the 'corrected' guess
-                                    if(iter>=10)
-                                        if(PPP[i].DhsmlNgbFactor==1) fac *= 10; // tries to help with being trapped in small steps
-                                    
-                                    if(fac > fac_lim-0.231)
-                                    {
-                                        PPP[i].AGS_Hsml *= exp(fac); // more expensive function, but faster convergence
-                                    }
-                                    else
-                                        PPP[i].AGS_Hsml *= exp(fac_lim-0.231); // limiter to prevent --too-- far a jump in a single iteration
-                                }
-                                else
-                                    PPP[i].AGS_Hsml *= exp(fac_lim); // here we're not very close to the 'right' answer, so don't trust the (local) derivatives
-                            }
-                        } // closes if(Right[i] > 0 && Left[i] > 0) else clause
-                        
-                    } // closes if[particle_set_to_max/minhsml_flag]
-                    /* resets for max/min values */
-                    if(PPP[i].AGS_Hsml < minsoft) PPP[i].AGS_Hsml = minsoft;
-                    if(particle_set_to_minhsml_flag==1) PPP[i].AGS_Hsml = minsoft;
-                    if(PPP[i].AGS_Hsml > maxsoft) PPP[i].AGS_Hsml = maxsoft;
-                    if(particle_set_to_maxhsml_flag==1) PPP[i].AGS_Hsml = maxsoft;
-                } // closes redo_particle
-                else
-                    P[i].TimeBin = -P[i].TimeBin - 1;	/* Mark as inactive */
-            } //  if(ags_density_isactive(i))
-        } // for(i = FirstActiveParticle, npleft = 0; i >= 0; i = NextActiveParticle[i])
-        
-        tend = my_second();
-        timecomp1 += timediff(tstart, tend);
-        sumup_large_ints(1, &npleft, &ntot);
-        if(ntot > 0)
-        {
-            iter++;
-            if(iter > 0 && ThisTask == 0)
-            {
-#ifdef IO_REDUCED_MODE
-                if(iter > 10)
-#endif
-                printf("ags-ngb iteration %d: need to repeat for %d%09d particles.\n", iter,
-                       (int) (ntot / 1000000000), (int) (ntot % 1000000000));
-            }
-            if(iter > MAXITER)
-            {
-                printf("ags-failed to converge in neighbour iteration in density()\n");
-                fflush(stdout);
-                endrun(1155);
-            }
-        }
-    }
-    while(ntot > 0);
-
-    myfree(DataNodeList);
-    myfree(DataIndexTable);
-    myfree(Right);
-    myfree(Left);
-    myfree(Ngblist);
-    
-    /* mark as active again */
-    for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
-    {
-        if(P[i].TimeBin < 0) {P[i].TimeBin = -P[i].TimeBin - 1;}
-    }
-
-    /* now that we are DONE iterating to find hsml, we can do the REAL final operations on the results */
-    for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
-    {
-        if(ags_density_isactive(i))
-        {
-            if((P[i].Mass>0)&&(PPP[i].AGS_Hsml>0)&&(PPP[i].NumNgb>0))
-            {
-                double minsoft = ags_return_minsoft(i);
-                double maxsoft = ags_return_maxsoft(i);
-                minsoft = DMAX(minsoft , AGS_Prev[i]*AGS_DSOFT_TOL);
-                maxsoft = DMIN(maxsoft , AGS_Prev[i]/AGS_DSOFT_TOL);
-                if(PPP[i].AGS_Hsml >= maxsoft) {PPPZ[i].AGS_zeta = 0;} /* check that we're within the 'valid' range for adaptive softening terms, otherwise zeta=0 */
-
-                double z0 = 0.5 * PPPZ[i].AGS_zeta * PPP[i].AGS_Hsml / (NUMDIMS * P[i].Mass * PPP[i].NumNgb / ( NORM_COEFF * pow(PPP[i].AGS_Hsml,NUMDIMS) )); // zeta before various prefactors
-                double h_eff = 2. * (KERNEL_CORE_SIZE*All.ForceSoftening[P[i].Type]); // force softening defines where Jeans pressure needs to kick in; prefactor = NJeans [=2 here]
-                double Prho = 0 * h_eff*h_eff/2.; if(P[i].Particle_DivVel>0) {Prho=-Prho;} // truelove criterion. NJeans[above] , gamma=2 for effective EOS when this dominates, rho=ma*na; h_eff here can be Hsml [P/rho~H^-1] or gravsoft_min to really enforce that, as MIN, with P/rho~H^-3; if-check makes it so this term always adds KE to the system, pumping it up
-                PPPZ[i].AGS_zeta = P[i].Mass*P[i].Mass * PPP[i].DhsmlNgbFactor * ( z0 + Prho ); // force correction, including corrections for adaptive softenings and EOS terms
-                PPP[i].NumNgb = pow(PPP[i].NumNgb , 1./NUMDIMS); /* convert NGB to the more useful format, NumNgb^(1/NDIMS), which we can use to obtain the corrected particle sizes */
-            } else {
-                PPPZ[i].AGS_zeta = 0; PPP[i].NumNgb = 0; PPP[i].AGS_Hsml = All.ForceSoftening[P[i].Type];
-            }
-#ifdef PM_HIRES_REGION_CLIPPING
-            if(PPP[i].NumNgb <= 0) {P[i].Mass = 0;}
-            if((PPP[i].AGS_Hsml <= 0) || (PPP[i].AGS_Hsml >= PM_HIRES_REGION_CLIPPING)) {P[i].Mass = 0;}
-            double vmag=0; for(k=0;k<3;k++) {vmag+=P[i].Vel[k]*P[i].Vel[k];} vmag = sqrt(vmag);
-            if(vmag>5.e9*All.cf_atime/All.UnitVelocity_in_cm_per_s) {P[i].Mass=0;}
-            if(vmag>1.e9*All.cf_atime/All.UnitVelocity_in_cm_per_s) {for(k=0;k<3;k++) {P[i].Vel[k]*=(1.e9*All.cf_atime/All.UnitVelocity_in_cm_per_s)/vmag;}}
-#endif
-        }
-    }
-    myfree(AGS_Prev);
-    
-    /* collect some timing information */
-    
-    t1 = WallclockTime = my_second();
-    timeall += timediff(t0, t1);
-    
-    timecomp = timecomp1 + timecomp2;
-    timewait = timewait1 + timewait2;
-    timecomm = timecommsumm1 + timecommsumm2;
-    
-    CPU_Step[CPU_AGSDENSCOMPUTE] += timecomp;
-    CPU_Step[CPU_AGSDENSWAIT] += timewait;
-    CPU_Step[CPU_AGSDENSCOMM] += timecomm;
-    CPU_Step[CPU_AGSDENSMISC] += timeall - (timecomp + timewait + timecomm);
-}
-
-
-
-
-
 
 /*! This function represents the core of the density computation. The
  *  target particle may either be local, or reside in the communication
  *  buffer.
  */
-int ags_density_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist)
+int ags_density_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
 {
     int j, n;
     int startnode, numngb_inbox, listindex = 0;
     double r2, h2, u;
     struct kernel_density kernel;
-    struct ags_densdata_in local;
-    struct ags_densdata_out out;
-    memset(&out, 0, sizeof(struct ags_densdata_out));
+    struct INPUT_STRUCT_NAME local;
+    struct OUTPUT_STRUCT_NAME out;
+    memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME));
     
     if(mode == 0)
-        ags_particle2in_density(&local, target);
+        ags_particle2in_density(&local, target, loop_iteration);
     else
-        local = AGS_DensDataGet[target];
+        local = DATAGET_NAME[target];
     
     h2 = local.AGS_Hsml * local.AGS_Hsml;
     kernel_hinv(local.AGS_Hsml, &kernel.hinv, &kernel.hinv3, &kernel.hinv4);
@@ -810,14 +149,13 @@ int ags_density_evaluate(int target, int mode, int *exportflag, int *exportnodec
     
     if(mode == 0)
     {
-        startnode = All.MaxPart;	/* root node */
+        startnode = All.MaxPart;    /* root node */
     }
     else
     {
-        startnode = AGS_DensDataGet[target].NodeList[0];
-        startnode = Nodes[startnode].u.d.nextnode;	/* open it */
+        startnode = DATAGET_NAME[target].NodeList[0];
+        startnode = Nodes[startnode].u.d.nextnode;    /* open it */
     }
-    
     
     
     double fac_mu = -3 / (All.cf_afac3 * All.cf_atime);
@@ -902,37 +240,348 @@ int ags_density_evaluate(int target, int mode, int *exportflag, int *exportnodec
             listindex++;
             if(listindex < NODELISTLENGTH)
             {
-                startnode = AGS_DensDataGet[target].NodeList[listindex];
+                startnode = DATAGET_NAME[target].NodeList[listindex];
                 if(startnode >= 0)
-                    startnode = Nodes[startnode].u.d.nextnode;	/* open it */
+                    startnode = Nodes[startnode].u.d.nextnode;    /* open it */
             }
         }
     }
     
     if(mode == 0)
-        ags_out2particle_density(&out, target, 0);
+        ags_out2particle_density(&out, target, 0, loop_iteration);
     else
-        AGS_DensDataResult[target] = out;
+        DATARESULT_NAME[target] = out;
     
     return 0;
 }
 
 
 
-void *ags_density_evaluate_primary(void *p)
+void ags_density(void)
 {
-#define CONDITION_FOR_EVALUATION if(ags_density_isactive(i))
-#define EVALUATION_CALL ags_density_evaluate(i, 0, exportflag, exportnodecount, exportindex, ngblist)
-#include "../system/code_block_primary_loop_evaluation.h"
-#undef CONDITION_FOR_EVALUATION
-#undef EVALUATION_CALL
+    /* initialize variables used below, in particlar the structures we need to call throughout the iteration */
+    MyFloat *Left, *Right, *AGS_Prev; double fac, fac_lim, desnumngb, desnumngbdev; long long ntot;
+    int i, npleft, iter=0, redo_particle, particle_set_to_minhsml_flag = 0, particle_set_to_maxhsml_flag = 0;
+    AGS_Prev = (MyFloat *) mymalloc("AGS_Prev", NumPart * sizeof(MyFloat));
+    Left = (MyFloat *) mymalloc("Left", NumPart * sizeof(MyFloat));
+    Right = (MyFloat *) mymalloc("Right", NumPart * sizeof(MyFloat));
+    /* initialize anything we need to about the active particles before their loop */
+    for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) {
+        if(ags_density_isactive(i)) {
+            Left[i] = Right[i] = 0; AGS_Prev[i] = PPP[i].AGS_Hsml; PPP[i].AGS_vsig = 0;
+#ifdef WAKEUP
+            P[i].wakeup = 0;
+#endif
+      }}
+
+    /* allocate buffers to arrange communication */
+    #include "../system/code_block_xchange_perform_ops_malloc.h" /* this calls the large block of code which contains the memory allocations for the MPI/OPENMP/Pthreads parallelization block which must appear below */
+    /* we will repeat the whole thing for those particles where we didn't find enough neighbours */
+    do
+    {
+        #include "../system/code_block_xchange_perform_ops.h" /* this calls the large block of code which actually contains all the loops, MPI/OPENMP/Pthreads parallelization */
+
+      /* do check on whether we have enough neighbors, and iterate for density-hsml solution */
+        double tstart = my_second(), tend;
+        for(i = FirstActiveParticle, npleft = 0; i >= 0; i = NextActiveParticle[i])
+        {
+            if(ags_density_isactive(i))
+            {
+#ifdef DM_FUZZY
+                P[i].AGS_Density = P[i].Mass * PPP[i].NumNgb;
+#endif
+                if(PPP[i].NumNgb > 0)
+                {
+                    PPP[i].DhsmlNgbFactor *= PPP[i].AGS_Hsml / (NUMDIMS * PPP[i].NumNgb);
+                    P[i].Particle_DivVel /= PPP[i].NumNgb;
+                    /* spherical volume of the Kernel (use this to normalize 'effective neighbor number') */
+                    PPP[i].NumNgb *= NORM_COEFF * pow(PPP[i].AGS_Hsml,NUMDIMS);
+                } else {
+                    PPP[i].NumNgb = PPP[i].DhsmlNgbFactor = P[i].Particle_DivVel = 0;
+                }
+                
+                // inverse of SPH volume element (to satisfy constraint implicit in Lagrange multipliers)
+                if(PPP[i].DhsmlNgbFactor > -0.9)	/* note: this would be -1 if only a single particle at zero lag is found */
+                    PPP[i].DhsmlNgbFactor = 1 / (1 + PPP[i].DhsmlNgbFactor);
+                else
+                    PPP[i].DhsmlNgbFactor = 1;
+                P[i].Particle_DivVel *= PPP[i].DhsmlNgbFactor;
+                
+                /* now check whether we have enough neighbours */
+                redo_particle = 0;
+                
+                double minsoft = ags_return_minsoft(i);
+                double maxsoft = ags_return_maxsoft(i);
+                if(All.Time > All.TimeBegin)
+                {
+                    minsoft = DMAX(minsoft , AGS_Prev[i]*AGS_DSOFT_TOL);
+                    maxsoft = DMIN(maxsoft , AGS_Prev[i]/AGS_DSOFT_TOL);
+                }
+                desnumngb = All.AGS_DesNumNgb;
+                desnumngbdev = All.AGS_MaxNumNgbDeviation;
+                /* allow the neighbor tolerance to gradually grow as we iterate, so that we don't spend forever trapped in a narrow iteration */
+#if defined(AGS_FACE_CALCULATION_IS_ACTIVE)
+                double ConditionNumber = do_cbe_nvt_inversion_for_faces(i); // right now we don't do anything with this, but could use to force expansion of search, as in hydro
+                if(ConditionNumber > MAX_REAL_NUMBER) {PRINT_WARNING("CNUM warning for CBE: ThisTask=%d i=%d ConditionNumber=%g desnumngb=%g NumNgb=%g iter=%d NVT=%g/%g/%g/%g/%g/%g AGS_Hsml=%g \n",ThisTask,i,ConditionNumber,desnumngb,PPP[i].NumNgb,iter,P[i].NV_T[0][0],P[i].NV_T[1][1],P[i].NV_T[2][2],P[i].NV_T[0][1],P[i].NV_T[0][2],P[i].NV_T[1][2],PPP[i].AGS_Hsml);}
+                if(iter > 10) {desnumngbdev = DMIN( 0.25*desnumngb , desnumngbdev * exp(0.1*log(desnumngb/(16.*desnumngbdev))*((double)iter - 9.)) );}
+#else
+                if(iter > 4) {desnumngbdev = DMIN( 0.25*desnumngb , desnumngbdev * exp(0.1*log(desnumngb/(16.*desnumngbdev))*((double)iter - 3.)) );}
+#endif
+                if(All.Time<=All.TimeBegin) {if(desnumngbdev > 0.0005) desnumngbdev=0.0005; if(iter > 50) {desnumngbdev = DMIN( 0.25*desnumngb , desnumngbdev * exp(0.1*log(desnumngb/(16.*desnumngbdev))*((double)iter - 49.)) );}}
+
+
+                /* check if we are in the 'normal' range between the max/min allowed values */
+                if((PPP[i].NumNgb < (desnumngb - desnumngbdev) && PPP[i].AGS_Hsml < 0.999*maxsoft) ||
+                   (PPP[i].NumNgb > (desnumngb + desnumngbdev) && PPP[i].AGS_Hsml > 1.001*minsoft))
+                    redo_particle = 1;
+                
+                /* check maximum kernel size allowed */
+                particle_set_to_maxhsml_flag = 0;
+                if((PPP[i].AGS_Hsml >= 0.999*maxsoft) && (PPP[i].NumNgb < (desnumngb - desnumngbdev)))
+                {
+                    redo_particle = 0;
+                    if(PPP[i].AGS_Hsml == maxsoft)
+                    {
+                        /* iteration at the maximum value is already complete */
+                        particle_set_to_maxhsml_flag = 0;
+                    } else {
+                        /* ok, the particle needs to be set to the maximum, and (if gas) iterated one more time */
+                        redo_particle = 1;
+                        PPP[i].AGS_Hsml = maxsoft;
+                        particle_set_to_maxhsml_flag = 1;
+                    }
+                }
+                
+                /* check minimum kernel size allowed */
+                particle_set_to_minhsml_flag = 0;
+                if((PPP[i].AGS_Hsml <= 1.001*minsoft) && (PPP[i].NumNgb > (desnumngb + desnumngbdev)))
+                {
+                    redo_particle = 0;
+                    if(PPP[i].AGS_Hsml == minsoft)
+                    {
+                        /* this means we've already done an iteration with the MinHsml value, so the
+                         neighbor weights, etc, are not going to be wrong; thus we simply stop iterating */
+                        particle_set_to_minhsml_flag = 0;
+                    } else {
+                        /* ok, the particle needs to be set to the minimum, and (if gas) iterated one more time */
+                        redo_particle = 1;
+                        PPP[i].AGS_Hsml = minsoft;
+                        particle_set_to_minhsml_flag = 1;
+                    }
+                }
+                
+                if(redo_particle)
+                {
+                    if(iter >= MAXITER - 10)
+                    {
+                        PRINT_WARNING("AGS: i=%d task=%d ID=%llu Type=%d Hsml=%g dhsml=%g Left=%g Right=%g Ngbs=%g Right-Left=%g maxh_flag=%d minh_flag=%d  minsoft=%g maxsoft=%g desnum=%g desnumtol=%g redo=%d pos=(%g|%g|%g)\n",
+                               i, ThisTask, (unsigned long long) P[i].ID, P[i].Type, PPP[i].AGS_Hsml, PPP[i].DhsmlNgbFactor, Left[i], Right[i],
+                               (float) PPP[i].NumNgb, Right[i] - Left[i], particle_set_to_maxhsml_flag, particle_set_to_minhsml_flag, minsoft,
+                               maxsoft, desnumngb, desnumngbdev, redo_particle, P[i].Pos[0], P[i].Pos[1], P[i].Pos[2]);
+                    }
+                    
+                    /* need to redo this particle */
+                    npleft++;
+                    
+                    if(Left[i] > 0 && Right[i] > 0)
+                        if((Right[i] - Left[i]) < 1.0e-3 * Left[i])
+                        {
+                            /* this one should be ok */
+                            npleft--;
+                            P[i].TimeBin = -P[i].TimeBin - 1;	/* Mark as inactive */
+                            continue;
+                        }
+                    
+                    if((particle_set_to_maxhsml_flag==0)&&(particle_set_to_minhsml_flag==0))
+                    {
+                        if(PPP[i].NumNgb < (desnumngb - desnumngbdev))
+                        {
+                            Left[i] = DMAX(PPP[i].AGS_Hsml, Left[i]);
+                        }
+                        else
+                        {
+                            if(Right[i] != 0)
+                            {
+                                if(PPP[i].AGS_Hsml < Right[i])
+                                    Right[i] = PPP[i].AGS_Hsml;
+                            }
+                            else
+                                Right[i] = PPP[i].AGS_Hsml;
+                        }
+                        
+                        // right/left define upper/lower bounds from previous iterations
+                        if(Right[i] > 0 && Left[i] > 0)
+                        {
+                            // geometric interpolation between right/left //
+                            double maxjump=0;
+                            if(iter>1) {maxjump = 0.2*log(Right[i]/Left[i]);}
+                            if(PPP[i].NumNgb > 1)
+                            {
+                                double jumpvar = PPP[i].DhsmlNgbFactor * log( desnumngb / PPP[i].NumNgb ) / NUMDIMS;
+                                if(iter>1) {if(fabs(jumpvar) < maxjump) {if(jumpvar<0) {jumpvar=-maxjump;} else {jumpvar=maxjump;}}}
+                                PPP[i].AGS_Hsml *= exp(jumpvar);
+                            } else {
+                                PPP[i].AGS_Hsml *= 2.0;
+                            }
+                            if((PPP[i].AGS_Hsml<Right[i])&&(PPP[i].AGS_Hsml>Left[i]))
+                            {
+                                if(iter > 1)
+                                {
+                                    double hfac = exp(maxjump);
+                                    if(PPP[i].AGS_Hsml > Right[i] / hfac) {PPP[i].AGS_Hsml = Right[i] / hfac;}
+                                    if(PPP[i].AGS_Hsml < Left[i] * hfac) {PPP[i].AGS_Hsml = Left[i] * hfac;}
+                                }
+                            } else {
+                                if(PPP[i].AGS_Hsml>Right[i]) PPP[i].AGS_Hsml=Right[i];
+                                if(PPP[i].AGS_Hsml<Left[i]) PPP[i].AGS_Hsml=Left[i];
+                                PPP[i].AGS_Hsml = pow(PPP[i].AGS_Hsml * Left[i] * Right[i] , 1.0/3.0);
+                            }
+                        }
+                        else
+                        {
+                            if(Right[i] == 0 && Left[i] == 0)
+                            {
+                                char buf[1000]; sprintf(buf, "AGS: Right[i] == 0 && Left[i] == 0 && PPP[i].AGS_Hsml=%g\n", PPP[i].AGS_Hsml); terminate(buf);
+                            }
+                            
+                            if(Right[i] == 0 && Left[i] > 0)
+                            {
+                                if (PPP[i].NumNgb > 1)
+                                    fac_lim = log( desnumngb / PPP[i].NumNgb ) / NUMDIMS; // this would give desnumgb if constant density (+0.231=2x desnumngb)
+                                else
+                                    fac_lim = 1.4; // factor ~66 increase in N_NGB in constant-density medium
+                                
+                                if((PPP[i].NumNgb < 2*desnumngb)&&(PPP[i].NumNgb > 0.1*desnumngb))
+                                {
+                                    double slope = PPP[i].DhsmlNgbFactor;
+                                    if(iter>2 && slope<1) slope = 0.5*(slope+1);
+                                    fac = fac_lim * slope; // account for derivative in making the 'corrected' guess
+                                    if(iter>=4)
+                                        if(PPP[i].DhsmlNgbFactor==1) fac *= 10; // tries to help with being trapped in small steps
+                                    
+                                    if(fac < fac_lim+0.231)
+                                    {
+                                        PPP[i].AGS_Hsml *= exp(fac); // more expensive function, but faster convergence
+                                    }
+                                    else
+                                    {
+                                        PPP[i].AGS_Hsml *= exp(fac_lim+0.231);
+                                        // fac~0.26 leads to expected doubling of number if density is constant,
+                                        //   insert this limiter here b/c we don't want to get *too* far from the answer (which we're close to)
+                                    }
+                                }
+                                else
+                                    PPP[i].AGS_Hsml *= exp(fac_lim); // here we're not very close to the 'right' answer, so don't trust the (local) derivatives
+                            }
+                            
+                            if(Right[i] > 0 && Left[i] == 0)
+                            {
+                                if (PPP[i].NumNgb > 1)
+                                    fac_lim = log( desnumngb / PPP[i].NumNgb ) / NUMDIMS; // this would give desnumgb if constant density (-0.231=0.5x desnumngb)
+                                else
+                                    fac_lim = 1.4; // factor ~66 increase in N_NGB in constant-density medium
+                                
+                                if (fac_lim < -1.535) fac_lim = -1.535; // decreasing N_ngb by factor ~100
+                                
+                                if((PPP[i].NumNgb < 2*desnumngb)&&(PPP[i].NumNgb > 0.1*desnumngb))
+                                {
+                                    double slope = PPP[i].DhsmlNgbFactor;
+                                    if(iter>2 && slope<1) slope = 0.5*(slope+1);
+                                    fac = fac_lim * slope; // account for derivative in making the 'corrected' guess
+                                    if(iter>=10)
+                                        if(PPP[i].DhsmlNgbFactor==1) fac *= 10; // tries to help with being trapped in small steps
+                                    
+                                    if(fac > fac_lim-0.231)
+                                    {
+                                        PPP[i].AGS_Hsml *= exp(fac); // more expensive function, but faster convergence
+                                    }
+                                    else
+                                        PPP[i].AGS_Hsml *= exp(fac_lim-0.231); // limiter to prevent --too-- far a jump in a single iteration
+                                }
+                                else
+                                    PPP[i].AGS_Hsml *= exp(fac_lim); // here we're not very close to the 'right' answer, so don't trust the (local) derivatives
+                            }
+                        } // closes if(Right[i] > 0 && Left[i] > 0) else clause
+                        
+                    } // closes if[particle_set_to_max/minhsml_flag]
+                    /* resets for max/min values */
+                    if(PPP[i].AGS_Hsml < minsoft) PPP[i].AGS_Hsml = minsoft;
+                    if(particle_set_to_minhsml_flag==1) PPP[i].AGS_Hsml = minsoft;
+                    if(PPP[i].AGS_Hsml > maxsoft) PPP[i].AGS_Hsml = maxsoft;
+                    if(particle_set_to_maxhsml_flag==1) PPP[i].AGS_Hsml = maxsoft;
+                } // closes redo_particle
+                else
+                    P[i].TimeBin = -P[i].TimeBin - 1;	/* Mark as inactive */
+            } //  if(ags_density_isactive(i))
+        } // for(i = FirstActiveParticle, npleft = 0; i >= 0; i = NextActiveParticle[i])
+        
+        tend = my_second();
+        timecomp += timediff(tstart, tend);
+        sumup_large_ints(1, &npleft, &ntot);
+        if(ntot > 0)
+        {
+            iter++;
+            if(iter > 10 && ThisTask == 0) {printf("AGS-ngb iteration %d: need to repeat for %d%09d particles.\n", iter, (int) (ntot / 1000000000), (int) (ntot % 1000000000));}
+            if(iter > MAXITER) {printf("ags-failed to converge in neighbour iteration in density()\n"); fflush(stdout); endrun(1155);}
+        }
+    }
+    while(ntot > 0);
+
+    /* iteration is done - de-malloc everything now */
+    #include "../system/code_block_xchange_perform_ops_demalloc.h" /* this de-allocates the memory for the MPI/OPENMP/Pthreads parallelization block which must appear above */
+    myfree(Right); myfree(Left);
+    
+    /* mark as active again */
+    for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
+    {
+        if(P[i].TimeBin < 0) {P[i].TimeBin = -P[i].TimeBin - 1;}
+    }
+
+    /* now that we are DONE iterating to find hsml, we can do the REAL final operations on the results */
+    for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
+    {
+        if(ags_density_isactive(i))
+        {
+            if((P[i].Mass>0)&&(PPP[i].AGS_Hsml>0)&&(PPP[i].NumNgb>0))
+            {
+                double minsoft = ags_return_minsoft(i);
+                double maxsoft = ags_return_maxsoft(i);
+                minsoft = DMAX(minsoft , AGS_Prev[i]*AGS_DSOFT_TOL);
+                maxsoft = DMIN(maxsoft , AGS_Prev[i]/AGS_DSOFT_TOL);
+                if(PPP[i].AGS_Hsml >= maxsoft) {PPPZ[i].AGS_zeta = 0;} /* check that we're within the 'valid' range for adaptive softening terms, otherwise zeta=0 */
+
+                double z0 = 0.5 * PPPZ[i].AGS_zeta * PPP[i].AGS_Hsml / (NUMDIMS * P[i].Mass * PPP[i].NumNgb / ( NORM_COEFF * pow(PPP[i].AGS_Hsml,NUMDIMS) )); // zeta before various prefactors
+                double h_eff = 2. * (KERNEL_CORE_SIZE*All.ForceSoftening[P[i].Type]); // force softening defines where Jeans pressure needs to kick in; prefactor = NJeans [=2 here]
+                double Prho = 0 * h_eff*h_eff/2.; if(P[i].Particle_DivVel>0) {Prho=-Prho;} // truelove criterion. NJeans[above] , gamma=2 for effective EOS when this dominates, rho=ma*na; h_eff here can be Hsml [P/rho~H^-1] or gravsoft_min to really enforce that, as MIN, with P/rho~H^-3; if-check makes it so this term always adds KE to the system, pumping it up
+                PPPZ[i].AGS_zeta = P[i].Mass*P[i].Mass * PPP[i].DhsmlNgbFactor * ( z0 + Prho ); // force correction, including corrections for adaptive softenings and EOS terms
+                PPP[i].NumNgb = pow(PPP[i].NumNgb , 1./NUMDIMS); /* convert NGB to the more useful format, NumNgb^(1/NDIMS), which we can use to obtain the corrected particle sizes */
+            } else {
+                PPPZ[i].AGS_zeta = 0; PPP[i].NumNgb = 0; PPP[i].AGS_Hsml = All.ForceSoftening[P[i].Type];
+            }
+#ifdef PM_HIRES_REGION_CLIPPING
+            if(PPP[i].NumNgb <= 0) {P[i].Mass = 0;}
+            if((PPP[i].AGS_Hsml <= 0) || (PPP[i].AGS_Hsml >= PM_HIRES_REGION_CLIPPING)) {P[i].Mass = 0;}
+            double vmag=0; for(k=0;k<3;k++) {vmag+=P[i].Vel[k]*P[i].Vel[k];} vmag = sqrt(vmag);
+            if(vmag>5.e9*All.cf_atime/All.UnitVelocity_in_cm_per_s) {P[i].Mass=0;}
+            if(vmag>1.e9*All.cf_atime/All.UnitVelocity_in_cm_per_s) {for(k=0;k<3;k++) {P[i].Vel[k]*=(1.e9*All.cf_atime/All.UnitVelocity_in_cm_per_s)/vmag;}}
+#endif
+        }
+    }
+    myfree(AGS_Prev);
+    
+    /* collect some timing information */
+    double t1; t1 = WallclockTime = my_second(); timeall += timediff(t0, t1);
+    CPU_Step[CPU_AGSDENSCOMPUTE] += timecomp; CPU_Step[CPU_AGSDENSWAIT] += timewait;
+    CPU_Step[CPU_AGSDENSCOMM] += timecomm; CPU_Step[CPU_AGSDENSMISC] += timeall - (timecomp + timewait + timecomm);
 }
-void *ags_density_evaluate_secondary(void *p)
-{
-#define EVALUATION_CALL ags_density_evaluate(j, 1, &dummy, &dummy, &dummy, ngblist);
-#include "../system/code_block_secondary_loop_evaluation.h"
-#undef EVALUATION_CALL
-}
+#include "../system/code_block_xchange_finalize.h" /* de-define the relevant variables and macros to avoid compilation errors and memory leaks */
+
+
+
+
+
+
+
 
 
 /* routine to determine if we need to use ags_density to calculate Hsml */
@@ -1093,9 +742,17 @@ double do_cbe_nvt_inversion_for_faces(int i)
  Everything below here is a giant block to define the sub-routines needed to calculate additional force
   terms for particle types that do not fall into the 'hydro' category.
  -------------------------------------------------------------------------------------------------------- */
+#define MASTER_FUNCTION_NAME AGSForce_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define CONDITIONFUNCTION_FOR_EVALUATION if(AGSForce_isactive(i)) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
+#include "../system/code_block_xchange_initialize.h" /* pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
+
+struct kernel_AGSForce
+{
+    double dp[3], dv[3], r, wk_i, wk_j, dwk_i, dwk_j, h_i, hinv_i, hinv3_i, hinv4_i, h_j, hinv_j, hinv3_j, hinv4_j;
+};
 
 /* structure for variables needed in evaluation sub-routines which must be passed from particles (sent to other processors) */
-struct AGSForce_data_in
+struct INPUT_STRUCT_NAME
 {
     double Mass;
     double AGS_Hsml;
@@ -1123,40 +780,10 @@ struct AGSForce_data_in
 #endif
 #endif
 }
-*AGSForce_DataIn, *AGSForce_DataGet;
-
-/* structure for variables which must be returned -from- the evaluation sub-routines */
-struct AGSForce_data_out
-{
-#if defined(DM_SIDM)
-    double sidm_kick[3];
-    integertime dt_step_sidm;
-    int si_count;
-#endif
-#ifdef DM_FUZZY
-    double acc[3], AGS_Dt_Numerical_QuantumPotential;
-#if (DM_FUZZY > 0)
-    double AGS_Dt_Psi_Re, AGS_Dt_Psi_Im, AGS_Dt_Psi_Mass;
-#endif
-#endif
-}
-*AGSForce_DataResult, *AGSForce_DataOut;
-
-/* this is a temporary structure for quantities used ONLY in the loop below, for example for computing the slope-limiters (for the Reimann problem) */
-/* (currently not used, but can un-comment this and add as needed, if needed for future sub-routines)
-static struct temporary_data_topass
-{}
-*AGSForce_DataPasser;
-*/
-
-struct kernel_AGSForce
-{
-    double dp[3], dv[3], r, wk_i, wk_j, dwk_i, dwk_j, h_i, hinv_i, hinv3_i, hinv4_i, h_j, hinv_j, hinv3_j, hinv4_j;
-};
+*DATAIN_NAME, *DATAGET_NAME;
 
 /* routine to pass particle information to the actual evaluation sub-routines */
-static inline void particle2in_AGSForce(struct AGSForce_data_in *in, int i);
-static inline void particle2in_AGSForce(struct AGSForce_data_in *in, int i)
+static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
 {
     in->Mass = PPP[i].Mass;
     in->AGS_Hsml = PPP[i].AGS_Hsml;
@@ -1191,13 +818,30 @@ static inline void particle2in_AGSForce(struct AGSForce_data_in *in, int i)
 #endif
 }
 
+
+/* structure for variables which must be returned -from- the evaluation sub-routines */
+struct OUTPUT_STRUCT_NAME
+{
+#if defined(DM_SIDM)
+    double sidm_kick[3];
+    integertime dt_step_sidm;
+    int si_count;
+#endif
+#ifdef DM_FUZZY
+    double acc[3], AGS_Dt_Numerical_QuantumPotential;
+#if (DM_FUZZY > 0)
+    double AGS_Dt_Psi_Re, AGS_Dt_Psi_Im, AGS_Dt_Psi_Mass;
+#endif
+#endif
+}
+*DATARESULT_NAME, *DATAOUT_NAME;
+
 #define ASSIGN_ADD_PRESET(x,y,mode) (mode == 0 ? (x=y) : (x+=y))
 #define MINMAX_CHECK(x,xmin,xmax) ((x<xmin)?(xmin=x):((x>xmax)?(xmax=x):(1)))
 #define MAX_ADD(x,y,mode) ((y > x) ? (x = y) : (1)) // simpler definition now used
 #define MIN_ADD(x,y,mode) ((y < x) ? (x = y) : (1))
 
-static inline void out2particle_AGSForce(struct AGSForce_data_out *out, int i, int mode);
-static inline void out2particle_AGSForce(struct AGSForce_data_out *out, int i, int mode)
+static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration)
 {
     int k,k2; k=0; k2=0;
 #if defined(DM_SIDM)
@@ -1214,264 +858,40 @@ static inline void out2particle_AGSForce(struct AGSForce_data_out *out, int i, i
     ASSIGN_ADD_PRESET(P[i].AGS_Dt_Psi_Mass,out->AGS_Dt_Psi_Mass,mode);
 #endif
 #endif
-
 }
 
 
-void AGSForce_calc(void)
+/* routine to determine if we need to apply the additional AGS-Force calculation[s] */
+int AGSForce_isactive(int i);
+int AGSForce_isactive(int i)
 {
-    int i, j, k, ngrp, ndone, ndone_flag, recvTask, place, save_NextParticle;
-    double timeall = 0, timecomp1 = 0, timecomp2 = 0, timecommsumm1 = 0, timecommsumm2 = 0, timewait1 = 0, timewait2 = 0;
-    double timecomp, timecomm, timewait, tstart, tend, t0, t1;
-    long long n_exported = 0, NTaskTimesNumPart;
-    /* allocate buffers to arrange communication */
-    //AGSForce_DataPasser = (struct temporary_data_topass *) mymalloc("AGSForce_DataPasser",NumPart * sizeof(struct temporary_data_topass));
-    NTaskTimesNumPart = maxThreads * NumPart;
-    size_t MyBufferSize = All.BufferSize;
-    All.BunchSize = (int) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
-                                                           sizeof(struct AGSForce_data_in) + sizeof(struct AGSForce_data_out) + sizemax(sizeof(struct AGSForce_data_in),sizeof(struct AGSForce_data_out))));
-    CPU_Step[CPU_AGSDENSMISC] += measure_time();
-    t0 = my_second();
-    Ngblist = (int *) mymalloc("Ngblist", NTaskTimesNumPart * sizeof(int));
-    DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
-    DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
-
-    /* before doing any operations, need to zero the appropriate memory so we can correctly do pair-wise operations */
-    //for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) {if(P[i].Type==0) {memset(&AGSForce_DataPasser[i], 0, sizeof(struct temporary_data_topass));}}
-#if defined(DM_SIDM)
-    for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) {P[i].dt_step_sidm = 10*P[i].dt_step;}
+    if(P[i].TimeBin < 0) return 0; /* check our 'marker' for particles which have finished iterating to an Hsml solution (if they have, dont do them again) */
+#ifdef DM_SIDM
+    if((1 << P[i].Type) & (DM_SIDM)) return 1;
 #endif
-
-    /* begin the main gradient loop */
-    NextParticle = FirstActiveParticle;    /* begin with this index */
-    do
-    {
-        BufferFullFlag = 0;
-        Nexport = 0;
-        save_NextParticle = NextParticle;
-        for(j = 0; j < NTask; j++)
-        {
-            Send_count[j] = 0;
-            Exportflag[j] = -1;
-        }
-        /* do local particles and prepare export list */
-        tstart = my_second();
-        
-#ifdef _OPENMP
-#pragma omp parallel
+#if defined(DM_FUZZY) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+    if(P[i].Type == 1) return 1;
 #endif
-        {
-#ifdef _OPENMP
-            int mainthreadid = omp_get_thread_num();
-#else
-            int mainthreadid = 0;
-#endif
-            AGSForce_evaluate_primary(&mainthreadid);    /* do local particles and prepare export list */
-        }
-        
-        tend = my_second();
-        timecomp1 += timediff(tstart, tend);
-        
-        if(BufferFullFlag)
-        {
-            int last_nextparticle = NextParticle;
-            NextParticle = save_NextParticle;
-            while(NextParticle >= 0)
-            {
-                if(NextParticle == last_nextparticle) break;
-                if(ProcessedFlag[NextParticle] != 1) break;
-                ProcessedFlag[NextParticle] = 2;
-                NextParticle = NextActiveParticle[NextParticle];
-            }
-            if(NextParticle == save_NextParticle)
-            {
-                endrun(123708); /* in this case, the buffer is too small to process even a single particle */
-            }
-            int new_export = 0;
-            for(j = 0, k = 0; j < Nexport; j++)
-                if(ProcessedFlag[DataIndexTable[j].Index] != 2)
-                {
-                    if(k < j + 1) {k = j + 1;}
-                    for(; k < Nexport; k++)
-                        if(ProcessedFlag[DataIndexTable[k].Index] == 2)
-                        {
-                            int old_index = DataIndexTable[j].Index;
-                            DataIndexTable[j] = DataIndexTable[k];
-                            DataNodeList[j] = DataNodeList[k];
-                            DataIndexTable[j].IndexGet = j;
-                            new_export++;
-                            DataIndexTable[k].Index = old_index;
-                            k++;
-                            break;
-                        }
-                }
-                else {new_export++;}
-            Nexport = new_export;
-        }
-        n_exported += Nexport;
-        for(j = 0; j < NTask; j++) {Send_count[j] = 0;}
-        for(j = 0; j < Nexport; j++) {Send_count[DataIndexTable[j].Task]++;}
-        MYSORT_DATAINDEX(DataIndexTable, Nexport, sizeof(struct data_index), data_index_compare);
-        tstart = my_second();
-        MPI_Alltoall(Send_count, 1, MPI_INT, Recv_count, 1, MPI_INT, MPI_COMM_WORLD);
-        tend = my_second();
-        timewait1 += timediff(tstart, tend);
-        for(j = 0, Nimport = 0, Recv_offset[0] = 0, Send_offset[0] = 0; j < NTask; j++)
-        {
-            Nimport += Recv_count[j];
-            if(j > 0)
-            {
-                Send_offset[j] = Send_offset[j - 1] + Send_count[j - 1];
-                Recv_offset[j] = Recv_offset[j - 1] + Recv_count[j - 1];
-            }
-        }
-        
-        /* prepare particle data for export */
-        AGSForce_DataGet = (struct AGSForce_data_in *) mymalloc("AGSForce_DataGet", Nimport * sizeof(struct AGSForce_data_in));
-        AGSForce_DataIn = (struct AGSForce_data_in *) mymalloc("AGSForce_DataIn", Nexport * sizeof(struct AGSForce_data_in));
-        for(j = 0; j < Nexport; j++)
-        {
-            place = DataIndexTable[j].Index;
-            particle2in_AGSForce(&AGSForce_DataIn[j], place);
-            memcpy(AGSForce_DataIn[j].NodeList,DataNodeList[DataIndexTable[j].IndexGet].NodeList, NODELISTLENGTH * sizeof(int));
-        }
-        
-        /* exchange particle data */
-        tstart = my_second();
-        for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-        {
-            recvTask = ThisTask ^ ngrp;
-            if(recvTask < NTask)
-            {
-                if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
-                {
-                    /* get the particles */
-                    MPI_Sendrecv(&AGSForce_DataIn[Send_offset[recvTask]],
-                                 Send_count[recvTask] * sizeof(struct AGSForce_data_in), MPI_BYTE,
-                                 recvTask, TAG_GRADLOOP_A,
-                                 &AGSForce_DataGet[Recv_offset[recvTask]],
-                                 Recv_count[recvTask] * sizeof(struct AGSForce_data_in), MPI_BYTE,
-                                 recvTask, TAG_GRADLOOP_A, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                }
-            }
-        }
-        tend = my_second();
-        timecommsumm1 += timediff(tstart, tend);
-        myfree(AGSForce_DataIn);
-        AGSForce_DataResult = (struct AGSForce_data_out *) mymalloc("AGSForce_DataResult", Nimport * sizeof(struct AGSForce_data_out));
-        AGSForce_DataOut = (struct AGSForce_data_out *) mymalloc("AGSForce_DataOut", Nexport * sizeof(struct AGSForce_data_out));
-        
-        /* now do the particles that were sent to us */
-        tstart = my_second();
-        NextJ = 0;
-        
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-        {
-#ifdef _OPENMP
-            int mainthreadid = omp_get_thread_num();
-#else
-            int mainthreadid = 0;
-#endif
-            AGSForce_evaluate_secondary(&mainthreadid);
-        }
-        
-        tend = my_second();
-        timecomp2 += timediff(tstart, tend);
-        
-        if(NextParticle < 0) {ndone_flag = 1;} else {ndone_flag = 0;}
-        tstart = my_second();
-        MPI_Allreduce(&ndone_flag, &ndone, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-        tend = my_second();
-        timewait2 += timediff(tstart, tend);
-        
-        /* get the result */
-        tstart = my_second();
-        for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-        {
-            recvTask = ThisTask ^ ngrp;
-            if(recvTask < NTask)
-            {
-                if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
-                {
-                    /* send the results */
-                    MPI_Sendrecv(&AGSForce_DataResult[Recv_offset[recvTask]],
-                                 Recv_count[recvTask] * sizeof(struct AGSForce_data_out),
-                                 MPI_BYTE, recvTask, TAG_GRADLOOP_B,
-                                 &AGSForce_DataOut[Send_offset[recvTask]],
-                                 Send_count[recvTask] * sizeof(struct AGSForce_data_out),
-                                 MPI_BYTE, recvTask, TAG_GRADLOOP_B, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                }
-            }
-        }
-        tend = my_second();
-        timecommsumm2 += timediff(tstart, tend);
-        
-        /* add the result to the local particles */
-        tstart = my_second();
-        for(j = 0; j < Nexport; j++)
-        {
-            place = DataIndexTable[j].Index;
-            out2particle_AGSForce(&AGSForce_DataOut[j], place, 1);
-        }
-        tend = my_second();
-        timecomp1 += timediff(tstart, tend);
-        myfree(AGSForce_DataOut);
-        myfree(AGSForce_DataResult);
-        myfree(AGSForce_DataGet);
-    }
-    while(ndone < NTask);
-    
-    myfree(DataNodeList);
-    myfree(DataIndexTable);
-    myfree(Ngblist);
-    
-    /* do final operations on results: these are operations that can be done after the complete set of iterations */
-    for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
-    {
-    }
-    //myfree(AGSForce_DataPasser); /* free the temporary structure we created for the MinMax and additional data passing */
-    MPI_Barrier(MPI_COMM_WORLD); // force barrier so we know the first derivatives are fully-computed //
-
-    /* collect some timing information */
-    t1 = WallclockTime = my_second();
-    timeall += timediff(t0, t1);
-    timecomp = timecomp1 + timecomp2;
-    timewait = timewait1 + timewait2;
-    timecomm = timecommsumm1 + timecommsumm2;
-    CPU_Step[CPU_AGSDENSCOMPUTE] += timecomp;
-    CPU_Step[CPU_AGSDENSWAIT] += timewait;
-    CPU_Step[CPU_AGSDENSCOMM] += timecomm;
-    CPU_Step[CPU_AGSDENSMISC] += timeall - (timecomp + timewait + timecomm);
+    return 0; // default to no-action, need to affirm calculation above //
 }
 
 
-
-int AGSForce_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist)
+int AGSForce_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
 {
-    /* define variables */
-    int startnode, numngb_inbox, listindex = 0, j, k, n;
-    double r2, u_i, u_j;
-    struct kernel_AGSForce kernel;
-    struct AGSForce_data_in local;
-    struct AGSForce_data_out out;
     /* zero memory and import data for local target */
-    memset(&out, 0, sizeof(struct AGSForce_data_out)); memset(&kernel, 0, sizeof(struct kernel_AGSForce));
-    if(mode == 0) {particle2in_AGSForce(&local, target);} else {local = AGSForce_DataGet[target];}
-    /* check if we should bother doing a neighbor loop */
-    if(local.Mass <= 0) return 0;
-    if(local.AGS_Hsml <= 0) return 0;
+    int startnode, numngb_inbox, listindex = 0, j, k, n; double r2, u_i, u_j;
+    struct kernel_AGSForce kernel; struct INPUT_STRUCT_NAME local; struct OUTPUT_STRUCT_NAME out;
+    memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME)); memset(&kernel, 0, sizeof(struct kernel_AGSForce));
+    if(mode == 0) {INPUTFUNCTION_NAME(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];}
+    if(local.Mass <= 0 || local.AGS_Hsml <= 0) return 0;
     /* now set particle-i centric quantities so we don't do it inside the loop */
-    kernel.h_i = local.AGS_Hsml;
-    kernel_hinv(kernel.h_i, &kernel.hinv_i, &kernel.hinv3_i, &kernel.hinv4_i);
+    kernel.h_i = local.AGS_Hsml; kernel_hinv(kernel.h_i, &kernel.hinv_i, &kernel.hinv3_i, &kernel.hinv4_i);
     int AGS_kernel_shared_BITFLAG = ags_gravity_kernel_shared_BITFLAG(local.Type); // determine allowed particle types for search for adaptive gravitational softening terms
 #if defined(DM_SIDM)
     out.dt_step_sidm = local.dt_step_sidm;
 #endif
-
     /* Now start the actual neighbor computation for this particle */
-    if(mode == 0) {startnode = All.MaxPart; /* root node */} else {startnode = AGSForce_DataGet[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode;    /* open it */}
+    if(mode == 0) {startnode = All.MaxPart; /* root node */} else {startnode = DATAGET_NAME[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode;    /* open it */}
     while(startnode >= 0)
     {
         while(startnode >= 0)
@@ -1521,55 +941,28 @@ int AGSForce_evaluate(int target, int mode, int *exportflag, int *exportnodecoun
 
             } // numngb_inbox loop
         } // while(startnode)
-        /* continue to open leaves if needed */
-        if(mode == 1)
-        {
-            listindex++;
-            if(listindex < NODELISTLENGTH)
-            {
-                startnode = AGSForce_DataGet[target].NodeList[listindex];
-                if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;    /* open it */}
-            }
-        }
+        if(mode == 1) {listindex++; if(listindex < NODELISTLENGTH) {startnode = DATAGET_NAME[target].NodeList[listindex]; if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode; /* open it */}}} /* continue to open leaves if needed */
     }
-    
-    /* Collect the result at the right place */
-    if(mode == 0) {out2particle_AGSForce(&out, target, 0);} else {AGSForce_DataResult[target] = out;}
+    if(mode == 0) {OUTPUTFUNCTION_NAME(&out, target, 0, loop_iteration);} else {DATARESULT_NAME[target] = out;} /* collects the result at the right place */
     return 0;
 }
 
-void *AGSForce_evaluate_primary(void *p)
-{
-#define CONDITION_FOR_EVALUATION if(AGSForce_isactive(i))
-#define EVALUATION_CALL AGSForce_evaluate(i,0,exportflag,exportnodecount,exportindex,ngblist)
-#include "../system/code_block_primary_loop_evaluation.h"
-#undef CONDITION_FOR_EVALUATION
-#undef EVALUATION_CALL
-}
 
-void *AGSForce_evaluate_secondary(void *p)
+void AGSForce_calc(void)
 {
-#define EVALUATION_CALL AGSForce_evaluate(j, 1, &dummy, &dummy, &dummy, ngblist);
-#include "../system/code_block_secondary_loop_evaluation.h"
-#undef EVALUATION_CALL
-}
-
-
-/* routine to determine if we need to apply the additional AGS-Force calculation[s] */
-int AGSForce_isactive(int i)
-{
-    if(P[i].TimeBin < 0) return 0; /* check our 'marker' for particles which have finished iterating to an Hsml solution (if they have, dont do them again) */
-#ifdef DM_SIDM
-    if((1 << P[i].Type) & (DM_SIDM)) return 1;
+    PRINT_STATUS(" ..entering AGS-Force calculation [as hydro loop for non-gas elements]\n");
+    /* before doing any operations, need to zero the appropriate memory so we can correctly do pair-wise operations */
+#if defined(DM_SIDM)
+    {int i; for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) {P[i].dt_step_sidm = 10*P[i].dt_step;}}
 #endif
-#if defined(DM_FUZZY) || defined(FLAG_NOT_IN_PUBLIC_CODE)
-    if(P[i].Type == 1) return 1;
-#endif
-    return 0; // default to no-action, need to affirm calculation above //
+    #include "../system/code_block_xchange_perform_ops_malloc.h" /* this calls the large block of code which contains the memory allocations for the MPI/OPENMP/Pthreads parallelization block which must appear below */
+    #include "../system/code_block_xchange_perform_ops.h" /* this calls the large block of code which actually contains all the loops, MPI/OPENMP/Pthreads parallelization */
+    #include "../system/code_block_xchange_perform_ops_demalloc.h" /* this de-allocates the memory for the MPI/OPENMP/Pthreads parallelization block which must appear above */
+    /* do final operations on results: these are operations that can be done after the complete set of iterations */
+    /* collect timing information */
+    CPU_Step[CPU_AGSDENSCOMPUTE] += timecomp; CPU_Step[CPU_AGSDENSWAIT] += timewait; CPU_Step[CPU_AGSDENSCOMM] += timecomm; CPU_Step[CPU_AGSDENSMISC] += timeall - (timecomp + timewait + timecomm);
 }
-
-
-
+#include "../system/code_block_xchange_finalize.h" /* de-define the relevant variables and macros to avoid compilation errors and memory leaks */
 
 
 #endif // AGS_HSML_CALCULATION_IS_ACTIVE

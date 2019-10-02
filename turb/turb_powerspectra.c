@@ -29,6 +29,8 @@
 #include     <srfftw_mpi.h>
 #endif
 #endif
+#define cmplx_re(c) ((c).re)
+#define cmplx_im(c) ((c).im)
 #else /* FFTW3 */
 #include "../gravity/myfftw3.h"
 #endif
@@ -591,12 +593,7 @@ void powerspec_turb(int filenr)
 
   tend = my_second();
   
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("end turbulent power spectra  took %g seconds\n", timediff(tstart, tend));
-    }
-#endif
+  PRINT_STATUS("end turbulent power spectra  took %g seconds", timediff(tstart, tend));
 }
 
 
@@ -818,13 +815,7 @@ double powerspec_turb_obtain_fields(void)
 
   double tstart = my_second();
 
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("Start finding nearest gas-particle for mesh-cell centers (presently allocated=%g MB)\n", AllocatedBytes / (1024.0 * 1024.0));
-    }
-#endif
-    
+  PRINT_STATUS("Start finding nearest gas-particle for mesh-cell centers (presently allocated=%g MB)", AllocatedBytes / (1024.0 * 1024.0));
   large_array_offset i, n, Ncount = ((large_array_offset)nslab_x) * (TURB_DRIVING_SPECTRUMGRID * TURB_DRIVING_SPECTRUMGRID);  /* number of grid points on the local slab */
 
   powerspec_turb_nearest_distance = (float *) mymalloc("powerspec_turb_nearest_distance", sizeof(float) * Ncount);
@@ -853,7 +844,7 @@ double powerspec_turb_obtain_fields(void)
   /* we will repeat the whole thing for those points where we didn't find enough neighbours */
   do
     {
-      i = 0;			/* beginn with this index */
+      i = 0;			/* begin with this index */
 
       do
 	{
@@ -891,13 +882,8 @@ double powerspec_turb_obtain_fields(void)
 	  DataGet = (struct data_in *) mymalloc("DataGet", nimport * sizeof(struct data_in));
 	  DataIn = (struct data_in *) mymalloc("DataIn", nexport * sizeof(struct data_in));
 
-#ifndef IO_REDUCED_MODE
-	  if(ThisTask == 0)
-	    {
-	      printf("still finding nearest... (presently allocated=%g MB)\n", AllocatedBytes / (1024.0 * 1024.0));
-	    }
-#endif
-	  for(j = 0; j < nexport; j++)
+        PRINT_STATUS("still finding nearest... (presently allocated=%g MB)", AllocatedBytes / (1024.0 * 1024.0));
+        for(j = 0; j < nexport; j++)
 	    {
 	      place = DataIndexTable[j].Index;
 
@@ -1070,14 +1056,8 @@ double powerspec_turb_obtain_fields(void)
       if(ntot > 0)
 	{
 	  iter++;
-#ifndef IO_REDUCED_MODE
-	  if(iter > 0 && ThisTask == 0)
-	    {
-	      printf("powespec_vel nearest iteration %d: need to repeat for %lld particles.\n", iter, ntot);
-	    }
-#endif
-	  if(iter > MAXITER)
-	    terminate("failed to converge");
+	  if(iter > 0) PRINT_STATUS("powespec_vel nearest iteration %d: need to repeat for %lld particles", iter, ntot);
+	  if(iter > MAXITER) terminate("failed to converge");
 	}
     }
   while(ntot > 0);

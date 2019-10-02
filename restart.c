@@ -36,7 +36,7 @@ int old_MaxPart = 0, new_MaxPart;
 
 /*
  * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org). The code has been modified
+ * Volker Springel. The code has been modified
  * in part (adding/removing read/write items, allowing for different variables 
  * to be changed or re-initialized on restarts, and changing variable units as necessary)
  * by Phil Hopkins (phopkins@caltech.edu) for GIZMO.

@@ -11,17 +11,17 @@
  */
 /* --------------------------------------------------------------------------------- */
 /* --------------------------------------------------------------------------------- */
-int hydro_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist)
+int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
 {
     int j, k, n, startnode, numngb, kernel_mode, listindex;
     double hinv_i,hinv3_i,hinv4_i,hinv_j,hinv3_j,hinv4_j,V_i,V_j,dt_hydrostep,r2,rinv,rinv_soft,u,Particle_Size_i;
     double v_hll,k_hll,b_hll; v_hll=k_hll=0,b_hll=1;
     struct kernel_hydra kernel;
-    struct hydrodata_in local;
-    struct hydrodata_out out;
+    struct INPUT_STRUCT_NAME local;
+    struct OUTPUT_STRUCT_NAME out;
     struct Conserved_var_Riemann Fluxes;
     listindex = 0;
-    memset(&out, 0, sizeof(struct hydrodata_out));
+    memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME));
     memset(&kernel, 0, sizeof(struct kernel_hydra));
     memset(&Fluxes, 0, sizeof(struct Conserved_var_Riemann));
 #ifndef HYDRO_SPH
@@ -44,11 +44,11 @@ int hydro_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
 
     if(mode == 0)
     {
-        particle2in_hydra(&local, target); // this setup allows for all the fields we need to define (don't hard-code here)
+        particle2in_hydra(&local, target, loop_iteration); // this setup allows for all the fields we need to define (don't hard-code here)
     }
     else
     {
-        local = HydroDataGet[target]; // this setup allows for all the fields we need to define (don't hard-code here)
+        local = DATAGET_NAME[target]; // this setup allows for all the fields we need to define (don't hard-code here)
     }
     
     /* certain particles should never enter the loop: check for these */
@@ -127,7 +127,7 @@ int hydro_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     else
     {
 #ifndef DONOTUSENODELIST
-        startnode = HydroDataGet[target].NodeList[0];
+        startnode = DATAGET_NAME[target].NodeList[0];
         startnode = Nodes[startnode].u.d.nextnode;	/* open it */
 #else
         startnode = All.MaxPart;	/* root node */
@@ -515,7 +515,7 @@ int hydro_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
             listindex++;
             if(listindex < NODELISTLENGTH)
             {
-                startnode = HydroDataGet[target].NodeList[listindex];
+                startnode = DATAGET_NAME[target].NodeList[listindex];
                 if(startnode >= 0)
                     startnode = Nodes[startnode].u.d.nextnode;	/* open it */
             }
@@ -525,9 +525,9 @@ int hydro_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     
     /* Now collect the result at the right place */
     if(mode == 0)
-        out2particle_hydra(&out, target, 0);
+        out2particle_hydra(&out, target, 0, loop_iteration);
     else
-        HydroDataResult[target] = out;
+        DATARESULT_NAME[target] = out;
     
     return 0;
 }

@@ -25,15 +25,6 @@
 %   setting MHD_CONSTRAINED_GRADIENT=1 as well.
 % 
 
-%-------------------------------------------------------------------------
-%----  This file contains the input parameters needed at run-time for 
-%       simulations. It is based on and closely resembles the GADGET-3
-%       parameterfile (format of which and parsing routines written by 
-%       Volker Springel [volker.springel@h-its.org]). It has been updated
-%       with new naming conventions and additional variables as needed by 
-%       Phil Hopkins [phopkins@caltech.edu] for GIZMO.
-%-------------------------------------------------------------------------
-
 %----  Relevant files
 InitCondFile /panfs/ds06/sxs/phopkins/GIZMO_tests/iso_disk/iso_disk_ics
 OutputDir   /panfs/ds06/sxs/phopkins/GIZMO_tests/iso_disk
@@ -61,7 +52,7 @@ CpuTimeBetRestartFile   3500  	% in seconds
 ResubmitOn              0 
 ResubmitCommand         my-scriptfile 
 
-%----- Memory alloction 
+%----- Memory allocation 
 MaxMemSize          1500    % sets maximum MPI process memory use in MByte 
 PartAllocFactor     2.0     % memory load allowed for better cpu balance 
 BufferSize          50     % in MByte 

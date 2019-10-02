@@ -4,17 +4,12 @@
 # system. Don't commit changes to this file unless you add support for
 # a new system.
 #
-###########
-#
-# This file was originally part of the GADGET3 code developed by
-#   Volker Springel (volker.springel@h-its.org). 
-#
 #############
 
 
-#SYSTYPE="Frontera"
+SYSTYPE="Frontera"
 #SYSTYPE="Stampede2"
-SYSTYPE="Wheeler"
+#SYSTYPE="Wheeler"
 #SYSTYPE="MacBookPro"
 #SYSTYPE="Quest"
 #SYSTYPE="Quest-intel"

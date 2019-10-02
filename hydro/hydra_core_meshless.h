@@ -349,7 +349,7 @@
                            Riemann_vec.L.v[0],Riemann_vec.L.v[1],Riemann_vec.L.v[2],
                            Riemann_vec.R.v[0],Riemann_vec.R.v[1],Riemann_vec.R.v[2],n_unit[0],n_unit[1],n_unit[2]);
 #endif
-                    exit(1234);
+                    endrun(1234);
                 }
             }
         } // closes loop of alternative reconstructions if invalid pressures are found //

@@ -16,14 +16,18 @@
  *  \brief parallel FoF group finder
  */
 /*
- * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org). It is here in GIZMO 
- * as legacy code at the moment, and needs to be re-written or removed.
- */
+* This file was originally part of the GADGET3 code developed by Volker Springel.
+* It has been updated significantly by PFH for basic compatibility with GIZMO,
+* as well as code cleanups, and accommodating new GIZMO functionality for various
+* other operations. 
+*/
 
 
 #ifdef FOF
 #include "fof.h"
+#ifdef SUBFIND
+#include "subfind/subfind.h"
+#endif
 
 
 int Ngroups, TotNgroups;
@@ -70,7 +74,7 @@ static int NgroupsExt, Nids;
 
 static int MyFOF_PRIMARY_LINK_TYPES;
 static int MyFOF_SECONDARY_LINK_TYPES;
-static int MyFOF_GROUP_MIN_LEN;
+static int MyFOF_GROUP_MIN_SIZE;
 
 static MyIDType *Head, *Len, *Next, *Tail, *MinID, *MinIDTask;
 static char *NonlocalFlag;
@@ -87,21 +91,17 @@ void fof_fof(int num)
   struct unbind_data *d;
   long long ndmtot;
 
-
-
-
-
+#ifdef IO_SUBFIND_READFOF_FROMIC
+  read_fof(num);
+#endif
 
   MyFOF_PRIMARY_LINK_TYPES = FOF_PRIMARY_LINK_TYPES;
   MyFOF_SECONDARY_LINK_TYPES = FOF_SECONDARY_LINK_TYPES;
-  MyFOF_GROUP_MIN_LEN = FOF_GROUP_MIN_LEN;
+  MyFOF_GROUP_MIN_SIZE = FOF_GROUP_MIN_SIZE;
 
   if(ThisTask == 0)
     {
       printf("\nBegin to compute FoF group catalogues...  (presently allocated=%g MB)\n", AllocatedBytes / (1024.0 * 1024.0));
-#ifndef IO_REDUCED_MODE
-        fflush(stdout);
-#endif
     }
 
   CPU_Step[CPU_MISC] += measure_time();
@@ -109,7 +109,6 @@ void fof_fof(int num)
   domain_Decomposition(1, 0, 0);
 
   force_treefree();
-
 
   for(i = 0, ndm = 0, mass = 0; i < NumPart; i++)
     if(((1 << P[i].Type) & (MyFOF_PRIMARY_LINK_TYPES)))
@@ -127,14 +126,7 @@ void fof_fof(int num)
 
   LinkL = LINKLENGTH * pow(masstot / ndmtot / rhodm, 1.0 / 3);
 
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("\nComoving linking length: %g    ", LinkL);
-      printf("(presently allocated=%g MB)\n", AllocatedBytes / (1024.0 * 1024.0));
-      fflush(stdout);
-    }
-#endif
+    PRINT_STATUS("Comoving linking length: %g : (presently allocated=%g MB) ",LinkL,AllocatedBytes / (1024.0 * 1024.0))
 
   FOF_PList =
     (struct fof_particle_list *) mymalloc("FOF_PList", NumPart *
@@ -250,7 +242,7 @@ void fof_fof(int num)
 
   if(ThisTask == 0)
     {
-      printf("\nTotal number of groups with at least %d particles: %d\n", MyFOF_GROUP_MIN_LEN, TotNgroups);
+      printf("\nTotal number of groups with at least %d particles: %d\n", MyFOF_GROUP_MIN_SIZE, TotNgroups);
       if(TotNgroups > 0)
 	{
 	  printf("Largest group has %d particles.\n", largestgroup);
@@ -261,18 +253,10 @@ void fof_fof(int num)
 
   t0 = my_second();
 
-  Group =
-    (group_properties *) mymalloc("Group", sizeof(group_properties) *
+  Group = (group_properties *) mymalloc("Group", sizeof(group_properties) *
 					 IMAX(NgroupsExt, TotNgroups / NTask + 1));
 
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("group properties are now allocated.. (presently allocated=%g MB)\n",
-	     AllocatedBytes / (1024.0 * 1024.0));
-      fflush(stdout);
-    }
-#endif
+  PRINT_STATUS("group properties are now allocated.. (presently allocated=%g MB)",AllocatedBytes / (1024.0 * 1024.0));
     
   for(i = 0, start = 0; i < NgroupsExt; i++)
     {
@@ -326,6 +310,10 @@ void fof_fof(int num)
   if(num >= 0)
     {
       fof_save_groups(num);
+#ifdef SUBFIND
+      if(DumpFlag != 2)
+	subfind(num);
+#endif
     }
 
   myfree(Group);
@@ -333,18 +321,15 @@ void fof_fof(int num)
   myfree(FOF_GList);
   myfree(FOF_PList);
 
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("Finished computing FoF groups.  (presently allocated=%g MB)\n\n",
-	     AllocatedBytes / (1024.0 * 1024.0));
-      fflush(stdout);
-    }
-#endif
+  PRINT_STATUS("Finished computing FoF groups.  (presently allocated=%g MB)", AllocatedBytes / (1024.0 * 1024.0));
 
   CPU_Step[CPU_FOF] += measure_time();
 
+#ifdef SUBFIND
+  domain_Decomposition(1, 0, 0);
+#else
   force_treeallocate((int) (All.TreeAllocFactor * All.MaxPart) + NTopnodes, All.MaxPart);
+#endif
 
   if(ThisTask == 0)
     printf("Tree construction.\n");
@@ -366,13 +351,7 @@ void fof_find_groups(void)
   char *FoFDataOut, *FoFDataResult, *MarkedFlag, *ChangedFlag;
   double t0, t1;
 
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("\nStart linking particles (presently allocated=%g MB)\n", AllocatedBytes / (1024.0 * 1024.0));
-      fflush(stdout);
-    }
-#endif
+  PRINT_STATUS("Start linking particles (presently allocated=%g MB)", AllocatedBytes / (1024.0 * 1024.0));
 
   /* allocate buffers to arrange communication */
 
@@ -412,20 +391,8 @@ void fof_find_groups(void)
   t1 = my_second();
 
 
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf
-	("links on local processor done (took %g sec).\nMarked=%d%09d out of the %d%09d primaries which are linked\n",
-	 timediff(t0, t1),
-	 (int) (totmarked / 1000000000), (int) (totmarked % 1000000000),
-	 (int) (totnpart / 1000000000), (int) (totnpart % 1000000000));
-
-      printf("\nlinking across processors (presently allocated=%g MB) \n",
-	     AllocatedBytes / (1024.0 * 1024.0));
-      fflush(stdout);
-    }
-#endif
+  PRINT_STATUS("links on local processor done (took %g sec).\nMarked=%d%09d out of the %d%09d primaries which are linked",timediff(t0, t1),(int) (totmarked / 1000000000), (int) (totmarked % 1000000000),(int) (totnpart / 1000000000), (int) (totnpart % 1000000000));
+  PRINT_STATUS("\nlinking across processors (presently allocated=%g MB)",AllocatedBytes / (1024.0 * 1024.0));
     
   for(i = 0; i < NumPart; i++)
     {
@@ -587,15 +554,7 @@ void fof_find_groups(void)
 
       t1 = my_second();
 
-#ifndef IO_REDUCED_MODE
-      if(ThisTask == 0)
-	{
-	  printf("have done %d%09d cross links (processed %d%09d, took %g sec)\n",
-		 (int) (link_across_tot / 1000000000), (int) (link_across_tot % 1000000000),
-		 (int) (ntot / 1000000000), (int) (ntot % 1000000000), timediff(t0, t1));
-	  fflush(stdout);
-	}
-#endif
+	  PRINT_STATUS("have done %d%09d cross links (processed %d%09d, took %g sec)",(int) (link_across_tot / 1000000000), (int) (link_across_tot % 1000000000),(int) (ntot / 1000000000), (int) (ntot % 1000000000), timediff(t0, t1));
 
       /* let's check out which particles have changed their MinID */
       for(i = 0; i < NumPart; i++)
@@ -619,13 +578,7 @@ void fof_find_groups(void)
   myfree(DataIndexTable);
   myfree(Ngblist);
 
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("Local groups found.\n\n");
-      fflush(stdout);
-    }
-#endif
+PRINT_STATUS("Local groups found.");
 }
 
 
@@ -930,9 +883,9 @@ void fof_compile_catalogue(void)
   for(i = 0, Ngroups = 0, Nids = 0; i < NgroupsExt; i++)
     {
 #ifdef FOF_DENSITY_SPLIT_TYPES
-      if(FOF_GList[i].LocDMCount + FOF_GList[i].ExtDMCount < MyFOF_GROUP_MIN_LEN)
+      if(FOF_GList[i].LocDMCount + FOF_GList[i].ExtDMCount < MyFOF_GROUP_MIN_SIZE)
 #else
-      if(FOF_GList[i].LocCount + FOF_GList[i].ExtCount < MyFOF_GROUP_MIN_LEN)
+      if(FOF_GList[i].LocCount + FOF_GList[i].ExtCount < MyFOF_GROUP_MIN_SIZE)
 #endif
 	{
 	  FOF_GList[i] = FOF_GList[NgroupsExt - 1];
@@ -1182,13 +1135,7 @@ void fof_save_groups(int num)
   char buf[500];
   double t0, t1;
 
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("start global sorting of group catalogues\n");
-      fflush(stdout);
-    }
-#endif
+  PRINT_STATUS("start global sorting of group catalogues");
     
   t0 = my_second();
 
@@ -1203,12 +1150,8 @@ void fof_save_groups(int num)
 #endif
     }
 
-#ifdef ALTERNATIVE_PSORT
-  fof_sort_FOF_GList_LocCountTaskDiffMinID(FOF_GList, NgroupsExt);
-#else
   parallel_sort(FOF_GList, NgroupsExt, sizeof(fof_group_list),
 		fof_compare_FOF_GList_LocCountTaskDiffMinID);
-#endif
 
   for(i = 0, ngr = 0; i < NgroupsExt; i++)
     {
@@ -1235,11 +1178,7 @@ void fof_save_groups(int num)
     }
 
   /* bring the group list back into the original order */
-#ifdef ALTERNATIVE_PSORT
-  fof_sort_FOF_GList_ExtCountMinID(FOF_GList, NgroupsExt);
-#else
   parallel_sort(FOF_GList, NgroupsExt, sizeof(fof_group_list), fof_compare_FOF_GList_ExtCountMinID);
-#endif
 
   /* Assign the group numbers to the group properties array */
   for(i = 0, start = 0; i < Ngroups; i++)
@@ -1254,11 +1193,7 @@ void fof_save_groups(int num)
     }
 
   /* sort the groups according to group-number */
-#ifdef ALTERNATIVE_PSORT
-  fof_sort_Group_GrNr(Group, Ngroups);
-#else
   parallel_sort(Group, Ngroups, sizeof(group_properties), fof_compare_Group_GrNr);
-#endif
 
   /* fill in the offset-values */
   for(i = 0, totlen = 0; i < Ngroups; i++)
@@ -1285,6 +1220,10 @@ void fof_save_groups(int num)
 
   ID_list = (fof_id_list *)mymalloc("ID_list", sizeof(fof_id_list) * NumPart);
 
+#ifdef SUBFIND
+  for(i = 0; i < NumPart; i++)
+    P[i].GrNr = TotNgroups + 1;	/* will mark particles that are not in any group */
+#endif
 
   for(i = 0, start = 0, Nids = 0; i < NgroupsExt; i++)
     {
@@ -1303,6 +1242,9 @@ void fof_save_groups(int num)
 	  {
 	    ID_list[Nids].GrNr = FOF_GList[i].GrNr;
 	    ID_list[Nids].ID = P[FOF_PList[start + lenloc].Pindex].ID;
+#ifdef SUBFIND
+	    P[FOF_PList[start + lenloc].Pindex].GrNr = FOF_GList[i].GrNr;
+#endif
 	    Nids++;
 	    lenloc++;
 	  }
@@ -1326,22 +1268,10 @@ void fof_save_groups(int num)
     }
 
   /* sort the particle IDs according to group-number */
-
-#ifdef ALTERNATIVE_PSORT
-  fof_sort_ID_list_GrNrID(ID_list, Nids);
-#else
   parallel_sort(ID_list, Nids, sizeof(fof_id_list), fof_compare_ID_list_GrNrID);
-#endif
 
   t1 = my_second();
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("Group catalogues globally sorted. took = %g sec\n", timediff(t0, t1));
-      printf("starting saving of group catalogue\n");
-      fflush(stdout);
-    }
-#endif
+  PRINT_STATUS("Group catalogues globally sorted. took = %g sec. Started saving of group catalogue", timediff(t0, t1));
   t0 = my_second();
 
   if(ThisTask == 0)
@@ -1352,12 +1282,7 @@ void fof_save_groups(int num)
   MPI_Barrier(MPI_COMM_WORLD);
 
 
-  if(NTask < All.NumFilesWrittenInParallel)
-    {
-      printf
-	("Fatal error.\nNumber of processors must be a smaller or equal than `NumFilesWrittenInParallel'.\n");
-      endrun(241931);
-    }
+  if(NTask < All.NumFilesWrittenInParallel) {printf("Fatal error.\nNumber of processors must be a smaller or equal than `NumFilesWrittenInParallel'.\n"); endrun(241931);}
 
   nprocgroup = NTask / All.NumFilesWrittenInParallel;
   if((NTask % All.NumFilesWrittenInParallel))
@@ -1373,14 +1298,7 @@ void fof_save_groups(int num)
   myfree(ID_list);
 
   t1 = my_second();
-
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("Group catalogues saved. took = %g sec\n", timediff(t0, t1));
-      fflush(stdout);
-    }
-#endif
+  PRINT_STATUS("Group catalogues saved. took = %g sec", timediff(t0, t1));
 }
 
 
@@ -1514,14 +1432,7 @@ void fof_find_nearest_dmparticle(void)
   int i, j, n, ntot, dummy;
   int ndone, ndone_flag, ngrp, recvTask, place, nexport, nimport, npleft, iter;
 
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("Start finding nearest dm-particle (presently allocated=%g MB)\n",
-	     AllocatedBytes / (1024.0 * 1024.0));
-      fflush(stdout);
-    }
-#endif
+  PRINT_STATUS("Start finding nearest dm-particle (presently allocated=%g MB)",AllocatedBytes / (1024.0 * 1024.0));
   fof_nearest_distance = (float *) mymalloc("fof_nearest_distance", sizeof(float) * NumPart);
   fof_nearest_hsml = (float *) mymalloc("fof_nearest_hsml", sizeof(float) * NumPart);
 
@@ -1550,7 +1461,7 @@ void fof_find_nearest_dmparticle(void)
   /* we will repeat the whole thing for those particles where we didn't find enough neighbours */
   do
     {
-      i = 0;			/* beginn with this index */
+      i = 0;			/* begin with this index */
 
       do
 	{
@@ -1589,14 +1500,7 @@ void fof_find_nearest_dmparticle(void)
 	  FoFDataGet = (struct fofdata_in *) mymalloc("FoFDataGet", nimport * sizeof(struct fofdata_in));
 	  FoFDataIn = (struct fofdata_in *) mymalloc("FoFDataIn", nexport * sizeof(struct fofdata_in));
 
-#ifndef IO_REDUCED_MODE
-	  if(ThisTask == 0)
-	    {
-	      printf("still finding nearest... (presently allocated=%g MB)\n",
-		     AllocatedBytes / (1024.0 * 1024.0));
-	      fflush(stdout);
-	    }
-#endif
+      PRINT_STATUS("still finding nearest... (presently allocated=%g MB)",AllocatedBytes / (1024.0 * 1024.0));
 	  for(j = 0; j < nexport; j++)
 	    {
 	      place = DataIndexTable[j].Index;
@@ -1722,21 +1626,8 @@ void fof_find_nearest_dmparticle(void)
       if(ntot > 0)
 	{
 	  iter++;
-#ifndef IO_REDUCED_MODE
-	  if(iter > 0 && ThisTask == 0)
-#else
-          if(iter > 10 && ThisTask == 0)
-#endif
-	    {
-	      printf("fof-nearest iteration %d: need to repeat for %d particles.\n", iter, ntot);
-	      fflush(stdout);
-	    }
-	  if(iter > MAXITER)
-	    {
-	      printf("failed to converge in fof-nearest\n");
-	      fflush(stdout);
-	      endrun(1159);
-	    }
+	  if(iter > 10 && ThisTask == 0) {printf("fof-nearest iteration %d: need to repeat for %d particles.\n", iter, ntot); fflush(stdout);}
+	  if(iter > MAXITER) {printf("failed to converge in fof-nearest\n"); fflush(stdout); endrun(1159);}
 	}
     }
   while(ntot > 0);
@@ -1748,13 +1639,7 @@ void fof_find_nearest_dmparticle(void)
   myfree(fof_nearest_hsml);
   myfree(fof_nearest_distance);
 
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("done finding nearest dm-particle\n");
-      fflush(stdout);
-    }
-#endif
+  PRINT_STATUS("done finding nearest dm-particle");
 }
 
 
@@ -1934,14 +1819,7 @@ void fof_make_black_holes(void)
     }
 
   MPI_Allreduce(&nimport, &ntot, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("\nMaking %d new black hole particles\n\n", ntot);
-      fflush(stdout);
-    }
-#endif
+  PRINT_STATUS("Making %d new black hole particles", ntot);
   All.TotBHs += ntot;
 
   for(n = 0; n < nimport; n++)
@@ -2330,5 +2208,559 @@ int fof_compare_ID_list_GrNrID(const void *a, const void *b)
 
 
 
+#ifdef IO_SUBFIND_READFOF_FROMIC		/* read already existing FOF instead of recomputing it */
+
+void read_fof(int num)
+{
+  FILE *fd;
+  double t0, t1;
+  char fname[500];
+  float *mass, *cm;
+  int i, j, ntask, *len, count;
+  MyIDType *ids;
+  int *list_of_ngroups, *list_of_nids, *list_of_allgrouplen;
+  int *recvoffset;
+  int grnr, ngrp, sendTask, recvTask, imax1, imax2;
+  int nprocgroup, masterTask, groupTask, nid_previous;
+  int fof_compare_P_SubNr(const void *a, const void *b);
+    PRINT_STATUS("Trying to read preexisting FoF group catalogues...  (presently allocated=%g MB)",AllocatedBytes / (1024.0 * 1024.0));
+  domain_Decomposition(1, 0, 0);
+
+  force_treefree();
+
+
+  /* start reading of group catalogue */
+
+  if(ThisTask == 0)
+    {
+      sprintf(fname, "%s/groups_%03d/%s_%03d.%d", All.OutputDir, num, "group_tab", num, 0);
+      if(!(fd = fopen(fname, "r")))
+	{
+	  printf("can't read file `%s`\n", fname);
+	  endrun(11831);
+	}
+
+      my_fread(&Ngroups, sizeof(int), 1, fd);
+      my_fread(&TotNgroups, sizeof(int), 1, fd);
+      my_fread(&Nids, sizeof(int), 1, fd);
+      my_fread(&TotNids, sizeof(long long), 1, fd);
+      my_fread(&ntask, sizeof(int), 1, fd);
+      fclose(fd);
+    }
+
+  MPI_Bcast(&ntask, 1, MPI_INT, 0, MPI_COMM_WORLD);
+  MPI_Bcast(&TotNgroups, 1, MPI_INT, 0, MPI_COMM_WORLD);
+  MPI_Bcast(&TotNids, sizeof(long long), MPI_BYTE, 0, MPI_COMM_WORLD);
+
+  t0 = my_second();
+
+  if(NTask != ntask)
+    {
+      if(ThisTask == 0)
+	printf
+	  ("number of files (%d) in group catalogues does not match MPI-Tasks, I'm working around this.\n",
+	   ntask);
+
+      Group =
+	(group_properties *) mymalloc("Group",
+					     sizeof(group_properties) * (TotNgroups / NTask + NTask));
+
+      ID_list = mymalloc("ID_list", (TotNids / NTask + NTask) * sizeof(fof_id_list));
+
+
+      int filenr, target, ngroups, nids, nsend, stored;
+
+      int *ngroup_to_get = mymalloc("ngroup_to_get", NTask * sizeof(NTask));
+      int *nids_to_get = mymalloc("nids_to_get", NTask * sizeof(NTask));
+      int *ngroup_obtained = mymalloc("ngroup_obtained", NTask * sizeof(NTask));
+      int *nids_obtained = mymalloc("nids_obtained", NTask * sizeof(NTask));
+
+      for(i = 0; i < NTask; i++)
+	ngroup_obtained[i] = nids_obtained[i] = 0;
+
+      for(i = 0; i < NTask - 1; i++)
+	ngroup_to_get[i] = TotNgroups / NTask;
+      ngroup_to_get[NTask - 1] = TotNgroups - (NTask - 1) * (TotNgroups / NTask);
+
+      for(i = 0; i < NTask - 1; i++)
+	nids_to_get[i] = (int) (TotNids / NTask);
+      nids_to_get[NTask - 1] = (int) (TotNids - (NTask - 1) * (TotNids / NTask));
+
+      Ngroups = ngroup_to_get[ThisTask];
+      Nids = nids_to_get[ThisTask];
+
+
+
+      if(ThisTask == 0)
+	{
+	  for(filenr = 0; filenr < ntask; filenr++)
+	    {
+	      sprintf(fname, "%s/groups_%03d/%s_%03d.%d", All.OutputDir, num, "group_tab", num, filenr);
+	      if(!(fd = fopen(fname, "r")))
+		{
+		  printf("can't read file `%s`\n", fname);
+		  endrun(11831);
+		}
+
+	      printf("reading '%s'\n", fname);
+	      my_fread(&ngroups, sizeof(int), 1, fd);
+	      my_fread(&TotNgroups, sizeof(int), 1, fd);
+	      my_fread(&nids, sizeof(int), 1, fd);
+	      my_fread(&TotNids, sizeof(long long), 1, fd);
+	      my_fread(&ntask, sizeof(int), 1, fd);
+
+	      group_properties *tmpGroup =
+		(group_properties *) mymalloc("tmpGroup", sizeof(group_properties) * ngroups);
+
+	      /* group len */
+	      len = mymalloc("len", ngroups * sizeof(int));
+	      my_fread(len, ngroups, sizeof(int), fd);
+	      for(i = 0; i < ngroups; i++)
+		tmpGroup[i].Len = len[i];
+	      myfree(len);
+
+	      /* offset into id-list */
+	      len = mymalloc("len", ngroups * sizeof(int));
+	      my_fread(len, ngroups, sizeof(int), fd);
+	      for(i = 0; i < ngroups; i++)
+		tmpGroup[i].Offset = len[i];
+	      myfree(len);
+
+	      /* mass */
+	      mass = mymalloc("mass", ngroups * sizeof(float));
+	      my_fread(mass, ngroups, sizeof(float), fd);
+	      for(i = 0; i < ngroups; i++)
+		tmpGroup[i].Mass = mass[i];
+	      myfree(mass);
+
+	      /* CM */
+	      cm = mymalloc("cm", ngroups * 3 * sizeof(float));
+	      my_fread(cm, ngroups, 3 * sizeof(float), fd);
+	      for(i = 0; i < ngroups; i++)
+		for(j = 0; j < 3; j++)
+		  tmpGroup[i].CM[j] = cm[i * 3 + j];
+	      myfree(cm);
+
+	      fclose(fd);
+
+	      target = 0;
+	      stored = 0;
+	      while(ngroups > 0)
+		{
+		  while(ngroup_to_get[target] == 0)
+		    target++;
+
+		  if(ngroups > ngroup_to_get[target])
+		    nsend = ngroup_to_get[target];
+		  else
+		    nsend = ngroups;
+
+		  if(target == 0)
+		    memcpy(&Group[ngroup_obtained[target]], &tmpGroup[stored],
+			   nsend * sizeof(group_properties));
+		  else
+		    {
+		      MPI_Send(&nsend, 1, MPI_INT, target, TAG_N, MPI_COMM_WORLD);
+		      MPI_Send(&tmpGroup[stored], nsend * sizeof(group_properties), MPI_BYTE,
+			       target, TAG_PDATA, MPI_COMM_WORLD);
+		    }
+
+		  ngroup_to_get[target] -= nsend;
+		  ngroup_obtained[target] += nsend;
+		  ngroups -= nsend;
+		  stored += nsend;
+		}
+
+	      myfree(tmpGroup);
+	    }
+
+
+
+	      /**** now ids ****/
+	  for(filenr = 0; filenr < ntask; filenr++)
+	    {
+	      sprintf(fname, "%s/groups_%03d/%s_%03d.%d", All.OutputDir, num, "group_ids", num, filenr);
+	      if(!(fd = fopen(fname, "r")))
+		{
+		  printf("can't read file `%s`\n", fname);
+		  endrun(1184132);
+		}
+	      my_fread(&ngroups, sizeof(int), 1, fd);
+	      my_fread(&TotNgroups, sizeof(int), 1, fd);
+	      my_fread(&nids, sizeof(int), 1, fd);
+	      my_fread(&TotNids, sizeof(long long), 1, fd);
+	      my_fread(&ntask, sizeof(int), 1, fd);
+	      my_fread(&nid_previous, sizeof(int), 1, fd);	/* this is the number of IDs in previous files */
+
+
+	      fof_id_list *tmpID_list = mymalloc("tmpID_list", nids * sizeof(fof_id_list));
+
+	      ids = mymalloc("ids", nids * sizeof(MyIDType));
+
+	      my_fread(ids, sizeof(MyIDType), nids, fd);
+
+	      for(i = 0; i < nids; i++)
+		tmpID_list[i].ID = ids[i];
+
+	      myfree(ids);
+
+	      fclose(fd);
+
+	      target = 0;
+	      stored = 0;
+	      while(nids > 0)
+		{
+		  while(nids_to_get[target] == 0)
+		    target++;
+
+		  if(nids > nids_to_get[target])
+		    nsend = nids_to_get[target];
+		  else
+		    nsend = nids;
+
+		  if(target == 0)
+		    memcpy(&ID_list[nids_obtained[target]], &tmpID_list[stored],
+			   nsend * sizeof(fof_id_list));
+		  else
+		    {
+		      MPI_Send(&nsend, 1, MPI_INT, target, TAG_HEADER, MPI_COMM_WORLD);
+		      MPI_Send(&tmpID_list[stored], nsend * sizeof(fof_id_list), MPI_BYTE,
+			       target, TAG_SPHDATA, MPI_COMM_WORLD);
+		    }
+
+		  nids_to_get[target] -= nsend;
+		  nids_obtained[target] += nsend;
+		  nids -= nsend;
+		  stored += nsend;
+		}
+
+	      myfree(tmpID_list);
+	    }
+	}
+      else
+	{
+	  while(ngroup_to_get[ThisTask])
+	    {
+	      MPI_Recv(&nsend, 1, MPI_INT, 0, TAG_N, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+	      MPI_Recv(&Group[ngroup_obtained[ThisTask]], nsend * sizeof(group_properties), MPI_BYTE,
+		       0, TAG_PDATA, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+	      ngroup_to_get[ThisTask] -= nsend;
+	      ngroup_obtained[ThisTask] += nsend;
+	    }
+
+	  while(nids_to_get[ThisTask])
+	    {
+	      MPI_Recv(&nsend, 1, MPI_INT, 0, TAG_HEADER, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+	      MPI_Recv(&ID_list[nids_obtained[ThisTask]], nsend * sizeof(fof_id_list), MPI_BYTE,
+		       0, TAG_SPHDATA, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+	      nids_to_get[ThisTask] -= nsend;
+	      nids_obtained[ThisTask] += nsend;
+	    }
+	}
+
+      myfree(nids_obtained);
+      myfree(ngroup_obtained);
+      myfree(nids_to_get);
+      myfree(ngroup_to_get);
+    }
+
+  else
+    {
+      /* read routine can continue in parallel */
+
+      nprocgroup = NTask / All.NumFilesWrittenInParallel;
+      if((NTask % All.NumFilesWrittenInParallel))
+	nprocgroup++;
+      masterTask = (ThisTask / nprocgroup) * nprocgroup;
+      for(groupTask = 0; groupTask < nprocgroup; groupTask++)
+	{
+	  if(ThisTask == (masterTask + groupTask))	/* ok, it's this processor's turn */
+	    {
+
+	      sprintf(fname, "%s/groups_%03d/%s_%03d.%d", All.OutputDir, num, "group_tab", num, ThisTask);
+	      if(!(fd = fopen(fname, "r")))
+		{
+		  printf("can't read file `%s`\n", fname);
+		  endrun(11831);
+		}
+	      my_fread(&Ngroups, sizeof(int), 1, fd);
+	      my_fread(&TotNgroups, sizeof(int), 1, fd);
+	      my_fread(&Nids, sizeof(int), 1, fd);
+	      my_fread(&TotNids, sizeof(long long), 1, fd);
+	      my_fread(&ntask, sizeof(int), 1, fd);
+	      if(NTask != ntask)
+		{
+		  if(ThisTask == 0)
+		    printf("number of files in group catalogues needs to match MPI-Tasks\n");
+		  endrun(0);
+		}
+
+	      if(ThisTask == 0)
+		printf("TotNgroups=%d\n", TotNgroups);
+
+	      Group = (group_properties *) mymalloc("Group", sizeof(group_properties) *
+							   IMAX(Ngroups, TotNgroups / NTask + 1));
+
+	      /* group len */
+	      len = mymalloc("len", Ngroups * sizeof(int));
+	      my_fread(len, Ngroups, sizeof(int), fd);
+	      for(i = 0; i < Ngroups; i++)
+		Group[i].Len = len[i];
+	      myfree(len);
+
+	      /* offset into id-list */
+	      len = mymalloc("len", Ngroups * sizeof(int));
+	      my_fread(len, Ngroups, sizeof(int), fd);
+	      for(i = 0; i < Ngroups; i++)
+		Group[i].Offset = len[i];
+	      myfree(len);
+
+	      /* mass */
+	      mass = mymalloc("mass", Ngroups * sizeof(float));
+	      my_fread(mass, Ngroups, sizeof(float), fd);
+	      for(i = 0; i < Ngroups; i++)
+		Group[i].Mass = mass[i];
+	      myfree(mass);
+
+	      /* CM */
+	      cm = mymalloc("cm", Ngroups * 3 * sizeof(float));
+	      my_fread(cm, Ngroups, 3 * sizeof(float), fd);
+	      for(i = 0; i < Ngroups; i++)
+		for(j = 0; j < 3; j++)
+		  Group[i].CM[j] = cm[i * 3 + j];
+	      myfree(cm);
+
+	      fclose(fd);
+
+	      sprintf(fname, "%s/groups_%03d/%s_%03d.%d", All.OutputDir, num, "group_ids", num, ThisTask);
+	      if(!(fd = fopen(fname, "r")))
+		{
+		  printf("can't read file `%s`\n", fname);
+		  endrun(1184132);
+		}
+	      my_fread(&Ngroups, sizeof(int), 1, fd);
+	      my_fread(&TotNgroups, sizeof(int), 1, fd);
+	      my_fread(&Nids, sizeof(int), 1, fd);
+	      my_fread(&TotNids, sizeof(long long), 1, fd);
+	      my_fread(&ntask, sizeof(int), 1, fd);
+	      my_fread(&nid_previous, sizeof(int), 1, fd);	/* this is the number of IDs in previous files */
+
+	      ID_list = mymalloc("ID_list", Nids * sizeof(fof_id_list));
+	      ids = mymalloc("ids", Nids * sizeof(MyIDType));
+
+	      my_fread(ids, sizeof(MyIDType), Nids, fd);
+
+	      for(i = 0; i < Nids; i++)
+		ID_list[i].ID = ids[i];
+
+	      myfree(ids);
+
+	      fclose(fd);
+	    }
+
+	  MPI_Barrier(MPI_COMM_WORLD);	/* wait inside the group */
+	}
+    }
+
+  t1 = my_second();
+  if(ThisTask == 0)
+    printf("reading  took %g sec\n", timediff(t0, t1));
+
+
+
+  t0 = my_second();
+
+  /* now need to assign group numbers */
+
+
+  list_of_ngroups = mymalloc("list_of_ngroups", NTask * sizeof(int));
+  list_of_nids = mymalloc("list_of_nids", NTask * sizeof(int));
+
+  MPI_Allgather(&Ngroups, 1, MPI_INT, list_of_ngroups, 1, MPI_INT, MPI_COMM_WORLD);
+  MPI_Allgather(&Nids, 1, MPI_INT, list_of_nids, 1, MPI_INT, MPI_COMM_WORLD);
+
+  list_of_allgrouplen = mymalloc("list_of_allgrouplen", TotNgroups * sizeof(int));
+
+  recvoffset = mymalloc("recvoffset", NTask * sizeof(int));
+  for(i = 1, recvoffset[0] = 0; i < NTask; i++)
+    recvoffset[i] = recvoffset[i - 1] + list_of_ngroups[i - 1];
+  len = mymalloc("len", Ngroups * sizeof(int));
+  for(i = 0; i < Ngroups; i++)
+    len[i] = Group[i].Len;
+  MPI_Allgatherv(len, Ngroups, MPI_INT, list_of_allgrouplen, list_of_ngroups, recvoffset, MPI_INT,
+		 MPI_COMM_WORLD);
+  myfree(len);
+  myfree(recvoffset);
+
+  /* do a check */
+  long long totlen;
+
+  for(i = 0, totlen = 0; i < TotNgroups; i++)
+    totlen += list_of_allgrouplen[i];
+  if(totlen != TotNids)
+    endrun(8881);
+
+
+  for(i = 0, count = 0; i < ThisTask; i++)
+    count += list_of_ngroups[i];
+
+  for(i = 0; i < Ngroups; i++)
+    Group[i].GrNr = 1 + count + i;
+
+  /* fix Group.Offset (may have overflown) */
+  if(Ngroups > 0)
+    for(i = 0, count = 0, Group[0].Offset = 0; i < ThisTask; i++)
+      for(j = 0; j < list_of_ngroups[i]; j++)
+	Group[0].Offset += list_of_allgrouplen[count++];
+
+  for(i = 1; i < Ngroups; i++)
+    Group[i].Offset = Group[i - 1].Offset + Group[i - 1].Len;
+
+
+  long long *idoffset = mymalloc("idoffset", NTask * sizeof(long long));
+
+  for(i = 1, idoffset[0] = 0; i < NTask; i++)
+    idoffset[i] = idoffset[i - 1] + list_of_nids[i - 1];
+
+  count = 0;
+
+  for(i = 0, grnr = 1, totlen = 0; i < TotNgroups; totlen += list_of_allgrouplen[i++], grnr++)
+    {
+      if(totlen + list_of_allgrouplen[i] - 1 >= idoffset[ThisTask] && totlen < idoffset[ThisTask] + Nids)
+	{
+	  for(j = 0; j < list_of_allgrouplen[i]; j++)
+	    {
+	      if((totlen + j) >= idoffset[ThisTask] && (totlen + j) < (idoffset[ThisTask] + Nids))
+		{
+		  ID_list[(totlen + j) - idoffset[ThisTask]].GrNr = grnr;
+		  count++;
+		}
+	    }
+	}
+    }
+  if(count != Nids)
+    endrun(1231);
+
+  myfree(idoffset);
+
+  t1 = my_second();
+  if(ThisTask == 0)
+    printf("assigning took %g sec\n", timediff(t0, t1));
+
+
+
+  t0 = my_second();
+
+  for(i = 0; i < NumPart; i++)
+    P[i].SubNr = i;
+
+  qsort(P, NumPart, sizeof(struct particle_data), io_compare_P_ID);
+  qsort(ID_list, Nids, sizeof(fof_id_list), fof_compare_ID_list_ID);
+
+  for(i = 0; i < NumPart; i++)
+    P[i].GrNr = TotNgroups + 1;	/* will mark particles that are not in any group */
+
+  t1 = my_second();
+  if(ThisTask == 0)
+    printf("sorting took %g sec\n", timediff(t0, t1));
+
+
+  static fof_id_list *recv_ID_list;
+
+  t0 = my_second();
+
+  int matches = 0;
+
+  /* exchange  data */
+  for(ngrp = 0; ngrp < (1 << PTask); ngrp++)
+    {
+      sendTask = ThisTask;
+      recvTask = ThisTask ^ ngrp;
+
+      if(recvTask < NTask)
+	{
+	  if(list_of_nids[sendTask] > 0 || list_of_nids[recvTask] > 0)
+	    {
+	      if(ngrp == 0)
+		{
+		  recv_ID_list = ID_list;
+		}
+	      else
+		{
+		  recv_ID_list = mymalloc("recv_ID_list", list_of_nids[recvTask] * sizeof(fof_id_list));
+
+		  /* get the particles */
+		  MPI_Sendrecv(ID_list, Nids * sizeof(fof_id_list), MPI_BYTE, recvTask, TAG_FOF_H,
+			       recv_ID_list, list_of_nids[recvTask] * sizeof(fof_id_list), MPI_BYTE,
+			       recvTask, TAG_FOF_H, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+		}
+
+	      for(i = 0, j = 0; i < list_of_nids[recvTask]; i++)
+		{
+		  while(j < NumPart - 1 && P[j].ID < recv_ID_list[i].ID)
+		    j++;
+
+		  if(recv_ID_list[i].ID == P[j].ID)
+		    {
+		      P[j].GrNr = recv_ID_list[i].GrNr;
+		      matches++;
+		    }
+		}
+
+	      if(ngrp != 0)
+		myfree(recv_ID_list);
+	    }
+	}
+    }
+
+  sumup_large_ints(1, &matches, &totlen);
+  if(totlen != TotNids)
+    endrun(543);
+
+  t1 = my_second();
+  if(ThisTask == 0)
+    printf("assigning GrNr to P[] took %g sec\n", timediff(t0, t1));
+
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  myfree(list_of_allgrouplen);
+  myfree(list_of_nids);
+  myfree(list_of_ngroups);
+
+  /* restore peano-hilbert order */
+  qsort(P, NumPart, sizeof(struct particle_data), fof_compare_P_SubNr);
+  subfind(num);
+  endrun(0);
+
+}
+
+
+
+int fof_compare_ID_list_ID(const void *a, const void *b)
+{
+  if(((fof_id_list *) a)->ID < ((fof_id_list *) b)->ID)
+    return -1;
+
+  if(((fof_id_list *) a)->ID > ((fof_id_list *) b)->ID)
+    return +1;
+
+  return 0;
+}
+
+
+int fof_compare_P_SubNr(const void *a, const void *b)
+{
+  if(((struct particle_data *) a)->SubNr < (((struct particle_data *) b)->SubNr))
+    return -1;
+
+  if(((struct particle_data *) a)->SubNr > (((struct particle_data *) b)->SubNr))
+    return +1;
+
+  return 0;
+}
+
+#endif // IO_SUBFIND_READFOF_FROMIC
 
 #endif /* of FOF */

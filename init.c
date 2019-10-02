@@ -13,7 +13,7 @@
  */
 /*
  * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org). The code has been modified
+ * Volker Springel. The code has been modified
  * in part by Phil Hopkins (phopkins@caltech.edu) for GIZMO (mostly initializing 
  * new/modified variables, as needed)
  */
@@ -416,6 +416,12 @@ void init(void)
 #endif
 #ifdef SINGLE_STAR_FORMATION
         P[i].BH_Ngb_Flag = 0;
+#endif	
+#ifdef SINGLE_STAR_TIMESTEPPING
+	    P[i].min_bh_approach_time = P[i].min_bh_freefall_time = MAX_REAL_NUMBER;
+#if (SINGLE_STAR_TIMESTEPPING > 0)
+	    P[i].SuperTimestepFlag = 0;
+#endif
 #endif	
         if(P[i].Type == 5)
         {
@@ -829,7 +835,6 @@ void init(void)
     
     if(RestartFlag == 3)
     {
-        
 #ifdef AGS_HSML_CALCULATION_IS_ACTIVE
         if(ThisTask == 0) {printf("*AGS_HSML_CALCULATION_IS_ACTIVE* Computation of softening lengths... \n");}
         ags_setup_smoothinglengths();
@@ -1186,11 +1191,7 @@ void test_id_uniqueness(void)
     for(i = 0; i < NumPart; i++)
         ids[i] = P[i].ID;
     
-#ifdef ALTERNATIVE_PSORT
-    init_sort_ID(ids, NumPart);
-#else
     parallel_sort(ids, NumPart, sizeof(MyIDType), compare_IDs);
-#endif
     
     for(i = 1; i < NumPart; i++)
         if(ids[i] == ids[i - 1])

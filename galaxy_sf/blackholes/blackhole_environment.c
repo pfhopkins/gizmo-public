@@ -1,52 +1,38 @@
+/*! \file blackhole_environment.c
+*  \brief routines for evaluating black hole environment
+*/
 #include <mpi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <gsl/gsl_math.h>
-
 #include "../../allvars.h"
 #include "../../proto.h"
 #include "../../kernel.h"
-
-/*! \file blackhole_environment.c
- *  \brief routines for evaluating black hole environment
- */
 /*
- * This file was largely written by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
- *   It was based on a similar file in GADGET3 by Volker Springel (volker.springel@h-its.org),
- *   but the physical modules for black hole accretion and feedback have been
- *   replaced, and the algorithm for their coupling is new to GIZMO.  This file was modified
- *   by Paul Torrey (ptorrey@mit.edu) on 1/9/15 for clairity.  The main functional difference is that BlackholeTempInfo
- *   is now allocated only for N_active_loc_BHs, rather than NumPart (as was done before).  Some
- *   extra index gymnastics are required to follow this change through in the MPI comm routines.
- *   Cleanup, de-bugging, and consolidation of routines by Xiangcheng Ma
- *   (xchma@caltech.edu) followed on 05/15/15; re-integrated by PFH.
- */
+* This file is largely written by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
+* see notes in blackhole.c for details on code history.
+*/
 
 
+#define MASTER_FUNCTION_NAME blackhole_environment_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define CONDITIONFUNCTION_FOR_EVALUATION if(P[i].Type==5) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
+#include "../../system/code_block_xchange_initialize.h" /* pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
 
-/* quantities that pass IN to the 'blackhole_environment_evaluate' routines */
-static struct blackholedata_in
+/* this structure defines the variables that need to be sent -from- the 'searching' element */
+struct INPUT_STRUCT_NAME
 {
+    int NodeList[NODELISTLENGTH]; MyDouble Pos[3]; MyFloat Vel[3], Hsml; MyIDType ID;
 #if defined(BH_GRAVCAPTURE_GAS) || (BH_GRAVACCRETION == 8)
     MyDouble Mass;
 #endif
 #if defined(BH_GRAVCAPTURE_FIXEDSINKRADIUS)
     MyFloat SinkRadius;
 #endif  
-    MyDouble Pos[3];
-    MyFloat Vel[3];
-#ifdef BH_GRAVACCRETION
-    MyFloat Jgas[3];
-    MyFloat Jstar[3];
-#endif
-    MyFloat Hsml;
 #if (ADAPTIVE_GRAVSOFT_FORALL & 32)
     MyFloat AGS_Hsml;
-#endif    
-    MyIDType ID;
-    int NodeList[NODELISTLENGTH];
+#endif
 #ifdef BH_WAKEUP_GAS
     MyFloat TimeBin;
 #endif
@@ -54,271 +40,181 @@ static struct blackholedata_in
     MyFloat BH_Specific_AngMom[3];
 #endif
 }
-*BlackholeDataIn, *BlackholeDataGet;
+*DATAIN_NAME, *DATAGET_NAME; /* dont mess with these names, they get filled-in by your definitions automatically */
 
-
-
-void blackhole_environment_loop(void)
+/* this subroutine assigns the values to the variables that need to be sent -from- the 'searching' element */
+static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
 {
-    int i, j, k, nexport, nimport, place, ngrp, recvTask, dummy;
-    int ndone_flag, ndone;
-    MPI_Status status;
-    
-    size_t MyBufferSize = All.BufferSize;
-    Ngblist = (int *) mymalloc("Ngblist", NumPart * sizeof(int));
-    All.BunchSize = (int) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
-                                                             sizeof(struct blackholedata_in) +
-                                                             sizeof(struct blackhole_temp_particle_data) +
-                                                             sizemax(sizeof(struct blackholedata_in),sizeof(struct blackhole_temp_particle_data))));
-    DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
-    DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
-    
-    /* Scan gas particles for angular momentum, boundedness, etc */
-    i = FirstActiveParticle;	/* first particle for this task */
-    do
-    {
-        for(j = 0; j < NTask; j++)
-        {
-            Send_count[j] = 0;
-            Exportflag[j] = -1;
-        }
-        /* do local active BH particles and prepare export list */
-        for(nexport = 0; i >= 0; i = NextActiveParticle[i])
-            if(P[i].Type == 5)
-                if(blackhole_environment_evaluate(i, 0, &nexport, Send_count) < 0)
-                    break;
-        
-        MYSORT_DATAINDEX(DataIndexTable, nexport, sizeof(struct data_index), data_index_compare);
-        MPI_Alltoall(Send_count, 1, MPI_INT, Recv_count, 1, MPI_INT, MPI_COMM_WORLD);
-        for(j = 0, nimport = 0, Recv_offset[0] = 0, Send_offset[0] = 0; j < NTask; j++)
-        {
-            nimport += Recv_count[j];
-            if(j > 0)
-            {
-                Send_offset[j] = Send_offset[j - 1] + Send_count[j - 1];
-                Recv_offset[j] = Recv_offset[j - 1] + Recv_count[j - 1];
-            }
-        }
-        
-        
-        BlackholeDataGet = (struct blackholedata_in *) mymalloc("BlackholeDataGet", nimport * sizeof(struct blackholedata_in));
-        BlackholeDataIn = (struct blackholedata_in *) mymalloc("BlackholeDataIn", nexport * sizeof(struct blackholedata_in));
-        for(j = 0; j < nexport; j++)
-        {
-            place = DataIndexTable[j].Index;
-            for(k = 0; k < 3; k++)
-            {
-                BlackholeDataIn[j].Pos[k] = P[place].Pos[k];
-                BlackholeDataIn[j].Vel[k] = P[place].Vel[k];
-            }
+    int k; for(k=0;k<3;k++) {in->Pos[k]=P[i].Pos[k]; in->Vel[k]=P[i].Vel[k];} /* good example - always needed */
+    in->Hsml = PPP[i].Hsml; in->ID = P[i].ID;
 #if defined(BH_GRAVCAPTURE_GAS) || (BH_GRAVACCRETION == 8)
-            BlackholeDataIn[j].Mass = P[place].Mass;
+    in->Mass = P[i].Mass;
+#endif
 #ifdef BH_GRAVCAPTURE_FIXEDSINKRADIUS
-            BlackholeDataIn[j].SinkRadius = P[place].SinkRadius;
-#endif	    
+    in->SinkRadius = PPP[i].SinkRadius;
 #endif
 #if (ADAPTIVE_GRAVSOFT_FORALL & 32)
-            BlackholeDataIn[j].AGS_Hsml = PPP[place].AGS_Hsml;
-#endif	    
-            BlackholeDataIn[j].Hsml = PPP[place].Hsml;	    
-            BlackholeDataIn[j].ID = P[place].ID;
+    in->AGS_Hsml = PPP[i].AGS_Hsml;
+#endif
 #ifdef BH_WAKEUP_GAS
-	        BlackholeDataIn[j].TimeBin = P[place].TimeBin;
+    in->TimeBin = P[i].TimeBin;
 #endif
 #if defined(BH_RETURN_ANGMOM_TO_GAS)
-            BlackholeDataIn[j].BH_Specific_AngMom[0] = P[place].BH_Specific_AngMom[0];BlackholeDataIn[j].BH_Specific_AngMom[1] = P[place].BH_Specific_AngMom[1];BlackholeDataIn[j].BH_Specific_AngMom[2] = P[place].BH_Specific_AngMom[2];
+    for(k=0;k<3;k++) {in->BH_Specific_AngMom[k]=P[i].BH_Specific_AngMom[k];}
 #endif
-            memcpy(BlackholeDataIn[j].NodeList, DataNodeList[DataIndexTable[j].IndexGet].NodeList, NODELISTLENGTH * sizeof(int));
-        }
-        /* exchange particle data */
-        for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-        {
-            recvTask = ThisTask ^ ngrp;
-            if(recvTask < NTask)
-            {
-                if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
-                {
-                    /* get the particles */
-                    MPI_Sendrecv(&BlackholeDataIn[Send_offset[recvTask]],
-                                 Send_count[recvTask] * sizeof(struct blackholedata_in), MPI_BYTE,
-                                 recvTask, TAG_BH_A,
-                                 &BlackholeDataGet[Recv_offset[recvTask]],
-                                 Recv_count[recvTask] * sizeof(struct blackholedata_in), MPI_BYTE,
-                                 recvTask, TAG_BH_A, MPI_COMM_WORLD, &status);
-                }
-            }
-        }
-        myfree(BlackholeDataIn);
-   
-        /*  DAA: PasserResult cycles over nimport!  PasserOut cycles over nexport! */
-        BlackholeDataPasserResult = (struct blackhole_temp_particle_data *) mymalloc("BlackholeDataPasserResult", nimport * sizeof(struct blackhole_temp_particle_data));
-        BlackholeDataPasserOut = (struct blackhole_temp_particle_data *) mymalloc("BlackholeDataPasserOut", nexport * sizeof(struct blackhole_temp_particle_data));
-        
-        memset( &BlackholeDataPasserResult[0], 0, nimport * sizeof(struct blackhole_temp_particle_data)  );
-        memset( &BlackholeDataPasserOut[0],    0, nexport * sizeof(struct blackhole_temp_particle_data)  );
-
-        /* now do the particles that were sent to us */
-        for(j = 0; j < nimport; j++)
-            blackhole_environment_evaluate(j, 1, &dummy, &dummy);
-        
-        if(i < 0)
-            ndone_flag = 1;
-        else
-            ndone_flag = 0;
-        
-        MPI_Allreduce(&ndone_flag, &ndone, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-        
-        /* get the result */
-        for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-        {
-            recvTask = ThisTask ^ ngrp;
-            if(recvTask < NTask)
-            {
-                if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
-                {
-                    /* send the results */
-                    MPI_Sendrecv(&BlackholeDataPasserResult[Recv_offset[recvTask]],
-                                 Recv_count[recvTask] * sizeof(struct blackhole_temp_particle_data),
-                                 MPI_BYTE, recvTask, TAG_BH_B,
-                                 &BlackholeDataPasserOut[Send_offset[recvTask]],
-                                 Send_count[recvTask] * sizeof(struct blackhole_temp_particle_data),
-                                 MPI_BYTE, recvTask, TAG_BH_B, MPI_COMM_WORLD, &status);
-                }
-            }
-        } // for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-        
-        /* add the result to the particles */
-        for(j = 0; j < nexport; j++)
-        {
-            place = DataIndexTable[j].Index;
-#if defined(BH_ACCRETE_NEARESTFIRST) && defined(BH_GRAVCAPTURE_GAS)
-            if(P[place].BH_dr_to_NearestGasNeighbor > BlackholeDataPasserOut[j].BH_dr_to_NearestGasNeighbor) {P[place].BH_dr_to_NearestGasNeighbor  = BlackholeDataPasserOut[j].BH_dr_to_NearestGasNeighbor;}
-#endif
-            out2particle_blackhole(&BlackholeDataPasserOut[j], P[place].IndexMapToTempStruc, 1);
-        } // for(j = 0; j < nexport; j++)
-        myfree(BlackholeDataPasserOut);
-        myfree(BlackholeDataPasserResult);
-        myfree(BlackholeDataGet);
-    }
-    while(ndone < NTask);
-    myfree(DataNodeList);
-    myfree(DataIndexTable);
-    myfree(Ngblist);
-
-    /* DAA: normalize/finalized some of the environment variables */
-    for(i=0; i<N_active_loc_BHs; i++) {normalize_temp_info_struct(i);}        
 }
 
 
+/* this structure defines the variables that need to be sent -back to- the 'searching' element */
+struct OUTPUT_STRUCT_NAME
+{ /* define variables below as e.g. "double X;" */
+MyFloat BH_InternalEnergy, Mgas_in_Kernel, Mstar_in_Kernel, Malt_in_Kernel;
+MyFloat Jgas_in_Kernel[3], Jstar_in_Kernel[3], Jalt_in_Kernel[3]; // mass/angular momentum for GAS/STAR/TOTAL components computed always now
+#ifdef BH_DYNFRICTION
+    MyFloat DF_rms_vel, DF_mean_vel[3], DF_mmax_particles;
+#endif
+#if defined(BH_OUTPUT_MOREINFO)
+    MyFloat Sfr_in_Kernel;
+#endif
+#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)
+    MyFloat GradRho_in_Kernel[3];
+#endif
+#if defined(BH_BONDI) || defined(BH_DRAG) || (BH_GRAVACCRETION >= 5)
+    MyFloat BH_SurroundingGasVel[3];
+#endif
+#if (BH_GRAVACCRETION == 8)
+    MyFloat hubber_mdot_vr_estimator, hubber_mdot_disk_estimator, hubber_mdot_bondi_limiter;
+#endif
+#if defined(BH_GRAVCAPTURE_GAS)
+    MyFloat mass_to_swallow_edd;
+#endif
+#if defined(BH_RETURN_ANGMOM_TO_GAS)
+    MyFloat angmom_prepass_sum_for_passback[3];
+#endif
+#if defined(BH_ACCRETE_NEARESTFIRST) && defined(BH_GRAVCAPTURE_GAS)
+    MyDouble BH_dr_to_NearestGasNeighbor;
+#endif
+}
+*DATARESULT_NAME, *DATAOUT_NAME; /* dont mess with these names, they get filled-in by your definitions automatically */
+
+/* simple routine to add quantities to BlackholeTempInfo */
+static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration)
+{
+    int target = P[i].IndexMapToTempStruc, k=0;
+    ASSIGN_ADD(BlackholeTempInfo[target].BH_InternalEnergy,out->BH_InternalEnergy,mode);
+    ASSIGN_ADD(BlackholeTempInfo[target].Mgas_in_Kernel,out->Mgas_in_Kernel,mode);
+    ASSIGN_ADD(BlackholeTempInfo[target].Mstar_in_Kernel,out->Mstar_in_Kernel,mode);
+    ASSIGN_ADD(BlackholeTempInfo[target].Malt_in_Kernel,out->Malt_in_Kernel,mode);
+    for(k=0;k<3;k++) {ASSIGN_ADD(BlackholeTempInfo[target].Jgas_in_Kernel[k],out->Jgas_in_Kernel[k],mode);}
+    for(k=0;k<3;k++) {ASSIGN_ADD(BlackholeTempInfo[target].Jstar_in_Kernel[k],out->Jstar_in_Kernel[k],mode);}
+    for(k=0;k<3;k++) {ASSIGN_ADD(BlackholeTempInfo[target].Jalt_in_Kernel[k],out->Jalt_in_Kernel[k],mode);}
+#ifdef BH_DYNFRICTION
+    ASSIGN_ADD(BlackholeTempInfo[target].DF_rms_vel,out->DF_rms_vel,mode);
+    for(k=0;k<3;k++) {ASSIGN_ADD(BlackholeTempInfo[target].DF_mean_vel[k],out->DF_mean_vel[k],mode);}
+    if(mode==0) {BlackholeTempInfo[target].DF_mmax_particles = out->DF_mmax_particles;}
+        else {if(out->DF_mmax_particles > BlackholeTempInfo[target].DF_mmax_particles) {BlackholeTempInfo[target].DF_mmax_particles = out->DF_mmax_particles;}}
+#endif
+#if defined(BH_OUTPUT_MOREINFO)
+    ASSIGN_ADD(BlackholeTempInfo[target].Sfr_in_Kernel,out->Sfr_in_Kernel,mode);
+#endif
+#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)
+    for(k=0;k<3;k++) {ASSIGN_ADD(BlackholeTempInfo[target].GradRho_in_Kernel[k],out->GradRho_in_Kernel[k],mode);}
+#endif
+#if defined(BH_BONDI) || defined(BH_DRAG) || (BH_GRAVACCRETION >= 5)
+    for(k=0;k<3;k++) {ASSIGN_ADD(BlackholeTempInfo[target].BH_SurroundingGasVel[k],out->BH_SurroundingGasVel[k],mode);}
+#endif
+#if (BH_GRAVACCRETION == 8)
+    ASSIGN_ADD(BlackholeTempInfo[target].hubber_mdot_bondi_limiter,out->hubber_mdot_bondi_limiter,mode);
+    ASSIGN_ADD(BlackholeTempInfo[target].hubber_mdot_vr_estimator,out->hubber_mdot_vr_estimator,mode);
+    ASSIGN_ADD(BlackholeTempInfo[target].hubber_mdot_disk_estimator,out->hubber_mdot_disk_estimator,mode);
+#endif
+#if defined(BH_GRAVCAPTURE_GAS)
+    ASSIGN_ADD(BlackholeTempInfo[target].mass_to_swallow_edd, out->mass_to_swallow_edd, mode);
+#endif
+#if defined(BH_RETURN_ANGMOM_TO_GAS)
+    for(k=0;k<3;k++) {ASSIGN_ADD(BlackholeTempInfo[target].angmom_prepass_sum_for_passback[k],out->angmom_prepass_sum_for_passback[k],mode);}
+#endif
+#if defined(BH_ACCRETE_NEARESTFIRST) && defined(BH_GRAVCAPTURE_GAS)
+    if(mode==0) {P[i].BH_dr_to_NearestGasNeighbor=out->BH_dr_to_NearestGasNeighbor;} else {if(P[i].BH_dr_to_NearestGasNeighbor > out->BH_dr_to_NearestGasNeighbor) {P[i].BH_dr_to_NearestGasNeighbor=out->BH_dr_to_NearestGasNeighbor;}}
+#endif
+}
+
+
+/* for new quantities calculated in environment loop, divide out weights and convert to physical units */
+void bh_normalize_temp_info_struct_after_environment_loop(int i);
+void bh_normalize_temp_info_struct_after_environment_loop(int i)
+{
+    int k; k=0;
+    if(BlackholeTempInfo[i].Mgas_in_Kernel > 0)
+    {
+        BlackholeTempInfo[i].BH_InternalEnergy /= BlackholeTempInfo[i].Mgas_in_Kernel;
+#if defined(BH_BONDI) || defined(BH_DRAG) || (BH_GRAVACCRETION >= 5)
+        for(k=0;k<3;k++) {BlackholeTempInfo[i].BH_SurroundingGasVel[k] /= BlackholeTempInfo[i].Mgas_in_Kernel * All.cf_atime;}
+#endif
+    }
+    else {BlackholeTempInfo[i].BH_InternalEnergy = 0;}
+    // DAA: add GAS/STAR mass/angular momentum to the TOTAL mass/angular momentum in kernel
+    BlackholeTempInfo[i].Malt_in_Kernel += (BlackholeTempInfo[i].Mgas_in_Kernel + BlackholeTempInfo[i].Mstar_in_Kernel);
+    for(k=0;k<3;k++) {BlackholeTempInfo[i].Jalt_in_Kernel[k] += (BlackholeTempInfo[i].Jgas_in_Kernel[k] + BlackholeTempInfo[i].Jstar_in_Kernel[k]);}
+#ifdef BH_DYNFRICTION  // DAA: normalize by the appropriate MASS in kernel depending on selected option
+    double Mass_in_Kernel;
+#if (BH_DYNFRICTION == 1)    // DAA: dark matter + stars
+    Mass_in_Kernel = BlackholeTempInfo[i].Malt_in_Kernel - BlackholeTempInfo[i].Mgas_in_Kernel;
+#elif (BH_DYNFRICTION == 2)  // DAA: stars only
+    Mass_in_Kernel = BlackholeTempInfo[i].Mstar_in_Kernel;
+#else
+    Mass_in_Kernel = BlackholeTempInfo[i].Malt_in_Kernel;
+#endif
+    if(Mass_in_Kernel > 0)
+    {
+#if (BH_REPOSITION_ON_POTMIN == 2)
+        Mass_in_Kernel = BlackholeTempInfo[i].DF_rms_vel;
+#else
+        BlackholeTempInfo[i].DF_rms_vel /= Mass_in_Kernel;
+        BlackholeTempInfo[i].DF_rms_vel = sqrt(BlackholeTempInfo[i].DF_rms_vel) / All.cf_atime;
+#endif
+        for(k=0;k<3;k++) {BlackholeTempInfo[i].DF_mean_vel[k] /= Mass_in_Kernel * All.cf_atime;}
+    }
+#endif
+}
 
 
 /* routine to return the values we need of the properties of the gas, stars, etc in the vicinity of the BH -- these all factor into the BHAR */
-int blackhole_environment_evaluate(int target, int mode, int *nexport, int *nSend_local)
+int blackhole_environment_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
 {
-    /* initialize variables before SPH loop is started */
-    int startnode, numngb, j, k, n, listindex=0, mod_index;
-    MyFloat *pos, h_i, *vel, hinv, mass, hinv3; mass=0; MyFloat ags_h_i = All.ForceSoftening[5]; MyIDType id;
-    MyDouble dP[3],dv[3],wt;
-    struct blackhole_temp_particle_data out;
-    memset(&out, 0, sizeof(struct blackhole_temp_particle_data));
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS) || (BH_GRAVACCRETION == 8)
-    MyFloat wk, dwk, u; u=wk=dwk=0;
+    /* initialize variables before loop is started */
+    int startnode, numngb, listindex = 0, j, k, n; struct INPUT_STRUCT_NAME local; struct OUTPUT_STRUCT_NAME out; memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME)); /* define variables and zero memory and import data for local target*/
+    if(mode == 0) {INPUTFUNCTION_NAME(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];} /* imports the data to the correct place and names */
+    double ags_h_i, h_i, hinv, hinv3; h_i=local.Hsml; hinv=1./h_i; hinv3=hinv*hinv*hinv; ags_h_i=All.ForceSoftening[5];
+#if (ADAPTIVE_GRAVSOFT_FORALL & 32)
+    ags_h_i = local.AGS_Hsml;
 #endif
-#if defined(BH_GRAVCAPTURE_GAS)
-    MyFloat vrel, vbound, r2, sink_radius; sink_radius=0;
 #ifdef BH_ACCRETE_NEARESTFIRST
     out.BH_dr_to_NearestGasNeighbor = MAX_REAL_NUMBER; // initialize large value
 #endif
+#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS) || (BH_GRAVACCRETION == 8)
+    MyFloat wk, dwk, u; // initialized here to prevent some annoying compiler warnings
 #endif
-#if defined(BH_RETURN_ANGMOM_TO_GAS)
-    MyFloat *BH_Specific_AngMom;
-#endif
-    
-    /* these are the BH properties */
-    if(mode == 0)
-    {
-#if defined(BH_GRAVCAPTURE_GAS) || (BH_GRAVACCRETION == 8)
-        mass = P[target].Mass;
-#if defined(BH_GRAVCAPTURE_FIXEDSINKRADIUS)
-        sink_radius = P[target].SinkRadius;
-#endif	
-#endif
-        pos = P[target].Pos;
-        vel = P[target].Vel;
-        h_i = PPP[target].Hsml;
-#if (ADAPTIVE_GRAVSOFT_FORALL & 32)
-	    ags_h_i = PPP[target].AGS_Hsml;
-#endif	
-        id = P[target].ID;
-        mod_index = P[target].IndexMapToTempStruc;  /* the index of the BlackholeTempInfo should we modify*/
-#ifdef BH_WAKEUP_GAS
-	    bh_timebin = P[target].TimeBin;
-#endif
-#if defined(BH_RETURN_ANGMOM_TO_GAS)
-        BH_Specific_AngMom = P[target].BH_Specific_AngMom;
-#endif
-    }
-    else
-    {
-#if defined(BH_GRAVCAPTURE_GAS) || (BH_GRAVACCRETION == 8)
-        mass = BlackholeDataGet[target].Mass;
-#if defined(BH_GRAVCAPTURE_FIXEDSINKRADIUS)
-        sink_radius = BlackholeDataGet[target].SinkRadius;
-#endif		
-#endif
-        pos = BlackholeDataGet[target].Pos;
-        vel = BlackholeDataGet[target].Vel;
-        h_i = BlackholeDataGet[target].Hsml;
-#if (ADAPTIVE_GRAVSOFT_FORALL & 32)
-	    ags_h_i = BlackholeDataGet[target].AGS_Hsml;
-#endif	
-        id = BlackholeDataGet[target].ID;
-        mod_index = 0;                              /* this is not used for mode==1, but this avoids compiler error */
-#ifdef BH_WAKEUP_GAS
-	    bh_timebin = BlackholeDataGet[target].TimeBin;
-#endif 
-#if defined(BH_RETURN_ANGMOM_TO_GAS)
-        BH_Specific_AngMom = BlackholeDataGet[target].BH_Specific_AngMom;
-#endif
-    }
-    
-    if(h_i < 0) return -1;
-    hinv = 1./h_i; hinv3 = hinv*hinv*hinv;
-    if(mode == 0)
-    {
-        startnode = All.MaxPart;  /* root node */
-    }
-    else
-    {
-        startnode = BlackholeDataGet[target].NodeList[0];
-        startnode = Nodes[startnode].u.d.nextnode;        /* open it */
-    }
-    
-    while(startnode >= 0)
-    {
-        while(startnode >= 0)
-        {
-            numngb = ngb_treefind_pairs_targeted(pos, h_i, target, &startnode, mode, nexport, nSend_local, BH_NEIGHBOR_BITFLAG);	   
+    /* Now start the actual neighbor computation for this particle */
+    if(mode == 0) {startnode = All.MaxPart; /* root node */} else {startnode = DATAGET_NAME[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode;    /* open it */}
+    while(startnode >= 0) {
+        while(startnode >= 0) {
+            numngb = ngb_treefind_pairs_threads_targeted(local.Pos, h_i, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist, BH_NEIGHBOR_BITFLAG);
             if(numngb < 0) return -1;
-            
             for(n = 0; n < numngb; n++)
             {
-                j = Ngblist[n];
-
+                j = ngblist[n];
 #ifdef BH_WAKEUP_GAS
-		        if (bh_timebin < P[j].LowestBHTimeBin) {P[j].LowestBHTimeBin = bh_timebin;}
+                if (local.Timebin < P[j].LowestBHTimeBin) {P[j].LowestBHTimeBin = local.Timebin;}
 #endif
-                if( (P[j].Mass > 0) && (P[j].Type != 5) && (P[j].ID != id) )
+                if( (P[j].Mass > 0) && (P[j].Type != 5) && (P[j].ID != local.ID) )
                 {
-                    wt = P[j].Mass;
-                    dP[0] = P[j].Pos[0]-pos[0]; dP[1] = P[j].Pos[1]-pos[1]; dP[2] = P[j].Pos[2]-pos[2];
-#ifdef BOX_PERIODIC
+                    double wt = P[j].Mass;
+                    double dP[3], dv[3]; for(k=0;k<3;k++) {dP[k]=P[j].Pos[k]-local.Pos[k]; dv[k]=P[j].Vel[k]-local.Vel[k];}
                     NEAREST_XYZ(dP[0],dP[1],dP[2],-1); /*  find the closest image in the given box size  */
-#endif
-                    dv[0] = P[j].Vel[0]-vel[0]; dv[1] = P[j].Vel[1]-vel[1]; dv[2] = P[j].Vel[2]-vel[2];
 #ifdef BOX_SHEARING
-                    if(pos[0] - P[j].Pos[0] > +boxHalf_X) {dv[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;}
-                    if(pos[0] - P[j].Pos[0] < -boxHalf_X) {dv[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;}
+                    if(local.Pos[0] - P[j].Pos[0] > +boxHalf_X) {dv[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;}
+                    if(local.Pos[0] - P[j].Pos[0] < -boxHalf_X) {dv[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;}
 #endif
 
 #ifdef BH_DYNFRICTION
@@ -339,11 +235,11 @@ int blackhole_environment_evaluate(int target, int mode, int *nexport, int *nSen
                         if(P[j].Mass>out.DF_mmax_particles) out.DF_mmax_particles=P[j].Mass;
                         for (k=0;k<3;k++)
                         {
-                            out.DF_mean_vel[k] += wt*dv[k];
+                            out.DF_mean_vel[k] += wtfac*dv[k];
 #if (BH_REPOSITION_ON_POTMIN == 2)
-                            out.DF_rms_vel += wt;
+                            out.DF_rms_vel += wtfac;
 #else
-                            out.DF_rms_vel += wt*dv[k]*dv[k];
+                            out.DF_rms_vel += wtfac*dv[k]*dv[k];
 #endif
                         }
                     }
@@ -355,123 +251,100 @@ int blackhole_environment_evaluate(int target, int mode, int *nexport, int *nSen
                     {
                         /* we found gas in BH's kernel */
                         out.Mgas_in_Kernel += wt;
-                        out.Sfr_in_Kernel += SphP[j].Sfr;
                         out.BH_InternalEnergy += wt*SphP[j].InternalEnergy;
-                        out.Jgas_in_Kernel[0] += wt*(dP[1]*dv[2] - dP[2]*dv[1]);
-                        out.Jgas_in_Kernel[1] += wt*(dP[2]*dv[0] - dP[0]*dv[2]);
-                        out.Jgas_in_Kernel[2] += wt*(dP[0]*dv[1] - dP[1]*dv[0]);
+                        out.Jgas_in_Kernel[0] += wt*(dP[1]*dv[2] - dP[2]*dv[1]); out.Jgas_in_Kernel[1] += wt*(dP[2]*dv[0] - dP[0]*dv[2]); out.Jgas_in_Kernel[2] += wt*(dP[0]*dv[1] - dP[1]*dv[0]);
+#if defined(BH_OUTPUT_MOREINFO)
+                        out.Sfr_in_Kernel += SphP[j].Sfr;
+#endif
 #if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)
                         u=0; for(k=0;k<3;k++) {u+=dP[k]*dP[k];}
-                        u=sqrt(u)/h_i; kernel_main(u,hinv3,hinv3*hinv,&wk,&dwk,1);
+                        u=sqrt(u)/h_i; if(u<1) {kernel_main(u,hinv3,hinv3*hinv,&wk,&dwk,1);} else {wk=dwk=0;}
                         dwk /= u*h_i; for(k=0;k<3;k++) out.GradRho_in_Kernel[k] += wt * dwk * fabs(dP[k]);
 #endif
 #if defined(BH_BONDI) || defined(BH_DRAG) || (BH_GRAVACCRETION >= 5)
                         for(k=0;k<3;k++) {out.BH_SurroundingGasVel[k] += wt*dv[k];}
 #endif
 #if defined(BH_RETURN_ANGMOM_TO_GAS) /* We need a normalization factor for angular momentum feedback so we will go over all the neighbours */
-                        double r2j=dP[0]*dP[0]+dP[1]*dP[1]+dP[2]*dP[2], Lrj=BH_Specific_AngMom[0]*dP[0]+BH_Specific_AngMom[1]*dP[1]+BH_Specific_AngMom[2]*dP[2];
-                        for(k=0;k<3;k++) {out.angmom_prepass_sum_for_passback[k] += wt*(BH_Specific_AngMom[k]*r2j - dP[k]*Lrj);}
+                        double r2j=dP[0]*dP[0]+dP[1]*dP[1]+dP[2]*dP[2], Lrj=local.BH_Specific_AngMom[0]*dP[0]+local.BH_Specific_AngMom[1]*dP[1]+local.BH_Specific_AngMom[2]*dP[2];
+                        for(k=0;k<3;k++) {out.angmom_prepass_sum_for_passback[k] += wt*(local.BH_Specific_AngMom[k]*r2j - dP[k]*Lrj);}
 #endif
 #if (BH_GRAVACCRETION == 8)
                         u=0; for(k=0;k<3;k++) {u+=dP[k]*dP[k];}
-                        u=sqrt(u)/h_i; kernel_main(u,hinv3,hinv3*hinv,&wk,&dwk,-1);
+                        u=sqrt(u)/h_i; if(u<1) {kernel_main(u,hinv3,hinv3*hinv,&wk,&dwk,-1);} else {wk=dwk=0;}
                         double rj=u*h_i*All.cf_atime; double csj=Particle_effective_soundspeed_i(j);
                         double vdotrj=0; for(k=0;k<3;k++) {vdotrj+=-dP[k]*dv[k];}
                         double vr_mdot = 4*M_PI * wt*(wk*All.cf_a3inv) * rj*vdotrj;
-			
                         if(rj < All.ForceSoftening[5]*All.cf_atime)
                         {
-                            double bondi_mdot = 4*M_PI*All.G*All.G * mass*mass / pow(csj*csj + (dv[0]*dv[0]+dv[1]*dv[1]+dv[2]*dv[2])*All.cf_a2inv, 1.5) * wt * (wk*All.cf_a3inv);
-                            vr_mdot = DMAX(vr_mdot , bondi_mdot);
-                            out.hubber_mdot_bondi_limiter += bondi_mdot;
+                            double bondi_mdot = 4*M_PI*All.G*All.G * local.Mass*local.Mass / pow(csj*csj + (dv[0]*dv[0]+dv[1]*dv[1]+dv[2]*dv[2])*All.cf_a2inv, 1.5) * wt * (wk*All.cf_a3inv);
+                            vr_mdot = DMAX(vr_mdot , bondi_mdot); out.hubber_mdot_bondi_limiter += bondi_mdot;
                         }
                         out.hubber_mdot_vr_estimator += vr_mdot; /* physical */
                         out.hubber_mdot_disk_estimator += wt*wk * sqrt(rj) / (SphP[j].Density * csj*csj); /* physical */
 #endif
                     }
-                    else if( P[j].Type==4 || ((P[j].Type==2||P[j].Type==3) && !(All.ComovingIntegrationOn)) ) 
+                    else if( P[j].Type==4 || ((P[j].Type==2||P[j].Type==3) && !(All.ComovingIntegrationOn)) ) /* stars */
                     {
-                        /* stars */
-                        out.Mstar_in_Kernel += wt;
-                        out.Jstar_in_Kernel[0] += wt*(dP[1]*dv[2] - dP[2]*dv[1]);
-                        out.Jstar_in_Kernel[1] += wt*(dP[2]*dv[0] - dP[0]*dv[2]);
-                        out.Jstar_in_Kernel[2] += wt*(dP[0]*dv[1] - dP[1]*dv[0]);
+                        out.Mstar_in_Kernel += wt; out.Jstar_in_Kernel[0] += wt*(dP[1]*dv[2] - dP[2]*dv[1]); out.Jstar_in_Kernel[1] += wt*(dP[2]*dv[0] - dP[0]*dv[2]); out.Jstar_in_Kernel[2] += wt*(dP[0]*dv[1] - dP[1]*dv[0]);
                     }
-                    else 
-                    { 
-                        /* dark matter */ // DAA: Jalt_in_Kernel and Malt_in_Kernel are updated in normalize_temp_info_struct() to be TOTAL angular momentum and mass 
-                        out.Malt_in_Kernel += wt;
-                        out.Jalt_in_Kernel[0] += wt*(dP[1]*dv[2] - dP[2]*dv[1]);
-                        out.Jalt_in_Kernel[1] += wt*(dP[2]*dv[0] - dP[0]*dv[2]);
-                        out.Jalt_in_Kernel[2] += wt*(dP[0]*dv[1] - dP[1]*dv[0]);
+                    else /* dark matter */ // DAA: Jalt_in_Kernel and Malt_in_Kernel are updated in bh_normalize_temp_info_struct() to be TOTAL angular momentum and mass
+                    {
+                        out.Malt_in_Kernel += wt; out.Jalt_in_Kernel[0] += wt*(dP[1]*dv[2] - dP[2]*dv[1]); out.Jalt_in_Kernel[1] += wt*(dP[2]*dv[0] - dP[0]*dv[2]); out.Jalt_in_Kernel[2] += wt*(dP[0]*dv[1] - dP[1]*dv[0]);
                     }
-                    
 
-#if defined(BH_GRAVCAPTURE_GAS)
-                    /* XM: I formally distinguish BH_GRAVCAPTURE_GAS and BH_GRAVCAPTURE_NONGAS. The former applies to
-                     gas ONLY, as an accretion model. The later can be combined with any accretion model.
-                     Currently, I only allow gas accretion to contribute to BH_Mdot (consistent with the energy radiating away).
-                     For star particles, if there is an alpha-disk, they are captured to the disk. If not, they directly go
-                     to the hole, without any contribution to BH_Mdot and feedback. This can be modified in the swallow loop
-                     for other purposes. The goal of the following part is to estimate BH_Mdot, which will be used to evaluate feedback strength.
-                     Therefore, we only need it when we enable BH_GRAVCAPTURE_GAS as gas accretion model. */
+#if defined(BH_GRAVCAPTURE_GAS) /* XM: I formally distinguish BH_GRAVCAPTURE_GAS and BH_GRAVCAPTURE_NONGAS. The former applies to gas ONLY, as an accretion model. The later can be combined with any accretion model.
+                                    Currently, I only allow gas accretion to contribute to BH_Mdot (consistent with the energy radiating away). For star particles, if there is an alpha-disk, they are captured to the disk. If not, they directly go
+                                    to the hole, without any contribution to BH_Mdot and feedback. This can be modified in the swallow loop for other purposes. The goal of the following part is to estimate BH_Mdot, which will be used to evaluate feedback strength.
+                                    Therefore, we only need it when we enable BH_GRAVCAPTURE_GAS as gas accretion model. */
                     if( (P[j].Mass > 0) && (P[j].Type == 0))
                     {
-                        vrel=r2=0; for(k=0;k<3;k++) {vrel+=dv[k]*dv[k]; r2+=dP[k]*dP[k];}
+                        double vrel=0, r2=0; for(k=0;k<3;k++) {vrel+=dv[k]*dv[k]; r2+=dP[k]*dP[k];}
                         double dr_code = sqrt(r2); vrel = sqrt(vrel) / All.cf_atime;
-                        vbound = bh_vesc(j, mass, dr_code, ags_h_i);
+                        double vbound = bh_vesc(j, local.Mass, dr_code, ags_h_i);
                         if(vrel < vbound) { /* bound */
 #ifdef BH_GRAVCAPTURE_FIXEDSINKRADIUS
                             double spec_mom=0; for(k=0;k<3;k++) {spec_mom += dv[k]*dP[k];} // delta_x.delta_v
                             spec_mom = (r2*vrel*vrel - spec_mom*spec_mom*All.cf_a2inv);  // specific angular momentum^2 = r^2(delta_v)^2 - (delta_v.delta_x)^2;
-                            if(spec_mom < All.G * (mass + P[j].Mass) * sink_radius) // check Bate 1995 angular momentum criterion (in addition to bounded-ness)
+                            if(spec_mom < All.G * (local.Mass + P[j].Mass) * local.SinkRadius) // check Bate 1995 angular momentum criterion (in addition to bounded-ness)
 #endif
-                            if( bh_check_boundedness(j,vrel,vbound,dr_code,sink_radius)==1 ) 
+                            if( bh_check_boundedness(j,vrel,vbound,dr_code,local.SinkRadius)==1 )
                             { /* apocenter within 2.8*epsilon (softening length) */
 #ifdef SINGLE_STAR_SINK_DYNAMICS
                                 double eps = DMAX(P[j].Hsml/2.8, DMAX(dr_code, ags_h_i/2.8));
-			                    double tff = eps*eps*eps / (mass + P[j].Mass);
-			                    if(tff < P[j].SwallowTime) {P[j].SwallowTime = tff;}
+                                double tff = eps*eps*eps / (local.Mass + P[j].Mass);
+                                if(tff < P[j].SwallowTime) {P[j].SwallowTime = tff;}
 #endif
 #if defined(BH_ACCRETE_NEARESTFIRST)
-                                if((out.BH_dr_to_NearestGasNeighbor > dr_code) && (P[j].SwallowID < id)) {out.BH_dr_to_NearestGasNeighbor = dr_code; out.mass_to_swallow_edd = P[j].Mass;}
+                                if((out.BH_dr_to_NearestGasNeighbor > dr_code) && (P[j].SwallowID < local.ID)) {out.BH_dr_to_NearestGasNeighbor = dr_code; out.mass_to_swallow_edd = P[j].Mass;}
 #else
-                                if(P[j].SwallowID < id) {out.mass_to_swallow_edd += P[j].Mass;} /* mark as 'will be swallowed' on next loop, to correct accretion rate */
+                                if(P[j].SwallowID < local.ID) {out.mass_to_swallow_edd += P[j].Mass;} /* mark as 'will be swallowed' on next loop, to correct accretion rate */
 #endif
                             } /* if( apocenter in tolerance range ) */
                         } /* if(vrel < vbound) */
                     } /* type check */
 #endif // BH_GRAVCAPTURE_GAS
-                } // ( (P[j].Mass > 0) && (P[j].Type != 5) && (P[j].ID != id) )
-            } // for(n = 0; n < numngb; n++)
-
-            if(mode == 0) /* local -> send directly to local temp struct */
-            {
-#if defined(BH_ACCRETE_NEARESTFIRST) && defined(BH_GRAVCAPTURE_GAS)
-                P[target].BH_dr_to_NearestGasNeighbor = out.BH_dr_to_NearestGasNeighbor;
-#endif
-                out2particle_blackhole(&out, mod_index, 0);     /* target -> mod_index for reduced size struc */
-            }
-            else
-            {
-                BlackholeDataPasserResult[target] = out;        /* this is okay because target cycles over nimport only */
-            }
-            
-        } // while(startnode >= 0)
-        
-        if(mode == 1)
-        {
-            listindex++;
-            if(listindex < NODELISTLENGTH)
-            {
-                startnode = BlackholeDataGet[target].NodeList[listindex];   /* non-local target o.k. */
-                if(startnode >= 0)
-                    startnode = Nodes[startnode].u.d.nextnode;	/* open it */
-            } // if(listindex < NODELISTLENGTH)
-        } // if(mode == 1)
-    } // while(startnode >= 0)
+                } // ( (P[j].Mass > 0) && (P[j].Type != 5) && (P[j].ID != local.ID) ) - condition for entering primary loop
+            } // numngb_inbox loop
+        } // while(startnode)
+        if(mode == 1) {listindex++; if(listindex < NODELISTLENGTH) {startnode = DATAGET_NAME[target].NodeList[listindex]; if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode; /* open it */}}} /* continue to open leaves if needed */
+    }
+    if(mode == 0) {OUTPUTFUNCTION_NAME(&out, target, 0, loop_iteration);} else {DATARESULT_NAME[target] = out;} /* collects the result at the right place */
     return 0;
 }
+
+
+void blackhole_environment_loop(void)
+{
+    #include "../../system/code_block_xchange_perform_ops_malloc.h" /* this calls the large block of code which contains the memory allocations for the MPI/OPENMP/Pthreads parallelization block which must appear below */
+    #include "../../system/code_block_xchange_perform_ops.h" /* this calls the large block of code which actually contains all the loops, MPI/OPENMP/Pthreads parallelization */
+    #include "../../system/code_block_xchange_perform_ops_demalloc.h" /* this de-allocates the memory for the MPI/OPENMP/Pthreads parallelization block which must appear above */
+    /* final operations on results */
+    {int i; for(i=0; i<N_active_loc_BHs; i++) {bh_normalize_temp_info_struct_after_environment_loop(i);}}
+}
+#include "../../system/code_block_xchange_finalize.h" /* de-define the relevant variables and macros to avoid compilation errors and memory leaks */
+
+
+
 
 
 
@@ -480,287 +353,79 @@ int blackhole_environment_evaluate(int target, int mode, int *nexport, int *nSen
 /* -----------------------------------------------------------------------------------------------------
  * DAA: modified versions of blackhole_environment_loop and blackhole_environment_evaluate for a second
  * environment loop. Here we do a Bulge-Disk kinematic decomposition for gravitational torque accretion
- * ----------------------------------------------------------------------------------------------------- 
- */
-
-
+ * ----------------------------------------------------------------------------------------------------- */
 #if defined(BH_GRAVACCRETION) && (BH_GRAVACCRETION == 0)
 
-void blackhole_environment_second_loop(void)
+#define MASTER_FUNCTION_NAME blackhole_environment_second_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define CONDITIONFUNCTION_FOR_EVALUATION if(P[i].Type==5) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
+#include "../../system/code_block_xchange_initialize.h" /* pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
+
+/* this structure defines the variables that need to be sent -from- the 'searching' element */
+struct INPUT_STRUCT_NAME
 {
-    int i, j, k, nexport, nimport, place, ngrp, recvTask, dummy;
-    int ndone_flag, ndone;
-    int mod_index;
-    MPI_Status status;
+    int NodeList[NODELISTLENGTH]; MyDouble Pos[3]; MyFloat Vel[3], Hsml, Jgas_in_Kernel[3], Jstar_in_Kernel[3];
+}
+*DATAIN_NAME, *DATAGET_NAME; /* dont mess with these names, they get filled-in by your definitions automatically */
 
-    size_t MyBufferSize = All.BufferSize;
-    Ngblist = (int *) mymalloc("Ngblist", NumPart * sizeof(int));
-    All.BunchSize = (int) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
-                                                             sizeof(struct blackholedata_in) +
-                                                             sizeof(struct blackhole_temp_particle_data) +
-                                                             sizemax(sizeof(struct blackholedata_in),sizeof(struct blackhole_temp_particle_data))));
-    DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
-    DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
-
-    /* Scan gas particles for angular momentum, boundedness, etc */
-    i = FirstActiveParticle;    /* first particle for this task */
-    do
-    {
-        for(j = 0; j < NTask; j++)
-        {
-            Send_count[j] = 0;
-            Exportflag[j] = -1;
-        }
-        /* do local active BH particles and prepare export list */
-        for(nexport = 0; i >= 0; i = NextActiveParticle[i])
-            if(P[i].Type == 5)
-                if(blackhole_environment_second_evaluate(i, 0, &nexport, Send_count) < 0)
-                    break;
-
-        MYSORT_DATAINDEX(DataIndexTable, nexport, sizeof(struct data_index), data_index_compare);
-        MPI_Alltoall(Send_count, 1, MPI_INT, Recv_count, 1, MPI_INT, MPI_COMM_WORLD);
-        for(j = 0, nimport = 0, Recv_offset[0] = 0, Send_offset[0] = 0; j < NTask; j++)
-        {
-            nimport += Recv_count[j];
-            if(j > 0)
-            {
-                Send_offset[j] = Send_offset[j - 1] + Send_count[j - 1];
-                Recv_offset[j] = Recv_offset[j - 1] + Recv_count[j - 1];
-            }
-        }
-
-
-        BlackholeDataGet = (struct blackholedata_in *) mymalloc("BlackholeDataGet", nimport * sizeof(struct blackholedata_in));
-        BlackholeDataIn = (struct blackholedata_in *) mymalloc("BlackholeDataIn", nexport * sizeof(struct blackholedata_in));
-        for(j = 0; j < nexport; j++)
-        {
-            place = DataIndexTable[j].Index;
-            mod_index = P[place].IndexMapToTempStruc;  /* DAA: the index of the BlackholeTempInfo structure */
-            for(k = 0; k < 3; k++)
-            {
-                BlackholeDataIn[j].Pos[k] = P[place].Pos[k];
-                BlackholeDataIn[j].Vel[k] = P[place].Vel[k];
-                BlackholeDataIn[j].Jgas[k] = BlackholeTempInfo[mod_index].Jgas_in_Kernel[k];    // DAA: Jgas is available after first environment loop
-                BlackholeDataIn[j].Jstar[k] = BlackholeTempInfo[mod_index].Jstar_in_Kernel[k];
-            }
-            BlackholeDataIn[j].Hsml = PPP[place].Hsml;
-#if (ADAPTIVE_GRAVSOFT_FORALL & 32)
-            BlackholeDataIn[j].AGS_Hsml = PPP[place].AGS_Hsml;
-#endif	    
-            BlackholeDataIn[j].ID = P[place].ID;
-            memcpy(BlackholeDataIn[j].NodeList, DataNodeList[DataIndexTable[j].IndexGet].NodeList, NODELISTLENGTH * sizeof(int));
-        }
-        /* exchange particle data */
-        for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-        {
-            recvTask = ThisTask ^ ngrp;
-            if(recvTask < NTask)
-            {
-                if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
-                {
-                    /* get the particles */
-                    MPI_Sendrecv(&BlackholeDataIn[Send_offset[recvTask]],
-                                 Send_count[recvTask] * sizeof(struct blackholedata_in), MPI_BYTE,
-                                 recvTask, TAG_BH_C,
-                                 &BlackholeDataGet[Recv_offset[recvTask]],
-                                 Recv_count[recvTask] * sizeof(struct blackholedata_in), MPI_BYTE,
-                                 recvTask, TAG_BH_C, MPI_COMM_WORLD, &status);
-                }
-            }
-        }
-        myfree(BlackholeDataIn);
-
-        //DAA: PasserResult cycles over nimport, PasserOut cycles over nexport:
-        BlackholeDataPasserResult = (struct blackhole_temp_particle_data *) mymalloc("BlackholeDataPasserResult", nimport * sizeof(struct blackhole_temp_particle_data));
-        BlackholeDataPasserOut = (struct blackhole_temp_particle_data *) mymalloc("BlackholeDataPasserOut", nexport * sizeof(struct blackhole_temp_particle_data));
-
- /* -------------- NOTE
- *         DAA: note that we actually don't need the full BlackholeDataPasserResult/BlackholeDataPasserOut structures here... 
- *         --> we could only pass Mbulge_in_Kernel !
- *  -------------- NOTE
- */
-
-        /* now do the particles that were sent to us */
-        for(j = 0; j < nimport; j++)
-            blackhole_environment_second_evaluate(j, 1, &dummy, &dummy);
-
-            if(i < 0)
-                ndone_flag = 1;
-                else
-                    ndone_flag = 0;
-
-                    MPI_Allreduce(&ndone_flag, &ndone, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-
-                /* get the result */
-                    for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-                    {
-                        recvTask = ThisTask ^ ngrp;
-                        if(recvTask < NTask)
-                        {
-                            if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
-                            {
-                                /* send the results */
-                                MPI_Sendrecv(&BlackholeDataPasserResult[Recv_offset[recvTask]],
-                                             Recv_count[recvTask] * sizeof(struct blackhole_temp_particle_data),
-                                             MPI_BYTE, recvTask, TAG_BH_D,
-                                             &BlackholeDataPasserOut[Send_offset[recvTask]],
-                                             Send_count[recvTask] * sizeof(struct blackhole_temp_particle_data),
-                                             MPI_BYTE, recvTask, TAG_BH_D, MPI_COMM_WORLD, &status);
-                            }
-                        }
-                    } // for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-
-        /* add the result to the particles */
-        for(j = 0; j < nexport; j++)
-        {
-            place = DataIndexTable[j].Index;
-            mod_index = P[place].IndexMapToTempStruc;
-            /* DAA: we only need to update Mbulge_in_Kernel */
-            BlackholeTempInfo[mod_index].MgasBulge_in_Kernel += BlackholeDataPasserOut[j].MgasBulge_in_Kernel;
-            BlackholeTempInfo[mod_index].MstarBulge_in_Kernel += BlackholeDataPasserOut[j].MstarBulge_in_Kernel;
-        } // for(j = 0; j < nexport; j++)
-        myfree(BlackholeDataPasserOut);
-        myfree(BlackholeDataPasserResult);
-        myfree(BlackholeDataGet);
-    }
-    while(ndone < NTask);
-    myfree(DataNodeList);
-    myfree(DataIndexTable);
-    myfree(Ngblist);
-
+/* this subroutine assigns the values to the variables that need to be sent -from- the 'searching' element */
+static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
+{
+    int k, j_tempinfo = P[i].IndexMapToTempStruc; in->Hsml = PPP[i].Hsml; /* link to the location in the shared structure where this is stored */
+    for(k=0;k<3;k++) {in->Pos[k]=P[i].Pos[k]; in->Vel[k]=P[i].Vel[k];} /* good example - always needed */
+    for(k=0;k<3;k++) {in->Jgas_in_Kernel[k]=BlackholeTempInfo[j_tempinfo].Jgas_in_Kernel[k]; in->Jstar_in_Kernel[k]=BlackholeTempInfo[j_tempinfo].Jstar_in_Kernel[k];}
 }
 
+/* this structure defines the variables that need to be sent -back to- the 'searching' element */
+struct OUTPUT_STRUCT_NAME
+{ /* define variables below as e.g. "double X;" */
+    MyFloat MgasBulge_in_Kernel, MstarBulge_in_Kernel;
+}
+*DATARESULT_NAME, *DATAOUT_NAME; /* dont mess with these names, they get filled-in by your definitions automatically */
 
-
-
-int blackhole_environment_second_evaluate(int target, int mode, int *nexport, int *nSend_local)
+/* simple routine to add quantities to BlackholeTempInfo */
+static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration)
 {
-    /* initialize variables before SPH loop is started */
-    int startnode, numngb, j, n, listindex=0, mod_index;
-    MyFloat *pos, h_i, *vel, *Jgas, *Jstar;
-    MyIDType id;
+    int target = P[i].IndexMapToTempStruc;
+    ASSIGN_ADD(BlackholeTempInfo[target].MgasBulge_in_Kernel,out->MgasBulge_in_Kernel,mode);
+    ASSIGN_ADD(BlackholeTempInfo[target].MstarBulge_in_Kernel,out->MstarBulge_in_Kernel,mode);
+}
 
-    double dP[3],dv[3],J_tmp[3],wt;
-    double MgasBulge_tmp, MstarBulge_tmp;
-    MgasBulge_tmp=0; MstarBulge_tmp=0;
-
-    /* these are the BH properties */
-    if(mode == 0)
-    {
-        pos = P[target].Pos;
-        vel = P[target].Vel;
-        h_i = PPP[target].Hsml;	
-        id = P[target].ID;
-        mod_index = P[target].IndexMapToTempStruc;  /* the index of the BlackholeTempInfo should we modify*/
-        Jgas = BlackholeTempInfo[mod_index].Jgas_in_Kernel;      // DAA: Jgas/Jstar available after first environment loop
-        Jstar = BlackholeTempInfo[mod_index].Jstar_in_Kernel;
-    }
-    else
-    {
-        pos = BlackholeDataGet[target].Pos;
-        vel = BlackholeDataGet[target].Vel;
-        h_i = BlackholeDataGet[target].Hsml;
-        id = BlackholeDataGet[target].ID;
-        mod_index = 0;                              /* this is not used for mode==1, but this avoids compiler error */
-        Jgas = BlackholeDataGet[target].Jgas;
-        Jstar = BlackholeDataGet[target].Jstar;
-    }
-
-    if(h_i < 0) return -1;
-
-    if(mode == 0)
-    {
-        startnode = All.MaxPart;  /* root node */
-    }
-    else
-    {
-        startnode = BlackholeDataGet[target].NodeList[0];
-        startnode = Nodes[startnode].u.d.nextnode;        /* open it */
-    }
-
-    while(startnode >= 0)
-    {
-        while(startnode >= 0)
-        {
-            numngb = ngb_treefind_pairs_targeted(pos, h_i, target, &startnode, mode, nexport, nSend_local, BH_NEIGHBOR_BITFLAG); // BH_NEIGHBOR_BITFLAG defines which types of particles we search for
-            if(numngb < 0) return -1;
-
-            for(n = 0; n < numngb; n++)
+/* this subroutine does the actual neighbor-element calculations (this is the 'core' of the loop, essentially) */
+int blackhole_environment_second_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
+{
+    int startnode, numngb_inbox, listindex = 0, j, n; struct INPUT_STRUCT_NAME local; struct OUTPUT_STRUCT_NAME out; memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME)); /* define variables and zero memory and import data for local target*/
+    if(mode == 0) {INPUTFUNCTION_NAME(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];} /* imports the data to the correct place and names */
+    if(mode == 0) {startnode = All.MaxPart; /* root node */} else {startnode = DATAGET_NAME[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode;    /* open it */}
+    while(startnode >= 0) {
+        while(startnode >= 0) {
+            numngb_inbox = ngb_treefind_pairs_threads_targeted(local.Pos, local.Hsml, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist, BH_NEIGHBOR_BITFLAG);
+            if(numngb_inbox < 0) {return -1;} /* no neighbors! */
+            for(n = 0; n < numngb_inbox; n++) /* neighbor loop */
             {
-                j = Ngblist[n];
-
-
-                if( (P[j].Mass > 0) && (P[j].Type != 5) && (P[j].ID != id) )
-                {
-                    wt = P[j].Mass;
-                    dP[0] = P[j].Pos[0]-pos[0];
-                    dP[1] = P[j].Pos[1]-pos[1];
-                    dP[2] = P[j].Pos[2]-pos[2];
-#ifdef BOX_PERIODIC           
-                    NEAREST_XYZ(dP[0],dP[1],dP[2],-1); /*  find the closest image in the given box size  */
-#endif
-                    dv[0] = P[j].Vel[0]-vel[0];
-                    dv[1] = P[j].Vel[1]-vel[1];
-                    dv[2] = P[j].Vel[2]-vel[2];
+                j = ngblist[n]; if((P[j].Mass <= 0)||(P[j].Hsml <= 0)||(P[j].Type==5)) {continue;} /* make sure neighbor is valid */
+                int k; double dP[3], dv[3]; for(k=0;k<3;k++) {dP[k]=P[j].Pos[k]-local.Pos[k]; dv[k]=P[j].Vel[k]-local.Vel[k];} /* position offset */
+                NEAREST_XYZ(dP[0],dP[1],dP[2],-1);
 #ifdef BOX_SHEARING
-                    if(pos[0] - P[j].Pos[0] > +boxHalf_X) {dv[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;}
-                    if(pos[0] - P[j].Pos[0] < -boxHalf_X) {dv[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;}
+                if(local.Pos[0] - P[j].Pos[0] > +boxHalf_X) {dv[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;}
+                if(local.Pos[0] - P[j].Pos[0] < -boxHalf_X) {dv[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;}
 #endif
-
-                    // DAA: jx,jy,jz, are independent of 'a' because ~ m*r*v, vphys=v/a, rphys=r*a //
-                    J_tmp[0] = wt*(dP[1]*dv[2] - dP[2]*dv[1]);
-                    J_tmp[1] = wt*(dP[2]*dv[0] - dP[0]*dv[2]);
-                    J_tmp[2] = wt*(dP[0]*dv[1] - dP[1]*dv[0]);
-
-                    if(P[j].Type==0)
-                    {
-                        /* GAS */
-                        if( (J_tmp[0]*Jgas[0] + J_tmp[1]*Jgas[1] + J_tmp[2]*Jgas[2]) < 0 )  
-                        {
-                            /* DAA: assume the bulge component contains as many particles with positive azimuthal velocities  
-                               as with negative azimuthal velocities relative to the angular momentum vector */
-                            MgasBulge_tmp += 2.0 * wt;
-                        }
-                    }
-                    else if( P[j].Type==4 || ((P[j].Type==2||P[j].Type==3) && !(All.ComovingIntegrationOn)) )
-                    {
-                        /* STARS */
-                        if( (J_tmp[0]*Jstar[0] + J_tmp[1]*Jstar[1] + J_tmp[2]*Jstar[2]) < 0 )   
-                        {
-                            MstarBulge_tmp += 2.0 * wt;
-                        }
-                    }
-
-
-                } // ( (P[j].Mass > 0) && (P[j].Type != 5) && (P[j].ID != id) )
-            } // for(n = 0; n < numngb; n++)
-
-            if(mode == 0) /* local -> send directly to local temp struct */
-            {
-                BlackholeTempInfo[mod_index].MgasBulge_in_Kernel = MgasBulge_tmp;
-                BlackholeTempInfo[mod_index].MstarBulge_in_Kernel = MstarBulge_tmp;
-            }
-            else
-            {
-                BlackholeDataPasserResult[target].MgasBulge_in_Kernel = MgasBulge_tmp;
-                BlackholeDataPasserResult[target].MstarBulge_in_Kernel = MstarBulge_tmp;
-            }
-
-        } // while(startnode >= 0)
-
-        if(mode == 1)
-        {
-            listindex++;
-            if(listindex < NODELISTLENGTH)
-            {
-                startnode = BlackholeDataGet[target].NodeList[listindex];   /* non-local target o.k. */
-                if(startnode >= 0)
-                    startnode = Nodes[startnode].u.d.nextnode;  /* open it */
-            } // if(listindex < NODELISTLENGTH)
-        } // if(mode == 1)
-    } // while(startnode >= 0)
+                double J_tmp[3]; J_tmp[0]=dP[1]*dv[2]-dP[2]*dv[1]; J_tmp[1]=dP[2]*dv[0]-dP[0]*dv[2]; J_tmp[2]=dP[0]*dv[1]-dP[1]*dv[0]; /* just need direction not magnitude */
+                if(P[j].Type==0) {if(J_tmp[0]*local.Jgas_in_Kernel[0] + J_tmp[1]*local.Jgas_in_Kernel[1] + J_tmp[2]*local.Jgas_in_Kernel[2] < 0) {out.MgasBulge_in_Kernel += 2*P[j].Mass;}} /* DAA: assume the bulge component contains as many particles with positive azimuthal velocities as with negative azimuthal velocities relative to the angular momentum vector */
+                if(P[j].Type==4 || ((P[j].Type==2||P[j].Type==3) && !(All.ComovingIntegrationOn))) {if(J_tmp[0]*local.Jstar_in_Kernel[0] + J_tmp[1]*local.Jstar_in_Kernel[1] + J_tmp[2]*local.Jstar_in_Kernel[2] < 0) {out.MstarBulge_in_Kernel += 2*P[j].Mass;}}
+            } // numngb_inbox loop
+        } // while(startnode)
+        if(mode == 1) {listindex++; if(listindex < NODELISTLENGTH) {startnode = DATAGET_NAME[target].NodeList[listindex]; if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode; /* open it */}}} /* continue to open leaves if needed */
+    }
+    if(mode == 0) {OUTPUTFUNCTION_NAME(&out, target, 0, loop_iteration);} else {DATARESULT_NAME[target] = out;} /* collects the result at the right place */
     return 0;
 }
 
+void blackhole_environment_second_loop(void)
+{
+#include "../../system/code_block_xchange_perform_ops_malloc.h" /* this calls the large block of code which contains the memory allocations for the MPI/OPENMP/Pthreads parallelization block which must appear below */
+#include "../../system/code_block_xchange_perform_ops.h" /* this calls the large block of code which actually contains all the loops, MPI/OPENMP/Pthreads parallelization */
+#include "../../system/code_block_xchange_perform_ops_demalloc.h" /* this de-allocates the memory for the MPI/OPENMP/Pthreads parallelization block which must appear above */
+}
+#include "../../system/code_block_xchange_finalize.h" /* de-define the relevant variables and macros to avoid compilation errors and memory leaks */
 
 #endif   //BH_GRAVACCRETION == 0

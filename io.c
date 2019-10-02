@@ -15,7 +15,7 @@
  */
 /*
  * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org). The code has been modified
+ * Volker Springel. The code has been modified
  * in part by Phil Hopkins (phopkins@caltech.edu) for GIZMO (mostly to
  * write out new/modified quantities, as needed)
  */
@@ -136,8 +136,7 @@ void savepositions(int num)
         All.Ti_lastoutput = All.Ti_Current;
         
         CPU_Step[CPU_SNAPSHOT] += measure_time();
-        
-    }
+}
     
 #ifdef FOF
     if(RestartFlag != 4)
@@ -279,6 +278,9 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                     for(k = 0; k < 3; k++)
                     {
                         fp[k] = P[pindex].Vel[k] + P[pindex].GravAccel[k] * dt_gravkick;
+#if (SINGLE_STAR_TIMESTEPPING > 0)
+			            if((P[pindex].Type == 5) && (P[pindex].SuperTimestepFlag >= 2)) {fp[k] += (P[pindex].COM_GravAccel[k]-P[pindex].GravAccel[k]) * dt_gravkick;}
+#endif			    
                         if(P[pindex].Type == 0)
                         {
                             fp[k] += SphP[pindex].HydroAccel[k] * dt_hydrokick * All.cf_atime;
@@ -562,6 +564,14 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             break;
             
         case IO_HSMS:		/* kernel length for star particles */
+#ifdef SUBFIND
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = P[pindex].DM_Hsml;
+                    n++;
+                }
+#endif
             break;
             
         case IO_Z:			/* gas and star metallicity */
@@ -581,7 +591,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
 
             
         case IO_POT:		/* gravitational potential */
-#if defined(OUTPUT_POTENTIAL)  || defined(FLAG_NOT_IN_PUBLIC_CODE_RESHUFFLE_AND_POTENTIAL)
+#if defined(OUTPUT_POTENTIAL)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
@@ -1258,21 +1268,6 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
 #endif
             break;
             
-        case IO_DMHSML:
-            break;
-            
-        case IO_DMDENSITY:
-            break;
-            
-        case IO_DMVELDISP:
-            break;
-            
-        case IO_DMHSML_V:
-            break;
-            
-        case IO_DMDENSITY_V:
-            break;
-            
         case IO_CHEM:
             break;
         case IO_AGS_SOFT:		/* Adaptive Gravitational Softening: softening */
@@ -1678,15 +1673,6 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
             break;
             
             
-        case IO_DMHSML:
-        case IO_DMDENSITY:
-        case IO_DMVELDISP:
-        case IO_DMHSML_V:
-        case IO_DMDENSITY_V:
-            bytes_per_blockelement = sizeof(float);
-            break;
-
-            
         case IO_IMF:
 #ifdef GALSF_SFR_IMF_VARIATION
             if(mode)
@@ -1924,11 +1910,6 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_EOSYE:
         case IO_PRESSURE:
         case IO_INIT_DENSITY:
-        case IO_DMHSML:
-        case IO_DMDENSITY:
-        case IO_DMVELDISP:
-        case IO_DMHSML_V:
-        case IO_DMDENSITY_V:
         case IO_AGS_SOFT:
         case IO_AGS_RHO:
         case IO_AGS_QPT:
@@ -2282,20 +2263,6 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
             return nsel;
             break;
             
-            
-        case IO_DMHSML:
-        case IO_DMDENSITY:
-        case IO_DMVELDISP:
-        case IO_DMHSML_V:
-        case IO_DMDENSITY_V:
-            for(i = 0; i < 6; i++)
-                if(((1 << i) & (FOF_PRIMARY_LINK_TYPES)))
-                    nsel += header.npart[i];
-                else
-                    typelist[i] = 0;
-            return nsel;
-            break;
-            
         case IO_MG_ACCEL:
             for(i = 2; i < 6; i++)
                 typelist[i] = 0;
@@ -2355,7 +2322,11 @@ int blockpresent(enum iofields blocknr)
 #endif
             
         case IO_HSMS:
+#if defined(SUBFIND)
+            return 1;
+#else
             return 0;
+#endif
             break;
             
         case IO_SFR:
@@ -2435,7 +2406,7 @@ int blockpresent(enum iofields blocknr)
             break;
             
         case IO_POT:
-#if defined(OUTPUT_POTENTIAL) || defined(FLAG_NOT_IN_PUBLIC_CODE_RESHUFFLE_AND_POTENTIAL)
+#if defined(OUTPUT_POTENTIAL)
             return 1;
 #else
             return 0;
@@ -2799,17 +2770,6 @@ int blockpresent(enum iofields blocknr)
 #else
             return 0;
 #endif
-            
-        case IO_DMHSML:
-        case IO_DMDENSITY:
-        case IO_DMVELDISP:
-            return 0;
-            break;
-            
-        case IO_DMHSML_V:
-        case IO_DMDENSITY_V:
-            return 0;
-            break;
             
         case IO_CHEM:
             return 0;
@@ -3215,21 +3175,6 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
             break;
         case IO_EDDINGTON_TENSOR:
             strncpy(label, "ET", 4);
-            break;
-        case IO_DMHSML:
-            strncpy(label, "DMHS", 4);
-            break;
-        case IO_DMDENSITY:
-            strncpy(label, "DMDE", 4);
-            break;
-        case IO_DMVELDISP:
-            strncpy(label, "DMVD", 4);
-            break;
-        case IO_DMHSML_V:
-            strncpy(label, "VDMH", 4);
-            break;
-        case IO_DMDENSITY_V:
-            strncpy(label, "VDMD", 4);
             break;
         case IO_CHEM:
             strncpy(label, "CHEM", 4);
@@ -3640,21 +3585,6 @@ void get_dataset_name(enum iofields blocknr, char *buf)
         case IO_EDDINGTON_TENSOR:
             strcpy(buf, "EddingtonTensor");
             break;
-        case IO_DMHSML:
-            strcpy(buf, "DM Hsml");
-            break;
-        case IO_DMDENSITY:
-            strcpy(buf, "DM Density");
-            break;
-        case IO_DMVELDISP:
-            strcpy(buf, "DM Velocity Dispersion");
-            break;
-        case IO_DMHSML_V:
-            strcpy(buf, "DM Hsml Voronoi");
-            break;
-        case IO_DMDENSITY_V:
-            strcpy(buf, "DM Density Voronoi");
-            break;
         case IO_CHEM:
             strcpy(buf, "ChemicalAbundances");
             break;
@@ -3784,7 +3714,6 @@ void write_file(char *fname, int writeTask, int lastTask)
 #endif
     
 #define SKIP  {my_fwrite(&blksize,sizeof(int),1,fd);}
-    
     
     /* determine particle numbers of each type in file */
     
@@ -4405,14 +4334,11 @@ void mpi_printf(const char *fmt, ...)
         va_list l;
         va_start(l, fmt);
         vprintf(fmt, l);
-#ifndef IO_REDUCED_MODE
-        fflush(stdout);
-#endif
         va_end(l);
     }
 }
 
-#if defined(FLAG_NOT_IN_PUBLIC_CODE_READ_FOF) || defined(FLAG_NOT_IN_PUBLIC_CODE_RESHUFFLE_CATALOGUE)
+#if defined(IO_SUBFIND_READFOF_FROMIC)
 int io_compare_P_ID(const void *a, const void *b)
 {
     if(((struct particle_data *) a)->ID < (((struct particle_data *) b)->ID))

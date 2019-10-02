@@ -7,7 +7,7 @@
 #include "../allvars.h"
 #include "../proto.h"
 #include "../kernel.h"
-#ifdef OMP_NUM_THREADS
+#ifdef PTHREADS_NUM_THREADS
 #include <pthread.h>
 #endif
 
@@ -35,8 +35,11 @@
 #define ASSIGN_ADD_PRESET(x,y,mode) (x+=y)
 #define MINMAX_CHECK(x,xmin,xmax) ((x<xmin)?(xmin=x):((x>xmax)?(xmax=x):(1)))
 #define SHOULD_I_USE_SPH_GRADIENTS(condition_number) ((condition_number > CONDITION_NUMBER_DANGER) ? (1):(0))
+#define MAX_ADD(x,y,mode) ((y > x) ? (x = y) : (1)) // simpler definition now used
+#define MIN_ADD(x,y,mode) ((y < x) ? (x = y) : (1))
+#define NV_MYSIGN(x) (( x > 0 ) - ( x < 0 ))
 
-#ifdef OMP_NUM_THREADS
+#ifdef PTHREADS_NUM_THREADS
 extern pthread_mutex_t mutex_nexport;
 extern pthread_mutex_t mutex_partnodedrift;
 #define LOCK_NEXPORT     pthread_mutex_lock(&mutex_nexport);
@@ -46,7 +49,6 @@ extern pthread_mutex_t mutex_partnodedrift;
 #define UNLOCK_NEXPORT
 #endif
 
-#define NV_MYSIGN(x) (( x > 0 ) - ( x < 0 ))
 
 struct Quantities_for_Smooth_Gradients {
     double Velocity_hat[3];
@@ -154,8 +156,6 @@ static inline void particle2in_DynamicDiff(struct DynamicDiffdata_in *in, int i,
 }
 
 
-#define MAX_ADD(x,y,mode) ((y > x) ? (x = y) : (1)) // simpler definition now used
-#define MIN_ADD(x,y,mode) ((y < x) ? (x = y) : (1))
 
 
 static inline void out2particle_DynamicDiff_iter(struct DynamicDiffdata_out_iter *out, int i, int mode, int dynamic_iteration) {
@@ -191,7 +191,6 @@ static inline void out2particle_DynamicDiff(struct DynamicDiffdata_out *out, int
 
 
 void local_slopelimiter_dyndiff(double *grad, double valmax, double valmin, double alim, double h, double shoot_tol);
-
 void local_slopelimiter_dyndiff(double *grad, double valmax, double valmin, double alim, double h, double shoot_tol) {
     int k;
     double d_abs = 0.0;
@@ -255,7 +254,7 @@ void construct_gradient_dyndiff(double *grad, int i) {
  *      - D. Rennehan
  */
 void dynamic_diff_calc(void) {
-    mpi_printf("start dynamic diffusion calculations...\n");
+    PRINT_STATUS("Start dynamic diffusion calculations...");
     int i, j, k, v, k1, u, ngrp, ndone, ndone_flag, dynamic_iteration;
     double shear_factor, dynamic_denominator, trace = 0, trace_dynamic_fac = 0, hhat2 = 0, leonardTensor[3][3], prefactor = 0;
 #ifdef TURB_DIFF_DYNAMIC_ERROR
@@ -284,10 +283,7 @@ void dynamic_diff_calc(void) {
     Ngblist = (int *) mymalloc("Ngblist", NTaskTimesNumPart * sizeof(int));
     DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
     DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
-
-#ifdef TURB_DIFF_DYNAMIC_VERBOSE
-    mpi_printf("Begin initializing smoothed quantities.\n");
-#endif
+    PRINT_STATUS(" ..begin initializing smoothed quantities.");
 
     /* Because of smoothing operation, we don't zero these out, they get set to their current value */
     for (i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) {
@@ -315,19 +311,13 @@ void dynamic_diff_calc(void) {
             }
         }
     }
- 
-#ifdef TURB_DIFF_DYNAMIC_VERBOSE
-    mpi_printf("Entering iteration loop for the first time. # of iterations = %d\n", (All.TurbDynamicDiffIterations + 2));
-#endif
-
+    PRINT_STATUS(" ..entering iteration loop for the first time. # of iterations = %d", (All.TurbDynamicDiffIterations + 2));
+    
     /* prepare to do the requisite number of sweeps over the particle distribution */
     for (dynamic_iteration = 0; dynamic_iteration < (All.TurbDynamicDiffIterations + 1); dynamic_iteration++) {      
         // now we actually begin the main gradient loop //
         NextParticle = FirstActiveParticle;	/* begin with this index */
-    
-#ifdef TURB_DIFF_DYNAMIC_VERBOSE
-        mpi_printf("First loop over active particles (iter = %d)\n", dynamic_iteration);
-#endif
+        PRINT_STATUS(" ..first loop over active particles (iter = %d)", dynamic_iteration);
 
         do {    
             BufferFullFlag = 0;
@@ -342,9 +332,9 @@ void dynamic_diff_calc(void) {
             /* do local particles and prepare export list */
             tstart = my_second();
             
-#ifdef OMP_NUM_THREADS
-            pthread_t mythreads[OMP_NUM_THREADS - 1];
-            int threadid[OMP_NUM_THREADS - 1];
+#ifdef PTHREADS_NUM_THREADS
+            pthread_t mythreads[PTHREADS_NUM_THREADS - 1];
+            int threadid[PTHREADS_NUM_THREADS - 1];
             pthread_attr_t attr;
             
             pthread_attr_init(&attr);
@@ -354,7 +344,7 @@ void dynamic_diff_calc(void) {
             
             TimerFlag = 0;
             
-            for (j = 0; j < OMP_NUM_THREADS - 1; j++) {
+            for (j = 0; j < PTHREADS_NUM_THREADS - 1; j++) {
                 threadid[j] = j + 1;
                 pthread_create(&mythreads[j], &attr, DynamicDiff_evaluate_primary, &threadid[j]);
             }
@@ -371,8 +361,8 @@ void dynamic_diff_calc(void) {
                 DynamicDiff_evaluate_primary(&mainthreadid, dynamic_iteration);	/* do local particles and prepare export list */
             }
             
-#ifdef OMP_NUM_THREADS
-            for (j = 0; j < OMP_NUM_THREADS - 1; j++) pthread_join(mythreads[j], NULL);
+#ifdef PTHREADS_NUM_THREADS
+            for (j = 0; j < PTHREADS_NUM_THREADS - 1; j++) pthread_join(mythreads[j], NULL);
 #endif
             
             tend = my_second();
@@ -495,8 +485,8 @@ void dynamic_diff_calc(void) {
             tstart = my_second();
             NextJ = 0;
             
-#ifdef OMP_NUM_THREADS
-            for (j = 0; j < OMP_NUM_THREADS - 1; j++) pthread_create(&mythreads[j], &attr, DynamicDiff_evaluate_secondary, &threadid[j]);
+#ifdef PTHREADS_NUM_THREADS
+            for (j = 0; j < PTHREADS_NUM_THREADS - 1; j++) pthread_create(&mythreads[j], &attr, DynamicDiff_evaluate_secondary, &threadid[j]);
 #endif
 #ifdef _OPENMP
 #pragma omp parallel
@@ -510,8 +500,8 @@ void dynamic_diff_calc(void) {
                 DynamicDiff_evaluate_secondary(&mainthreadid, dynamic_iteration);
             }
             
-#ifdef OMP_NUM_THREADS
-            for (j = 0; j < OMP_NUM_THREADS - 1; j++) pthread_join(mythreads[j], NULL);
+#ifdef PTHREADS_NUM_THREADS
+            for (j = 0; j < PTHREADS_NUM_THREADS - 1; j++) pthread_join(mythreads[j], NULL);
             
             pthread_mutex_destroy(&mutex_partnodedrift);
             pthread_mutex_destroy(&mutex_nexport);
@@ -587,10 +577,7 @@ void dynamic_diff_calc(void) {
             myfree(DynamicDiffDataGet);
         }
         while(ndone < NTask);
-  
-#ifdef TURB_DIFF_DYNAMIC_VERBOSE
-        mpi_printf("Finished communication, beginning secondary calculations (iter = %d)\n", dynamic_iteration);
-#endif
+        PRINT_STATUS(" ..finished communication, beginning secondary calculations (iter = %d)", dynamic_iteration);
 
         /* The first two iterations were solely to calculate the hat quantities */ 
         { 
@@ -784,13 +771,8 @@ void dynamic_diff_calc(void) {
                 } /* P[i].Type == 0 */
             } /* Active particle loop */
         } /* dynamic_iteration >= 0 */
-
         tstart = my_second();
-
-#ifdef TURB_DIFF_DYNAMIC_VERBOSE
-        mpi_printf("Waiting for tasks... (iter = %d)\n", dynamic_iteration);
-#endif
-
+        PRINT_STATUS(" ..waiting for tasks... (iter = %d)", dynamic_iteration);
         /* Must wait for ALL tasks for finish each iteration in order to converge */
         MPI_Barrier(MPI_COMM_WORLD);   
 
@@ -801,13 +783,8 @@ void dynamic_diff_calc(void) {
     myfree(DataNodeList);
     myfree(DataIndexTable);
     myfree(Ngblist);
-   
     myfree(DynamicDiffDataPasser);
  
-#ifdef TURB_DIFF_DYNAMIC_VERBOSE
-    mpi_printf("Dynamic diffusion iterations complete\n");
-#endif
-
     /* collect some timing information */
     t1 = WallclockTime = my_second();
     timeall += timediff(t0, t1);
@@ -819,7 +796,7 @@ void dynamic_diff_calc(void) {
     CPU_Step[CPU_DYNDIFFWAIT] += timewait;
     CPU_Step[CPU_DYNDIFFCOMM] += timecomm;
     CPU_Step[CPU_DYNDIFFMISC] += timeall - (timecomp + timewait + timecomm);
-    mpi_printf("dynamic diffusion calculations done.\n");
+    PRINT_STATUS(" ..dynamic diffusion calculations done.");
 }
 
 
@@ -952,7 +929,7 @@ int DynamicDiff_evaluate(int target, int mode, int *exportflag, int *exportnodec
                 /* In this case, W_ij = W_ji, so we only need wk_i and dwk_i */
                 kernel_hinv(h_avg, &hinv, &hinv3, &hinv4);
                 u = DMIN(kernel.r * hinv, 1.0);
-                kernel_main(u, hinv3, hinv4, &kernel.wk_i, &kernel.dwk_i, kernel_mode_i);
+                if(u<1) {kernel_main(u, hinv3, hinv4, &kernel.wk_i, &kernel.dwk_i, kernel_mode_i);} else {kernel.wk_i=kernel.dwk_i=0;}
 
                 double weight_j = kernel.wk_i * V_i;
                 double weight_i = kernel.wk_i * V_j;

@@ -19,9 +19,10 @@
 
 /*
  * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org). The code has been modified
+ * Volker Springel. The code has been modified
  * by Phil Hopkins (phopkins@caltech.edu) for GIZMO; the conventions for the 
- * timestep units are different so this is revised here.
+ * timestep units are different so this is revised here. Computation uses
+ * different libraries now as well.
  */
 
 static double logTimeBegin;

@@ -12,10 +12,9 @@
  *  \brief computes the two-point mass correlation function on the fly
  */
 /*
- * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org). It is here in GIZMO
- * as legacy code at the moment, and needs to be re-written or removed.
- */
+* This file was originally part of the GADGET3 code developed by Volker Springel.
+* It has been updated by PFH for basic compatibility with GIZMO.
+*/
 
 /* Note: This routine will only work correctly for particles of equal mass ! */
 
@@ -61,239 +60,90 @@ static MyFloat *RsList;
  */
 void twopoint(void)
 {
-  int i, j, k, bin, n;
-  double p, rs, vol, scaled_frac;
-  int ndone, ndone_flag, dummy, nexport, nimport, place;
-  long long *countbuf;
-  int recvTask, ngrp;
-  double tstart, tend;
-  double mass, masstot;
-  void *state_buffer;
-
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("begin two-point correlation function...\n");
-      fflush(stdout);
-    }
-#endif
-
-  tstart = my_second();
-
-
-  /* set inner and outer radius for the bins that are used for the correlation function estimate */
-  R0 = All.SofteningTable[1];	/* we assume that type=1 is the primary type */
-  R1 = All.BoxSize / 2;
-
-
-  scaled_frac = FRACTION_TP * 1.0e7 / All.TotNumPart;
-
-  logR0 = log(R0);
-  binfac = BINS_TP / (log(R1) - log(R0));
-
-
-  for(i = 0, mass = 0; i < NumPart; i++)
-    mass += P[i].Mass;
-
-  MPI_Allreduce(&mass, &masstot, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-  PartMass = masstot / All.TotNumPart;
-
-
-  for(i = 0; i < BINS_TP; i++)
-    {
-      Count[i] = 0;
-      CountSpheres[i] = 0;
-    }
-
-  /* allocate buffers to arrange communication */
-
-  RsList = (MyFloat *) mymalloc("RsList", NumPart * sizeof(MyFloat));
-
+    int i, j, k, bin, n, ndone, ndone_flag, dummy, nexport, nimport, place, recvTask, ngrp;
+    double p, rs, vol, scaled_frac, tstart, tend, mass, masstot; long long *countbuf; void *state_buffer;
+    PRINT_STATUS("begin two-point correlation function..."); tstart = my_second();
+    /* set inner and outer radius for the bins that are used for the correlation function estimate */
+    R0 = All.SofteningTable[1]; R1 = All.BoxSize / 2; /* we assume that type=1 is the primary type */
+    scaled_frac = FRACTION_TP * 1.0e7 / All.TotNumPart; logR0 = log(R0); binfac = BINS_TP / (log(R1) - log(R0));
+    for(i = 0, mass = 0; i < NumPart; i++) {mass += P[i].Mass;}
+    MPI_Allreduce(&mass, &masstot, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD); PartMass = masstot / All.TotNumPart;
+    for(i = 0; i < BINS_TP; i++) {Count[i] = 0; CountSpheres[i] = 0;}
+    /* allocate buffers to arrange communication */
+    RsList = (MyFloat *) mymalloc("RsList", NumPart * sizeof(MyFloat));
     size_t MyBufferSize = All.BufferSize;
-    All.BunchSize = (int) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
-					     2 * sizeof(struct twopointdata_in)));
+    All.BunchSize = (int) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) + 2 * sizeof(struct twopointdata_in)));
     DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
     DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
-
-
-
-
-  state_buffer = mymalloc("state_buffer", gsl_rng_size(random_generator));
-
-  memcpy(state_buffer, gsl_rng_state(random_generator), gsl_rng_size(random_generator));
-
-  gsl_rng_set(random_generator, P[0].ID + ThisTask);	/* seed things with first particle ID to make sure we are
-							   different on each CPU */
-
-
-  i = 0;			/* beginn with this index */
-
-
-  do
+    state_buffer = mymalloc("state_buffer", gsl_rng_size(random_generator));
+    memcpy(state_buffer, gsl_rng_state(random_generator), gsl_rng_size(random_generator));
+    gsl_rng_set(random_generator, P[0].ID + ThisTask);    /* seed things with first particle ID to make sure we are different on each CPU */
+    i = 0;            /* begin with this index */
+    do
     {
-      for(j = 0; j < NTask; j++)
-	{
-	  Send_count[j] = 0;
-	  Exportflag[j] = -1;
-	}
+        for(j = 0; j < NTask; j++) {Send_count[j] = 0; Exportflag[j] = -1;}
+        for(nexport = 0; i < NumPart; i++) /* do local particles and prepare export list */
+        if(gsl_rng_uniform(random_generator) < scaled_frac)
+        {
+          p = gsl_rng_uniform(random_generator); rs = pow(pow(R0, ALPHA) + p * (pow(R1, ALPHA) - pow(R0, ALPHA)), 1 / ALPHA);
+          bin = (int) ((log(rs) - logR0) * binfac); rs = exp((bin + 1) / binfac + logR0); RsList[i] = rs;
+          if(twopoint_count_local(i, 0, &nexport, Send_count) < 0) {break;}
+          for(j = 0; j <= bin; j++) {CountSpheres[j]++;}
+        }
+        MYSORT_DATAINDEX(DataIndexTable, nexport, sizeof(struct data_index), data_index_compare);
+        MPI_Alltoall(Send_count, 1, MPI_INT, Recv_count, 1, MPI_INT, MPI_COMM_WORLD);
+        for(j = 0, nimport = 0, Recv_offset[0] = 0, Send_offset[0] = 0; j < NTask; j++)
+        {
+          nimport += Recv_count[j];
+          if(j > 0) {Send_offset[j] = Send_offset[j - 1] + Send_count[j - 1]; Recv_offset[j] = Recv_offset[j - 1] + Recv_count[j - 1];}
+        }
+        TwoPointDataGet = (struct twopointdata_in *) mymalloc("TwoPointDataGet", nimport * sizeof(struct twopointdata_in));
+        TwoPointDataIn = (struct twopointdata_in *) mymalloc("TwoPointDataIn", nexport * sizeof(struct twopointdata_in));
+        for(j = 0; j < nexport; j++)
+        {
+          place = DataIndexTable[j].Index;
+          for(k = 0; k < 3; k++) {TwoPointDataIn[j].Pos[k] = P[place].Pos[k];}
+          TwoPointDataIn[j].Rs = RsList[place];
+          memcpy(TwoPointDataIn[j].NodeList, DataNodeList[DataIndexTable[j].IndexGet].NodeList, NODELISTLENGTH * sizeof(int));
+        }
+        /* exchange particle data */
+        for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
+        {
+          recvTask = ThisTask ^ ngrp;
+          if(recvTask < NTask)
+            if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
+            { /* get the particles */
+              MPI_Sendrecv(&TwoPointDataIn[Send_offset[recvTask]], Send_count[recvTask] * sizeof(struct twopointdata_in), MPI_BYTE, recvTask, TAG_HYDRO_A,
+                     &TwoPointDataGet[Recv_offset[recvTask]], Recv_count[recvTask] * sizeof(struct twopointdata_in), MPI_BYTE, recvTask, TAG_HYDRO_A, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            }
+        }
+        myfree(TwoPointDataIn);
+        for(j = 0; j < nimport; j++) {twopoint_count_local(j, 1, &dummy, &dummy);}
+        if(i >= NumPart) {ndone_flag = 1;} else {ndone_flag = 0;}
+        MPI_Allreduce(&ndone_flag, &ndone, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        myfree(TwoPointDataGet);
+    } while(ndone < NTask);
+    memcpy(gsl_rng_state(random_generator), state_buffer, gsl_rng_size(random_generator));
+    myfree(state_buffer); myfree(DataNodeList); myfree(DataIndexTable); myfree(RsList);
 
-      /* do local particles and prepare export list */
+    /* Now compute the actual correlation function */
+    countbuf = (long long int *) mymalloc("countbuf", NTask * BINS_TP * sizeof(long long));
+    MPI_Allgather(Count, BINS_TP * sizeof(long long), MPI_BYTE, countbuf, BINS_TP * sizeof(long long), MPI_BYTE, MPI_COMM_WORLD);
 
-      for(nexport = 0; i < NumPart; i++)
-	if(gsl_rng_uniform(random_generator) < scaled_frac)
-	  {
-	    p = gsl_rng_uniform(random_generator);
+    for(i = 0; i < BINS_TP; i++) {Count[i] = 0; for(n = 0; n < NTask; n++) {Count[i] += countbuf[n * BINS_TP + i];}}
+    MPI_Allgather(CountSpheres, BINS_TP * sizeof(long long), MPI_BYTE, countbuf, BINS_TP * sizeof(long long), MPI_BYTE, MPI_COMM_WORLD);
 
-	    rs = pow(pow(R0, ALPHA) + p * (pow(R1, ALPHA) - pow(R0, ALPHA)), 1 / ALPHA);
+    for(i = 0; i < BINS_TP; i++) {CountSpheres[i] = 0; for(n = 0; n < NTask; n++) {CountSpheres[i] += countbuf[n * BINS_TP + i];}}
+    myfree(countbuf);
 
-	    bin = (int) ((log(rs) - logR0) * binfac);
-
-	    rs = exp((bin + 1) / binfac + logR0);
-
-	    RsList[i] = rs;
-
-	    if(twopoint_count_local(i, 0, &nexport, Send_count) < 0)
-	      break;
-
-	    for(j = 0; j <= bin; j++)
-	      CountSpheres[j]++;
-	  }
-
-
-      MYSORT_DATAINDEX(DataIndexTable, nexport, sizeof(struct data_index), data_index_compare);
-
-      MPI_Alltoall(Send_count, 1, MPI_INT, Recv_count, 1, MPI_INT, MPI_COMM_WORLD);
-
-      for(j = 0, nimport = 0, Recv_offset[0] = 0, Send_offset[0] = 0; j < NTask; j++)
-	{
-	  nimport += Recv_count[j];
-
-	  if(j > 0)
-	    {
-	      Send_offset[j] = Send_offset[j - 1] + Send_count[j - 1];
-	      Recv_offset[j] = Recv_offset[j - 1] + Recv_count[j - 1];
-	    }
-	}
-
-      TwoPointDataGet =
-	(struct twopointdata_in *) mymalloc("TwoPointDataGet", nimport * sizeof(struct twopointdata_in));
-      TwoPointDataIn =
-	(struct twopointdata_in *) mymalloc("TwoPointDataIn", nexport * sizeof(struct twopointdata_in));
-
-      for(j = 0; j < nexport; j++)
-	{
-	  place = DataIndexTable[j].Index;
-
-	  for(k = 0; k < 3; k++)
-	    TwoPointDataIn[j].Pos[k] = P[place].Pos[k];
-
-	  TwoPointDataIn[j].Rs = RsList[place];
-
-	  memcpy(TwoPointDataIn[j].NodeList,
-		 DataNodeList[DataIndexTable[j].IndexGet].NodeList, NODELISTLENGTH * sizeof(int));
-
-	}
-
-
-      /* exchange particle data */
-      for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-	{
-	  recvTask = ThisTask ^ ngrp;
-
-	  if(recvTask < NTask)
-	    {
-	      if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
-		{
-		  /* get the particles */
-		  MPI_Sendrecv(&TwoPointDataIn[Send_offset[recvTask]],
-			       Send_count[recvTask] * sizeof(struct twopointdata_in), MPI_BYTE,
-			       recvTask, TAG_HYDRO_A,
-			       &TwoPointDataGet[Recv_offset[recvTask]],
-			       Recv_count[recvTask] * sizeof(struct twopointdata_in), MPI_BYTE,
-			       recvTask, TAG_HYDRO_A, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		}
-	    }
-	}
-
-      myfree(TwoPointDataIn);
-
-
-      for(j = 0; j < nimport; j++)
-	twopoint_count_local(j, 1, &dummy, &dummy);
-
-      if(i >= NumPart)
-	ndone_flag = 1;
-      else
-	ndone_flag = 0;
-
-      MPI_Allreduce(&ndone_flag, &ndone, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-
-      myfree(TwoPointDataGet);
-    }
-  while(ndone < NTask);
-
-  memcpy(gsl_rng_state(random_generator), state_buffer, gsl_rng_size(random_generator));
-  myfree(state_buffer);
-
-  myfree(DataNodeList);
-  myfree(DataIndexTable);
-
-  myfree(RsList);
-
-
-  /* Now compute the actual correlation function */
-
-  countbuf = (long long int *) mymalloc("countbuf", NTask * BINS_TP * sizeof(long long));
-
-  MPI_Allgather(Count, BINS_TP * sizeof(long long), MPI_BYTE,
-		countbuf, BINS_TP * sizeof(long long), MPI_BYTE, MPI_COMM_WORLD);
-
-  for(i = 0; i < BINS_TP; i++)
-    {
-      Count[i] = 0;
-      for(n = 0; n < NTask; n++)
-	Count[i] += countbuf[n * BINS_TP + i];
-    }
-
-  MPI_Allgather(CountSpheres, BINS_TP * sizeof(long long), MPI_BYTE,
-		countbuf, BINS_TP * sizeof(long long), MPI_BYTE, MPI_COMM_WORLD);
-
-  for(i = 0; i < BINS_TP; i++)
-    {
-      CountSpheres[i] = 0;
-      for(n = 0; n < NTask; n++)
-	CountSpheres[i] += countbuf[n * BINS_TP + i];
-    }
-
-  myfree(countbuf);
-
-
-  for(i = 0; i < BINS_TP; i++)
-    {
-      vol = 4 * M_PI / 3.0 * (pow(exp((i + 1.0) / binfac + logR0), 3)
-			      - pow(exp((i + 0.0) / binfac + logR0), 3));
-
-      if(CountSpheres[i] > 0)
-	Xi[i] = -1 + Count[i] / ((double) CountSpheres[i]) / (All.TotNumPart / pow(All.BoxSize, 3)) / vol;
-      else
-	Xi[i] = 0;
-
-      Rbin[i] = exp((i + 0.5) / binfac + logR0);
-    }
-
-#ifndef IO_REDUCED_MODE
-  twopoint_save();
-#endif
-    
-  tend = my_second();
-
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("end two-point: Took=%g seconds.\n", timediff(tstart, tend));
-      fflush(stdout);
-    }
-#endif
+    for(i = 0; i < BINS_TP; i++)
+      {
+        vol = 4 * M_PI / 3.0 * (pow(exp((i + 1.0) / binfac + logR0), 3) - pow(exp((i + 0.0) / binfac + logR0), 3));
+        if(CountSpheres[i] > 0) {Xi[i] = -1 + Count[i] / ((double) CountSpheres[i]) / (All.TotNumPart / pow(All.BoxSize, 3)) / vol;} else {Xi[i] = 0;}
+        Rbin[i] = exp((i + 0.5) / binfac + logR0);
+      }
+    twopoint_save();
+    tend = my_second(); PRINT_STATUS(" ..end two-point: Took=%g seconds", timediff(tstart, tend));
 }
 
 
@@ -301,27 +151,13 @@ void twopoint(void)
 
 void twopoint_save(void)
 {
-  FILE *fd;
-  char buf[500];
-  int i;
-
+  FILE *fd; char buf[500]; int i;
   if(ThisTask == 0)
     {
       sprintf(buf, "%s/correl_%03d.txt", All.OutputDir, RestartSnapNum);
-
-      if(!(fd = fopen(buf, "w")))
-	{
-	  printf("can't open file `%s`\n", buf);
-	  endrun(1323);
-	}
-
-      fprintf(fd, "%g\n", All.Time);
-      i = BINS_TP;
-      fprintf(fd, "%d\n", i);
-
-      for(i = 0; i < BINS_TP; i++)
-	fprintf(fd, "%g %g %g %g\n", Rbin[i], Xi[i], (double) Count[i], (double) CountSpheres[i]);
-
+      if(!(fd = fopen(buf, "w"))) {printf("can't open file `%s`\n", buf); endrun(1323);}
+      fprintf(fd, "%g\n", All.Time); i = BINS_TP; fprintf(fd, "%d\n", i);
+      for(i = 0; i < BINS_TP; i++) {fprintf(fd, "%g %g %g %g\n", Rbin[i], Xi[i], (double) Count[i], (double) CountSpheres[i]);}
       fclose(fd);
     }
 }
@@ -403,10 +239,7 @@ int twopoint_ngb_treefind_variable(MyDouble searchcenter[3], MyFloat rsearch, in
   int no, p, bin, task, bin2, nexport_save;
   struct NODE *current;
   MyDouble dx, dy, dz, dist;
-
-#ifdef BOX_PERIODIC
-  MyDouble xtmp;
-#endif
+    MyDouble xtmp; xtmp=0;
 
   nexport_save = *nexport;
 

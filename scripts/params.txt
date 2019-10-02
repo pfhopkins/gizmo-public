@@ -1,10 +1,12 @@
 %-------------------------------------------------------------------------
 %----  This file contains the input parameters needed at run-time for 
-%       simulations. It is based on and closely resembles the GADGET-3
-%       parameterfile (format of which and parsing routines written by 
-%       Volker Springel [volker.springel@h-its.org]). It has been updated
+%       simulations. It is based on and (intentionally) closely resembles
+%       the GADGET-2/3 and AREPO parameterfile formats (format and parsing
+%       routines written by Volker Springel). It has been updated
 %       with new naming conventions and additional variables as needed by 
-%       Phil Hopkins [phopkins@caltech.edu] for GIZMO.
+%       Phil Hopkins [phopkins@caltech.edu] for GIZMO. This is a template:
+%       please see the GIZMO User Guide for documentation which explains
+%       the actual meaning and function of every variable here.
 %-------------------------------------------------------------------------
 
 %----  Relevant files (filenames and directories)

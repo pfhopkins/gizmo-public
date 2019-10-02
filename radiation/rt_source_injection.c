@@ -7,18 +7,6 @@
 #include "../allvars.h"
 #include "../proto.h"
 #include "../kernel.h"
-#ifdef PTHREADS_NUM_THREADS
-#include <pthread.h>
-#endif
-#ifdef PTHREADS_NUM_THREADS
-extern pthread_mutex_t mutex_nexport;
-extern pthread_mutex_t mutex_partnodedrift;
-#define LOCK_NEXPORT     pthread_mutex_lock(&mutex_nexport);
-#define UNLOCK_NEXPORT   pthread_mutex_unlock(&mutex_nexport);
-#else
-#define LOCK_NEXPORT
-#define UNLOCK_NEXPORT
-#endif
 
 /*! \file rt_source_injection.c
  *  \brief inject luminosity from point sources to neighboring gas particles
@@ -43,8 +31,14 @@ extern pthread_mutex_t mutex_partnodedrift;
 
 #ifdef RT_SOURCE_INJECTION
 
+
+#define MASTER_FUNCTION_NAME rt_sourceinjection_evaluate /*! name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define CONDITIONFUNCTION_FOR_EVALUATION if(rt_sourceinjection_active_check(i)) /*! function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
+#include "../system/code_block_xchange_initialize.h" /*! pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
+
+
 /*! Structure for communication during the kernel computation. Holds data that is sent to other processors  */
-static struct rt_sourcedata_in
+static struct INPUT_STRUCT_NAME
 {
     MyDouble Pos[3];
     MyFloat Hsml;
@@ -52,17 +46,10 @@ static struct rt_sourcedata_in
     MyFloat Luminosity[N_RT_FREQ_BINS];
     int NodeList[NODELISTLENGTH];
 }
-*RT_SourceDataIn, *RT_SourceDataGet;
-
-/* declare subroutines */
-void rt_particle2in_source(struct rt_sourcedata_in *in, int i);
-int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist);
-void *rt_sourceinjection_evaluate_primary(void *p);
-void *rt_sourceinjection_evaluate_secondary(void *p);
-
+*DATAIN_NAME, *DATAGET_NAME;
 
 /*! subroutine to insert the data needed to be passed to other processors: here for convenience, match to structure above  */
-void rt_particle2in_source(struct rt_sourcedata_in *in, int i)
+void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
 {
     int k;
     for(k=0; k<3; k++) {in->Pos[k] = P[i].Pos[k];}
@@ -86,208 +73,69 @@ void rt_particle2in_source(struct rt_sourcedata_in *in, int i)
     }
 }
 
-/* routine to do the master loop over particles, for the source injection (photons put into surrounding gas) */
-void rt_source_injection(void)
+
+/*! this structure defines the variables that need to be sent -back to- the 'searching' element */
+struct OUTPUT_STRUCT_NAME
+{ /* define variables below as e.g. "double X;" */
+}
+*DATARESULT_NAME, *DATAOUT_NAME; /* dont mess with these names, they get filled-in by your definitions automatically */
+
+/*! this subroutine assigns the values to the variables that need to be sent -back to- the 'searching' element */
+static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration)
+{  /* "i" is the particle to which data from structure "out" will be assigned. mode=0 for local communication,
+    =1 for data sent back from other processors. you must account for this. */
+    /* example: ASSIGN_ADD(P[i].X,out->X,mode); which is short for: if(mode==0) {P[i].X=out->X;} else {P[i].X+=out->X;} */
+}
+
+
+
+/*! determine if an element is active as a source */
+int rt_sourceinjection_active_check(int i);
+int rt_sourceinjection_active_check(int i)
 {
-    int j, k, ngrp, ndone, ndone_flag;
-    int recvTask, place;
-    int save_NextParticle;
-    long long n_exported = 0;
-    
+    if(PPP[i].NumNgb <= 0) return 0;
+    if(PPP[i].Hsml <= 0) return 0;
+    if(PPP[i].Mass <= 0) return 0;
+    double lum[N_RT_FREQ_BINS];
+    return rt_get_source_luminosity(i,-1,lum);
+}
+
+
+/*! operations that need to be performed before entering the main loop */
+void rt_source_injection_initial_operations_preloop(void);
+void rt_source_injection_initial_operations_preloop(void)
+{
     /* first, we do a loop over the gas particles themselves. these are trivial -- they don't need to share any information,
      they just determine their own source functions. so we don't need to do any loops. and we can zero everything before the loop below. */
-    for(j=0;j<N_gas;j++)
-    {
-        if(P[j].Type==0)
-        {
-            double lum[N_RT_FREQ_BINS];
+    int j;
+    for(j=0;j<N_gas;j++) {
+        if(P[j].Type==0) {
+            double lum[N_RT_FREQ_BINS]; int k;
             for(k=0;k<N_RT_FREQ_BINS;k++) {SphP[j].Je[k]=0;} // need to zero -before- calling injection //
             int active_check = rt_get_source_luminosity(j,0,lum);
             /* here is where we would need to code some source luminosity for the gas */
             for(k=0;k<N_RT_FREQ_BINS;k++) if(active_check) {SphP[j].Je[k]=lum[k];}
         }
     }
-
-    /* allocate buffers to arrange communication */
-    long long NTaskTimesNumPart;
-    NTaskTimesNumPart = maxThreads * NumPart;
-    Ngblist = (int *) mymalloc("Ngblist", NTaskTimesNumPart * sizeof(int));
-    size_t MyBufferSize = All.BufferSize;
-    All.BunchSize = (int) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) + sizeof(struct rt_sourcedata_in) + sizeof(struct rt_sourcedata_in)));
-    DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
-    DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
-    
-    NextParticle = FirstActiveParticle;	/* begin with this index */
-    do
-    {
-        BufferFullFlag = 0;
-        Nexport = 0;
-        save_NextParticle = NextParticle;
-        for(j = 0; j < NTask; j++) {Send_count[j] = 0; Exportflag[j] = -1;}
-        
-        /* do local particles and prepare export list */
-#ifdef PTHREADS_NUM_THREADS
-        pthread_t mythreads[PTHREADS_NUM_THREADS - 1];
-        int threadid[PTHREADS_NUM_THREADS - 1];
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-        pthread_mutex_init(&mutex_nexport, NULL);
-        pthread_mutex_init(&mutex_partnodedrift, NULL);
-        TimerFlag = 0;
-        for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++)
-        {
-            threadid[j] = j + 1;
-            pthread_create(&mythreads[j], &attr, rt_sourceinjection_evaluate_primary, &threadid[j]);
-        }
-#endif
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-        {
-#ifdef _OPENMP
-            int mainthreadid = omp_get_thread_num();
-#else
-            int mainthreadid = 0;
-#endif
-            rt_sourceinjection_evaluate_primary(&mainthreadid);	/* do local particles and prepare export list */
-        }
-#ifdef PTHREADS_NUM_THREADS
-        for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++) {pthread_join(mythreads[j], NULL);}
-#endif
-        if(BufferFullFlag)
-        {
-            int last_nextparticle = NextParticle;
-            NextParticle = save_NextParticle;
-            while(NextParticle >= 0)
-            {
-                if(NextParticle == last_nextparticle) break;
-                if(ProcessedFlag[NextParticle] != 1) break;
-                ProcessedFlag[NextParticle] = 2;
-                NextParticle = NextActiveParticle[NextParticle];
-            }
-            if(NextParticle == save_NextParticle)
-            {
-                /* in this case, the buffer is too small to process even a single particle */
-                endrun(116610);
-            }
-            int new_export = 0;
-            for(j = 0, k = 0; j < Nexport; j++)
-            {
-                if(ProcessedFlag[DataIndexTable[j].Index] != 2)
-                {
-                    if(k < j + 1) {k = j + 1;}
-                    for(; k < Nexport; k++)
-                    {
-                        if(ProcessedFlag[DataIndexTable[k].Index] == 2)
-                        {
-                            int old_index = DataIndexTable[j].Index;
-                            DataIndexTable[j] = DataIndexTable[k];
-                            DataNodeList[j] = DataNodeList[k];
-                            DataIndexTable[j].IndexGet = j;
-                            new_export++;
-                            DataIndexTable[k].Index = old_index;
-                            k++;
-                            break;
-                        }
-                    }
-                } else {new_export++;}
-            }
-            Nexport = new_export;
-        }
-        n_exported += Nexport;
-        
-        for(j = 0; j < NTask; j++) {Send_count[j] = 0;}
-        for(j = 0; j < Nexport; j++) {Send_count[DataIndexTable[j].Task]++;}
-        MYSORT_DATAINDEX(DataIndexTable, Nexport, sizeof(struct data_index), data_index_compare);
-        MPI_Alltoall(Send_count, 1, MPI_INT, Recv_count, 1, MPI_INT, MPI_COMM_WORLD);
-        for(j = 0, Nimport = 0, Recv_offset[0] = 0, Send_offset[0] = 0; j < NTask; j++)
-        {
-            Nimport += Recv_count[j];
-            if(j > 0)
-            {
-                Send_offset[j] = Send_offset[j - 1] + Send_count[j - 1];
-                Recv_offset[j] = Recv_offset[j - 1] + Recv_count[j - 1];
-            }
-        }
-        
-        RT_SourceDataGet = (struct rt_sourcedata_in *) mymalloc("RT_SourceDataGet", Nimport * sizeof(struct rt_sourcedata_in));
-        RT_SourceDataIn = (struct rt_sourcedata_in *) mymalloc("RT_SourceDataIn", Nexport * sizeof(struct rt_sourcedata_in));
-        /* prepare particle data for export */
-        for(j = 0; j < Nexport; j++)
-        {
-            place = DataIndexTable[j].Index;
-            rt_particle2in_source(&RT_SourceDataIn[j], place);
-#ifndef DONOTUSENODELIST
-            memcpy(RT_SourceDataIn[j].NodeList, DataNodeList[DataIndexTable[j].IndexGet].NodeList, NODELISTLENGTH * sizeof(int));
-#endif
-        }
-        /* exchange particle data */
-        for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-        {
-            recvTask = ThisTask ^ ngrp;
-            if(recvTask < NTask)
-            {
-                if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
-                {
-                    /* get the particles */
-                    MPI_Sendrecv(&RT_SourceDataIn[Send_offset[recvTask]], Send_count[recvTask] * sizeof(struct rt_sourcedata_in), MPI_BYTE, recvTask, TAG_RT_C,
-                                 &RT_SourceDataGet[Recv_offset[recvTask]], Recv_count[recvTask] * sizeof(struct rt_sourcedata_in), MPI_BYTE, recvTask, TAG_RT_C, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                }
-            }
-        }
-        myfree(RT_SourceDataIn);
-        /* now do the particles that were sent to us */
-        NextJ = 0;
-#ifdef PTHREADS_NUM_THREADS
-        for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++)
-            pthread_create(&mythreads[j], &attr, rt_sourceinjection_evaluate_secondary, &threadid[j]);
-#endif
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-        {
-#ifdef _OPENMP
-            int mainthreadid = omp_get_thread_num();
-#else
-            int mainthreadid = 0;
-#endif
-            rt_sourceinjection_evaluate_secondary(&mainthreadid);
-        }
-        
-#ifdef PTHREADS_NUM_THREADS
-        for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++) {pthread_join(mythreads[j], NULL);}
-        pthread_mutex_destroy(&mutex_partnodedrift);
-        pthread_mutex_destroy(&mutex_nexport);
-        pthread_attr_destroy(&attr);
-#endif
-        if(NextParticle < 0) {ndone_flag = 1;} else {ndone_flag = 0;}
-        MPI_Allreduce(&ndone_flag, &ndone, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-        
-        myfree(RT_SourceDataGet);
-    }
-    while(ndone < NTask);
-    /* free memory */
-    myfree(DataNodeList);
-    myfree(DataIndexTable);
-    myfree(Ngblist);
 }
 
 
-/* subroutine that actually distributes the luminosity as desired to neighbor particles in the kernel */
-int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist)
+
+
+/*! subroutine that actually distributes the luminosity as desired to neighbor particles in the kernel */
+int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
 {
     /* Load the data for the particle */
     int j, k, n, startnode, numngb_inbox, listindex = 0;
-    struct rt_sourcedata_in local;
-    if(mode == 0) {rt_particle2in_source(&local, target);} else {local = RT_SourceDataGet[target];}
+    struct INPUT_STRUCT_NAME local;
+    if(mode == 0) {INPUTFUNCTION_NAME(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];}
     /* basic calculations */
     if(local.Hsml<=0) return 0; // zero-extent kernel, no particles //
     double hinv, hinv3, hinv4, h2=local.Hsml*local.Hsml;
     kernel_hinv(local.Hsml, &hinv, &hinv3, &hinv4);
     
     /* Now start the actual operations for this particle */
-    if(mode == 0) {startnode = All.MaxPart; /* root node */} else {startnode = RT_SourceDataGet[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode;/* open it */}
+    if(mode == 0) {startnode = All.MaxPart; /* root node */} else {startnode = DATAGET_NAME[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode;/* open it */}
     while(startnode >= 0)
     {
         while(startnode >= 0)
@@ -307,9 +155,6 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
                 if(r2<=0) continue; // same particle //
                 if(r2>=h2) continue; // outside kernel //
                 // calculate kernel quantities //
-                //double wk, dwk, u = sqrt(r2) * hinv;
-                //kernel_main(u, hinv3, hinv4, &wk, &dwk, -1); // traditional kernel
-                //wk *= P[j].Mass / local.KernelSum_Around_RT_Source;
                 double wk = (1 - r2*hinv*hinv) / local.KernelSum_Around_RT_Source;
 #if defined(RT_INJECT_PHOTONS_DISCRETELY_ADD_MOMENTUM_FOR_LOCAL_EXTINCTION)
                 double r = sqrt(r2);
@@ -366,7 +211,7 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
             listindex++;
             if(listindex < NODELISTLENGTH)
             {
-                startnode = RT_SourceDataGet[target].NodeList[listindex];
+                startnode = DATAGET_NAME[target].NodeList[listindex];
                 if(startnode >= 0)
                     startnode = Nodes[startnode].u.d.nextnode;	/* open it */
             }
@@ -374,34 +219,20 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
 #endif
     } // while(startnode >= 0)
     return 0;
-} // int rt_sourceinjection_evaluate
+} 
 
 
-int rt_sourceinjection_active_check(int i);
-int rt_sourceinjection_active_check(int i)
-{
-    if(PPP[i].NumNgb <= 0) return 0;
-    if(PPP[i].Hsml <= 0) return 0;
-    if(PPP[i].Mass <= 0) return 0;
-    double lum[N_RT_FREQ_BINS];
-    return rt_get_source_luminosity(i,-1,lum);
-}
 
-/* routine for initial loop of particles on local processor (and determination of which need passing) */
-void *rt_sourceinjection_evaluate_primary(void *p)
+/*! routine to do the master loop over particles, for the source injection (photons put into surrounding gas) */
+void rt_source_injection(void)
 {
-#define CONDITION_FOR_EVALUATION if(rt_sourceinjection_active_check(i)==1)
-#define EVALUATION_CALL rt_sourceinjection_evaluate(i, 0, exportflag, exportnodecount, exportindex, ngblist)
-#include "../system/code_block_primary_loop_evaluation.h"
-#undef CONDITION_FOR_EVALUATION
-#undef EVALUATION_CALL
+    rt_source_injection_initial_operations_preloop(); /* operations before the main loop */
+    #include "../system/code_block_xchange_perform_ops_malloc.h" /* this calls the large block of code which contains the memory allocations for the MPI/OPENMP/Pthreads parallelization block which must appear below */
+    #include "../system/code_block_xchange_perform_ops.h" /* this calls the large block of code which actually contains all the loops, MPI/OPENMP/Pthreads parallelization */
+    #include "../system/code_block_xchange_perform_ops_demalloc.h" /* this de-allocates the memory for the MPI/OPENMP/Pthreads parallelization block which must appear above */
 }
-void *rt_sourceinjection_evaluate_secondary(void *p)
-{
-#define EVALUATION_CALL rt_sourceinjection_evaluate(j, 1, &dummy, &dummy, &dummy, ngblist);
-#include "../system/code_block_secondary_loop_evaluation.h"
-#undef EVALUATION_CALL
-}
+#include "../system/code_block_xchange_finalize.h" /* de-define the relevant variables and macros to avoid compilation errors and memory leaks */
+
 
 
 

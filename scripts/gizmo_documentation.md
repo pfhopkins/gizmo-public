@@ -102,12 +102,25 @@
     + [Magneto-Hydrodynamics Tests](#tests-mhd) (e.g. waves, shocktubes, field-loops, current sheets, Orszag-Tang vortex, rotors, MRI, jets, MHD-mixing/gravity)
     + [Elasto-Dynamics Tests](#tests-elastic) (e.g. bouncing rubber cylinders)
     + [Dust/Particulate-Dynamics Tests](#tests-dust) (e.g. [uniform dust-gas acceleration](#tests-dust-dustybox), [damped two-fluid waves](#tests-dust-dustywave))
-12. [Useful Additional Resources](#faqs)
-    + [Visualization, Radiative Transfer, and Plotting](#faqs-vis)
-    + [Halo/Group-Finding and Structure Identification](#faqs-halofinders)
-    + [Other Analysis Tools](#faqs-otheranalysistools)
-    + [General Super-Computing Questions](#faqs-generalsupercomputing)
-13. [Disclaimer](#disclaimer)
+12. [Useful Additional Resources](#rscr)
+    + [Visualization, Radiative Transfer, and Plotting](#rscr-vis)
+    + [Halo/Group-Finding and Structure Identification](#rscr-halofinders)
+    + [Other Analysis Tools](#rscr-otheranalysistools)
+    + [General Super-Computing Questions](#rscr-generalsupercomputing)
+13. [Frequently Asked Questions](#faqs)
+    + [Where to Go for Help?](#faqs-help)
+    + [What Are 'Optimal' Code Settings? (aka 'My Run is Slow')](#faqs-optimal)
+    + [Are There 'Best' (More Accurate) Physics Modules or Solvers?](#faqs-best)
+    + [My Run Won't Start, What Did I Do Wrong?](#faqs-startup)
+    + [How do I Avoid Memory Errors/Crashes?](#faqs-memory)
+    + [My Large Simulation Hangs, but Smaller Runs Work?](#faqs-big)
+    + [Why Did Everything Drop to TimeBin=1?](#faqs-timebin)
+    + [Are there Public ICs? Analysis Tools? Image/Movie-Makers?](#faqs-rscr)
+    + [What Does this Variable Mean?](#faqs-variable)
+    + [What are the Code Units?](#faqs-units)
+    + [Can I use this Module? What should I cite?](#faq-citation)
+    + [Can the Code do 'X'?](#faq-capabilities)
+14. [Disclaimer](#disclaimer)
 
 ***
 
@@ -617,9 +630,22 @@ To start a simulation, invoke the executable with a command like
 
 This will have to be modified for the machine you're using ("mpirun" may have a different syntax, but should be a completely standard MPI call: see the users' guide for whatever system you're on for the details). This example would run the simulation with 32 processors, and with simulation parameters as specified in the parameter file of name myparameterfile.param (discussed in detail on its own page). 
 
-The code does not need to be recompiled for a different number of processors, or for a different problem size. It is necessary to recompile if you are using the code in hybrid OPENMP/MPI or PTHREADS/MPI (multi-threaded) mode, and want to change the number of threads (processors) per MPI process. Note that there is no formal requirement for the processor number to be a power of two (though that can sometimes be most efficient for communication). 
+The code does not need to be recompiled for a different number of processors, or for a different problem size. It is necessary to recompile if you are using the code in hybrid OPENMP/MPI or PTHREADS/MPI (multi-threaded) mode, and want to change the number of threads (processors) per MPI process. Note that there is no formal requirement for the processor number to be a power of two (though that can sometimes be most efficient for communication). While GIZMO runs, it will print out various log-messages that inform you about the code activity. If you run a simulation interactively (as in the above call), these log-messages will appear on the screen, but you can also re-direct them to a file. 
 
-While GIZMO runs, it will print out various log-messages that inform you about the code activity. If you run a simulation interactively (as in the above call), these log-messages will appear on the screen, but you can also re-direct them to a file. For normal runs at any cluster computer, you will usually have to put the "mpirun" comment into a script file submitted to the computing queue (again, see your computers users guide) -- in this case, it will automatically pipe standard output/error messages to files, but you may still want to specify filenames in the script.
+For normal runs at any cluster computer, you will usually have to put the "mpirun" comment into a script file submitted to the computing queue (again, see your computers users guide) -- in this case, it will automatically pipe standard output/error messages to files, but you may still want to specify filenames in the script. This is required for the queue systems to organize the jobs, though you can usually put in special requests to run jobs in interactive mode.
+
+Here is a typical example SLURM script (most modern systems use this or PBS as their job submission system): 
+
+    #!/bin/bash
+    #SBATCH -J TEST -p normal -N 100 --ntasks-per-node 16 -t 01:00:00 -A ALLOCATIONNAME
+    export OMP_NUM_THREADS=2
+    source $HOME/.bashrc
+    module purge
+    module load intel impi hdf5 fftw3 gsl
+    ibrun ./GIZMO ./params.txt 0 1>gizmo.out 2>gizmo.err
+
+This is a script submitting job-name `TEST`, requesting it go in the `NORMAL` queue, run on `100` nodes, with `16` MPI tasks per node, running for 1 hour (time in HH:MM:SS format), charged to allocation `ALLOCATIONNAME`. We've set it to use 2 OPENMP threads. We've also used the module system of the machine to load the relevant shared libraries (intel compiler, intel-MPI, hdf5, fftw, and gsl here). We can also load the modules through our personal .bashrc file, so including both calls here is a bit redundant. Then we submit the job, using `ibrun` (this is like `mpirun` above: different compilers and machines have different calls for running MPI executables), to call our compiled `GIZMO` executable in the local directory, with parameterfile `params.txt` in the same directory, restartflag `0` (start from ICs). The `1>gizmo.out 2>gizmo.err` are standard bash prompts that redirect stdout and stderr to files with those names, respectively (otherwise the machine will decide their default names, which you may prefer). Note that on different machines, the modules will be different, as will the `ibrun`/`mpirun` call, as will some of the required flags. Some machines will use `#PBS` instead of `#SBATCH`. You need to read the machine user guide to know how to submit on a particular machine. Also read the SBATCH or PBS (whichever you are using) manual page to learn what all the different flag options are. Finally, you could name this script something like `runscript` and submit it with the command `sbatch runscript`. 
+
 
 
 <a name="tutorial-interrupt"></a>
@@ -1160,17 +1186,27 @@ When either `ADAPTIVE_GRAVSOFT_FORGAS` or `ADAPTIVE_GRAVSOFT_FORALL` is set, the
 ## ----------------------------------------------------------------------------------------------------
 # ------------------------------------- Friends-of-friends on-the-fly finder options (source in fof.c)
 # -----------------------------------------------------------------------------------------------------
-#FOF                                # enable FoF searching on-the-fly and outputs (set parameter LINKLENGTH=x to control LinkingLength; default=0.2)
-#FOF_PRIMARY_LINK_TYPES=2           # 2^type for the primary dark matter type
-#FOF_SECONDARY_LINK_TYPES=1+16+32   # 2^type for the types linked to nearest primaries
-#FOF_DENSITY_SPLIT_TYPES=1+2+16+32  # 2^type for whch the densities should be calculated seperately
-#FOF_GROUP_MIN_LEN=32               # default is 32
+#FOF                                # master switch: enable FoF searching on-the-fly and outputs (set parameter LINKLENGTH=x to control LinkingLength; default=0.2)
+#FOF_PRIMARY_LINK_TYPES=2           # bitflag: sum of 2^type for the primary type used to define initial FOF groups (use a common type to ensure 'start' in reasonable locations)
+#FOF_SECONDARY_LINK_TYPES=1+16+32   # bitflag: sum of 2^type for the seconary types which can be linked to nearest primaries (will be 'seen' when calculating group properties)
+#FOF_DENSITY_SPLIT_TYPES=1+2+16+32  # bitflag: sum of 2^type for which the densities should be calculated seperately (i.e. if 1+2+16+32, fof densities are separately calculated for types 0,1,4,5, and shared for types 2,3)
+#FOF_GROUP_MIN_SIZE=32              # minimum number of identified members required to qualify as a 'group': default is 32
+## ----------------------------------------------------------------------------------------------------
+# -------------------------------------  Subhalo on-the-fly finder options (uses "subfind" source code).
+## ----------------------------------------------------------------------------------------------------
+#SUBFIND                            # master switch to enable substructure-finding with the SubFind algorithm
+#SUBFIND_ADDIO_NUMOVERDEN=1         # for M200,R200-type properties, compute values within in this number of different overdensities (default=1=)
+#SUBFIND_ADDIO_VELDISP              # add the mass-weighted 1D velocity dispersions to properties computed in parent group[s], within the chosen overdensities
+#SUBFIND_ADDIO_BARYONS              # add gas mass, mass-weighted temperature, and x-ray luminosity (assuming ionized primoridal gas), and stellar masses, to properties computed in parent group[s], within the chosen overdensities
+## ----------------------------------------------------------------------------------------------------
+#SUBFIND_REMOVE_GAS_STRUCTURES      # delete (do not save) any structures which are entirely gas (or have fewer than target number of elements which are non-gas, with the rest in gas)
+#SUBFIND_SAVE_PARTICLEDATA          # save all particle positions,velocity,type,mass in subhalo file (in addition to IDs: this is highly redundant with snapshots, so makes subhalo info more like a snapshot)
 ####################################################################################################
 ```
 
-These flags enable group finding via an on-the-fly FOF finder which is run at intervals set by the run-time parameters. This is most commonly used for halo finding in cosmological simulations, to build on-the-fly halo catalogues, or to simply track halos for purposes of seeding black holes and other on-the-fly physics. Users of *any* of these modules should cite Springel et al., MNRAS, 2001, 328, 726 for the numerical methods.
+These flags enable group finding via an on-the-fly FOF finder which is run at intervals set by the run-time parameters. This is most commonly used for halo finding in cosmological simulations, to build on-the-fly halo catalogues, or to simply track halos for purposes of seeding black holes and other on-the-fly physics. However it has also been modified in previous applications to track things like star clusters, planet-forming clumps, or really any type of self-gravitating objects on-the-fly. The current defaults assume halo-finding, however, by defining structures as above a traditional virial overdensity. Users of *any* of these modules should cite Springel et al., MNRAS, 2001, 328, 726 for the numerical methods.
 
-**FOF**: Master switch required for all modules in this block and any SUBFIND implementation. The default FOF linking length is 0.2 times the mean inter-particle separation of the desired type. This can be adjusted by adding the compiler parameter **LINKLENGTH** set to some desired value.
+**FOF**: Master switch required for all modules in this block (as well as any SUBFIND implementation). The default FOF linking length is 0.2 times the mean inter-particle separation of the desired type. This can be adjusted by adding the compiler parameter **LINKLENGTH** set to some desired value.
 
 **FOF\_PRIMARY\_LINK\_TYPES**: This sets the primary particle type for the linking/group-finding. For dark matter, this is typically particle-type 1, which means setting the parameter to 2. The parameter is set as a bit-wise value (see notes in the gravity section)
 
@@ -1178,7 +1214,27 @@ These flags enable group finding via an on-the-fly FOF finder which is run at in
 
 **FOF\_DENSITY\_SPLIT\_TYPES**: The list of particle types (set bit-wise again) which should have separately-calculated densities for linking purposes. If e.g. you are halo-finding in a cosmological simulation with star formation, this may need to separate dark matter and stars that have wildly different density distributions, or it will give spurious results.
 
-**FOF\_GROUP\_MIN\_LEN**: Minimum size for a saved FOF group (in terms of total particle number). Set as desired.
+**FOF\_GROUP\_MIN\_SIZE**: Minimum size for a saved FOF group (in terms of total particle number). Set as desired.
+
+
+<a name="config-fof-subfind"></a>
+### _Sub-Structure (Subhalo, Satellite, etc) Finding_ 
+
+**SUBFIND**: Master switch to enable *substructure*-finding with the SUBFIND algorithm from Springel et al., MNRAS, 2001, 328, 726 (cite this if using these algorithms). This identifies local density maxima within an FOF group, then moves outwards to associate material with that maxima while it is part of a 'peak' (with criteria to decide whether and how to 'merge' subgroups at saddle points), followed by an iterative un-binding criterion so that only bound sub-structures are saved. This is originally designed for detecting sub-halos (and associated satellite galaxies) in cosmological simulations, and saving their properties on-the-fly (that can be done in post-processing, of course, but this was intended to allow much more frequent monitoring and saving of these properties). But variants of this algorithm have been used for a variety of structure-finding tasks, including molecular cloud, star cluster, and planetesimal detection. The search is executed alongside the FOF search, whenever snapshots are written (allowing you to specify arbitrary times for writeouts: of course, full snapshots can be compressed or deleted after these writeouts, if they are set very frequent for storage reasons), and by default the outputs are saved in snapshot-like HDF5 files which are numbered alongside the snapshots and contain the group lists, with some gross properties of the group, their membership in the FOF groups, and the complete list of all particle IDs which are members of each group/substructure. These can be used with the snapshots to fully reconstruct the substructures. Additional output options are below (these are off by default because they can always be reconstructed in post-processing). 
+
+In the parameterfile, you must set the parameter `DesLinkNgb`, which is the neighbor number used for density estimation and creation of linked-lists to determine the substructure membership, saddle-points, etc. Usually this is set to the same value as `DesNumNgb` or a a couple times larger, if additional smoothing (to eliminate spurious resolution-scale structures) is desired, but in special cases it can be very different. Note that run-time tests and de-bugging may still be needed for some SUBFIND modules (users: please contribute notes or pushes if you are using these), although they have all been tested to compile properly with all combinations of other modules in GIZMO and basic functionality should work well. Note that the SUBFIND modules remain fundamentally coded in the old GADGET-3 style, meaning they are not multi-threaded, and do not take advantage of the modular parallelism structures, etc (they have not been re-written in the more modern style mainly because the groups using them have not found they are a major expense). Also note that by modern standards, SUBFIND is a relatively 'simple' algorithm for sub-structure finding: its primary utility is when users want something which can run on-the-fly in the simulations. There are a large number of extremely sophisticated sub-structure finders (which involve a large number of additional features and options) which can be run on GIZMO snapshots in post-processing: if you are interested, see the section of this guide on [Halo/Group-Finding and Structure Identification](#rscr-halofinders).
+
+A very similar version of this algorithm (also adapted from the original GADGET3 implementation of SUBFIND) has recently been made public in the public release of AREPO (Weinberger, Springel, and Pakmor, arXiv:1909.04667): users are encouraged to cite that paper for more technical details, as well as the Springel et al., MNRAS, 2001, 328, 726 algorithm paper, if they are using this module. All credit goes to Volker Springel for these algorithms. 
+
+
+**SUBFIND_ADDIO_NUMOVERDEN**: Set this to a number to compute FOF group quantities (masses, radii, and all properties set with the `SUBFIND_ADDIO_...` flags below) within that number of different 'thresholds' in terms of over-density. Default is =1, i.e. just one density, taken to be (1) $200\bar{\rho}$ (200 times the mean background matter density). Higher values (=2, =3, etc., up to =10) will add (2) the spherical top-hat overdensity for collapse (accounting for full cosmological parameters), (3) 200 times the critical density, (4) 500x critical, (5) 1000x critical, (6) 2500x critical, (7) 500x mean, (8) 1000x mean, (9) 2500x mean, (10) 5000x mean. The output values will be vectors of length `SUBFIND_ADDIO_NUMOVERDEN`, corresponding to the values for each threshold in the order above. You can trivially change this list by editing `Delta_MasterList` in `subfind_so.c`. 
+
+**SUBFIND_ADDIO_VELDISP, SUBFIND_ADDIO_BARYONS**: Enable these flags to add additional quantities to the saved sub-structure properties. Each will be evaluated inside of every radius defined by the overdensity list of `SUBFIND_ADDIO_NUMOVERDEN`, i.e. like mass and radius above, these will be saved as vector outputs with each value corresponding to the value inside the relevant overdensity criterion. `SUBFIND_ADDIO_VELDISP` saves the mass-weighted mean (sightline-averaged) 1D velocity dispersion (of all elements) inside the sub-structure. `SUBFIND_ADDIO_BARYONS` adds some baryonic properties including gas mass, stellar mass (assuming stars have Type=4), mass-weighted gas temperature and X-ray luminosity (calculated assuming a fully-ionized primordial-composition gas, with X-rays from bolometric thermal Bremsstrahlung). These modules have been more updated, compared to the rest of the SUBFIND code, to be templated so that users can easily add their own additional quantities to calculate and output in SUBFIND catalogues. Simply search for one of the relevant flags (e.g. `SUBFIND_ADDIO_BARYONS`) to see the 5 or so places in the code where it appears, where the new physics desired can be modularly added (basically the user needs to define the variables to be computed/passed, and define the actual operation on resolution elements which will compute them, then decide which, if any, to write to file. for the writing, see the results of that search, but be sure to follow all the places the relevant output flag appears: for an example see e.g. `SIO_DELTA_MGASSUB`). 
+
+**SUBFIND_REMOVE_GAS_STRUCTURES**: Delete (do not save) any structures which are entirely gas (or have fewer than target number of elements which are non-gas, with the rest in gas). Useful for some applications where there may be a lot of dense gas sub-clumps which you do not want to store (if you are primarily interested in e.g. dark matter halos). This is primarily for storage efficiency.
+
+**SUBFIND_SAVE_PARTICLEDATA**: Save all particle positions, velocities, types, and masses in the SUBFIND output file, for each member associated with a given substructure. Normally, only the ID-list of particles/cells associated with a given substructure are saved to allow you to combine with the snapshot files to re-construct any other quantities in post-processing. This makes the SUBFIND outputs essentially a snapshot onto themselves (and users could easily add additional fields saved), but obviously requires much larger storage.
+
 
 
 
@@ -2150,7 +2206,7 @@ point, then write a restart-file, and a snapshot file corresponding to this time
      
 **Omega0**: Cosmological matter density parameter in units of the critical density at z=0. Relevant only for comoving integration.
 
-**OmegaLambda**: Cosmological vacuum energy density (cosmological constant) in units of the critical density at z=0. Relevant only for comoving integration. For a geometrically flat universe, one has Omega0 + OmegaLambda = 1. For simulations in Newtonian space, this parameter has to be set to zero.
+**OmegaLambda**: Cosmological vacuum energy density (cosmological constant) in units of the critical density at z=0. Relevant for comoving integration, but can in principle be set for a non-periodic box to reflect uniform expansion. For a geometrically flat universe, one has Omega0 + OmegaLambda = 1. For simulations in Newtonian space (non-cosmological, non-expanding), this parameter has to be set to zero.
 
 **OmegaBaryon**: Baryon density in units of the critical density at z=0. Relevant only for comoving integration.
      
@@ -3677,12 +3733,12 @@ The exact solutions for the default setup are provided in the file "dustwave\_ex
 
 ***
 
-<a name="faqs"></a>
+<a name="rscr"></a>
 # 12. Useful Additional Resources 
 
 This section addresses some common questions and provides some additional resources for new users, which are not part of GIZMO itself.
 
-<a name="faqs-vis"></a>
+<a name="rscr-vis"></a>
 ## Visualization, Radiative Transfer, and Plotting
 
 Many questions I get about GIZMO are actually questions about how to visualize and plot data. GIZMO doesnt do this itself, of course, but there are many public codes out there which are compatible with GIZMO and have excellent tools available for visualization. Remember, anything that says it is compatible with "GADGET" formats is compatible with GIZMO outputs. Just a few examples include (thanks to Robyn Sanderson for suggesting several here):
@@ -3712,7 +3768,7 @@ For more detailed radiative transfer performed on the simulations, there are man
 + Many more specific codes exist, for example [pyXSIM](https://ascl.net/1608.002) is a code designed specifically to generate synthetic X-ray observations, which is compatible with our simulation outputs.
 
 
-<a name="faqs-halofinders"></a>
+<a name="rscr-halofinders"></a>
 ## Halo/Group-Finding and Structure Identification (Post-Processing)
 
 Many people ask about automated tools for halo-finding or structure identification in the simulations. This is a quite large and mature industry onto itself, on which many many papers have been written. I'll just note a couple popular codes that people commonly use to process GIZMO outputs:
@@ -3728,7 +3784,7 @@ Many people ask about automated tools for halo-finding or structure identificati
 + Power Spectra: Although there is some in-code functionality to compute power spectra in GIZMO, a variety of public codes exist specifically to efficiently compute various types of power spectra from the simulation outputs, including for example [GenPK](https://ascl.net/1706.006), [computePK](https://ascl.net/1403.015), and [POWMES](https://ascl.net/1110.017).
 
 
-<a name="faqs-otheranalysistools"></a>
+<a name="rscr-otheranalysistools"></a>
 ## Other Analysis Tools
 
 While there are a huge number of analysis tools, and users can of course write analysis software in any language they like, I highly recommend Python for analysis. It's open source, supported by the national centers (so you can run remotely), and much astronomy code development is based on it. 
@@ -3740,7 +3796,7 @@ While there are a huge number of analysis tools, and users can of course write a
 + [PynBody](https://ascl.net/1305.002), [PyGadgetReader](https://ascl.net/1411.001), [SPHGR](https://ascl.net/1502.012), and [PyGad](https://ascl.net/code/v/1569) are all python modules designed for easy reading and interaction with the simulation outputs. These are general analysis tools which have a variety of functionality associated with them. [YT](http://yt-project.org/), as described above, also has these tools (in addition to its pure visualization functions). 
 
 
-<a name="faqs-generalsupercomputing"></a>
+<a name="rscr-generalsupercomputing"></a>
 ## General Super-Computing Questions
 
 Questions about computing in general should be directed at the help resources for whatever computers you are using to run GIZMO. This includes things like "I can't get FFTW to compile," and "I can't get GIZMO to compile" (unless its a specific compiler error *internal* to the GIZMO code). But to help get started on submitting jobs, here's some useful resources for users not experienced with these systems.
@@ -3777,8 +3833,123 @@ And remember, once you get your simulations running, **ALWAYS BACK UP YOUR DATA*
 
 ***
 
+
+***
+
+<a name="faqs"></a>
+# 13. Frequently Asked Questions 
+
+This section addresses some of the most-commonly asked questions from new users.
+
+<a name="faqs-help"></a>
+## Where to Go for Help?
+
+Good news, you're in the right spot: first, read this guide. Please read it completely before asking for help: the document is long precisely because it already contains answers to more than 99% of all questions I receive from users. Make sure you also check the `Template_Config.sh` file for the relevant modules/flags, and even take a look at the source code to see if there are obvious notes (often the code has comments to clarify things for users) or definitions.
+
+If that really doesn't answer your question, please check our [GIZMO Google Group](https://groups.google.com/d/forum/gizmo-code). There are various posts archived there, with code issues, bugs and their fixes, feature requests and their modules that were developed, all maintained. First check if someone else has already asked the same question, then (if not), please post and join the discussion -- that's what its for, and other users most likely have answers for you.
+
+If you still cannot get an answer, the best thing to do is to find another experienced user, and ask them directly. Many such users are active in the google group, and of course you can reach out to colleagues, collaborators, and members of the community who have published many papers using GIZMO. And of course, you can contact the code developers (Phil or the salient developers of the modules in question, which are listed in detail in the `Template_Config.sh` file, and User Guide descriptions).
+
+<a name="faqs-optimal"></a>
+## What Are 'Optimal' Code Settings? (aka 'My Run is Slow')
+
+This is (by a huge margin) the most common question I receive, including variants like 'What is the expected performance on X problem', or 'Why is the code spending so much time on X?', or 'How can I improve speed (or reduce load imbalances)?', or 'What is the optimal number of CPUs or configuration for this problem?' or 'Why does GIZMO take longer than this other code to run this problem?' etc. Unfortunately, it also has no simple answer: **there is no single optimal configuration**. 
+
+The reason is straightforward: GIZMO is designed to flexibly run a huge range of different types of simulations as specified by the user. With the right choices, GIZMO should be as fast or faster than almost any other codes out there on almost all problems I have seriously tested. But a simulation of linear MHD instabilities (where every element is nearly homogeneous and advancing in lockstep) and a 'zoom-in' simulation of galaxy formation (where tiny, dense clumps and star clusters have timesteps a million times shorter than the volume-filling inter-galactic medium) have wildly different optimal parallelization strategies. Likewise, a problem running on a single node with 20 shared-memory cores will have totally different bottlenecks and overheads compared to a problem running on a hundred thousand nodes linked via infiniband. It simply isn't possible (despite what some misleading compiler libraries may claim in their sales pitches) to write a code that can predict your specific use case and all the bottlenecks or gains that will apply. This is why the *very* fastest codes are often custom-written for a single extremely specific problem and configuration, even taken to the custom-hardware level (think GRAPE boards for direct-N-body integration, or custom chips for mining cryptocurrency).
+
+This means some parameters will *always* need to be tailored to your use case and the specific problem being simulated. And to be clear, 'specific problem' in this context means a combination of physics enabled, resolution, node configuration and processor number, type of CPU, memory, how deep the timestep hierarchy is, ratio of collisionless to gas elements, and so on: it does not simply mean a broad topic like 'cosmological simulation.' Until you have experience running a specific type of simulation on a specific machine, you simply have to experiment with many different choices to identify the optimal configurations (I myself still do this every time I'm using a new cluster). 
+
+There are some general 'rules of thumb' however, regarding which parameters you should consider, and how they might impact your performance. Be sure, if you are testing, to enable `OUTPUT_ADDITIONAL_RUNINFO` in your `Config.sh` file to get more fine-grained info. The best thing you can do is use actual software performance profiling tools to break down the time in every subroutine and call of the code: almost every computing center provides these tools and instructions on how to use them, please talk to the specialists there about how to use these tools!
+
+**Compilers:** On any machine the choice of compiler (e.g. intel, gnu, pcc), compiler flags (-O1/2/3, custom optimizations), and which MPI libraries you use (e.g. intel-MPI, openMPI, mvapich), is important, but highly machine-specific. Read the user guides specific to your platform, and experiment. If you are running on a machine listed in `Makefile.systype`, check its description in `Makefile` -- almost all have helpful notes there describing advice, most useful modules, some tests, etc. If you're running on a new machine, check `Makefile` for advice for machines with similar hardware (and once you determine best compilers, add it to the code). In general, intel or pcc compilers often provide best performance, with gnu a bit slower. Modern forms of the MPI libraries tend to be comparably fast, it is more about what the computing center has optimized for. Compiler optimization flags require care: usually 95% of the performance gain comes from mild or intermediate optimization like `-O1` or `-O2`. More aggressive optimization should be done only with care: `-O3` and other flags can introduce inaccuracy for speed, break the code entirely (by moving things out-of-order), or make things slower (by 'guessing' patterns incorrectly). If unsure, scale down the optimization and see if you lose anything (always safer to use lower optimization). Custom flags tend to be minor differences. The choice of which version of other code libraries (GSL, FFTW2 or FFTW3, MKL, etc) tend to make a very small difference.
+
+**Config.sh Settings:** A couple Config settings can have a big impact, you should explore different choices for them. (1) `OPENMP`: see node configuration options below. (2) `MULTIPLEDOMAINS`: increasing this will allow more sub-blocking of domains to give more flexibility in domain-decomposition, useful for highly inhomogeneous problems (e.g. deep timestep hierarchies), but also introduces larger memory overheads and more communication. Values anywhere from 1-128 are perfectly reasonable (higher values will work too, though those are more rarely helpful). Generally lower for problems that are memory or communication limited, higher for problems which are imbalance-limited. (3) If you're using `PMGRID` for gravity (in e.g. cosmological simulations with periodic boxes), changing the value here can optimize by trading time between the FFT algorithms used for the PMGRID and tree (used on scales below PMGRID). Higher values will cost memory and more FFT time and can make gravity less accurate on small scales (as the tree-solver is more accurate there), but reduce tree-walk times and imbalances. 
+
+**Parameterfile Settings:** The params file also has a couple settings that can have a big impact. (1) `TreeDomainUpdateFrequency`: this requires more hand-tuning from experience than almost any other parameter. See its description: decreasing it will force the code to rebuild the domain decomposition more frequently, and can reduce load imbalances. But making it too frequent will cause it to bottleneck the code. A good 'rule of thumb' is that if the code is spending comparable time on imbalances (`treeimbal`+`densimbal`+`hydimbal` in `cpu.txt`) and domain decomposition (`domain` in `cpu.txt`), then this is set about right (but if both of these are very large, this is obviously an issue). (2) `PartAllocFactor`: this sets how flexible the code can allocate particles to allow larger memory imbalances in order to reduce load imbalances. You generally want it as large as memory allows. (3) Other parameters like force softening, neighbor number, time between snapshots or statistics, etc, are generally small corrections, unless they are set to inappropriate values and cause problems. For example, setting a force softening much too-small means the timesteps are artificially small; setting it too large will introduce large imbalances as the particles need to perform direct-$N^{2}$ gravity operations between every neighbor within their force-softening kernels.
+
+**Node, CPU, MPI Configuration**: This is the trickiest but often most important issue. Again, read carefully the user guides for the machine and consult the IT help staff, and experiment before running production simulations. (1) On some machines, specific thread placement requires some custom options be set: this is especially important if the nodes involve a mix of floating-point and integer cores (on these types of machines, failure to specify the correct custom 'thread placement' can lead to order-of-magnitude slower performance, as the threads get placed on overlapping cores, or threads intended for floating-point cores land on integer cores). One example of this is in the Makefile for the 'BlueWaters' machine. (2) On some machines, hyper-threading is encouraged to get best performance. Hyper-threads should almost always be OPENMP threads (as opposed to putting 2 MPI tasks on the same CPU). On others hyper-threading will crash. On others, hyper-threading will run but cause an order-of-magnitude slowdown. (3) The balance between the number of `OPENMP` threads and MPI tasks is highly machine and problem dependent. In setting `OPENMP`, consider whether you want hyperthreads or want extra memory per task (larger `OPENMP`). But also note some things cannot be OPENMP parallelized as effectively as MPI parallelized: it can be faster to have more MPI tasks instead of OPENMP threads (for the same core number), especially for smaller jobs. Some small jobs (e.g. couple-hundred-core) may prefer no OPENMP threading at all. As a rule of thumb, larger jobs and jobs with a deeper timestep hierarchy will benefit more from increasing the OPENMP count (depending on the job and computer, I've found optimal performance with values of OPENMP ranging from none to 40). But also be aware of the node configuration: not all cores on a node have shared memory, and if you make OPENMP larger than the number with a shared memory access, the performance will drop dramatically. There really is no substitute for experimenting with this value. (4) In terms of the total number of cores or threads, you will also need to experiment, as the behavior of the strong and weak scaling will always be highly problem-dependent. As a rule of thumb, you probably want to aim for something like $\sim 10^{4}-10^{7}$ resolution elements 'per thread', and for many types of problems with deep timestep hierarchies you will find a 'sweet spot' more like $\sim 10^{5}-10^{6}$. With too many elements per thread you simply aren't getting all the parallel benefit (strong scaling) you could (and may run into memory issues). With too few, your threads will not have enough work to do each timestep and most will simply idle while a couple others finish or they all wait for communications. 
+
+Good luck!
+
+
+<a name="faqs-best"></a>
+## Are There 'Best' (More Accurate) Physics Modules or Solvers?
+
+**No.** There is no single 'best' hydro solver, or gravity solver, or physics module, etc, in terms of accuracy (either numerical or physical). There are choices which are better for certain types of problems: either they are more accurate under some conditions, or they are faster and allow you to run higher-resolution and so be more accurate in that way, or they minimize a certain specific type of error you care about, or they are compatible with other modules that allow you to run the relevant physics. But there is never a single always-best choice, and it is important that you think about what works for **your** problem. Also make sure you read the discussion of [Fluid (Hydro) Solvers](#hydro). 
+
+<a name="faqs-startup"></a>
+## My Run Won't Start, What Did I Do Wrong?
+
+Again, this is not something with a generic answer. If your run will not start, its almost never a code problem, but a setup problem. Common causes include: (1) code was compiled incorrectly, (2) cant find the libraries it needs, (3) memory settings (see below) are incorrect and ask for more memory than available, (4) the source code, parameterfile, other needed files (ICs, TREECOOL, etc) are not in the correct directories your run script thinks they should be in, (5) your run script was not written correctly for the machine you are running on, (6) your maximum/minimum timesteps are set much too high or low for the problem, (7) your end time or begin time of the run, or box size, or cosmological parameters are set incorrectly, (8) the initial conditions file is not in the correct format, or has data not in the format assumed (remember parameters like `INPUT_IN_DOUBLEPRECISION`, `LONGIDS`, etc. are needed for those inputs to be read correctly if they are in those formats), (9) your settings (e.g. node number or multipledomains, or force softenings and smoothing length limits) are set such that the code spends its entire run-time in the 'overhead' calculations (reading in ICs, initial iteration to converge to smoothing lengths, etc). 
+
+Always check all stdout and stderr and run-time output files (including outputs from the job script system if they include those). If no such outputs exist the problem is almost certainly in your job submission script. If outputs exist, search for the error codes. Outputs in stdout with error codes will be error codes in GIZMO -- search for them explicitly in the GIZMO source code (do a grep) to find out where the code exited if the description is unclear. Other error codes are machine or compiler-provided: a simple search online will usually find a more useful description. 
+
+<a name="faqs-memory"></a>
+## How do I Avoid Memory Errors/Crashes?
+
+Assuming runs are set up appropriately, begin smoothly, and there are no hardware problems, then by far the most common crash/error for GIZMO simulations is related to running out of memory. This can manifest in many different ways in detail, but with usually involves the code exiting with an error message like `Task=%d: Not enough memory in mymalloc_fullinfo() to allocate %g MB for variable '%s' at %s()/%s/line %d (FreeBytes=%g MB)` where the various `%g` values describe the specific memory location of the error and magnitude of the discrepancy. This is particularly commonly associated with the structure 'GasGradDataResult' in this output, because in many runs that will be the single most-demanding memory call of the relevant type. 
+
+In September 2019 the parallelism was substantially re-structured to unify different modules and in particular to eliminate this particular type of error, which occurs when a given node is set to *receive* data from an extremely large number of nodes that need to communicate to it (which can occur in some highly imbalanced problems) in a way it could not predict in the old code. Dealing with this involves a pre-pass to check how much it can receive, and iterating the communication over smaller sub-chunks. This does involve some overhead cost in communication, but this is very small in tests, and worth it for removing one of the most common crash cases. Note that this issue, while much rarer, is not fixed for some particular legacy subroutines coded by older uses with some particular custom loops over different grids (instead of our normal cell list), such as the turbulent power spectrum computation: you may still see an error like this, in which case the generic memory advice below will apply. 
+
+In either case, there are still occasional memory issues. This occurs because, in order to be as flexible as possible (especially with load-balancing), GIZMO attempts to dynamically and flexibly allocate and de-allocate memory and re-scale it as needed. But that means it may reach a point where it has 'trapped' itself and has already allocated too much memory but cannot even allocate the memory needed to re-structure memory itself across different nodes (which requires some ability to allocate communication structures, etc). And some parts of the code contributed by other users may not be as 'safe' as core parts of the code. So you may see memory errors involving the code immediately quitting with an error that it was unable to allocate the memory it desired, or one of the `endrun(NNN)` where NNN is number errors which, when you search for it, has a comment to the effect of `in this case, the buffer is too small to process even a single particle`. 
+
+These are extremely problem-and-machine sensitive, as you would expect, so there is no single fix if you are running into memory problems, but there are a few things you should always check and experiment with.
+
+In **run/machine/node configuration**: (1) Be sure you are allocating enough nodes to actually accomodate the full size of your problem. Remember that the active memory is much larger than the size of snapshots (which only output a tiny fraction of the data). In addition to code profiling tools, and the memory table dumps produced occasionally, look at the restartfiles (which are an actual flash of code memory at the time they are written) to get an idea of how much memory you really need, and be sure to scale your runs appropriately. If you have a billion cells, and a lot of physics (e.g. chemistry, etc) which means a huge number of variables per cell, you will need a lot of space! So you may need to increase the number of nodes/tasks requested. (2) Try adjusting the *ratio* of MPI tasks to OPENMP threads. MPI communication makes complete copies of things every sub-domain needs (e.g. tree structure) so that they can be completely autonomous until you exchange specific information (why it works over infiniband and other networks). But this means there are significant memory overheads to every MPI task, and some of these increase per-core (sometimes non-linearly) with the number of tasks (the tree has more structure, for example). OPENMP, on the other hand, only works with physical shared memory, so within an MPI domain only certain cores on a sub-set of a node can be OPENMP threaded. But since it assumes shared memory, it creates effectively zero memory overheads. So taking the same number of cores, you can double the memory per MPI task by reducing the task number by a factor of two and doubling OPENMP. Experiment with the `OPENMP` values: sometimes we will use larger values just for memory reasons. (3) Of course, if you can find machines or nodes with more memory per core, great!
+
+In the **Config.sh** file: (1) Try turning on/off `ALLOW_IMBALANCED_GASPARTICLELOAD`: this is more commonly a solution to memory problems in highly-imbalanced runs, and when on it allocates significantly more memory 'up front' for gas cells. It can be especially useful if refinement or particle spawning means you will be significantly increasing the number of gas cells as you run. If this is on, the buffer for gas will not be based on the `PartAllocFactor` times number of gas cells, but number of total elements, so you may need to lower `PartAllocFactor`: as this makes obvious, while it can fix some memory issues, it requires a large memory overhead, so can make other sorts of memory errors worse. (2) There are some algorithms that can be especially memory-intensive. Setting `PMGRID` or `TURB_DRIVING_SPECTRUMGRID` to very large values means you need to allocate memory for that size **cubed** because you are making a three-dimensional grid, so try lowering these values, or looking for other areas where you are asking for large memory overheads. The code dumps of the memory footprint on startup and at particular use times are helpful for this. (3) `MULTIPLEDOMAINS` multiplies the number of MPI domains. While this can allow for more sub-chunking, the creation of new sub-domains implies a significant memory cost, as each sub-domain has fixed memory overheads (storing tree and communication data) as well as adding additional comm-buffers. This is also how you can often overlead the comm buffers, as even if you are running on a modest number of nodes, you need to remember the number of threads requesting communication simultaneously will be your MPI task number times `MULTIPLEDOMAINS` (this is a very common source of problems when set too large). (4) Adjust `OPENMP` as described above.
+
+In the **parameterfile**: (1) Make sure `MaxMemSize` is set appropriately. This tells the code when it should try to stop allocating memory and determines how it tries to 'pad space' for things like communications buffers and un-predictable things like users allocating large arrays in the middle of a loop in code they've added (hence it isn't perfect). You want this to be the number of MB **per MPI task** (not per core, or per thread) which you can accommodate. So bigger is better, but of course if it's larger than the actual space available on the node, the code will crash when it tries to allocate that memory! Also remember to allow a margin for things like the operating system, which may take some experimentation: a very common mistake is to set this very close to or exactly at the quoted memory-per-core of some supercomputer. Let's say we're running on a machine with nominally 2GB per core, with (for simplicity) 1 MPI task per core. If you set this to, say, `MaxMemSize 2000`, you are very likely to have an error. The reason is that the nodes are all actually running a full operating system (e.g. some version of Linux), as well as a bunch of things like monitoring and scripting and debugging operations, and also have things like whatever shared memories and modules you may load in some state of memory. Those numbers can even fluctuate a bit in time and node-to-node. As a result, the actual **safely available** memory per core is likely to be quite a bit lower (most machines quoting 2GB per core really have more like 1.6-1.8 per core, safely free), and this can vary quite dramatically on different machines. (2) `PartAllocFactor` determines the maximum number of cells/particles allowed in a given domain or sub-domain (MPI tasks times MULTIPLEDOMAINS), as this multiple of the average (i.e. if the average is every domain having N elements on it, and this is set to 5, the maximum memory or cell-load imbalance is set to 5N). So obviously lowering it prevents too much allocation on one cell, decreasing memory imbalances and demands, at the cost of being less able to move the work around and therefore reduce the work-load (or cpu-cost) imbalances. So lowering it will usually cost something. If the value is too low, the domain decomposition routine may fail entirely, after basically being unable to find any decomposition that mutually meets its criteria for work-load and memory-load imbalances. Optimal values are highly problem-dependent here and it takes experimentation, but obviously very large values are 'risky' as a spike of cells sent to one CPU can easily lead to it running out of memory: in practical runs anything from values 1.8 to 30 might be common. (3) Lowering `BufferSize` decreases the size of the communications (comm) buffer each sub-domain (MPI tasks times MULTIPLEDOMAINS) is allowed to use for outgoing communication. Making this lower means you are less likely to overflow with a big output request. If the code needs more than this it will just iterate over multiple cycles, so obviously very low values can be costly, but if you aren't running into errors where it is unable to process a single particle, or too much communication overhead, it can usually be safely decreased. On state-of-the-art machines this parameter often runs from values of 30 to 300. (4) Decreasing `TreeDomainUpdateFrequency` (making domain decompositions more frequent) will allow finer-grained refactoring of the memory balancing, making it easier to avoid memory overflows (at obvious computational cost). Optimal values are wildly problem-dependent, anything from 1e-8 to 0.1 in simulations I have run personally. 
+
+
+<a name="faqs-big"></a>
+## My Large Simulation Hangs, but Smaller Runs Work?
+
+If small and intermediate jobs are running, but larger jobs fail immediately, there are a few things to check. First make sure its not a memory issue (larger jobs require more memory, even per particle, owing to larger overheads): see the question above. Second, make sure it isn't a machine issue (some versions of MPI and some machines require very special commands to run on a very large number of nodes) -- check with your IT help. 
+
+There are also a couple of `Config.sh` parameters which can be **required** for large runs. If you have more IDs than an int register can hold, be sure `LONGIDS` is set in your `Config.sh` file. The flag `NO_ISEND_IRECV_IN_DOMAIN` is **required** for runs with much more than a couple billion particles, as most versions of MPI will otherwise send certain requests using a regular int register and will crash. In the future, these flags will be 'always on': even if you do not need them for smaller runs, they don't involve any performance penalty. The reason they are not always right now is purely historical compatibility: many ICs generated for GIZMO and GADGET do not use `LONGIDS`, and `NO_ISEND_IRECV_IN_DOMAIN` is incompatible with some older and/or serial compilers.
+
+<a name="faqs-timebin"></a>
+## Why Did Everything Drop to TimeBin=1?
+
+This is a peculiar manifestation of a certain class of errors. In the stdout file, where it shows the number of particles in a given timebin, suddenly (in one or a few timesteps), a huge number of cells end up in `bin= 1`. This is the smallest allowed timebin. First check that your minimum timestep is not too large (i.e. that this isn't just the code doing what it should do, but you aren't allowing it to use small enough timebins). If you need more dynamic range for timesteps, turn on `LONG_INTEGER_TIME`. 
+
+Assuming this is a real issue, what has usually happened is that somewhere (usually in a neighbor interaction involving terms in a more experimental module), the code divided by zero (or nearly-zero) or otherwise inserted a `nan` or extremely large or small number. This can happen under some circumstances when un-addressed memory is called (instead of the code just immediately crashing). This assigns a huge value to something like acceleration or velocity or energy, which drops the timebin down. This might only occur in one interaction, but that infinity or nan propagates through the grid. 
+
+Look carefully at the stdout, and profiling info, to diagnose in which subroutine this occurred. Turn on `STOP_WHEN_BELOW_MINTIMESTEP` to get additional info on the cells when the timestep drops, to see what is jumping to NaN or very strange values. Turn on and off different physics modules in turn while re-starting from a snapshot or restartfile before the error to isolate which modules and sub-routines cause the error. 
+
+In my experience, this is usually caused by users setting inappropriate flags (flags not designed for the problem they are simulating, or mutually-incompatible flags), or having a units mistake in their ICs or parameter file (so the timesteps are wildly different from what the user 'thinks' they should be), or reading ICs with insufficient precision (so particles have identical positions at floating-point accuracy, solved by setting the input and output `Config.sh` flags to `DOUBLEPRECISION`). But obviously, if you think you've identified a bug, you should go to the user group and report it.
+
+<a name="faqs-rscr"></a>
+## Are there Public ICs? Analysis Tools? Image/Movie-Makers?
+
+Yes, lots of them! See the sections of this User Guide on [Initial Conditions (Making & Reading Them)](#snaps-ics) and [Useful Additional Resources](#rscr).
+
+<a name="faqs-variable"></a>
+## What Does this Variable Mean?
+
+Read the [Snapshot & Initial Condition Files](#snaps) section, as well as the description of the relevant `Config.sh` flags you have enabled in [Config.sh (Setting compile-time options)](#config), where most of the outputs are described. If you cannot find it, search the source code, in `io.c` you can find the map between the HDF5 variable name and what is actually written out. 
+
+Example: if you are using radiation-hydrodynamics, and see the variable `PhotonEnergy` in your HDF5 file, search this in `io.c` to see it is associated with the case `IO_RADGAMMA` (the switch for whether or not this variable is written out to a file), so search that and you see it is writing out a vector with `N_RT_FREQ_BINS` entries per particle, representing the different radiation frequency bins followed in the code in the same order, and writing out the variable `SphP[pindex].E_gamma[k]` -- the absolute energy of the radiation field (in code units) at frequency `k` associated with gas resolution element `pindex`. 
+
+<a name="faqs-units"></a>
+## What are the Code Units?
+    
+See the section of this User Guide on [Units](#snaps-units). If you aren't sure whether something is in one unit or another (e.g. is this an absolute energy associated with a particle, or a specific energy, or an energy density?) check the units for sanity, and search for the variable in the source code to see where it is defined and written out.
+
+<a name="faqs-citation"></a>
+## Can I use this Module? What should I cite?
+    
+See the [Code Use, Authorship, Citation, Sharing, & Development Rules](#requirements).
+
+<a name="faqs-capabilities"></a>
+## Can the Code do 'X'?
+
+Read this User Guide to find out, especially the [Feature (Physics Module) Set](#features) and various subs-sections on all the huge variety of different options in [Config.sh (Setting compile-time options)](#config). 
+
+
 <a name="disclaimer"></a>
-# 13. Disclaimer 
+# 14. Disclaimer 
 
 Use this code at your own risk! It is provided without any guarantees of support, accuracy, or even that it will work! While I will do what I can to maintain things and address questions that arise, it is ultimately up to each user to build and maintain their copy of the code. And it is up to you, the user, to understand what the code is doing, and to be responsible for the content of your simulations. No numbers in e.g. the parameterfile and Config file examples are meant to be taken as recommendations: you should do considerable experimentation to determine the most appropriate values for the problem at hand. They will change depending on the problem details and what you are trying to extract. 
 

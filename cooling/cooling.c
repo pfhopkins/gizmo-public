@@ -15,8 +15,7 @@
  *   free-free, metal-line, Compton, collisional, photo-ionization and recombination, and more. Some of these 
  *   are controlled by individual modules that need to be enabled or disabled explicitly.
  *
- * This file was originally part of the GADGET3 code developed by
- *   Volker Springel (volker.springel@h-its.org). The code has been modified heavily by 
+ * This file was originally part of the GADGET3 code developed by Volker Springel. The code has been modified heavily by 
  *   Phil Hopkins (phopkins@caltech.edu) for GIZMO; essentially everything has been re-written at this point */
 
 
@@ -425,9 +424,7 @@ double find_abundances_and_rates(double logT, double rho, int target, double shi
     j = (int) t;
     if(j<0){j=0;}
     if(j>NCOOLTAB){
-#ifndef IO_REDUCED_MODE
-        printf("warning: j>NCOOLTAB : j=%d t %g Tlow %g Thi %g logT %g Tmin %g deltaT %g \n",j,t,Tmin+deltaT*j,Tmin+deltaT*(j+1),logT,Tmin,deltaT);fflush(stdout);
-#endif
+        PRINT_WARNING("warning: j>NCOOLTAB : j=%d t %g Tlow %g Thi %g logT %g Tmin %g deltaT %g \n",j,t,Tmin+deltaT*j,Tmin+deltaT*(j+1),logT,Tmin,deltaT);fflush(stdout);
         j=NCOOLTAB;
     }
     Tlow = Tmin + deltaT * j;
@@ -770,6 +767,9 @@ double CoolingRate(double logT, double rho, double n_elec_guess, int target)
                             + (Z[0]/All.SolarAbundances[0])*(Z[0]/All.SolarAbundances[0])/(1.0+nHcgs));
             /* add dust cooling as well */
             double Tdust = 30.;
+#if defined(SINGLE_STAR_SINK_DYNAMICS)
+            Tdust = 10.;
+#endif
 #ifdef RT_INFRARED
             if(target >= 0) {Tdust = SphP[target].Dust_Temperature;}
 #endif
@@ -861,6 +861,9 @@ double CoolingRate(double logT, double rho, double n_elec_guess, int target)
 #if defined(COOL_METAL_LINES_BY_SPECIES) && defined(COOL_LOW_TEMPERATURES)
         /* Dust collisional heating */
         double Tdust = 30.;
+#if defined(SINGLE_STAR_SINK_DYNAMICS)
+        Tdust = 10.;
+#endif
 #ifdef RT_INFRARED
         if(target >= 0) {Tdust = SphP[target].Dust_Temperature;}
 #endif
@@ -1085,7 +1088,7 @@ void ReadMultiSpeciesTables(int iT)
     FILE *fdcool; char *fname;
     
     fname=GetMultiSpeciesFilename(iT,0);
-    if(ThisTask == 0) printf("Opening Cooling Table %s \n",fname);
+    if(ThisTask == 0) printf(" ..opening Cooling Table %s \n",fname);
     if(!(fdcool = fopen(fname, "r"))) {
         printf(" Cannot read species cooling table in file `%s'\n", fname); endrun(456);}
     for(i=0;i<kspecies;i++) {
@@ -1109,7 +1112,7 @@ void ReadMultiSpeciesTables(int iT)
      */
     if (All.ComovingIntegrationOn && i<48) {
         fname=GetMultiSpeciesFilename(iT+1,0);
-        if(ThisTask == 0) printf("Opening (z+) Cooling Table %s \n",fname);
+        if(ThisTask == 0) printf(" ..opening (z+) Cooling Table %s \n",fname);
         if(!(fdcool = fopen(fname, "r"))) {
             printf(" Cannot read species 1 cooling table in file `%s'\n", fname); endrun(456);}
         for(i=0;i<kspecies;i++) {
@@ -1191,8 +1194,7 @@ void ReadIonizeParams(char *fname)
         else
             break;
     
-    if(ThisTask == 0)
-        printf("\n\nread ionization table with %d entries in file `%s'.\n\n", nheattab, fname);
+    if(ThisTask == 0) printf(" ..read ionization table with %d entries in file `%s'.\n", nheattab, fname);
 }
 
 
@@ -1361,8 +1363,7 @@ void IonizeParamsFunction(void)
 
 void InitCool(void)
 {
-    if(ThisTask == 0)
-        printf("Initializing cooling ...\n");
+    if(ThisTask == 0) printf("Initializing cooling ...\n");
 
     All.Time = All.TimeBegin;
     set_cosmo_factors_for_current_time();

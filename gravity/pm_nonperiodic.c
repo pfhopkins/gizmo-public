@@ -11,7 +11,7 @@
 
 /*
  * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org). The code has been modified
+ * Volker Springel. The code has been modified
  * slightly by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
  */
 
@@ -387,10 +387,8 @@ void pm_init_nonperiodic(void)
 #endif
 
 #ifndef USE_FFTW3
-  if(ThisTask == 0)
-    printf("\nAllocated %g MByte for FFT kernel(s).\n\n", bytes_tot / (1024.0 * 1024.0));
-
-#else 
+  if(ThisTask == 0) printf("\nAllocated %g MByte for FFT kernel(s).\n", bytes_tot / (1024.0 * 1024.0));
+#else
   
   if(!(rhogrid = (fftw_real *) mymalloc("rhogrid", bytes = maxfftsize * sizeof(d_fftw_real))))
     {
@@ -400,7 +398,7 @@ void pm_init_nonperiodic(void)
   bytes_tot += bytes;
 
   if(ThisTask == 0)
-    printf("\nAllocated %g MByte for FFT kernel(s) and rhogrid.\n\n", bytes_tot / (1024.0 * 1024.0));
+    printf("Allocated %g MByte for FFT kernel(s) and rhogrid.\n", bytes_tot / (1024.0 * 1024.0));
 
   fft_of_rhogrid = (fftw_complex *) rhogrid;
 
@@ -467,7 +465,7 @@ void pm_init_nonperiodic_allocate(void)
 #endif
 
   if(ThisTask == 0)
-    printf("Using %g MByte for non-periodic FFT computation. (presently allocated %g MB)\n",
+    printf(" ..using %g MByte for non-periodic FFT computation. (presently allocated %g MB)\n",
 	   bytes_tot / (1024.0 * 1024.0), AllocatedBytes / (1024.0 * 1024.0));
 
   workspace = forcegrid;
@@ -767,7 +765,7 @@ int pmforce_nonperiodic(int grnr)
 
 
   if(ThisTask == 0)
-    printf("Starting non-periodic PM calculation (grid=%d)  presently allocated=%g MB).\n", grnr,
+    printf("Starting non-periodic PM calculation (grid=%d , presently allocated=%g MB).\n", grnr,
 	   AllocatedBytes / (1024.0 * 1024.0));
 
   fac = All.G / pow(All.TotalMeshSize[grnr], 4) * pow(All.TotalMeshSize[grnr] / GRID, 3);	/* to get potential */
@@ -1349,7 +1347,7 @@ int pmforce_nonperiodic(int grnr)
   pm_init_nonperiodic_free();
 
   if(ThisTask == 0)
-    printf("done PM.\n");
+    printf(" ..done PM.\n");
 
   return 0;
 }
@@ -1664,7 +1662,7 @@ int pmpotential_nonperiodic(int grnr)
   MPI_Status status;
 
   if(ThisTask == 0)
-    printf("Starting non-periodic PM-potential calculation (grid=%d)  presently allocated=%g MB).\n", grnr,
+    printf("Starting non-periodic PM-potential calculation (grid=%d , presently allocated=%g MB).\n", grnr,
 	   AllocatedBytes / (1024.0 * 1024.0));
 
   fac = All.G / pow(All.TotalMeshSize[grnr], 4) * pow(All.TotalMeshSize[grnr] / GRID, 3);	/* to get potential */
@@ -2046,7 +2044,7 @@ int pmpotential_nonperiodic(int grnr)
   pm_init_nonperiodic_free();
 
   if(ThisTask == 0)
-    printf("done PM potential.\n");
+    printf(" ..done PM potential.\n");
 
   return 0;
 }
@@ -2150,7 +2148,7 @@ int pmtidaltensor_nonperiodic_diff(int grnr)
 #endif
 
   if(ThisTask == 0)
-    printf("Starting non-periodic PM-TIDAL calculation (grid=%d)  presently allocated=%g MB).\n", grnr,
+    printf("Starting non-periodic PM-TIDAL calculation (grid=%d , presently allocated=%g MB).\n", grnr,
 	   AllocatedBytes / (1024.0 * 1024.0));
 
   fac = All.G / pow(All.TotalMeshSize[grnr], 4) * pow(All.TotalMeshSize[grnr] / GRID, 3);	/* to get potential */
@@ -2836,7 +2834,7 @@ int pmtidaltensor_nonperiodic_diff(int grnr)
   pm_init_nonperiodic_free();
 
   if(ThisTask == 0)
-    printf("done PM-TIDAL.\n");
+    printf(" ..done PM-TIDAL.\n");
 
   return 0;
 }
@@ -2869,16 +2867,8 @@ int pmtidaltensor_nonperiodic_fourier(int grnr, int component)
   fftw_real *localfield_data, *import_data;
   MPI_Status status;
 
-  if(ThisTask == 0)
-    {
-      printf("Starting non-periodic PM-Tidaltensor (component=%d) calculation (grid=%d)  presently allocated=%g MB).\n", component, grnr, AllocatedBytes / (1024.0 * 1024.0));
-#ifndef IO_REDUCED_MODE
-      fflush(stdout);
-#endif
-    }
-
+  PRINT_STATUS("Starting non-periodic PM-Tidaltensor (component=%d) calculation (grid=%d , presently allocated=%g MB).", component, grnr, AllocatedBytes / (1024.0 * 1024.0));
   fac = All.G / pow(All.TotalMeshSize[grnr], 4) * pow(All.TotalMeshSize[grnr] / GRID, 3);	/* to get potential */
-
   to_slab_fac = GRID / All.TotalMeshSize[grnr];
 
 
@@ -3347,13 +3337,7 @@ int pmtidaltensor_nonperiodic_fourier(int grnr, int component)
   myfree(localfield_globalindex);
 
   pm_init_nonperiodic_free();
-
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("done PM-Tidaltensor (component=%d).\n", component);
-    }
-#endif
+  PRINT_STATUS(" ..done PM-Tidaltensor (component=%d)", component);
     return 0;
 }
 

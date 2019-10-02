@@ -12,8 +12,8 @@
 
 /*
  * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org). The code has been modified
- * very slightly by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
+ * Volker Springel. The code has been modified
+ * somewhat by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
  */
 
 #define MAXBLOCKS 500
@@ -104,7 +104,7 @@ void report_detailed_memory_usage_of_largest_task(size_t * OldHighMarkBytes, con
       if(ThisTask == task)
 	{
 	  printf
-	    ("\nAt '%s', %s()/%s/%d: Largest Allocation = %g Mbyte (on task=%d), Smallest = %g Mbyte, Average = %g Mbyte\n\n",
+	    ("\nIn '%s', %s()/%s/%d: Largest Allocation = %g Mbyte (on task=%d), Smallest = %g Mbyte, Average = %g Mbyte\n",
 	     label, func, file, line, maxsize / (1024.0 * 1024.0), task, minsize / (1024.0 * 1024.0),
 	     avgsize / (1024.0 * 1024.0));
 	  dump_memory_table();

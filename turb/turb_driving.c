@@ -156,12 +156,7 @@ void init_turb(void)
                     StMode[3*StNModes+0] = kx;
                     StMode[3*StNModes+1] = ky;
                     StMode[3*StNModes+2] = kz;
-#ifndef IO_REDUCED_MODE
-                    if(ThisTask==0)
-                    {
-                        printf("Mode: %d, ikx=%d, iky=%d, ikz=%d, kx=%f, ky=%f, kz=%f, ampl=%f\n",StNModes,ikx,iky,ikz,kx,ky,kz,ampl);
-                    }
-#endif
+                    PRINT_STATUS("Mode: %d, ikx=%d, iky=%d, ikz=%d, kx=%f, ky=%f, kz=%f, ampl=%f",StNModes,ikx,iky,ikz,kx,ky,kz,ampl);
                     StNModes++;
                     
                     
@@ -170,12 +165,7 @@ void init_turb(void)
                     StMode[3*StNModes+0] = kx;
                     StMode[3*StNModes+1] = -ky;
                     StMode[3*StNModes+2] = kz;
-#ifndef IO_REDUCED_MODE
-                    if(ThisTask==0)
-                    {
-                        printf("Mode: %d, ikx=%d, iky=%d, ikz=%d, kx=%f, ky=%f, kz=%f, ampl=%f\n",StNModes,ikx,-iky,ikz,kx,-ky,kz,ampl);
-                    }
-#endif
+                    PRINT_STATUS("Mode: %d, ikx=%d, iky=%d, ikz=%d, kx=%f, ky=%f, kz=%f, ampl=%f",StNModes,ikx,-iky,ikz,kx,-ky,kz,ampl);
                     StNModes++;
                     
 #if NUMDIMS > 2
@@ -183,24 +173,14 @@ void init_turb(void)
                     StMode[3*StNModes+0] = kx;
                     StMode[3*StNModes+1] = ky;
                     StMode[3*StNModes+2] = -kz;
-#ifndef IO_REDUCED_MODE
-                    if(ThisTask==0)
-                    {
-                        printf("Mode: %d, ikx=%d, iky=%d, ikz=%d, kx=%f, ky=%f, kz=%f, ampl=%f\n",StNModes,ikx,iky,-ikz,kx,ky,-kz,ampl);
-                    }
-#endif
+                    PRINT_STATUS("Mode: %d, ikx=%d, iky=%d, ikz=%d, kx=%f, ky=%f, kz=%f, ampl=%f",StNModes,ikx,iky,-ikz,kx,ky,-kz,ampl);
                     StNModes++;
                     
                     StAmpl[StNModes] = ampl;
                     StMode[3*StNModes+0] = kx;
                     StMode[3*StNModes+1] = -ky;
                     StMode[3*StNModes+2] = -kz;
-#ifndef IO_REDUCED_MODE
-                    if(ThisTask==0)
-                    {
-                        printf("Mode: %d, ikx=%d, iky=%d, ikz=%d, kx=%f, ky=%f, kz=%f, ampl=%f\n",StNModes,ikx,-iky,-ikz,kx,-ky,-kz,ampl);
-                    }
-#endif
+                    PRINT_STATUS("Mode: %d, ikx=%d, iky=%d, ikz=%d, kx=%f, ky=%f, kz=%f, ampl=%f",StNModes,ikx,-iky,-ikz,kx,-ky,-kz,ampl);
                     StNModes++;
 #endif
 #endif
@@ -376,12 +356,7 @@ void add_turb_accel()
             }
         }
     }
-#ifndef IO_REDUCED_MODE
-    if(ThisTask == 0)
-    {
-        printf("Finished turbulent accel computation.\n");
-    }
-#endif
+    PRINT_STATUS("Finished turbulent accel computation");
 }
 
 

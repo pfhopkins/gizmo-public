@@ -8,7 +8,7 @@
 
 /*
  * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org). The code has been modified
+ * Volker Springel. The code has been modified
  * substantially by Phil Hopkins (phopkins@caltech.edu) for GIZMO 
  * (added energy/entropy switch, terms for explicit mass conservation in mass fluxes, 
  *  and updates to additional fluid variables as needed)
@@ -268,6 +268,9 @@ void do_the_kick(int i, integertime tstart, integertime tend, integertime tcurre
 #endif
             }
             dp[j] += mass_pred * P[i].GravAccel[j] * dt_gravkick;
+#if (SINGLE_STAR_TIMESTEPPING > 0)  //if we're super-timestepping, the above accounts for the change in COM velocity. Now we do the internal binary velocity change
+            if((P[i].Type == 5) && (P[i].SuperTimestepFlag>=2)) {dp[j] += mass_pred * (P[i].COM_GravAccel[j]-P[i].GravAccel[j]) * dt_gravkick;} 
+#endif
             P[i].Vel[j] += dp[j] / mass_new; /* correctly accounts for mass change if its allowed */
         }
 
@@ -406,16 +409,12 @@ void do_sph_kick_for_extra_physics(int i, integertime tstart, integertime tend, 
             double phi_max_tolerance = 10.0;
             if(phi_phys_abs > 1000. * phi_max_tolerance * vb_phy_abs)
             {
-                /* this indicates a serious problem! issue a warning and zero phi */
-#ifndef IO_REDUCED_MODE
-                printf("WARNING: MAJOR GROWTH IN PHI-FIELD: phi_phys_abs=%g vb_phy_abs=%g vsig_max=%g b_phys=%g particle_id_i=%d dtphi_code=%g Pressure=%g rho=%g x/y/z=%g/%g/%g vx/vy/vz=%g/%g/%g Bx/By/Bz=%g/%g/%g h=%g u=%g m=%g phi=%g bin=%d SigVel=%g a=%g \n",
-                       phi_phys_abs,vb_phy_abs,vsig_max,b_phys,i,SphP[i].DtPhi,
-                       SphP[i].Pressure,SphP[i].Density,P[i].Pos[0],P[i].Pos[1],P[i].Pos[2],
+                /* this can indicate a problem! issue a warning and zero phi */
+                if(phi_phys_abs > 1.0e6 * phi_max_tolerance * vb_phy_abs) {
+                    PRINT_WARNING("warning: significant growth detected in phi-field: phi_phys_abs=%g vb_phy_abs=%g vsig_max=%g b_phys=%g particle_id_i=%d dtphi_code=%g Pressure=%g rho=%g x/y/z=%g/%g/%g vx/vy/vz=%g/%g/%g Bx/By/Bz=%g/%g/%g h=%g u=%g m=%g phi=%g bin=%d SigVel=%g a=%g \n",
+                       phi_phys_abs,vb_phy_abs,vsig_max,b_phys,i,SphP[i].DtPhi,SphP[i].Pressure,SphP[i].Density,P[i].Pos[0],P[i].Pos[1],P[i].Pos[2],
                        P[i].Vel[0],P[i].Vel[1],P[i].Vel[2],SphP[i].B[0],SphP[i].B[1],SphP[i].B[2],
-                       PPP[i].Hsml,SphP[i].InternalEnergy,P[i].Mass,SphP[i].Phi,P[i].TimeBin,
-                       SphP[i].MaxSignalVel,All.cf_atime);
-                fflush(stdout);
-#endif
+                       PPP[i].Hsml,SphP[i].InternalEnergy,P[i].Mass,SphP[i].Phi,P[i].TimeBin,SphP[i].MaxSignalVel,All.cf_atime);}
                 SphP[i].PhiPred = SphP[i].Phi = SphP[i].DtPhi = 0;
             } else {
                 if(phi_phys_abs > phi_max_tolerance * vb_phy_abs)
@@ -431,18 +430,18 @@ void do_sph_kick_for_extra_physics(int i, integertime tstart, integertime tend, 
                 }
             }
         }
-        if(isnan(SphP[i].DtPhi)) {SphP[i].DtPhi=0;}
-        if(isnan(SphP[i].Phi)) {SphP[i].Phi=0;}
-        if(isnan(SphP[i].PhiPred)) {SphP[i].PhiPred=SphP[i].Phi;}
     } else {
         SphP[i].Phi = SphP[i].PhiPred = SphP[i].DtPhi = 0;
     }
     /* now apply the usual damping term */
     double t_damp = Get_Particle_PhiField_DampingTimeInv(i);
-    if((t_damp>0) && (!isnan(t_damp)))
+    if((t_damp>0) && (!isnan(t_damp)) && (dt_entr>0))
     {
         SphP[i].Phi *= exp( -dt_entr * t_damp );
     }
+    if(isnan(SphP[i].DtPhi)) {SphP[i].DtPhi=0;}
+    if(isnan(SphP[i].Phi)) {SphP[i].Phi=0;}
+    if(isnan(SphP[i].PhiPred)) {SphP[i].PhiPred=SphP[i].Phi;}
 #endif
 #endif
 #endif

@@ -8,19 +8,6 @@
 #include "../proto.h"
 #include "../kernel.h"
 #define NDEBUG
-#ifdef PTHREADS_NUM_THREADS
-#include <pthread.h>
-#endif
-
-#ifdef PTHREADS_NUM_THREADS
-extern pthread_mutex_t mutex_nexport;
-extern pthread_mutex_t mutex_partnodedrift;
-#define LOCK_NEXPORT     pthread_mutex_lock(&mutex_nexport);
-#define UNLOCK_NEXPORT   pthread_mutex_unlock(&mutex_nexport);
-#else
-#define LOCK_NEXPORT
-#define UNLOCK_NEXPORT
-#endif
 
 /*! \file hydra_master.c
  *  \brief This contains the "second hydro loop", where the hydro fluxes are computed.
@@ -167,10 +154,22 @@ struct kernel_hydra
 #endif
 
 
+/* ok here we define some important variables for our generic communication
+    and flux-exchange structures. these can be changed, and vary across the code, but need to be set! */
+
+#define MASTER_FUNCTION_NAME hydro_force_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define INPUTFUNCTION_NAME particle2in_hydra    /* name of the function which loads the element data needed (for e.g. broadcast to other processors, neighbor search) */
+#define OUTPUTFUNCTION_NAME out2particle_hydra  /* name of the function which takes the data returned from other processors and combines it back to the original elements */
+#define CONDITIONFUNCTION_FOR_EVALUATION if((P[i].Type==0)&&(P[i].Mass>0)) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
+#include "../system/code_block_xchange_initialize.h" /* pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
+
+
+
+
 /* --------------------------------------------------------------------------------- */
 /* inputs to the routine: put here what's needed to do the calculation! */
 /* --------------------------------------------------------------------------------- */
-struct hydrodata_in
+struct INPUT_STRUCT_NAME
 {
     /* basic hydro variables */
     MyDouble Pos[3];
@@ -292,14 +291,14 @@ struct hydrodata_in
     int NodeList[NODELISTLENGTH];
 #endif
 }
-*HydroDataIn, *HydroDataGet;
+*DATAIN_NAME, *DATAGET_NAME;
 
 
 
 /* --------------------------------------------------------------------------------- */
 /* outputs: this is what the routine needs to return to the particles to set their final values */
 /* --------------------------------------------------------------------------------- */
-struct hydrodata_out
+struct OUTPUT_STRUCT_NAME
 {
     MyLongDouble Acc[3];
     //MyLongDouble dMomentum[3]; //manifest-indiv-timestep-debug//
@@ -347,7 +346,7 @@ struct hydrodata_out
     
 
 }
-*HydroDataResult, *HydroDataOut;
+*DATARESULT_NAME, *DATAOUT_NAME;
 
 
 
@@ -355,9 +354,8 @@ struct hydrodata_out
 /* --------------------------------------------------------------------------------- */
 /* this subroutine actually loads the particle data into the structure to share between nodes */
 /* --------------------------------------------------------------------------------- */
-static inline void particle2in_hydra(struct hydrodata_in *in, int i);
-static inline void out2particle_hydra(struct hydrodata_out *out, int i, int mode);
-static inline void particle2in_hydra(struct hydrodata_in *in, int i)
+static inline void particle2in_hydra(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration);
+static inline void particle2in_hydra(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
 {
     int k;
     for(k = 0; k < 3; k++)
@@ -505,7 +503,8 @@ static inline void particle2in_hydra(struct hydrodata_in *in, int i)
 /* --------------------------------------------------------------------------------- */
 /* this subroutine adds the output variables back to the particle values */
 /* --------------------------------------------------------------------------------- */
-static inline void out2particle_hydra(struct hydrodata_out *out, int i, int mode)
+static inline void out2particle_hydra(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration);
+static inline void out2particle_hydra(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration)
 {
     int k;
     /* these are zero-d out at beginning of hydro loop so should always be added */
@@ -712,9 +711,9 @@ void hydro_final_operations_and_cleanup(void)
             /* calculate the radiation pressure force */
             double radacc[3]; radacc[0]=radacc[1]=radacc[2]=0; int k2;
             // a = kappa*F/c = Gradients.E_gamma_ET[gradient of photon energy density] / rho[gas_density] //
-            double L_particle = Get_Particle_Size(i)*All.cf_atime; // particle effective size/slab thickness
-            double Sigma_particle = P[i].Mass / (M_PI*L_particle*L_particle); // effective surface density through particle
-            double abs_per_kappa_dt = RT_SPEEDOFLIGHT_REDUCTION * (C/All.UnitVelocity_in_cm_per_s) * (SphP[i].Density*All.cf_a3inv) * dt; // fractional absorption over timestep
+            //double L_particle = Get_Particle_Size(i)*All.cf_atime; // particle effective size/slab thickness
+            //double Sigma_particle = P[i].Mass / (M_PI*L_particle*L_particle); // effective surface density through particle
+            //double abs_per_kappa_dt = RT_SPEEDOFLIGHT_REDUCTION * (C/All.UnitVelocity_in_cm_per_s) * (SphP[i].Density*All.cf_a3inv) * dt; // fractional absorption over timestep
             for(k2=0;k2<N_RT_FREQ_BINS;k2++)
             {
                 // want to average over volume (through-slab) and over time (over absorption): both give one 'slab_fac' below //
@@ -814,21 +813,18 @@ void hydro_final_operations_and_cleanup(void)
 
 
 
-/* --------------------------------------------------------------------------------- */
-/* --------------------------------------------------------------------------------- */
-/*! This function is the driver routine for the calculation of hydrodynamical
- *  force, fluxes, etc. */
-/* --------------------------------------------------------------------------------- */
-/* --------------------------------------------------------------------------------- */
-void hydro_force(void)
+/* this function exists to loop over the hydro variables and do any needed 'pre-processing' before they enter the primary hydro force loop */
+void hydro_force_initial_operations_preloop(void)
 {
-    int i, j, k, ngrp, ndone, ndone_flag;
-    int recvTask, place;
-    double timeall=0, timecomp1=0, timecomp2=0, timecommsumm1=0, timecommsumm2=0, timewait1=0, timewait2=0, timenetwork=0;
-    double timecomp, timecomm, timewait, tstart, tend, t0, t1;
-    int save_NextParticle;
-    long long n_exported = 0;
+    // Set global factors for comoving integration of hydro //
+    fac_mu = 1 / (All.cf_afac3 * All.cf_atime); // code_vel * fac_mu = sqrt[code_pressure/code_density] = code_soundspeed //
+    fac_vsic_fix = All.cf_hubble_a * All.cf_afac1; // note also that signal_vel in forms below should be in units of code_soundspeed //
+#ifdef MAGNETIC
+    fac_magnetic_pressure = All.cf_afac1 / All.cf_atime; // code_Bfield*code_Bfield * fac_magnetic_pressure = code_pressure -- use this to get alfven velocities, etc, as well as comoving units for magnetic integration //
+#endif
+    
     /* need to zero out all numbers that can be set -EITHER- by an active particle in the domain, or by one of the neighbors we will get sent */
+    int i, k;
     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
         if(P[i].Type==0)
         {
@@ -836,15 +832,10 @@ void hydro_force(void)
 #ifdef ENERGY_ENTROPY_SWITCH_IS_ACTIVE
             SphP[i].MaxKineticEnergyNgb = -1.e10;
 #endif
-            SphP[i].DtInternalEnergy = 0;//SphP[i].dInternalEnergy = 0;//manifest-indiv-timestep-debug//
-            for(k=0;k<3;k++)
-            {
-                SphP[i].HydroAccel[k] = 0;//SphP[i].dMomentum[k] = 0;//manifest-indiv-timestep-debug//
-            }
+            SphP[i].DtInternalEnergy = 0; //SphP[i].dInternalEnergy = 0;//manifest-indiv-timestep-debug//
+            for(k=0;k<3;k++) {SphP[i].HydroAccel[k] = 0;} //SphP[i].dMomentum[k] = 0;//manifest-indiv-timestep-debug//
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
-            SphP[i].DtMass = 0;
-            SphP[i].dMass = 0;
-            for(k=0;k<3;k++) SphP[i].GravWorkTerm[k] = 0;
+            SphP[i].DtMass = 0; SphP[i].dMass = 0; for(k=0;k<3;k++) SphP[i].GravWorkTerm[k] = 0;
 #endif
 #if defined(RT_EVOLVE_NGAMMA_IN_HYDRO)
             for(k=0;k<N_RT_FREQ_BINS;k++) {SphP[i].Dt_E_gamma[k] = 0;}
@@ -855,10 +846,8 @@ void hydro_force(void)
 #if defined(RT_EVOLVE_FLUX)
             for(k=0;k<N_RT_FREQ_BINS;k++) {int k_dir; for(k_dir=0;k_dir<3;k_dir++) {SphP[i].Dt_Flux[k][k_dir] = 0;}}
 #endif
-            
 #ifdef MAGNETIC
-            SphP[i].divB = 0;
-            for(k=0;k<3;k++) {SphP[i].Face_Area[k] = 0;}
+            SphP[i].divB = 0; for(k=0;k<3;k++) {SphP[i].Face_Area[k] = 0;}
 #ifdef DIVBCLEANING_DEDNER
             for(k=0;k<3;k++) {SphP[i].DtB_PhiCorr[k] = 0;}
 #endif
@@ -869,323 +858,34 @@ void hydro_force(void)
 #endif
 #endif
 #endif // magnetic //
-
 #ifdef WAKEUP
             PPPZ[i].wakeup = 0;
 #endif
         }
-    
-    /* --------------------------------------------------------------------------------- */
-    // Global factors for comoving integration of hydro //
-    fac_mu = 1 / (All.cf_afac3 * All.cf_atime);
-    // code_vel * fac_mu = sqrt[code_pressure/code_density] = code_soundspeed //
-    // note also that signal_vel in forms below should be in units of code_soundspeed //
-    fac_vsic_fix = All.cf_hubble_a * All.cf_afac1;
-#ifdef MAGNETIC
-    fac_magnetic_pressure = All.cf_afac1 / All.cf_atime;
-    // code_Bfield*code_Bfield * fac_magnetic_pressure = code_pressure //
-    // -- use this to get alfven velocities, etc, as well as comoving units for magnetic integration //
-#endif
-    
-    /* --------------------------------------------------------------------------------- */
-    /* allocate buffers to arrange communication */
-    long long NTaskTimesNumPart;
-    NTaskTimesNumPart = maxThreads * NumPart;
-    Ngblist = (int *) mymalloc("Ngblist", NTaskTimesNumPart * sizeof(int));
-    size_t MyBufferSize = All.BufferSize;
-    All.BunchSize = (int) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
-                                                             sizeof(struct hydrodata_in) +
-                                                             sizeof(struct hydrodata_out) +
-                                                             sizemax(sizeof(struct hydrodata_in),sizeof(struct hydrodata_out))));
-    DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
-    DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
-    CPU_Step[CPU_HYDMISC] += measure_time();
-    t0 = my_second();
-    NextParticle = FirstActiveParticle;	/* begin with this index */
-    
-    do
-    {
-        BufferFullFlag = 0;
-        Nexport = 0;
-        save_NextParticle = NextParticle;
-        for(j = 0; j < NTask; j++)
-        {
-            Send_count[j] = 0;
-            Exportflag[j] = -1;
-        }
-        /* do local particles and prepare export list */
-        tstart = my_second();
-        
-#ifdef PTHREADS_NUM_THREADS
-        pthread_t mythreads[PTHREADS_NUM_THREADS - 1];
-        int threadid[PTHREADS_NUM_THREADS - 1];
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-        pthread_mutex_init(&mutex_nexport, NULL);
-        pthread_mutex_init(&mutex_partnodedrift, NULL);
-        TimerFlag = 0;
-        for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++)
-        {
-            threadid[j] = j + 1;
-            pthread_create(&mythreads[j], &attr, hydro_evaluate_primary, &threadid[j]);
-        }
-#endif
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-        {
-#ifdef _OPENMP
-            int mainthreadid = omp_get_thread_num();
-#else
-            int mainthreadid = 0;
-#endif
-            hydro_evaluate_primary(&mainthreadid);	/* do local particles and prepare export list */
-        }
-        
-#ifdef PTHREADS_NUM_THREADS
-        for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++)
-            pthread_join(mythreads[j], NULL);
-#endif
-        tend = my_second();
-        timecomp1 += timediff(tstart, tend);
-        
-        if(BufferFullFlag)
-        {
-            int last_nextparticle = NextParticle;
-            NextParticle = save_NextParticle;
-            while(NextParticle >= 0)
-            {
-                if(NextParticle == last_nextparticle)
-                    break;
-                
-                if(ProcessedFlag[NextParticle] != 1)
-                    break;
-                
-                ProcessedFlag[NextParticle] = 2;
-                NextParticle = NextActiveParticle[NextParticle];
-            }
-            if(NextParticle == save_NextParticle)
-            {
-                /* in this case, the buffer is too small to process even a single particle */
-                endrun(115508);
-            }
-            int new_export = 0;
-            for(j = 0, k = 0; j < Nexport; j++)
-                if(ProcessedFlag[DataIndexTable[j].Index] != 2)
-                {
-                    if(k < j + 1)
-                        k = j + 1;
-                    
-                    for(; k < Nexport; k++)
-                        if(ProcessedFlag[DataIndexTable[k].Index] == 2)
-                        {
-                            int old_index = DataIndexTable[j].Index;
-                            
-                            DataIndexTable[j] = DataIndexTable[k];
-                            DataNodeList[j] = DataNodeList[k];
-                            DataIndexTable[j].IndexGet = j;
-                            new_export++;
-                            
-                            DataIndexTable[k].Index = old_index;
-                            k++;
-                            break;
-                        }
-                }
-                else
-                    new_export++;
-            
-            Nexport = new_export;
-        }
-        
-        n_exported += Nexport;
-        for(j = 0; j < NTask; j++)
-        {
-            Send_count[j] = 0;
-            Recv_count[j] = 0;
-        }
-        for(j = 0; j < Nexport; j++)
-            Send_count[DataIndexTable[j].Task]++;
-        
-        MYSORT_DATAINDEX(DataIndexTable, Nexport, sizeof(struct data_index), data_index_compare);
-        tstart = my_second();
-        MPI_Alltoall(Send_count, 1, MPI_INT, Recv_count, 1, MPI_INT, MPI_COMM_WORLD);
-        tend = my_second();
-        timewait1 += timediff(tstart, tend);
-        
-        for(j = 0, Nimport = 0, Recv_offset[0] = 0, Send_offset[0] = 0; j < NTask; j++)
-        {
-            Nimport += Recv_count[j];
-            if(j > 0)
-            {
-                Send_offset[j] = Send_offset[j - 1] + Send_count[j - 1];
-                Recv_offset[j] = Recv_offset[j - 1] + Recv_count[j - 1];
-            }
-        }
-        HydroDataGet = (struct hydrodata_in *) mymalloc("HydroDataGet", Nimport * sizeof(struct hydrodata_in));
-        HydroDataIn = (struct hydrodata_in *) mymalloc("HydroDataIn", Nexport * sizeof(struct hydrodata_in));
-        
-        /* prepare particle data for export */
-        for(j = 0; j < Nexport; j++)
-        {
-            place = DataIndexTable[j].Index;
-            particle2in_hydra(&HydroDataIn[j], place);		// MADE D_IND CHANGE IN HERE
-#ifndef DONOTUSENODELIST
-            memcpy(HydroDataIn[j].NodeList,
-                   DataNodeList[DataIndexTable[j].IndexGet].NodeList, NODELISTLENGTH * sizeof(int));
-#endif
-            
-        }
-        
-        /* exchange particle data */
-        tstart = my_second();
-        for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-        {
-            recvTask = ThisTask ^ ngrp;
-            
-            if(recvTask < NTask)
-            {
-                if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
-                {
-                    /* get the particles */
-                    MPI_Sendrecv(&HydroDataIn[Send_offset[recvTask]],
-                                 Send_count[recvTask] * sizeof(struct hydrodata_in), MPI_BYTE,
-                                 recvTask, TAG_HYDRO_A,
-                                 &HydroDataGet[Recv_offset[recvTask]],
-                                 Recv_count[recvTask] * sizeof(struct hydrodata_in), MPI_BYTE,
-                                 recvTask, TAG_HYDRO_A, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                }
-            }
-        }
-        tend = my_second();
-        timecommsumm1 += timediff(tstart, tend);
-        
-        myfree(HydroDataIn);
-        HydroDataResult = (struct hydrodata_out *) mymalloc("HydroDataResult", Nimport * sizeof(struct hydrodata_out));
-        HydroDataOut = (struct hydrodata_out *) mymalloc("HydroDataOut", Nexport * sizeof(struct hydrodata_out));
-        report_memory_usage(&HighMark_sphhydro, "SPH_HYDRO");
-        
-        /* now do the particles that were sent to us */
-        tstart = my_second();
-        NextJ = 0;
-#ifdef PTHREADS_NUM_THREADS
-        for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++)
-            pthread_create(&mythreads[j], &attr, hydro_evaluate_secondary, &threadid[j]);
-#endif
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-        {
-#ifdef _OPENMP
-            int mainthreadid = omp_get_thread_num();
-#else
-            int mainthreadid = 0;
-#endif
-            hydro_evaluate_secondary(&mainthreadid);
-        }
-        
-#ifdef PTHREADS_NUM_THREADS
-        for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++)
-            pthread_join(mythreads[j], NULL);
-        
-        pthread_mutex_destroy(&mutex_partnodedrift);
-        pthread_mutex_destroy(&mutex_nexport);
-        pthread_attr_destroy(&attr);
-#endif
-        tend = my_second();
-        timecomp2 += timediff(tstart, tend);
-        
-        if(NextParticle < 0)
-            ndone_flag = 1;
-        else
-            ndone_flag = 0;
-        
-        tstart = my_second();
-        MPI_Allreduce(&ndone_flag, &ndone, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-        tend = my_second();
-        timewait2 += timediff(tstart, tend);
-        
-        /* get the result */
-        tstart = my_second();
-        for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-        {
-            recvTask = ThisTask ^ ngrp;
-            if(recvTask < NTask)
-            {
-                if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
-                {
-                    /* send the results */
-                    MPI_Sendrecv(&HydroDataResult[Recv_offset[recvTask]],
-                                 Recv_count[recvTask] * sizeof(struct hydrodata_out),
-                                 MPI_BYTE, recvTask, TAG_HYDRO_B,
-                                 &HydroDataOut[Send_offset[recvTask]],
-                                 Send_count[recvTask] * sizeof(struct hydrodata_out),
-                                 MPI_BYTE, recvTask, TAG_HYDRO_B, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                }
-            }
-        }
-        tend = my_second();
-        timecommsumm2 += timediff(tstart, tend);
-        
-        /* add the result to the local particles */
-        tstart = my_second();
-        for(j = 0; j < Nexport; j++)
-        {
-            place = DataIndexTable[j].Index;
-            out2particle_hydra(&HydroDataOut[j], place, 1);
-        }
-        tend = my_second();
-        timecomp1 += timediff(tstart, tend);
-        
-        myfree(HydroDataOut);
-        myfree(HydroDataResult);
-        myfree(HydroDataGet);
-    }
-    while(ndone < NTask);
-    
-    myfree(DataNodeList);
-    myfree(DataIndexTable);
-    myfree(Ngblist);
-    
-    
-    /* --------------------------------------------------------------------------------- */
-    /* do final operations on results */
-    /* --------------------------------------------------------------------------------- */
-    hydro_final_operations_and_cleanup();
-    
-    
-    /* --------------------------------------------------------------------------------- */
-    /* collect some timing information */
-    t1 = WallclockTime = my_second();
-    timeall += timediff(t0, t1);
-    timecomp = timecomp1 + timecomp2;
-    timewait = timewait1 + timewait2;
-    timecomm = timecommsumm1 + timecommsumm2;
-    CPU_Step[CPU_HYDCOMPUTE] += timecomp;
-    CPU_Step[CPU_HYDWAIT] += timewait;
-    CPU_Step[CPU_HYDCOMM] += timecomm;
-    CPU_Step[CPU_HYDNETWORK] += timenetwork;
-    CPU_Step[CPU_HYDMISC] += timeall - (timecomp + timewait + timecomm + timenetwork);
 }
+
+
 
 
 
 /* --------------------------------------------------------------------------------- */
-/* one of the core sub-routines used to do the MPI version of the hydro evaluation
- (don't put actual operations here!!!) */
 /* --------------------------------------------------------------------------------- */
-void *hydro_evaluate_primary(void *p)
+/*! This function is the driver routine for the calculation of hydrodynamical
+ *  force, fluxes, etc. */
+/* --------------------------------------------------------------------------------- */
+/* --------------------------------------------------------------------------------- */
+void hydro_force(void)
 {
-#define CONDITION_FOR_EVALUATION if((P[i].Type==0)&&(P[i].Mass>0))
-#define EVALUATION_CALL hydro_evaluate(i, 0, exportflag, exportnodecount, exportindex, ngblist)
-#include "../system/code_block_primary_loop_evaluation.h"
-#undef CONDITION_FOR_EVALUATION
-#undef EVALUATION_CALL
+    hydro_force_initial_operations_preloop(); /* do initial pre-processing operations as needed before main hydro force loop */
+    #include "../system/code_block_xchange_perform_ops_malloc.h" /* this calls the large block of code which contains the memory allocations for the MPI/OPENMP/Pthreads parallelization block which must appear below */
+    #include "../system/code_block_xchange_perform_ops.h" /* this calls the large block of code which actually contains all the loops, MPI/OPENMP/Pthreads parallelization */
+    #include "../system/code_block_xchange_perform_ops_demalloc.h" /* this de-allocates the memory for the MPI/OPENMP/Pthreads parallelization block which must appear above */
+    hydro_final_operations_and_cleanup(); /* do final operations on results */
+    /* collect timing information */
+    CPU_Step[CPU_HYDCOMPUTE] += timecomp; CPU_Step[CPU_HYDWAIT] += timewait; CPU_Step[CPU_HYDCOMM] += timecomm;
+    CPU_Step[CPU_HYDMISC] += timediff(t0, my_second()) - (timecomp + timewait + timecomm);
 }
-void *hydro_evaluate_secondary(void *p)
-{
-#define EVALUATION_CALL hydro_evaluate(j, 1, &dummy, &dummy, &dummy, ngblist);
-#include "../system/code_block_secondary_loop_evaluation.h"
-#undef EVALUATION_CALL
-}
+#include "../system/code_block_xchange_finalize.h" /* de-define the relevant variables and macros to avoid compilation errors and memory leaks */
+
+
 

@@ -29,6 +29,15 @@ void GravAccel_RDITestProblem(void);
 /* master routine which decides which (if any) analytic gravitational forces are applied */
 void add_analytic_gravitational_forces()
 {
+    /* first if the 'self gravity off' options are enabled, we need to ensure the appropriate terms are disabled here */
+#if defined(SELFGRAVITY_OFF) || defined(RT_SELFGRAVITY_OFF) /* zero gravaccel [difference is that RT_... option still computes everything above ]*/
+    int i; for(i=FirstActiveParticle; i>=0; i=NextActiveParticle[i]) {P[i].GravAccel[0]=P[i].GravAccel[1]=P[i].GravAccel[2]=0;}
+#if defined(COMPUTE_TIDAL_TENSOR_IN_GRAVTREE)
+    for(i=FirstActiveParticle; i>=0; i=NextActiveParticle[i]) {P[i].tidal_tensorps[0][0]=P[i].tidal_tensorps[0][1]=P[i].tidal_tensorps[0][2]=P[i].tidal_tensorps[1][0]=P[i].tidal_tensorps[1][1]=P[i].tidal_tensorps[1][2]=P[i].tidal_tensorps[2][0]=P[i].tidal_tensorps[2][1]=P[i].tidal_tensorps[2][2]=0;}
+#endif
+#endif
+
+    /* now add the appropriate [if any] analytic gravitational forces */
 #ifdef GRAVITY_ANALYTIC
     //GravAccel_RayleighTaylorTest();     // vertical potential for RT tests
     //GravAccel_StaticPlummerSphere();    // plummer sphere

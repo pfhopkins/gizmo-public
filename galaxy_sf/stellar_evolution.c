@@ -107,7 +107,7 @@ double particle_ionizing_luminosity_in_cgs(long i)
     of the ejecta for the event[s] of interest. Mass [Msne] and velocity [SNe_v_ejecta] should
     be in code units. yields[k] should be defined for all metal species [k], and in dimensionless units
     (mass fraction of the ejecta in that species). */
-void particle2in_addFB_fromstars(struct addFBdata_in *in, int i, int fb_loop_iteration)
+void particle2in_addFB_fromstars(struct addFB_evaluate_data_in_ *in, int i, int fb_loop_iteration)
 {
 #if defined(GALSF_FB_MECHANICAL) || defined(GALSF_FB_THERMAL)
     if(P[i].SNe_ThisTimeStep<=0) {in->Msne=0; return;} // no event

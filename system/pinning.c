@@ -7,8 +7,7 @@
 #include <unistd.h>
 
 /*
- * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org).
+ * This file was originally part of the GADGET3 code by Volker Springel.
  */
 
 #ifdef IMPOSE_PINNING
@@ -113,8 +112,7 @@ void report_pinning(void)
 #ifndef IO_REDUCED_MODE
   for(i=0; i<NTask; i++)
     {
-      if(ThisTask == i)
-	printf("Task=%02d: %s\n", ThisTask, buf);
+      if(ThisTask == i) printf("Task=%02d: %s\n", ThisTask, buf);
       fflush(stdout);
       MPI_Barrier(MPI_COMM_WORLD);
     }

@@ -10,66 +10,40 @@
 
 
 /*
- * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org). The code has been modified
- * in part by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
- */
-
+* This file was originally part of the GADGET3 code developed by
+* Volker Springel. The code has been modified
+* substantially (condensed, new feedback routines added,
+* some optimizatins, and new variable/memory conventions added)
+* by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
+*/
 
 void force_update_tree(void)
 {
-  int i, j;
-
-    if(ThisTask == 0) {printf("Kick-subroutine will prepare for dynamic update of tree\n");}
-
-  GlobFlag++;
-  DomainNumChanged = 0;
-  DomainList = (int *) mymalloc("DomainList", NTopleaves * sizeof(int));
-
-
-  /* note: the current list of active particles still refers to that
-   * synchronized at the previous time.
-   */
-  for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
+    PRINT_STATUS("Kick-subroutine will prepare for dynamic update of tree");
+    int i, j; GlobFlag++; DomainNumChanged = 0; DomainList = (int *) mymalloc("DomainList", NTopleaves * sizeof(int));
+    /* note: the current list of active particles still refers to that synchronized at the previous time. */
+    for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
     {
-      force_kick_node(i, P[i].dp);	/* kick the parent nodes with this momentum
-					   difference, also updated maximum velocity, softening and soundspeed, if needed */
-      for(j = 0; j < 3; j++)
-	P[i].dp[j] = 0;
+        force_kick_node(i, P[i].dp);    /* kick the parent nodes with this momentum difference, also updated maximum velocity, softening and soundspeed, if needed */
+        for(j = 0; j < 3; j++) {P[i].dp[j] = 0;}
     }
-
-  force_finish_kick_nodes();
-  myfree(DomainList);
-
-#ifndef IO_REDUCED_MODE
-    if(ThisTask == 0) {printf("Tree has been updated dynamically.\n");}
-#endif
+    force_finish_kick_nodes();
+    myfree(DomainList);
+    PRINT_STATUS(" ..Tree has been updated dynamically");
 }
-
-
-
-
-
-
-
 
 
 void force_kick_node(int i, MyDouble * dp)
 {
-  int j, no;
-  MyFloat v, vmax;
-
+  int j, no; MyFloat v, vmax;
 #ifdef RT_SEPARATELY_TRACK_LUMPOS
     MyFloat rt_source_lum_dp[3];
 #endif
-
 #ifdef DM_SCALARFIELD_SCREENING
   MyFloat dp_dm[3];
 #endif
-
 #ifdef NEUTRINOS
-  if(P[i].Type == 2)
-    return;
+ if(P[i].Type == 2) {return;}
 #endif
 
   for(j = 0; j < 3; j++)
@@ -194,14 +168,7 @@ void force_finish_kick_nodes(void)
 	}
     }
 
-#ifdef IO_REDUCED_MODE
-    if(All.HighestActiveTimeBin == All.HighestOccupiedTimeBin)
-#endif
-  if(ThisTask == 0)
-    {
-      printf("I exchange kick momenta for %d top-level nodes out of %d\n", totDomainNumChanged, NTopleaves);
-    }
-
+  PRINT_STATUS(" ..exchanged kick momenta for %d top-level nodes out of %d", totDomainNumChanged, NTopleaves);
   domainDp_all = (MyLongDouble *) mymalloc("domainDp_all", totDomainNumChanged * 3 * sizeof(MyLongDouble));
 #ifdef RT_SEPARATELY_TRACK_LUMPOS
     domainDp_stellarlum_all = (MyLongDouble *) mymalloc("domainDp_stellarlum_all", totDomainNumChanged * 3 * sizeof(MyLongDouble));
@@ -476,10 +443,7 @@ void force_update_hmax(void)
 	}
     }
 
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0) printf("Hmax exchange: %d topleaves out of %d\n", totDomainNumChanged, NTopleaves);
-#endif
-    
+  PRINT_STATUS(" ..Hmax exchange: %d topleaves out of %d", totDomainNumChanged, NTopleaves);
   domainHmax_all = (MyFloat *) mymalloc("domainHmax_all", totDomainNumChanged * OffsetSIZE * sizeof(MyFloat));
   domainList_all = (int *) mymalloc("domainList_all", totDomainNumChanged * sizeof(int));
 

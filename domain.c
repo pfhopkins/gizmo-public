@@ -29,11 +29,13 @@
 
 /*
  * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org). The code has been modified
+ * Volker Springel. The code has been modified
  * somewhat by Phil Hopkins (phopkins@caltech.edu) for GIZMO; these 
  * modifications do not change the core algorithm, but have optimized it in 
  * some places, changed relative weighting factors for different levels in the 
- * domain decomposition, and similar details.
+ * domain decomposition, and similar details. Also how some memory issues are
+ * handled has been updated to reflect the newer more general parallelization
+ * structures in GIZMO.
  */
 
 
@@ -187,18 +189,7 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
         }
     }
     
-#ifdef IO_REDUCED_MODE
-    if(All.HighestActiveTimeBin == All.HighestOccupiedTimeBin)
-#endif
-    if(ThisTask == 0)
-    {
-        printf("domain decomposition... LevelToTimeBin[TakeLevel=%d]=%d  (presently allocated=%g MB)\n",
-               TakeLevel, All.LevelToTimeBin[TakeLevel], AllocatedBytes / (1024.0 * 1024.0));
-#ifndef IO_REDUCED_MODE
-        fflush(stdout);
-#endif
-    }
-    
+    PRINT_STATUS("Domain decomposition building... LevelToTimeBin[TakeLevel=%d]=%d  (presently allocated=%g MB)", TakeLevel, All.LevelToTimeBin[TakeLevel], AllocatedBytes / (1024.0 * 1024.0));
     t0 = my_second();
 
   do
@@ -252,17 +243,7 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
 							(MaxTopNodes * sizeof(struct local_topnode_data)));
       all_bytes += bytes;
 
-#ifdef IO_REDUCED_MODE
-        if(All.HighestActiveTimeBin == All.HighestOccupiedTimeBin)
-#endif
-      if(ThisTask == 0)
-	{
-	  printf("use of %g MB of temporary storage for domain decomposition... (presently allocated=%g MB)\n",
-	     all_bytes / (1024.0 * 1024.0), AllocatedBytes / (1024.0 * 1024.0));
-#ifndef IO_REDUCED_MODE
-	  fflush(stdout);
-#endif
-	}
+	  PRINT_STATUS(" ..using %g MB of temporary storage for domain decomposition... (presently allocated=%g MB)",all_bytes / (1024.0 * 1024.0), AllocatedBytes / (1024.0 * 1024.0));
 
       maxLoad = (int) (All.MaxPart * REDUC_FAC);
       maxLoadsph = (int) (All.MaxPartSph * REDUC_FAC);
@@ -318,50 +299,27 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
 
 	  domain_free();
 
-	  if(ThisTask == 0)
-	    printf("Increasing TopNodeAllocFactor=%g  ", All.TopNodeAllocFactor);
+        if(ThisTask == 0) {printf("Increasing TopNodeAllocFactor=%g  ", All.TopNodeAllocFactor);}
 
 	  All.TopNodeAllocFactor *= 1.3;
 
-#ifndef IO_REDUCED_MODE
-	  if(ThisTask == 0)
-	    {
-	      printf("new value=%g\n", All.TopNodeAllocFactor);
-	      fflush(stdout);
-	    }
-#endif
-	  if(All.TopNodeAllocFactor > 1000)
-	    {
-	      if(ThisTask == 0)
-		printf("something seems to be going seriously wrong here. Stopping.\n");
-	      fflush(stdout);
-	      endrun(781);
-	    }
+      PRINT_STATUS("..new value=%g", All.TopNodeAllocFactor);
+	  if(All.TopNodeAllocFactor > 1000) {printf("something seems to be going seriously wrong here. Stopping.\n"); fflush(stdout); endrun(781);}
 	}
     }
   while(retsum);
 
   t1 = my_second();
 
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("domain decomposition done. (took %g sec)\n", timediff(t0, t1));
-      fflush(stdout);
-    }
-#endif
+  PRINT_STATUS(" ..domain decomposition done. (took %g sec)", timediff(t0, t1));
   CPU_Step[CPU_DOMAIN] += measure_time();
 
-  for(i = 0; i < NumPart; i++)
-    {
-      if(P[i].Type > 5 || P[i].Type < 0)
-	{
-	  printf("task=%d:  P[i=%d].Type=%d\n", ThisTask, i, P[i].Type);
-	  endrun(111111);
-	}
-    }
+  for(i = 0; i < NumPart; i++) {if(P[i].Type > 5 || P[i].Type < 0) {printf("task=%d:  P[i=%d].Type=%d\n", ThisTask, i, P[i].Type); endrun(111111);}}
 
 #ifdef PEANOHILBERT
+#ifdef SUBFIND
+  if(GrNr < 0)			/* we don't do it when SUBFIND is executed for a certain group */
+#endif
     peano_hilbert_order();
   CPU_Step[CPU_PEANO] += measure_time();
 #endif
@@ -373,15 +331,9 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
   TopNodes = (struct topnode_data *) myrealloc(TopNodes, bytes =
 					       (NTopnodes * sizeof(struct topnode_data) +
 						NTopnodes * sizeof(int)));
-#ifdef IO_REDUCED_MODE
-    if(All.HighestActiveTimeBin == All.HighestOccupiedTimeBin)
-#endif
-  if(ThisTask == 0) printf("Freed %g MByte in top-level domain structure\n", (MaxTopNodes - NTopnodes) * sizeof(struct topnode_data) / (1024.0 * 1024.0));
-
+  PRINT_STATUS(" ..freed %g MByte in top-level domain structure", (MaxTopNodes - NTopnodes) * sizeof(struct topnode_data) / (1024.0 * 1024.0));
   DomainTask = (int *) (TopNodes + NTopnodes);
-
   force_treeallocate((int) (All.TreeAllocFactor * All.MaxPart) + NTopnodes, All.MaxPart);
-
   reconstruct_timebins();
 }
 
@@ -405,10 +357,7 @@ void domain_allocate(void)
 
   DomainTask = (int *) (TopNodes + MaxTopNodes);
 
-#ifdef IO_REDUCED_MODE
-    if(All.HighestActiveTimeBin == All.HighestOccupiedTimeBin)
-#endif
-  if(ThisTask == 0) printf("Allocated %g MByte for top-level domain structure\n", all_bytes / (1024.0 * 1024.0));
+  PRINT_STATUS(" ..allocated %g MByte for top-level domain structure", all_bytes / (1024.0 * 1024.0));
 
   domain_allocated_flag = 1;
 }
@@ -515,6 +464,9 @@ int domain_decompose(void)
 
   for(i = 0, gravcost = sphcost = 0; i < NumPart; i++)
     {
+#ifdef SUBFIND
+        if(GrNr >= 0 && P[i].GrNr != GrNr) {continue;}
+#endif
         NtypeLocal[P[i].Type]++;
         double wt = domain_particle_cost_multiplier(i);
         gravcost += (1 + wt) * domain_particle_costfactor(i);
@@ -603,7 +555,7 @@ int domain_decompose(void)
 #endif
 	}
 
-      printf("gravity work-load balance=%g   memory-balance=%g   SPH work-load balance=%g\n",
+        printf("Balance: gravity work-load balance=%g   memory-balance=%g   hydro work-load balance=%g\n",
 	     maxwork / (sumwork / NTask), maxload / (((double) sumload) / NTask),
 	     maxworksph / ((sumworksph + 1.0e-30) / NTask));
     }
@@ -612,6 +564,10 @@ int domain_decompose(void)
 
   for(i = 0; i < NumPart; i++)
     {
+#ifdef SUBFIND
+      if(GrNr >= 0 && P[i].GrNr != GrNr)
+	continue;
+#endif
 
       no = 0;
 
@@ -648,17 +604,7 @@ int domain_decompose(void)
 
       sumup_longs(1, &sumtogo, &sumtogo);
 
-#ifdef IO_REDUCED_MODE
-        if(All.HighestActiveTimeBin == All.HighestOccupiedTimeBin)
-#endif
-      if(ThisTask == 0)
-	{
-	  printf("iter=%d exchange of %d%09d particles (ret=%d)\n", iter,
-		 (int) (sumtogo / 1000000000), (int) (sumtogo % 1000000000), ret);
-#ifndef IO_REDUCED_MODE
-	  fflush(stdout);
-#endif
-	}
+	  PRINT_STATUS(" ..iter=%d exchange of %d%09d particles (ret=%d)", iter, (int) (sumtogo / 1000000000), (int) (sumtogo % 1000000000), ret);
 
       domain_exchange();
 
@@ -730,6 +676,35 @@ int domain_check_memory_bound(int multipledomains)
 #endif
     }
 
+#ifdef SUBFIND
+  if(GrNr >= 0)
+    {
+      load = max_load;
+      sphload = max_sphload;
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+      starsload = max_starsload;
+#endif
+
+      for(i = 0; i < NumPart; i++)
+	{
+	  if(P[i].GrNr != GrNr)
+	    {
+	      load++;
+	      if(P[i].Type == 0)
+		sphload++;
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+	      if(P[i].Type == 4)
+		starsload++;
+#endif
+	    }
+	}
+      MPI_Allreduce(&load, &max_load, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+      MPI_Allreduce(&sphload, &max_sphload, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+      MPI_Allreduce(&starsload, &max_starsload, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+    }
+#endif
 
   if(max_load > maxLoad)
     {
@@ -1705,6 +1680,10 @@ int domain_countToGo(size_t nlimit)
 
   for(n = 0; n < NumPart && package < nlimit; n++)
     {
+#ifdef SUBFIND
+      if(GrNr >= 0 && P[n].GrNr != GrNr)
+	continue;
+#endif
       if(P[n].Type & 32)
 	{
 	  no = 0;
@@ -2310,6 +2289,10 @@ int domain_determineTopTree(void)
 
   for(i = 0, count = 0; i < NumPart; i++)
     {
+#ifdef SUBFIND
+      if(GrNr >= 0 && P[i].GrNr != GrNr)
+	continue;
+#endif
 
       mp[count].key = Key[i] = peano_hilbert_key((int) ((P[i].Pos[0] - DomainCorner[0]) * DomainFac),
 						 (int) ((P[i].Pos[1] - DomainCorner[1]) * DomainFac),
@@ -2320,6 +2303,10 @@ int domain_determineTopTree(void)
       count++;
     }
 
+#ifdef SUBFIND
+  if(GrNr >= 0 && count != NumPartGroup)
+    endrun(1222);
+#endif
 
 #ifdef MYSORT
   mysort_domain(mp, count, sizeof(struct peano_hilbert_data));
@@ -2418,18 +2405,11 @@ int domain_determineTopTree(void)
 
   MPI_Allreduce(&errflag, &errsum, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
 
-  if(errsum)
-    {
-      if(ThisTask == 0)
-	printf("can't combine trees due to lack of storage. Will try again.\n");
-      return errsum;
-    }
+  if(errsum) {if(ThisTask == 0) printf("Can't combine trees due to lack of storage. Will try again.\n"); return errsum;}
 
   /* now let's see whether we should still append more nodes, based on the estimated cumulative cost/count in each cell */
 
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0) printf("Before=%d\n", NTopnodes);
-#endif
+  PRINT_STATUS(" ..NTopNodes before=%d", NTopnodes);
     
   for(i = 0, errflag = 0; i < NTopnodes; i++)
     {
@@ -2466,9 +2446,7 @@ int domain_determineTopTree(void)
   if(errsum)
     return errsum;
 
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0) printf("After=%d\n", NTopnodes);
-#endif
+  PRINT_STATUS(" ..NTopnodes after=%d", NTopnodes);
   /* count toplevel leaves */
   domain_sumCost();
 
@@ -2515,13 +2493,14 @@ void domain_sumCost(void)
 #endif
     }
 
-#ifdef IO_REDUCED_MODE
-    if(All.HighestActiveTimeBin == All.HighestOccupiedTimeBin)
-#endif
-    if(ThisTask == 0) {printf("NTopleaves= %d  NTopnodes=%d (space for %d)\n", NTopleaves, NTopnodes, MaxTopNodes);}
+    PRINT_STATUS(" ..NTopleaves= %d  NTopnodes=%d (space for %d)", NTopleaves, NTopnodes, MaxTopNodes);
 
   for(n = 0; n < NumPart; n++)
     {
+#ifdef SUBFIND
+      if(GrNr >= 0 && P[n].GrNr != GrNr)
+	continue;
+#endif
 
       no = 0;
 
@@ -2573,6 +2552,10 @@ void domain_findExtent(void)
 
   for(i = 0; i < NumPart; i++)
     {
+#ifdef SUBFIND
+      if(GrNr >= 0 && P[i].GrNr != GrNr)
+	continue;
+#endif
 
       for(j = 0; j < 3; j++)
 	{

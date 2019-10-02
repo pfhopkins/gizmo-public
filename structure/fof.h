@@ -4,10 +4,11 @@
 
 /* variables for fof.c code */
 /*
- * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org). It is here in GIZMO
- * as legacy code at the moment, and needs to be re-written or removed.
- */
+* This file was originally part of the GADGET3 code developed by Volker Springel.
+* It has been updated significantly by PFH for basic compatibility with GIZMO,
+* as well as code cleanups, and accommodating new GIZMO functionality for various
+* other operations.
+*/
 
 void fof_exchange_group_data(void);
 int fof_compare_FOF_PList_MinID(const void *a, const void *b);
@@ -27,6 +28,9 @@ int compare_group_mass_ID(const void *a, const void *b);
 void fof_assign_HostHaloMass(void);
 extern int Ngroups, TotNgroups;
 extern long long TotNids;
+
+
+
 
 typedef struct
 {
@@ -66,6 +70,14 @@ typedef struct
 #endif
 #endif
     
+#ifdef SUBFIND
+  int Nsubs;
+  int FirstSub;
+  MyDouble Pos[3];
+  int ContaminationLen;
+  MyOutputFloat ContaminationMass;
+  struct Subfind_DensityOtherPropsEval_data_out SubHaloProps_vsDelta[SUBFIND_ADDIO_NUMOVERDEN];
+#endif
 
 } group_properties;
 extern group_properties *Group;
@@ -75,15 +87,5 @@ typedef struct
   MyIDType ID;
   unsigned int GrNr;
 } fof_id_list;
-
-
-#ifdef ALTERNATIVE_PSORT
-void fof_sort_FOF_GList_LocCountTaskDiffMinID(fof_group_list *data, int ndata);
-void fof_sort_FOF_GList_ExtCountMinID(fof_group_list *data, int ndata);
-void fof_sort_Group_GrNr(group_properties *data, int ndata);
-void fof_sort_ID_list_GrNrID(fof_id_list *data, int ndata);
-#endif
-
-
 
 #endif // FOF_H

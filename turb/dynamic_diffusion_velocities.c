@@ -7,10 +7,6 @@
 #include "../allvars.h"
 #include "../proto.h"
 #include "../kernel.h"
-#ifdef OMP_NUM_THREADS
-#include <pthread.h>
-#endif
-
 
 
 /*! \file dynamic_diffusion_velocities.c
@@ -28,24 +24,20 @@
 #define ASSIGN_ADD_PRESET(x,y,mode) (x+=y)
 #define MINMAX_CHECK(x,xmin,xmax) ((x<xmin)?(xmin=x):((x>xmax)?(xmax=x):(1)))
 #define SHOULD_I_USE_SPH_GRADIENTS(condition_number) ((condition_number > CONDITION_NUMBER_DANGER) ? (1):(0))
-
-#ifdef OMP_NUM_THREADS
-extern pthread_mutex_t mutex_nexport;
-extern pthread_mutex_t mutex_partnodedrift;
-#define LOCK_NEXPORT     pthread_mutex_lock(&mutex_nexport);
-#define UNLOCK_NEXPORT   pthread_mutex_unlock(&mutex_nexport);
-#else
-#define LOCK_NEXPORT
-#define UNLOCK_NEXPORT
-#endif
-
 #define NV_MYSIGN(x) (( x > 0 ) - ( x < 0 ))
 
 struct kernel_DiffFilter {
     double dp[3], r, wk_i, wk_j, dwk_i, dwk_j, h_i;
 };
 
-struct DiffFilterdata_in {
+
+#define MASTER_FUNCTION_NAME DiffFilter_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define INPUTFUNCTION_NAME particle2in_DiffFilter    /* name of the function which loads the element data needed (for e.g. broadcast to other processors, neighbor search) */
+#define OUTPUTFUNCTION_NAME out2particle_DiffFilter  /* name of the function which takes the data returned from other processors and combines it back to the original elements */
+#define CONDITIONFUNCTION_FOR_EVALUATION if(P[i].Type==0) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
+#include "../system/code_block_xchange_initialize.h" /* pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
+
+struct INPUT_STRUCT_NAME {
     MyDouble Pos[3];
     MyFloat Mass;
     MyFloat Hsml;
@@ -59,365 +51,52 @@ struct DiffFilterdata_in {
 #endif
     MyDouble VelPred[3];
 }
-*DiffFilterDataIn, *DiffFilterDataGet;
+*DATAIN_NAME, *DATAGET_NAME;
 
-struct DiffFilterdata_out {
+static inline void particle2in_DiffFilter(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration) {
+    int k; for(k = 0; k < 3; k++) {in->Pos[k] = P[i].Pos[k]; in->VelPred[k] = SphP[i].VelPred[k];}
+    in->Density = SphP[i].Density;
+    in->Hsml = PPP[i].Hsml;
+    in->Mass = DMAX(0,P[i].Mass);
+#ifdef GALSF_SUBGRID_WINDS
+    in->DelayTime = SphP[i].DelayTime;
+#endif
+    in->Timestep = (P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0);
+}
+
+
+struct OUTPUT_STRUCT_NAME {
     MyDouble Norm_hat;
     MyDouble Velocity_bar[3];
     MyFloat FilterWidth_bar;
     MyFloat MaxDistance_for_grad;
 }
-*DiffFilterDataResult, *DiffFilterDataOut;
-
-/* These functions will handle setting the calculated information */
-static inline void particle2in_DiffFilter(struct DiffFilterdata_in *in, int i);
-static inline void out2particle_DiffFilter(struct DiffFilterdata_out *out, int i, int mode);
-
-static inline void particle2in_DiffFilter(struct DiffFilterdata_in *in, int i) {
-    int k, v;
-    for (k = 0; k < 3; k++) {
-        in->Pos[k] = P[i].Pos[k];
-        in->VelPred[k] = SphP[i].VelPred[k];
-    }
-
-    in->Density = SphP[i].Density;
-    in->Hsml = PPP[i].Hsml;
-    in->Mass = P[i].Mass;
-
-#ifdef GALSF_SUBGRID_WINDS
-    in->DelayTime = SphP[i].DelayTime;
-#endif
-
-    if (in->Mass < 0) {
-        in->Mass = 0;
-    }
-
-    in->Timestep = (P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0);
-}
-
+*DATARESULT_NAME, *DATAOUT_NAME;
 
 #define MAX_ADD(x,y,mode) ((y > x) ? (x = y) : (1)) // simpler definition now used
 #define MIN_ADD(x,y,mode) ((y < x) ? (x = y) : (1))
-
-static inline void out2particle_DiffFilter(struct DiffFilterdata_out *out, int i, int mode) {
-    int k, v;
-    for (k = 0; k < 3; k++) {
-        ASSIGN_ADD_PRESET(SphP[i].Velocity_bar[k], out->Velocity_bar[k], mode);
-    }
-
+static inline void out2particle_DiffFilter(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration) {
+    int k; for (k = 0; k < 3; k++) {ASSIGN_ADD_PRESET(SphP[i].Velocity_bar[k], out->Velocity_bar[k], mode);}
     MAX_ADD(SphP[i].FilterWidth_bar, out->FilterWidth_bar, mode);
     MAX_ADD(SphP[i].MaxDistance_for_grad, out->MaxDistance_for_grad, mode);
     ASSIGN_ADD_PRESET(SphP[i].Norm_hat, out->Norm_hat, mode);
 }
 
-
-/**
- *
- *
- *
- */
-void dynamic_diff_vel_calc(void) {
-    mpi_printf("start velocity smoothing computation...\n");
-    int i, j, k, v, k1, ngrp, ndone, ndone_flag;
-    double shear_factor, prev_coeff_inv;
-    double smoothInv = 1.0 / All.TurbDynamicDiffSmoothing;
-    int recvTask, place;
-    double timeall = 0, timecomp1 = 0, timecomp2 = 0, timecommsumm1 = 0, timecommsumm2 = 0, timewait1 = 0, timewait2 = 0, timewait3 = 0;
-    double timecomp, timecomm, timewait, tstart, tend, t0, t1;
-    int save_NextParticle;
-    long long n_exported = 0;
-    
-    /* allocate buffers to arrange communication */
-    long long NTaskTimesNumPart;
-    NTaskTimesNumPart = maxThreads * NumPart;
-    All.BunchSize = (int) ((All.BufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
-                                                             sizeof(struct DiffFilterdata_in) +
-                                                             sizeof(struct DiffFilterdata_out) +
-                                                             sizemax(sizeof(struct DiffFilterdata_in),
-                                                                     sizeof(struct DiffFilterdata_out))));
-    CPU_Step[CPU_IMPROVDIFFMISC] += measure_time();
-    t0 = my_second();
-    
-    Ngblist = (int *) mymalloc("Ngblist", NTaskTimesNumPart * sizeof(int));
-    DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
-    DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
-
+/* operations that need to be performed before entering the main loop */
+void dynamic_diff_vel_calc_initial_operations_preloop(void);
+void dynamic_diff_vel_calc_initial_operations_preloop(void)
+{
     /* Because of the smoothing operation, need to set bar quantity to current SPH value first */
+    int i;
     for (i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) {
         if (P[i].Type == 0) {
             SphP[i].Norm_hat = 0;
             SphP[i].h_turb = Get_Particle_Size(i); // All.cf_atime unnecessary, will multiply later
             SphP[i].FilterWidth_bar = 0;
             SphP[i].MaxDistance_for_grad = 0;
-
-            for (k = 0; k < 3; k++) {
-                SphP[i].Velocity_bar[k] = SphP[i].VelPred[k] * smoothInv;
-            }
+            for (k = 0; k < 3; k++) {SphP[i].Velocity_bar[k] = SphP[i].VelPred[k] * smoothInv;}
         }
     }
-
-    NextParticle = FirstActiveParticle;	/* begin with this index */
-    
-    do {    
-        BufferFullFlag = 0;
-        Nexport = 0;
-        save_NextParticle = NextParticle;
-            
-        for (j = 0; j < NTask; j++) {
-            Send_count[j] = 0;
-            Exportflag[j] = -1;
-        }
-            
-        /* do local particles and prepare export list */
-        tstart = my_second();
-            
-#ifdef OMP_NUM_THREADS
-        pthread_t mythreads[OMP_NUM_THREADS - 1];
-        int threadid[OMP_NUM_THREADS - 1];
-        pthread_attr_t attr;
-            
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-        pthread_mutex_init(&mutex_nexport, NULL);
-        pthread_mutex_init(&mutex_partnodedrift, NULL);
-            
-        TimerFlag = 0;
-            
-        for (j = 0; j < OMP_NUM_THREADS - 1; j++) {
-            threadid[j] = j + 1;
-            pthread_create(&mythreads[j], &attr, DiffFilter_evaluate_primary, &threadid[j]);
-        }
-#endif
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-        {
-#ifdef _OPENMP
-            int mainthreadid = omp_get_thread_num();
-#else
-            int mainthreadid = 0;
-#endif
-            DiffFilter_evaluate_primary(&mainthreadid);	/* do local particles and prepare export list */
-        }
-            
-#ifdef OMP_NUM_THREADS
-        for (j = 0; j < OMP_NUM_THREADS - 1; j++) pthread_join(mythreads[j], NULL);
-#endif
-            
-        tend = my_second();
-        timecomp1 += timediff(tstart, tend);
-            
-        if (BufferFullFlag) {
-            int last_nextparticle = NextParticle;
-                
-            NextParticle = save_NextParticle;
-                
-            while (NextParticle >= 0) {
-                if (NextParticle == last_nextparticle) break;
-                if (ProcessedFlag[NextParticle] != 1) break;
-                    
-                ProcessedFlag[NextParticle] = 2;
-                NextParticle = NextActiveParticle[NextParticle];
-            }
-                
-            if (NextParticle == save_NextParticle) {
-                /* in this case, the buffer is too small to process even a single particle */
-                endrun(113308);
-            }
-                
-            int new_export = 0;
-                
-            for (j = 0, k = 0; j < Nexport; j++) {
-                if (ProcessedFlag[DataIndexTable[j].Index] != 2) {
-                    if (k < j + 1) k = j + 1;
-                        
-                    for (; k < Nexport; k++) {
-                        if (ProcessedFlag[DataIndexTable[k].Index] == 2) {
-                            int old_index = DataIndexTable[j].Index;
-                                
-                            DataIndexTable[j] = DataIndexTable[k];
-                            DataNodeList[j] = DataNodeList[k];
-                            DataIndexTable[j].IndexGet = j;
-                            new_export++;
-                                
-                            DataIndexTable[k].Index = old_index;
-                            k++;
-                            break;
-                        }
-                    }
-                }
-                else {
-                    new_export++;
-                }                
-            }
-
-            Nexport = new_export;       
-        }
-            
-        n_exported += Nexport;
-            
-        for (j = 0; j < NTask; j++) Send_count[j] = 0;
-        for (j = 0; j < Nexport; j++) Send_count[DataIndexTable[j].Task]++;
-            
-        MYSORT_DATAINDEX(DataIndexTable, Nexport, sizeof(struct data_index), data_index_compare);
-            
-        tstart = my_second();
-            
-        MPI_Alltoall(Send_count, 1, MPI_INT, Recv_count, 1, MPI_INT, MPI_COMM_WORLD);
-            
-        tend = my_second();
-        timewait1 += timediff(tstart, tend);
-            
-        for (j = 0, Nimport = 0, Recv_offset[0] = 0, Send_offset[0] = 0; j < NTask; j++) {
-            Nimport += Recv_count[j];
-                
-            if (j > 0) {
-                Send_offset[j] = Send_offset[j - 1] + Send_count[j - 1];
-                Recv_offset[j] = Recv_offset[j - 1] + Recv_count[j - 1];
-            }
-        }
-            
-        DiffFilterDataGet = (struct DiffFilterdata_in *) mymalloc("DiffFilterDataGet", Nimport * sizeof(struct DiffFilterdata_in));
-        DiffFilterDataIn = (struct DiffFilterdata_in *) mymalloc("DiffFilterDataIn", Nexport * sizeof(struct DiffFilterdata_in));
-            
-        /* prepare particle data for export */
-            
-        for (j = 0; j < Nexport; j++) {
-            place = DataIndexTable[j].Index;
-            particle2in_DiffFilter(&DiffFilterDataIn[j], place);
-#ifndef DONOTUSENODELIST
-            memcpy(DiffFilterDataIn[j].NodeList, DataNodeList[DataIndexTable[j].IndexGet].NodeList, NODELISTLENGTH * sizeof(int));
-#endif
-        }
-            
-        /* exchange particle data */
-        tstart = my_second();
-        for (ngrp = 1; ngrp < (1 << PTask); ngrp++) {
-            recvTask = ThisTask ^ ngrp;
-                
-            if (recvTask < NTask) {
-                if (Send_count[recvTask] > 0 || Recv_count[recvTask] > 0) {
-                    /* get the particles */
-                    MPI_Sendrecv(&DiffFilterDataIn[Send_offset[recvTask]],
-                                Send_count[recvTask] * sizeof(struct DiffFilterdata_in), MPI_BYTE,
-                                recvTask, TAG_GRADLOOP_A,
-                                &DiffFilterDataGet[Recv_offset[recvTask]],
-                                Recv_count[recvTask] * sizeof(struct DiffFilterdata_in), MPI_BYTE,
-                                recvTask, TAG_GRADLOOP_A, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                }
-            }
-        }
-
-        tend = my_second();
-        timecommsumm1 += timediff(tstart, tend);
-            
-        myfree(DiffFilterDataIn);
-
-        DiffFilterDataResult = (struct DiffFilterdata_out *) mymalloc("DiffFilterDataResult", Nimport * sizeof(struct DiffFilterdata_out));
-        DiffFilterDataOut = (struct DiffFilterdata_out *) mymalloc("DiffFilterDataOut", Nexport * sizeof(struct DiffFilterdata_out));
-            
-        /* now do the particles that were sent to us */
-        tstart = my_second();
-        NextJ = 0;
-            
-#ifdef OMP_NUM_THREADS
-        for (j = 0; j < OMP_NUM_THREADS - 1; j++) pthread_create(&mythreads[j], &attr, DiffFilter_evaluate_secondary, &threadid[j]);
-#endif
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-        {
-#ifdef _OPENMP
-            int mainthreadid = omp_get_thread_num();
-#else
-            int mainthreadid = 0;
-#endif
-            DiffFilter_evaluate_secondary(&mainthreadid);
-        }
-            
-#ifdef OMP_NUM_THREADS
-        for (j = 0; j < OMP_NUM_THREADS - 1; j++) pthread_join(mythreads[j], NULL);
-            
-        pthread_mutex_destroy(&mutex_partnodedrift);
-        pthread_mutex_destroy(&mutex_nexport);
-        pthread_attr_destroy(&attr);
-#endif
-            
-        tend = my_second();
-        timecomp2 += timediff(tstart, tend);
-            
-        if (NextParticle < 0) {
-            ndone_flag = 1;
-        }
-        else {
-            ndone_flag = 0;
-        }
-            
-        tstart = my_second();
-        MPI_Allreduce(&ndone_flag, &ndone, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-        tend = my_second();
-        timewait2 += timediff(tstart, tend);
-            
-        /* get the result */
-        tstart = my_second();
-        for (ngrp = 1; ngrp < (1 << PTask); ngrp++) {
-            recvTask = ThisTask ^ ngrp;
-            if (recvTask < NTask) {
-                if (Send_count[recvTask] > 0 || Recv_count[recvTask] > 0) {
-                    /* send the results */
-                    MPI_Sendrecv(&DiffFilterDataResult[Recv_offset[recvTask]],
-                                Recv_count[recvTask] * sizeof(struct DiffFilterdata_out),
-                                MPI_BYTE, recvTask, TAG_GRADLOOP_B,
-                                &DiffFilterDataOut[Send_offset[recvTask]],
-                                Send_count[recvTask] * sizeof(struct DiffFilterdata_out),
-                                MPI_BYTE, recvTask, TAG_GRADLOOP_B, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                }
-            }
-        }
-
-        tend = my_second();
-        timecommsumm2 += timediff(tstart, tend);
-            
-        /* add the result to the local particles */
-        tstart = my_second();
-        for (j = 0; j < Nexport; j++) {
-            place = DataIndexTable[j].Index;
-            out2particle_DiffFilter(&DiffFilterDataOut[j], place, 1);
-        }
-
-        tend = my_second();
-        timecomp1 += timediff(tstart, tend);
-        myfree(DiffFilterDataOut);
-        myfree(DiffFilterDataResult);
-
-        myfree(DiffFilterDataGet);
-    }
-    while(ndone < NTask);
- 
-    tstart = my_second();
-
-    /* Must wait for ALL tasks for finish each iteration in order to converge */
-    /* MPI_Barrier(MPI_COMM_WORLD); */
-
-    tend = my_second();
-    timewait3 += timediff(tstart, tend); 
-    
-    myfree(DataNodeList);
-    myfree(DataIndexTable);
-    myfree(Ngblist);
-    
-    /* collect some timing information */
-    t1 = WallclockTime = my_second();
-    timeall += timediff(t0, t1);
-    timecomp = timecomp1 + timecomp2;
-    timewait = timewait1 + timewait2 + timewait3;
-    timecomm = timecommsumm1 + timecommsumm2;
-    
-    CPU_Step[CPU_IMPROVDIFFCOMPUTE] += timecomp;
-    CPU_Step[CPU_IMPROVDIFFWAIT] += timewait;
-    CPU_Step[CPU_IMPROVDIFFCOMM] += timecomm;
-    CPU_Step[CPU_IMPROVDIFFMISC] += timeall - (timecomp + timewait + timecomm);
-    mpi_printf("velocity smoothing done.\n");
 }
 
 
@@ -428,23 +107,23 @@ void dynamic_diff_vel_calc(void) {
  *  - D. Rennehan
  *
  */
-int DiffFilter_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist) {
+int DiffFilter_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration) {
     int startnode, numngb, listindex = 0;
     int j, k, v, k2, n, swap_to_j;
     double hinv, hinv3, hinv4, r2, u, hinv_j, hinv3_j, hinv4_j;
     double shear_factor;
     struct kernel_DiffFilter kernel;
-    struct DiffFilterdata_in local;
-    struct DiffFilterdata_out out;
-    memset(&out, 0, sizeof(struct DiffFilterdata_out));
+    struct INPUT_STRUCT_NAME local;
+    struct OUTPUT_STRUCT_NAME out;
+    memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME));
 
     memset(&kernel, 0, sizeof(struct kernel_DiffFilter));
     
     if (mode == 0) {
-        particle2in_DiffFilter(&local, target);
+        particle2in_DiffFilter(&local, target, loop_iteration);
     }
     else {
-        local = DiffFilterDataGet[target];
+        local = DATAGET_NAME[target];
     }
   
     /* check if we should bother doing a neighbor loop */
@@ -465,7 +144,7 @@ int DiffFilter_evaluate(int target, int mode, int *exportflag, int *exportnodeco
         startnode = All.MaxPart;	/* root node */
     }
     else {
-        startnode = DiffFilterDataGet[target].NodeList[0];
+        startnode = DATAGET_NAME[target].NodeList[0];
         startnode = Nodes[startnode].u.d.nextnode;	/* open it */
     }
    
@@ -578,7 +257,7 @@ int DiffFilter_evaluate(int target, int mode, int *exportflag, int *exportnodeco
 
                 kernel_hinv(h_avg, &hinv, &hinv3, &hinv4);
                 u = DMIN(kernel.r * hinv, 1.0);
-                kernel_main(u, hinv3, hinv4, &kernel.wk_i, &kernel.dwk_i, kernel_mode_i);
+                if(u<1) {kernel_main(u, hinv3, hinv4, &kernel.wk_i, &kernel.dwk_i, kernel_mode_i);} else {kernel.wk_i=kernel.dwk_i=0;}
 
                 double weight_i = kernel.wk_i * V_j;
                 double weight_j = kernel.wk_i * V_i;
@@ -604,7 +283,7 @@ int DiffFilter_evaluate(int target, int mode, int *exportflag, int *exportnodeco
         if (mode == 1) {
             listindex++;
             if (listindex < NODELISTLENGTH) {
-                startnode = DiffFilterDataGet[target].NodeList[listindex];
+                startnode = DATAGET_NAME[target].NodeList[listindex];
                 if (startnode >= 0) startnode = Nodes[startnode].u.d.nextnode;	/* open it */
             }
         }
@@ -617,7 +296,7 @@ int DiffFilter_evaluate(int target, int mode, int *exportflag, int *exportnodeco
         out2particle_DiffFilter(&out, target, 0);
     }
     else {
-        DiffFilterDataResult[target] = out;
+        DATARESULT_NAME[target] = out;
     }
     /* ------------------------------------------------------------------------------------------------ */
     
@@ -625,74 +304,20 @@ int DiffFilter_evaluate(int target, int mode, int *exportflag, int *exportnodeco
 }
 
 
-void *DiffFilter_evaluate_primary(void *p) {
-    int thread_id = *(int *) p;
-    int i, j;
-    int *exportflag, *exportnodecount, *exportindex, *ngblist;
-    ngblist = Ngblist + thread_id * NumPart;
-    exportflag = Exportflag + thread_id * NTask;
-    exportnodecount = Exportnodecount + thread_id * NTask;
-    exportindex = Exportindex + thread_id * NTask;
-    
-    /* Note: exportflag is local to each thread */
-    for (j = 0; j < NTask; j++) exportflag[j] = -1;
-    
-    while (1) {
-        int exitFlag = 0;
-        LOCK_NEXPORT;
-#ifdef _OPENMP
-#pragma omp critical(_nexport_)
-#endif
-        {
-            if (BufferFullFlag != 0 || NextParticle < 0) {
-                exitFlag = 1;
-            }
-            else {
-                i = NextParticle;
-                ProcessedFlag[i] = 0;
-                NextParticle = NextActiveParticle[NextParticle];
-            }
-        }
-
-        UNLOCK_NEXPORT;
-        if (exitFlag) break;
-        
-        if (P[i].Type == 0) {
-	    if (DiffFilter_evaluate(i, 0, exportflag, exportnodecount, exportindex, ngblist) < 0) break;		/* export buffer has filled up */
-        }
-
-        ProcessedFlag[i] = 1; /* particle successfully finished */
-    }
-
-    return NULL;
+/**
+ * primary routine being called for this calculation
+ */
+void dynamic_diff_vel_calc(void) {
+    PRINT_STATUS("Start velocity smoothing computation...\n");
+    dynamic_diff_vel_calc_initial_operations_preloop(); /* any initial operations */
+    #include "../system/code_block_xchange_perform_ops_malloc.h" /* this calls the large block of code which contains the memory allocations for the MPI/OPENMP/Pthreads parallelization block which must appear below */
+    #include "../system/code_block_xchange_perform_ops.h" /* this calls the large block of code which actually contains all the loops, MPI/OPENMP/Pthreads parallelization */
+    #include "../system/code_block_xchange_perform_ops_demalloc.h" /* this de-allocates the memory for the MPI/OPENMP/Pthreads parallelization block which must appear above */
+    CPU_Step[CPU_IMPROVDIFFCOMPUTE] += timecomp; CPU_Step[CPU_IMPROVDIFFWAIT] += timewait; CPU_Step[CPU_IMPROVDIFFCOMM] += timecomm; CPU_Step[CPU_IMPROVDIFFMISC] += timeall - (timecomp + timewait + timecomm);
+    PRINT_STATUS(" ..velocity smoothing done.\n");
 }
+#include "../system/code_block_xchange_finalize.h" /* de-define the relevant variables and macros to avoid compilation errors and memory leaks */
 
-
-
-void *DiffFilter_evaluate_secondary(void *p) {
-    int thread_id = *(int *) p;
-    int j, dummy, *ngblist;
-    ngblist = Ngblist + thread_id * NumPart;
-
-    while (1) {
-        LOCK_NEXPORT;
-#ifdef _OPENMP
-#pragma omp critical(_nexport_)
-#endif
-        {
-            j = NextJ;
-            NextJ++;
-        }
-
-        UNLOCK_NEXPORT;
-        
-        if (j >= Nimport) break;
-
-        DiffFilter_evaluate(j, 1, &dummy, &dummy, &dummy, ngblist);
-    }
-
-    return NULL;
-}
 
 #endif /* End TURB_DIFF_DYNAMIC */
 

@@ -7,16 +7,6 @@
 #include "../allvars.h"
 #include "../proto.h"
 #include "../kernel.h"
-#ifdef PTHREADS_NUM_THREADS
-#include <pthread.h>
-extern pthread_mutex_t mutex_nexport;
-extern pthread_mutex_t mutex_partnodedrift;
-#define LOCK_NEXPORT     pthread_mutex_lock(&mutex_nexport);
-#define UNLOCK_NEXPORT   pthread_mutex_unlock(&mutex_nexport);
-#else
-#define LOCK_NEXPORT
-#define UNLOCK_NEXPORT
-#endif
 
 /* Routines for mechanical feedback/enrichment models: stellar winds, supernovae, etc
  * This file was written by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
@@ -24,20 +14,92 @@ extern pthread_mutex_t mutex_partnodedrift;
 
 #ifdef GALSF_FB_MECHANICAL
 
+
+int addFB_evaluate_active_check(int i, int fb_loop_iteration);
+int addFB_evaluate_active_check(int i, int fb_loop_iteration)
+{
+    if(P[i].Type <= 1) return 0;
+    if(P[i].Mass <= 0) return 0;
+    if(PPP[i].Hsml <= 0) return 0;
+    if(PPP[i].NumNgb <= 0) return 0;
+    if(P[i].SNe_ThisTimeStep>0) {if(fb_loop_iteration<0 || fb_loop_iteration==0) return 1;}
+    return 0;
+}
+
+
+void determine_where_SNe_occur(void)
+{
+    if(All.Time<=0) return;
+    int i; double dt,star_age,npossible,nhosttotal,ntotal,ptotal,dtmean,rmean;
+    npossible=nhosttotal=ntotal=ptotal=dtmean=rmean=0;
+    double mpi_npossible,mpi_nhosttotal,mpi_ntotal,mpi_ptotal,mpi_dtmean,mpi_rmean;
+    mpi_npossible=mpi_nhosttotal=mpi_ntotal=mpi_ptotal=mpi_dtmean=mpi_rmean=0;
+    // loop over particles //
+    for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
+    {
+        P[i].SNe_ThisTimeStep=0;
+        if(All.ComovingIntegrationOn) {if(P[i].Type != 4) {continue;}} // in cosmological simulations, 'stars' have particle type=4
+        if(All.ComovingIntegrationOn==0) {if((P[i].Type<2)||(P[i].Type>4)) {continue;}} // in non-cosmological sims, types 2,3,4 are valid 'stars'
+        if(P[i].Mass<=0) {continue;}
+#ifndef WAKEUP
+        dt = (P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0) * All.Timebase_interval / All.cf_hubble_a; // dloga to dt_physical
+#else
+        dt = P[i].dt_step * All.Timebase_interval / All.cf_hubble_a; // get particle timestep //
+#endif
+        if(dt<=0) {continue;} // no time, no events
+        star_age = evaluate_stellar_age_Gyr(P[i].StellarAge);
+        if(star_age<=0) {continue;} // unphysical age, no events
+        // now use a calculation of mechanical event rates to determine where/when the events actually occur //
+        npossible++;
+        double RSNe = mechanical_fb_calculate_eventrates(i,dt);
+        rmean += RSNe; ptotal += RSNe * dt * P[i].Mass * (All.UnitTime_in_Megayears/All.HubbleParam) * (All.UnitMass_in_g/All.HubbleParam)/SOLAR_MASS;
+#ifdef GALSF_SFR_IMF_SAMPLING
+        if(P[i].IMF_NumMassiveStars>0) {P[i].IMF_NumMassiveStars=DMAX(0,P[i].IMF_NumMassiveStars-P[i].SNe_ThisTimeStep);} // lose an O-star for every SNe //
+#endif
+        if(P[i].SNe_ThisTimeStep>0) {ntotal+=P[i].SNe_ThisTimeStep; nhosttotal++;}
+        dtmean += dt;
+    } // for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) //
+    
+    MPI_Reduce(&dtmean, &mpi_dtmean, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&rmean, &mpi_rmean, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&ptotal, &mpi_ptotal, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&nhosttotal, &mpi_nhosttotal, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&ntotal, &mpi_ntotal, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&npossible, &mpi_npossible, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    
+    if(ThisTask == 0)
+    {
+        if(mpi_ntotal > 0 && mpi_nhosttotal > 0 && mpi_dtmean > 0)
+        if(mpi_npossible>0)
+        {
+            mpi_dtmean /= mpi_npossible; mpi_rmean /= mpi_npossible;
+            fprintf(FdSneIIHeating, "%lg %g %g %g %g %g %g \n", All.Time,mpi_npossible,mpi_nhosttotal,mpi_ntotal,mpi_ptotal,mpi_dtmean,mpi_rmean);
+        }
+        if(All.HighestActiveTimeBin == All.HighestOccupiedTimeBin) {fflush(FdSneIIHeating);}
+    } // if(ThisTask == 0) //
+    
+} // void determine_where_SNe_occur() //
+
+
+
+
+#define MASTER_FUNCTION_NAME addFB_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define INPUTFUNCTION_NAME particle2in_addFB    /* name of the function which loads the element data needed (for e.g. broadcast to other processors, neighbor search) */
+#define OUTPUTFUNCTION_NAME out2particle_addFB  /* name of the function which takes the data returned from other processors and combines it back to the original elements */
+#define CONDITIONFUNCTION_FOR_EVALUATION if((P[i].Type==3)&&(P[i].TimeBin>=0)) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
+#include "../system/code_block_xchange_initialize.h" /* pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
+
 // define kernel structure (purely for convenience, will hold variables below) //
 struct kernel_addFB {double dp[3], r, wk, dwk, hinv, hinv3, hinv4;};
 
-struct addFBdata_out
+struct OUTPUT_STRUCT_NAME
 {
     MyFloat M_coupled, Area_weighted_sum[AREA_WEIGHTED_SUM_ELEMENTS];
 }
-*AddFBDataResult, *AddFBDataOut;
+*DATARESULT_NAME, *DATAOUT_NAME;
 
-void particle2in_addFB(struct addFBdata_in *in, int i, int fb_loop_iteration);
-void particle2in_addFB_wt(struct addFBdata_in *in, int i);
-void out2particle_addFB(struct addFBdata_out *out, int i, int mode, int fb_loop_iteration);
 
-void particle2in_addFB(struct addFBdata_in *in, int i, int fb_loop_iteration)
+void particle2in_addFB(struct addFB_evaluate_data_in_ *in, int i, int loop_iteration)
 {
     // pre-assign various values that will be used regardless of feedback physics //
     int k; for(k=0;k<3;k++) {in->Pos[k]=P[i].Pos[k]; in->Vel[k]=P[i].Vel[k];}
@@ -48,16 +110,16 @@ void particle2in_addFB(struct addFBdata_in *in, int i, int fb_loop_iteration)
     for(k=0;k<AREA_WEIGHTED_SUM_ELEMENTS;k++) {in->Area_weighted_sum[k] = P[i].Area_weighted_sum[k];}
     in->Msne = 0; in->unit_mom_SNe = 0; in->SNe_v_ejecta = 0;
     if((P[i].DensAroundStar <= 0)||(P[i].Mass == 0)) {return;} // events not possible
-    if(fb_loop_iteration < 0) {in->Msne=P[i].Mass; in->unit_mom_SNe=1.e-4; in->SNe_v_ejecta=1.0e-4; return;} // weighting loop
-    particle2in_addFB_fromstars(in,i,fb_loop_iteration); // subroutine that actually deals with the assignment of feedback properties
+    if(loop_iteration < 0) {in->Msne=P[i].Mass; in->unit_mom_SNe=1.e-4; in->SNe_v_ejecta=1.0e-4; return;} // weighting loop
+    particle2in_addFB_fromstars(in,i,loop_iteration); // subroutine that actually deals with the assignment of feedback properties
     in->unit_mom_SNe = in->Msne * in->SNe_v_ejecta;
 }
 
-void out2particle_addFB(struct addFBdata_out *out, int i, int mode, int fb_loop_iteration)
+void out2particle_addFB(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration)
 {
-    if(fb_loop_iteration < 0)
+    if(loop_iteration < 0)
     {
-        int k=0, kmin=0, kmax=7; if(fb_loop_iteration == -1) {kmin=kmax; kmax=AREA_WEIGHTED_SUM_ELEMENTS;}
+        int k=0, kmin=0, kmax=7; if(loop_iteration == -1) {kmin=kmax; kmax=AREA_WEIGHTED_SUM_ELEMENTS;}
 #ifdef GALSF_USE_SNE_ONELOOP_SCHEME
         kmin=0; kmax=AREA_WEIGHTED_SUM_ELEMENTS;
 #endif
@@ -69,197 +131,10 @@ void out2particle_addFB(struct addFBdata_out *out, int i, int mode, int fb_loop_
 
 
 
-void mechanical_fb_calc(int fb_loop_iteration)
-{
-    /* allocate buffers to arrange communication */
-    int j, k, ngrp, ndone, ndone_flag, recvTask, place, save_NextParticle;
-    long long n_exported = 0, NTaskTimesNumPart;
-    NTaskTimesNumPart = maxThreads * NumPart;
-    Ngblist = (int *) mymalloc("Ngblist", NTaskTimesNumPart * sizeof(int));
-    size_t MyBufferSize = All.BufferSize;
-    All.BunchSize = (int) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) + sizeof(struct addFBdata_in) + sizeof(struct addFBdata_out) + sizemax(sizeof(struct addFBdata_in),sizeof(struct addFBdata_out))));
-    DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
-    DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
-    NextParticle = FirstActiveParticle;    /* begin with this index */
-    do
-    {
-        BufferFullFlag = 0; Nexport = 0; save_NextParticle = NextParticle;
-        for(j = 0; j < NTask; j++) {Send_count[j] = 0; Exportflag[j] = -1;}
-        /* do local particles and prepare export list */
-#ifdef PTHREADS_NUM_THREADS
-        pthread_t mythreads[PTHREADS_NUM_THREADS - 1];
-        int threadid[PTHREADS_NUM_THREADS - 1];
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-        pthread_mutex_init(&mutex_nexport, NULL);
-        pthread_mutex_init(&mutex_partnodedrift, NULL);
-        TimerFlag = 0;
-        for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++)
-        {
-            threadid[j] = j + 1;
-            pthread_create(&mythreads[j], &attr, addFB_evaluate_primary, &threadid[j]);
-        }
-#endif
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-        {
-#ifdef _OPENMP
-            int mainthreadid = omp_get_thread_num();
-#else
-            int mainthreadid = 0;
-#endif
-            addFB_evaluate_primary(&mainthreadid, fb_loop_iteration);    /* do local particles and prepare export list */
-        }
-#ifdef PTHREADS_NUM_THREADS
-        for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++) {pthread_join(mythreads[j], NULL);}
-#endif
-        if(BufferFullFlag)
-        {
-            int last_nextparticle = NextParticle;
-            NextParticle = save_NextParticle;
-            while(NextParticle >= 0)
-            {
-                if(NextParticle == last_nextparticle) {break;}
-                if(ProcessedFlag[NextParticle] != 1) {break;}
-                ProcessedFlag[NextParticle] = 2;
-                NextParticle = NextActiveParticle[NextParticle];
-            }
-            if(NextParticle == save_NextParticle) {endrun(116608);} /* in this case, the buffer is too small to process even a single particle */
-            int new_export = 0;
-            for(j = 0, k = 0; j < Nexport; j++)
-            if(ProcessedFlag[DataIndexTable[j].Index] != 2)
-            {
-                if(k < j + 1) {k = j + 1;}
-                for(; k < Nexport; k++)
-                if(ProcessedFlag[DataIndexTable[k].Index] == 2)
-                {
-                    int old_index = DataIndexTable[j].Index;
-                    DataIndexTable[j] = DataIndexTable[k];
-                    DataNodeList[j] = DataNodeList[k];
-                    DataIndexTable[j].IndexGet = j;
-                    new_export++;
-                    DataIndexTable[k].Index = old_index;
-                    k++;
-                    break;
-                }
-            } else {new_export++;}
-            Nexport = new_export;
-        }
-        n_exported += Nexport;
-        for(j = 0; j < NTask; j++) {Send_count[j] = 0;}
-        for(j = 0; j < Nexport; j++) {Send_count[DataIndexTable[j].Task]++;}
-        MYSORT_DATAINDEX(DataIndexTable, Nexport, sizeof(struct data_index), data_index_compare);
-        MPI_Alltoall(Send_count, 1, MPI_INT, Recv_count, 1, MPI_INT, MPI_COMM_WORLD);
-        for(j = 0, Nimport = 0, Recv_offset[0] = 0, Send_offset[0] = 0; j < NTask; j++)
-        {
-            Nimport += Recv_count[j];
-            if(j > 0)
-            {
-                Send_offset[j] = Send_offset[j - 1] + Send_count[j - 1];
-                Recv_offset[j] = Recv_offset[j - 1] + Recv_count[j - 1];
-            }
-        }
-        /* prepare particle data for export */
-        AddFBDataGet = (struct addFBdata_in *) mymalloc("AddFBDataGet", Nimport * sizeof(struct addFBdata_in));
-        AddFBDataIn = (struct addFBdata_in *) mymalloc("AddFBDataIn", Nexport * sizeof(struct addFBdata_in));
-        for(j = 0; j < Nexport; j++)
-        {
-            place = DataIndexTable[j].Index;
-            particle2in_addFB(&AddFBDataIn[j], place, fb_loop_iteration);
-            memcpy(AddFBDataIn[j].NodeList, DataNodeList[DataIndexTable[j].IndexGet].NodeList, NODELISTLENGTH * sizeof(int));
-        }
-        /* exchange particle data */
-        int TAG_TO_USE = TAG_FBLOOP_1A;
-        if(fb_loop_iteration==-2) {TAG_TO_USE = TAG_FBLOOP_5A;}
-        if(fb_loop_iteration==-1) {TAG_TO_USE = TAG_FBLOOP_1A;}
-        if(fb_loop_iteration== 0) {TAG_TO_USE = TAG_FBLOOP_2A;}
-        if(fb_loop_iteration== 1) {TAG_TO_USE = TAG_FBLOOP_3A;}
-        if(fb_loop_iteration== 2) {TAG_TO_USE = TAG_FBLOOP_4A;}
-        if(fb_loop_iteration== 3) {TAG_TO_USE = TAG_FBLOOP_5A;}
-        for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-        {
-            recvTask = ThisTask ^ ngrp;
-            if(recvTask < NTask)
-            {
-                if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0) /* get the particles */
-                {
-                    MPI_Sendrecv(&AddFBDataIn[Send_offset[recvTask]], Send_count[recvTask] * sizeof(struct addFBdata_in), MPI_BYTE,
-                                 recvTask, TAG_TO_USE, &AddFBDataGet[Recv_offset[recvTask]], Recv_count[recvTask] * sizeof(struct addFBdata_in), MPI_BYTE, recvTask, TAG_TO_USE, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                }
-            }
-        }
-        myfree(AddFBDataIn);
-        AddFBDataResult = (struct addFBdata_out *) mymalloc("AddFBDataResult", Nimport * sizeof(struct addFBdata_out));
-        AddFBDataOut = (struct addFBdata_out *) mymalloc("AddFBDataOut", Nexport * sizeof(struct addFBdata_out));
-        
-        /* now do the particles that were sent to us */
-        NextJ = 0;
-#ifdef PTHREADS_NUM_THREADS
-        for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++) {pthread_create(&mythreads[j], &attr, addFB_evaluate_secondary, &threadid[j]);}
-#endif
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-        {
-#ifdef _OPENMP
-            int mainthreadid = omp_get_thread_num();
-#else
-            int mainthreadid = 0;
-#endif
-            addFB_evaluate_secondary(&mainthreadid, fb_loop_iteration);
-        }
-#ifdef PTHREADS_NUM_THREADS
-        for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++) {pthread_join(mythreads[j], NULL);}
-        pthread_mutex_destroy(&mutex_partnodedrift);
-        pthread_mutex_destroy(&mutex_nexport);
-        pthread_attr_destroy(&attr);
-#endif
-        if(NextParticle < 0) {ndone_flag = 1;} else {ndone_flag = 0;}
-        MPI_Allreduce(&ndone_flag, &ndone, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-        /* get the result */
-        TAG_TO_USE = TAG_FBLOOP_1B;
-        if(fb_loop_iteration==-2) {TAG_TO_USE = TAG_FBLOOP_5B;}
-        if(fb_loop_iteration==-1) {TAG_TO_USE = TAG_FBLOOP_1B;}
-        if(fb_loop_iteration== 0) {TAG_TO_USE = TAG_FBLOOP_2B;}
-        if(fb_loop_iteration== 1) {TAG_TO_USE = TAG_FBLOOP_3B;}
-        if(fb_loop_iteration== 2) {TAG_TO_USE = TAG_FBLOOP_4B;}
-        if(fb_loop_iteration== 3) {TAG_TO_USE = TAG_FBLOOP_5B;}
-        for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-        {
-            recvTask = ThisTask ^ ngrp;
-            if(recvTask < NTask)
-            {
-                if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0) /* send the results */
-                {
-                    MPI_Sendrecv(&AddFBDataResult[Recv_offset[recvTask]], Recv_count[recvTask] * sizeof(struct addFBdata_out), MPI_BYTE, recvTask, TAG_TO_USE,
-                                 &AddFBDataOut[Send_offset[recvTask]], Send_count[recvTask] * sizeof(struct addFBdata_out), MPI_BYTE, recvTask, TAG_TO_USE, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                }
-            }
-        }
-        /* add the result to the local particles */
-        for(j = 0; j < Nexport; j++)
-        {
-            place = DataIndexTable[j].Index;
-            out2particle_addFB(&AddFBDataOut[j], place, 1, fb_loop_iteration);
-        }
-        myfree(AddFBDataOut);
-        myfree(AddFBDataResult);
-        myfree(AddFBDataGet);
-    }
-    while(ndone < NTask);
-    myfree(DataNodeList);
-    myfree(DataIndexTable);
-    myfree(Ngblist);
-}
-
-
-
 
 #ifdef GALSF_USE_SNE_ONELOOP_SCHEME
 
-int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int fb_loop_iteration)
+int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
 {
     int startnode, numngb_inbox, listindex = 0;
     int j, k, n;
@@ -268,19 +143,19 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     double E_coupled,dP_sum,dP_boost_sum;
     
     struct kernel_addFB kernel;
-    struct addFBdata_in local;
-    struct addFBdata_out out;
-    memset(&out, 0, sizeof(struct addFBdata_out));
+    struct addFB_evaluate_data_in_ local;
+    struct OUTPUT_STRUCT_NAME out;
+    memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME));
     
     v_ejecta_max = 5000.0 * 1.0e5/ All.UnitVelocity_in_cm_per_s;
     // 'speed limit' to prevent numerically problematic kicks at low resolution //
-    kernel_main(0.0,1.0,1.0,&kernel_zero,&wk,-1);
+    kernel_main(0.0,1.0,1.0,&kernel_zero,&wk,-1); wk=0;
     
     /* Load the data for the particle injecting feedback */
     if(mode == 0)
-    particle2in_addFB(&local, target, fb_loop_iteration);
+    particle2in_addFB(&local, target, loop_iteration);
     else
-    local = AddFBDataGet[target];
+    local = DATAGET_NAME[target];
     
     if(local.Msne<=0) return 0; // no SNe for the master particle! nothing to do here //
     if(local.Hsml<=0) return 0; // zero-extent kernel, no particles //
@@ -311,7 +186,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     }
     else
     {
-        startnode = AddFBDataGet[target].NodeList[0];
+        startnode = DATAGET_NAME[target].NodeList[0];
         startnode = Nodes[startnode].u.d.nextnode;    /* open it */
     }
     
@@ -348,14 +223,14 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 u = kernel.r * kernel.hinv;
                 double hinv_j = 1./PPP[j].Hsml, hinv3_j = hinv_j*hinv_j*hinv_j; /* note these lines and many below assume 3D sims! */
                 double wk_j = 0, dwk_j = 0, u_j = kernel.r * hinv_j, hinv4_j = hinv_j*hinv3_j, V_j = P[j].Mass / SphP[j].Density;
-                kernel_main(u, kernel.hinv3, kernel.hinv4, &kernel.wk, &kernel.dwk, 1);
-                kernel_main(u_j, hinv3_j, hinv4_j, &wk_j, &dwk_j, 1);
+                if(u<1) {kernel_main(u, kernel.hinv3, kernel.hinv4, &kernel.wk, &kernel.dwk, 1);} else {kernel.dwk=kernel.wk=0;}
+                if(u_j<1) {kernel_main(u_j, hinv3_j, hinv4_j, &wk_j, &dwk_j, 1);} else {wk_j=dwk_j=0;}
                 if(local.V_i<0 || isnan(local.V_i)) {local.V_i=0;}
                 if(V_j<0 || isnan(V_j)) {V_j=0;}
                 double sph_area = fabs(local.V_i*local.V_i*kernel.dwk + V_j*V_j*dwk_j); // effective face area //
                 wk = 0.5 * (1 - 1/sqrt(1 + sph_area / (M_PI*kernel.r*kernel.r))); // corresponding geometric weight //
 #ifdef FIRE1_SNE_COUPLING
-                kernel_main(u, kernel.hinv3, kernel.hinv4, &kernel.wk, &kernel.dwk, 0);
+                if(u<1) {kernel_main(u, kernel.hinv3, kernel.hinv4, &kernel.wk, &kernel.dwk, 0);} else {kernel.wk=kernel.dwk=0;}
                 wk = P[j].Mass * kernel.wk;
 #endif
                 if((wk <= 0)||(isnan(wk))) continue; // no point in going further, there's no physical weight here
@@ -365,8 +240,8 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 if(kernel.dp[1]>0) {wk_vec[3]=wk*kernel.dp[1]/kernel.r; wk_vec[4]=0;} else {wk_vec[3]=0; wk_vec[4]=wk*kernel.dp[1]/kernel.r;}
                 if(kernel.dp[2]>0) {wk_vec[5]=wk*kernel.dp[2]/kernel.r; wk_vec[6]=0;} else {wk_vec[5]=0; wk_vec[6]=wk*kernel.dp[2]/kernel.r;}
                 
-                // if fb_loop_iteration==-1, this is a pre-calc loop to get the relevant weights for coupling //
-                if(fb_loop_iteration < 0)
+                // if loop_iteration==-1, this is a pre-calc loop to get the relevant weights for coupling //
+                if(loop_iteration < 0)
                 {
                     for(k=0;k<AREA_WEIGHTED_SUM_ELEMENTS;k++) out.Area_weighted_sum[k] += wk_vec[k];
                     continue;
@@ -484,7 +359,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 double m_cooling = 4.18879*pnorm*SphP[j].Density*RsneKPC*RsneKPC*RsneKPC;
                 /* apply limiter for energy conservation */
                 double mom_boost_fac = 1 + sqrt(DMIN(mj_preshock , m_cooling) / m_ej_input);
-                if(fb_loop_iteration > 0) {mom_boost_fac=1;}
+                if(loop_iteration > 0) {mom_boost_fac=1;}
                 
                 /* save summation values for outputs */
                 dP = local.unit_mom_SNe / P[j].Mass * pnorm;
@@ -514,7 +389,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
             listindex++;
             if(listindex < NODELISTLENGTH)
             {
-                startnode = AddFBDataGet[target].NodeList[listindex];
+                startnode = DATAGET_NAME[target].NodeList[listindex];
                 if(startnode >= 0)
                 startnode = Nodes[startnode].u.d.nextnode;    /* open it */
             }
@@ -523,9 +398,9 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     
     /* Now collect the result at the right place */
     if(mode == 0)
-    out2particle_addFB(&out, target, 0, fb_loop_iteration);
+    out2particle_addFB(&out, target, 0, loop_iteration);
     else
-    AddFBDataResult[target] = out;
+    DATARESULT_NAME[target] = out;
     
     return 0;
 } // int addFB_evaluate
@@ -535,23 +410,23 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
 #else // un-protected [updated, more fixed energy-injecting SNe scheme]
 
 
-int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int fb_loop_iteration)
+int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
 {
     int startnode, numngb_inbox, listindex = 0, j, k, n;
     double u,r2,kernel_zero,wk,dM_ejecta_in,dP,E_coupled,dP_sum,dP_boost_sum;
     struct kernel_addFB kernel;
-    struct addFBdata_in local;
-    struct addFBdata_out out;
-    memset(&out, 0, sizeof(struct addFBdata_out));
+    struct addFB_evaluate_data_in_ local;
+    struct OUTPUT_STRUCT_NAME out;
+    memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME));
     
     /* Load the data for the particle injecting feedback */
-    if(mode == 0) {particle2in_addFB(&local, target, fb_loop_iteration);} else {local = AddFBDataGet[target];}
+    if(mode == 0) {particle2in_addFB(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];}
     if(local.Msne<=0) {return 0;} // no SNe for the master particle! nothing to do here //
     if(local.Hsml<=0) {return 0;} // zero-extent kernel, no particles //
     
     // some units (just used below, but handy to define for clarity) //
     double h2 = local.Hsml*local.Hsml;
-    kernel_main(0.0,1.0,1.0,&kernel_zero,&wk,-1); // define the kernel zero-point value, needed to prevent some nasty behavior when no neighbors found
+    kernel_main(0.0,1.0,1.0,&kernel_zero,&wk,-1); wk=0; // define the kernel zero-point value, needed to prevent some nasty behavior when no neighbors found
     kernel_hinv(local.Hsml, &kernel.hinv, &kernel.hinv3, &kernel.hinv4); // define kernel quantities
     double unitlength_in_kpc=All.UnitLength_in_cm/All.HubbleParam/3.086e21*All.cf_atime;
     double density_to_n=All.cf_a3inv*All.UnitDensity_in_cgs * All.HubbleParam*All.HubbleParam / PROTONMASS;
@@ -562,7 +437,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     double psi_cool=1, psi_egycon=1, v_ejecta_eff=local.SNe_v_ejecta;
     double wk_norm = 1. / (MIN_REAL_NUMBER + fabs(local.Area_weighted_sum[0])); // normalization for scalar weight sum
     double pnorm_sum = 1./(MIN_REAL_NUMBER + fabs(local.Area_weighted_sum[10])); // re-normalization after second pass for normalized "pnorm" (should be close to ~1)
-    if((local.Area_weighted_sum[0] > MIN_REAL_NUMBER) && (fb_loop_iteration >= 0))
+    if((local.Area_weighted_sum[0] > MIN_REAL_NUMBER) && (loop_iteration >= 0))
     {
         double vba_2_eff = wk_norm * local.Area_weighted_sum[7]; // phi term for energy: weighted mass-deposited KE for ejecta neighbors
         v_ejecta_eff = sqrt(local.SNe_v_ejecta*local.SNe_v_ejecta + vba_2_eff); // account for all terms to get the revised KE term here
@@ -580,7 +455,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     double RsneKPC = 0., RsneKPC_3 = 0., m_cooling = 0., v_cooling = 2.1e7 / All.UnitVelocity_in_cm_per_s;
     double RsneKPC_0 = (0.0284/unitlength_in_kpc);
     int feedback_type_is_SNe = 0;
-    if(fb_loop_iteration == 0) {feedback_type_is_SNe = 1;} // assume, for now, that loop 0 represents SNe, for purposes of energy-momentum switch below //
+    if(loop_iteration == 0) {feedback_type_is_SNe = 1;} // assume, for now, that loop 0 represents SNe, for purposes of energy-momentum switch below //
     if(feedback_type_is_SNe == 1) // check for SNe specifically
     {
         RsneKPC_0 *= pow(1+Esne51,0.286); //SNe: using scaling from Cioffi with weak external pressure
@@ -599,7 +474,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     }
     else
     {
-        startnode = AddFBDataGet[target].NodeList[0];
+        startnode = DATAGET_NAME[target].NodeList[0];
         startnode = Nodes[startnode].u.d.nextnode;    /* open it */
     }
     
@@ -632,8 +507,8 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 u = kernel.r * kernel.hinv;
                 double hinv_j = 1./PPP[j].Hsml, hinv3_j = hinv_j*hinv_j*hinv_j;
                 double wk_j = 0, dwk_j = 0, u_j = kernel.r * hinv_j, hinv4_j = hinv_j*hinv3_j, V_j = P[j].Mass / SphP[j].Density;
-                kernel_main(u, kernel.hinv3, kernel.hinv4, &kernel.wk, &kernel.dwk, 1);
-                kernel_main(u_j, hinv3_j, hinv4_j, &wk_j, &dwk_j, 1);
+                if(u<1) {kernel_main(u, kernel.hinv3, kernel.hinv4, &kernel.wk, &kernel.dwk, 1);} else {kernel.wk=kernel.dwk=0;}
+                if(u_j<1) {kernel_main(u_j, hinv3_j, hinv4_j, &wk_j, &dwk_j, 1);} else {wk_j=dwk_j=0;}
                 if(local.V_i<0 || isnan(local.V_i)) {local.V_i=0;}
                 if(V_j<0 || isnan(V_j)) {V_j=0;}
                 double sph_area = fabs(local.V_i*local.V_i*kernel.dwk + V_j*V_j*dwk_j); // effective face area //
@@ -649,10 +524,10 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 
                 RsneKPC = RsneKPC_0;
                 /* calculate cooling radius given density and metallicity in this annulus into which the ejecta propagate */
-                if(fb_loop_iteration < 2)
+                if(loop_iteration < 2)
                 {
                     double e0 = Esne51;
-                    if(fb_loop_iteration < 0) {e0=1;}
+                    if(loop_iteration < 0) {e0=1;}
                     if(feedback_type_is_SNe == 1) {e0+=1;}
                     double n0 = SphP[j].Density*density_to_n;
                     if(n0 < 0.001) {n0=0.001;}
@@ -666,10 +541,10 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 }
                 RsneKPC_3 = RsneKPC*RsneKPC*RsneKPC;
                 
-                // if fb_loop_iteration==-1, this is a pre-calc loop to get the relevant weights for coupling //
-                if(fb_loop_iteration < 0)
+                // if loop_iteration==-1, this is a pre-calc loop to get the relevant weights for coupling //
+                if(loop_iteration < 0)
                 {
-                    if(fb_loop_iteration==-1) // the Area_weighted_sum quantities are computed on loop=-2; these quantities must be computed on loop=-1 (after Area_weighted_sums are computed)
+                    if(loop_iteration==-1) // the Area_weighted_sum quantities are computed on loop=-2; these quantities must be computed on loop=-1 (after Area_weighted_sums are computed)
                     {
                         /* calculate the corrected momentum vectors that we will actually use in the coupling proper */
                         double pnorm=0, pvec[3]={0}, vel_ba_2=0, cos_vel_ba_pcoupled=0;
@@ -815,14 +690,14 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
             listindex++;
             if(listindex < NODELISTLENGTH)
             {
-                startnode = AddFBDataGet[target].NodeList[listindex];
+                startnode = DATAGET_NAME[target].NodeList[listindex];
                 if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;}    /* open it */
             }
         } // if(mode == 1)
     } // while(startnode >= 0)
     
     /* Now collect the result at the right place */
-    if(mode == 0) {out2particle_addFB(&out, target, 0, fb_loop_iteration);} else {AddFBDataResult[target] = out;}
+    if(mode == 0) {out2particle_addFB(&out, target, 0, loop_iteration);} else {DATARESULT_NAME[target] = out;}
     
     return 0;
 } // int addFB_evaluate
@@ -830,93 +705,16 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
 #endif // GALSF_USE_SNE_ONELOOP_SCHEME else
 
 
-int addFB_evaluate_active_check(int i, int fb_loop_iteration);
-int addFB_evaluate_active_check(int i, int fb_loop_iteration)
+/* master routine which calls the relevant loops */
+void mechanical_fb_calc(int fb_loop_iteration)
 {
-    if(P[i].Type <= 1) return 0;
-    if(P[i].Mass <= 0) return 0;
-    if(PPP[i].Hsml <= 0) return 0;
-    if(PPP[i].NumNgb <= 0) return 0;
-    if(P[i].SNe_ThisTimeStep>0) {if(fb_loop_iteration<0 || fb_loop_iteration==0) return 1;}
-    return 0;
+    PRINT_STATUS(" ..mechanical feedback loop: iteration %d",fb_loop_iteration);
+    #include "../system/code_block_xchange_perform_ops_malloc.h" /* this calls the large block of code which contains the memory allocations for the MPI/OPENMP/Pthreads parallelization block which must appear below */
+    loop_iteration = fb_loop_iteration; /* sets the appropriate feedback type for the calls below */
+    #include "../system/code_block_xchange_perform_ops.h" /* this calls the large block of code which actually contains all the loops, MPI/OPENMP/Pthreads parallelization */
+    #include "../system/code_block_xchange_perform_ops_demalloc.h" /* this de-allocates the memory for the MPI/OPENMP/Pthreads parallelization block which must appear above */
 }
-
-
-void *addFB_evaluate_primary(void *p, int fb_loop_iteration)
-{
-#define CONDITION_FOR_EVALUATION if(addFB_evaluate_active_check(i,fb_loop_iteration)==1)
-#define EVALUATION_CALL addFB_evaluate(i, 0, exportflag, exportnodecount, exportindex, ngblist, fb_loop_iteration)
-#include "../system/code_block_primary_loop_evaluation.h"
-#undef CONDITION_FOR_EVALUATION
-#undef EVALUATION_CALL
-}
-void *addFB_evaluate_secondary(void *p, int fb_loop_iteration)
-{
-#define EVALUATION_CALL addFB_evaluate(j, 1, &dummy, &dummy, &dummy, ngblist, fb_loop_iteration);
-#include "../system/code_block_secondary_loop_evaluation.h"
-#undef EVALUATION_CALL
-}
-
-
-
-
-void determine_where_SNe_occur(void)
-{
-    if(All.Time<=0) return;
-    int i; double dt,star_age,npossible,nhosttotal,ntotal,ptotal,dtmean,rmean;
-    npossible=nhosttotal=ntotal=ptotal=dtmean=rmean=0;
-    double mpi_npossible,mpi_nhosttotal,mpi_ntotal,mpi_ptotal,mpi_dtmean,mpi_rmean;
-    mpi_npossible=mpi_nhosttotal=mpi_ntotal=mpi_ptotal=mpi_dtmean=mpi_rmean=0;
-    // loop over particles //
-    for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
-    {
-        P[i].SNe_ThisTimeStep=0;
-        if(All.ComovingIntegrationOn) {if(P[i].Type != 4) {continue;}} // in cosmological simulations, 'stars' have particle type=4
-        if(All.ComovingIntegrationOn==0) {if((P[i].Type<2)||(P[i].Type>4)) {continue;}} // in non-cosmological sims, types 2,3,4 are valid 'stars'
-        if(P[i].Mass<=0) {continue;}
-#ifndef WAKEUP
-        dt = (P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0) * All.Timebase_interval / All.cf_hubble_a; // dloga to dt_physical
-#else
-        dt = P[i].dt_step * All.Timebase_interval / All.cf_hubble_a; // get particle timestep //
-#endif
-        if(dt<=0) {continue;} // no time, no events
-        star_age = evaluate_stellar_age_Gyr(P[i].StellarAge);
-        if(star_age<=0) {continue;} // unphysical age, no events
-        // now use a calculation of mechanical event rates to determine where/when the events actually occur //
-        npossible++;
-        double RSNe = mechanical_fb_calculate_eventrates(i,dt);
-        rmean += RSNe; ptotal += RSNe * dt * P[i].Mass * (All.UnitTime_in_Megayears/All.HubbleParam) * (All.UnitMass_in_g/All.HubbleParam)/SOLAR_MASS;
-#ifdef GALSF_SFR_IMF_SAMPLING
-        if(P[i].IMF_NumMassiveStars>0) {P[i].IMF_NumMassiveStars=DMAX(0,P[i].IMF_NumMassiveStars-P[i].SNe_ThisTimeStep);} // lose an O-star for every SNe //
-#endif
-        if(P[i].SNe_ThisTimeStep>0) {ntotal+=P[i].SNe_ThisTimeStep; nhosttotal++;}
-        dtmean += dt;
-    } // for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) //
-    
-    MPI_Reduce(&dtmean, &mpi_dtmean, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&rmean, &mpi_rmean, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&ptotal, &mpi_ptotal, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&nhosttotal, &mpi_nhosttotal, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&ntotal, &mpi_ntotal, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&npossible, &mpi_npossible, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    
-    if(ThisTask == 0)
-    {
-#ifdef IO_REDUCED_MODE
-        if(mpi_ntotal > 0 && mpi_nhosttotal > 0 && mpi_dtmean > 0)
-#endif
-        if(mpi_npossible>0)
-        {
-            mpi_dtmean /= mpi_npossible; mpi_rmean /= mpi_npossible;
-            fprintf(FdSneIIHeating, "%lg %g %g %g %g %g %g \n", All.Time,mpi_npossible,mpi_nhosttotal,mpi_ntotal,mpi_ptotal,mpi_dtmean,mpi_rmean);
-        }
-#ifdef IO_REDUCED_MODE
-        if(All.HighestActiveTimeBin == All.HighestOccupiedTimeBin)
-#endif
-        {fflush(FdSneIIHeating);}
-    } // if(ThisTask == 0) //
-    
-} // void determine_where_SNe_occur() //
+#include "../system/code_block_xchange_finalize.h" /* de-define the relevant variables and macros to avoid compilation errors and memory leaks */
 
 
 #endif /* GALSF_FB_MECHANICAL */

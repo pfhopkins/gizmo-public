@@ -8,47 +8,88 @@
 #include "../proto.h"
 #include "../kernel.h"
 #include "../mesh_motion.h"
-#ifdef PTHREADS_NUM_THREADS
-#include <pthread.h>
-#endif
-#ifdef PTHREADS_NUM_THREADS
-extern pthread_mutex_t mutex_nexport;
-extern pthread_mutex_t mutex_partnodedrift;
-#define LOCK_NEXPORT     pthread_mutex_lock(&mutex_nexport);
-#define UNLOCK_NEXPORT   pthread_mutex_unlock(&mutex_nexport);
-#else
-#define LOCK_NEXPORT
-#define UNLOCK_NEXPORT
-#endif
 
 /*! \file density.c
- *  \brief SPH density computation and kernel length determination
+ *  \brief hydro kernel size and neighbor determination, volumetric quantities calculated
  *
  *  This file contains the "first hydro loop", where the gas densities and some
- *  auxiliary quantities are computed.  There is also functionality that
- *  corrects the kernel length if needed.
+ *  auxiliary quantities are computed.  There is also functionality that corrects the kernel length if needed.
+ */
+/*!
+ * This file was originally part of the GADGET3 code developed by Volker Springel.
+ * The code has been modified substantially (condensed, different criteria for kernel lengths, optimizatins,
+ * rewritten parallelism, new physics included, new variable/memory conventions added) by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
  */
 
-/*
- * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org). The code has been modified
- * substantially (condensed, different criteria for kernel lengths,
- * some optimizatins, and new variable/memory conventions added)
- * by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
- */
-
-struct kernel_density
+struct kernel_density /*! defines a number of useful variables we will use below */
 {
-  double dp[3],dv[3],r;
-  double wk, dwk;
-  double hinv, hinv3, hinv4;
-  double mj_wk, mj_dwk_r;
+  double dp[3],dv[3],r, wk, dwk, hinv, hinv3, hinv4, mj_wk, mj_dwk_r;
 };
 
 
-/*! Structure for communication during the density computation. Holds data that is sent to other processors.
- */
-static struct densdata_in
+/*! routine to determine if a given element is actually going to be active in the density subroutines below */
+int density_isactive(int n)
+{
+    /* first check our 'marker' for particles which have finished iterating to an Hsml solution (if they have, dont do them again) */
+    if(P[n].TimeBin < 0) return 0;
+    
+#if defined(GRAIN_FLUID)
+    /* all particles can potentially interact with the gas in this mode, if drag > 0 */
+    if(P[n].Type >= 0) return 1;
+#endif
+    
+#if defined(RT_SOURCE_INJECTION)
+    if((1 << P[n].Type) & (RT_SOURCES))
+    {
+#if defined(GALSF)
+       if(((P[n].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[n].Type == 2)||(P[n].Type==3))))&&(P[n].Mass>0))
+        {
+            double star_age = evaluate_stellar_age_Gyr(P[n].StellarAge);
+            if((star_age < 0.1)&&(star_age > 0)&&(!isnan(star_age))) return 1;
+        }
+#else
+        if(Flag_FullStep) {return 1;} // only do on full timesteps
+#endif
+    }
+#endif
+    
+#ifdef DO_DENSITY_AROUND_STAR_PARTICLES
+    if(((P[n].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[n].Type == 2)||(P[n].Type==3))))&&(P[n].Mass>0))
+    {
+#if defined(GALSF_FB_MECHANICAL) || defined(GALSF_FB_THERMAL)
+        /* check if there is going to be a SNe this timestep, in which case, we want the density info! */
+        if(P[n].SNe_ThisTimeStep>0) return 1;
+#endif
+#if defined(GALSF)
+        if(P[n].DensAroundStar<=0) return 1;
+        if(All.ComovingIntegrationOn==0) // only do stellar age evaluation if we have to //
+        {
+            double star_age = evaluate_stellar_age_Gyr(P[n].StellarAge);
+            if(star_age < 0.035) return 1;
+        }
+#endif
+    }
+#endif
+    
+#ifdef BLACK_HOLES
+    if(P[n].Type == 5) return 1;
+#endif
+    
+    if(P[n].Type == 0 && P[n].Mass > 0) return 1;
+    return 0; /* default to 0 if no check passed */
+}
+
+
+
+
+#define MASTER_FUNCTION_NAME density_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define INPUTFUNCTION_NAME hydrokerneldensity_particle2in    /* name of the function which loads the element data needed (for e.g. broadcast to other processors, neighbor search) */
+#define OUTPUTFUNCTION_NAME hydrokerneldensity_out2particle  /* name of the function which takes the data returned from other processors and combines it back to the original elements */
+#define CONDITIONFUNCTION_FOR_EVALUATION if(density_isactive(i)) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
+#include "../system/code_block_xchange_initialize.h" /* pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
+
+/*! this structure defines the variables that need to be sent -from- the 'searching' element */
+static struct INPUT_STRUCT_NAME
 {
   MyDouble Pos[3];
 #if defined(SPHAV_CD10_VISCOSITY_SWITCH)
@@ -62,9 +103,30 @@ static struct densdata_in
   int NodeList[NODELISTLENGTH];
   int Type;
 }
- *DensDataIn, *DensDataGet;
+ *DATAIN_NAME, *DATAGET_NAME;
 
-static struct densdata_out
+/*! this subroutine assigns the values to the variables that need to be sent -from- the 'searching' element */
+void hydrokerneldensity_particle2in(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
+{
+    int k;
+    in->Type = P[i].Type;
+    in->Hsml = PPP[i].Hsml;
+    for(k=0;k<3;k++) {in->Pos[k] = P[i].Pos[k];}
+    for(k=0;k<3;k++) {if(P[i].Type==0) {in->Vel[k]=SphP[i].VelPred[k];} else {in->Vel[k]=P[i].Vel[k];}}
+    if(P[i].Type == 0)
+    {
+#if defined(SPHAV_CD10_VISCOSITY_SWITCH)
+        for(k=0;k<3;k++) {in->Accel[k] = All.cf_a2inv*P[i].GravAccel[k] + SphP[i].HydroAccel[k];} // PHYSICAL units //
+#endif
+#ifdef GALSF_SUBGRID_WINDS
+        in->DelayTime = SphP[i].DelayTime;
+#endif
+    }
+}
+
+
+/*! this structure defines the variables that need to be sent -back to- the 'searching' element */
+static struct OUTPUT_STRUCT_NAME
 {
     MyLongDouble Ngb;
     MyLongDouble Rho;
@@ -80,31 +142,25 @@ static struct densdata_out
 #ifdef RT_SOURCE_INJECTION
     MyLongDouble KernelSum_Around_RT_Source;
 #endif
-    
 #ifdef HYDRO_PRESSURE_SPH
     MyLongDouble EgyRho;
 #endif
-
 #if defined(ADAPTIVE_GRAVSOFT_FORGAS) || (ADAPTIVE_GRAVSOFT_FORALL & 1)
     MyFloat AGS_zeta;
 #endif
-
 #if defined(SPHAV_CD10_VISCOSITY_SWITCH)
     MyFloat NV_D[3][3];
     MyFloat NV_A[3][3];
 #endif
-
 #ifdef DO_DENSITY_AROUND_STAR_PARTICLES
     MyFloat GradRho[3];
 #endif
-    
 #if defined(BLACK_HOLES)
     int BH_TimeBinGasNeighbor;
-#if defined(BH_ACCRETE_NEARESTFIRST) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if defined(BH_ACCRETE_NEARESTFIRST) || defined(SINGLE_STAR_TIMESTEPPING)
     MyDouble BH_dr_to_NearestGasNeighbor;
 #endif 
 #endif
-
 #if defined(TURB_DRIVING) || defined(GRAIN_FLUID)
     MyDouble GasVel[3];
 #endif
@@ -114,42 +170,11 @@ static struct densdata_out
     MyDouble Gas_B[3];
 #endif
 #endif
-
 }
- *DensDataResult, *DensDataOut;
+ *DATARESULT_NAME, *DATAOUT_NAME;
 
-void particle2in_density(struct densdata_in *in, int i);
-void out2particle_density(struct densdata_out *out, int i, int mode);
-void density_evaluate_extra_physics_gas(struct densdata_in *local, struct densdata_out *out,
-					struct kernel_density *kernel, int j);
-
-
-void particle2in_density(struct densdata_in *in, int i)
-{
-    int k;
-    in->Type = P[i].Type;
-    in->Hsml = PPP[i].Hsml;
-    for(k = 0; k < 3; k++)
-    {
-        in->Pos[k] = P[i].Pos[k];
-        if(P[i].Type==0) {in->Vel[k]=SphP[i].VelPred[k];} else {in->Vel[k]=P[i].Vel[k];}
-    }
-    
-    if(P[i].Type == 0)
-    {
-#if defined(SPHAV_CD10_VISCOSITY_SWITCH)
-        for(k = 0; k < 3; k++)
-            in->Accel[k] = All.cf_a2inv*P[i].GravAccel[k] + SphP[i].HydroAccel[k]; // PHYSICAL units //
-#endif
-        
-#ifdef GALSF_SUBGRID_WINDS
-        in->DelayTime = SphP[i].DelayTime;
-#endif
-    }
-}
-
-
-void out2particle_density(struct densdata_out *out, int i, int mode)
+/*! this subroutine assigns the values to the variables that need to be sent -back to- the 'searching' element */
+void hydrokerneldensity_out2particle(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration)
 {
     int j,k;
     ASSIGN_ADD(PPP[i].NumNgb, out->Ngb, mode);
@@ -177,8 +202,7 @@ void out2particle_density(struct densdata_out *out, int i, int mode)
 #endif
 
 #if defined(TURB_DRIVING)
-        for(k = 0; k < 3; k++)
-            ASSIGN_ADD(SphP[i].SmoothedVel[k], out->GasVel[k], mode);
+        for(k = 0; k < 3; k++) {ASSIGN_ADD(SphP[i].SmoothedVel[k], out->GasVel[k], mode);}
 #endif
 
 #if defined(SPHAV_CD10_VISCOSITY_SWITCH)
@@ -215,368 +239,246 @@ void out2particle_density(struct densdata_out *out, int i, int mode)
     if((1 << P[i].Type) & (RT_SOURCES)) {ASSIGN_ADD(P[i].KernelSum_Around_RT_Source, out->KernelSum_Around_RT_Source, mode);}
 #endif
     
-
 #ifdef BLACK_HOLES
     if(P[i].Type == 5)
     {
         if(mode == 0) {BPP(i).BH_TimeBinGasNeighbor = out->BH_TimeBinGasNeighbor;} else {if(BPP(i).BH_TimeBinGasNeighbor > out->BH_TimeBinGasNeighbor) {BPP(i).BH_TimeBinGasNeighbor = out->BH_TimeBinGasNeighbor;}}
-#if defined(BH_ACCRETE_NEARESTFIRST) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if defined(BH_ACCRETE_NEARESTFIRST) || defined(SINGLE_STAR_TIMESTEPPING)
         if(mode == 0) {BPP(i).BH_dr_to_NearestGasNeighbor = out->BH_dr_to_NearestGasNeighbor;} else {if(BPP(i).BH_dr_to_NearestGasNeighbor > out->BH_dr_to_NearestGasNeighbor) {BPP(i).BH_dr_to_NearestGasNeighbor = out->BH_dr_to_NearestGasNeighbor;}}
 #endif
     } /* if(P[i].Type == 5) */
 #endif
 }
 
+/*! declare this utility function here now that the relevant structures it uses have been defined */
+void density_evaluate_extra_physics_gas(struct INPUT_STRUCT_NAME *local, struct OUTPUT_STRUCT_NAME *out, struct kernel_density *kernel, int j);
 
 
-/*! This function computes the local density for each active SPH particle, the
- * number of neighbours in the current kernel radius, and the divergence
- * and rotation of the velocity field.  The pressure is updated as well.  If a
- * particle with its kernel region is fully inside the local domain, it is
- * not exported to the other processors. The function also detects particles
- * that have a number of neighbours outside the allowed tolerance range. For
- * these particles, the kernel length is adjusted accordingly, and the
- * density() computation is called again.  Note that the kernel length is
- * not allowed to fall below the lower bound set by MinHsml (this may mean
- * that one has to deal with substantially more than normal number of
- * neighbours.)
+/*! This function represents the core of the initial hydro kernel-identification and volume computation. The target particle may either be local, or reside in the communication buffer. */
+int density_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
+{
+    int j, n, startnode, numngb_inbox, listindex = 0; double r2, h2, u, mass_j, wk;
+    struct kernel_density kernel; struct INPUT_STRUCT_NAME local; struct OUTPUT_STRUCT_NAME out; memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME));
+    if(mode == 0) {hydrokerneldensity_particle2in(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];}
+    h2 = local.Hsml * local.Hsml; kernel_hinv(local.Hsml, &kernel.hinv, &kernel.hinv3, &kernel.hinv4);
+#if defined(BLACK_HOLES)
+    out.BH_TimeBinGasNeighbor = TIMEBINS;
+#ifdef BH_ACCRETE_NEARESTFIRST
+    out.BH_dr_to_NearestGasNeighbor = MAX_REAL_NUMBER;
+#endif
+#endif
+    if(mode == 0) {startnode = All.MaxPart; /* root node */} else {startnode = DATAGET_NAME[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode;    /* open it */}
+    while(startnode >= 0) {
+        while(startnode >= 0) {
+            numngb_inbox = ngb_treefind_variable_threads(local.Pos, local.Hsml, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist);
+            if(numngb_inbox < 0) return -1;
+            for(n = 0; n < numngb_inbox; n++)
+            {
+                j = ngblist[n];
+#ifdef GALSF_SUBGRID_WINDS /* check if partner is a wind particle: if I'm not wind, then ignore the wind particle */
+                if(SphP[j].DelayTime > 0) {if(!(local.DelayTime > 0)) {continue;}}
+#endif
+                if(P[j].Mass <= 0) continue;
+                kernel.dp[0] = local.Pos[0] - P[j].Pos[0];
+                kernel.dp[1] = local.Pos[1] - P[j].Pos[1];
+                kernel.dp[2] = local.Pos[2] - P[j].Pos[2];
+                NEAREST_XYZ(kernel.dp[0],kernel.dp[1],kernel.dp[2],1);
+                r2 = kernel.dp[0] * kernel.dp[0] + kernel.dp[1] * kernel.dp[1] + kernel.dp[2] * kernel.dp[2];
+                if(r2 < h2) /* this loop is only considering particles inside local.Hsml, i.e. seen-by-main */
+                {
+                    kernel.r = sqrt(r2);
+                    u = kernel.r * kernel.hinv;
+                    kernel_main(u, kernel.hinv3, kernel.hinv4, &kernel.wk, &kernel.dwk, 0);
+                    mass_j = P[j].Mass;
+                    kernel.mj_wk = FLT(mass_j * kernel.wk);
+                    
+                    out.Ngb += kernel.wk;
+                    out.Rho += kernel.mj_wk;
+#if defined(HYDRO_MESHLESS_FINITE_VOLUME) && ((HYDRO_FIX_MESH_MOTION==5)||(HYDRO_FIX_MESH_MOTION==6))
+                    if(local.Type == 0 && kernel.r==0) {int kv; for(kv=0;kv<3;kv++) {out.ParticleVel[kv] += kernel.mj_wk * SphP[j].VelPred[kv];}} // just the self-contribution //
+#endif
+#if defined(RT_SOURCE_INJECTION)
+                    if((1 << local.Type) & (RT_SOURCES)) {out.KernelSum_Around_RT_Source += 1.-u*u;}
+#endif
+                    out.DhsmlNgb += -(NUMDIMS * kernel.hinv * kernel.wk + u * kernel.dwk);
+#ifdef HYDRO_SPH
+                    double mass_eff = mass_j;
+#ifdef HYDRO_PRESSURE_SPH
+                    mass_eff *= SphP[j].InternalEnergyPred;
+                    out.EgyRho += kernel.wk * mass_eff;
+#endif
+                    out.DhsmlHydroSumFactor += -mass_eff * (NUMDIMS * kernel.hinv * kernel.wk + u * kernel.dwk);
+#endif
+#if defined(ADAPTIVE_GRAVSOFT_FORGAS) || (ADAPTIVE_GRAVSOFT_FORALL & 1)
+                    if(local.Type == 0) {out.AGS_zeta += mass_j * kernel_gravity(u, kernel.hinv, kernel.hinv3, 0);}
+#endif
+                    /* for everything below, we do NOT include the particle self-contribution! */
+                    if(kernel.r > 0)
+                    {
+                        if(local.Type == 0)
+                        {
+                            wk = kernel.wk; /* MAKE SURE THIS MATCHES CHOICE IN GRADIENTS.c!!! */
+                            /* the weights for the MLS tensor used for gradient estimation */
+                            out.NV_T[0][0] +=  wk * kernel.dp[0] * kernel.dp[0];
+                            out.NV_T[0][1] +=  wk * kernel.dp[0] * kernel.dp[1];
+                            out.NV_T[0][2] +=  wk * kernel.dp[0] * kernel.dp[2];
+                            out.NV_T[1][1] +=  wk * kernel.dp[1] * kernel.dp[1];
+                            out.NV_T[1][2] +=  wk * kernel.dp[1] * kernel.dp[2];
+                            out.NV_T[2][2] +=  wk * kernel.dp[2] * kernel.dp[2];
+                        }
+                        kernel.dv[0] = local.Vel[0] - SphP[j].VelPred[0];
+                        kernel.dv[1] = local.Vel[1] - SphP[j].VelPred[1];
+                        kernel.dv[2] = local.Vel[2] - SphP[j].VelPred[2];
+#ifdef BOX_SHEARING
+                        if(local.Pos[0] - P[j].Pos[0] > +boxHalf_X) {kernel.dv[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;}
+                        if(local.Pos[0] - P[j].Pos[0] < -boxHalf_X) {kernel.dv[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;}
+#endif
+#if defined(HYDRO_MESHLESS_FINITE_VOLUME) && ((HYDRO_FIX_MESH_MOTION==5)||(HYDRO_FIX_MESH_MOTION==6))
+                        // do neighbor contribution to smoothed particle velocity here, after wrap, so can account for shearing boxes correctly //
+                        {int kv; for(kv=0;kv<3;kv++) {out.ParticleVel[kv] += kernel.mj_wk * (local.Vel[kv] - kernel.dv[kv]);}}
+#endif
+                        out.Particle_DivVel -= kernel.dwk * (kernel.dp[0] * kernel.dv[0] + kernel.dp[1] * kernel.dv[1] + kernel.dp[2] * kernel.dv[2]) / kernel.r;
+                        /* this is the -particle- divv estimator, which determines how Hsml will evolve (particle drift) */
+                        
+                        density_evaluate_extra_physics_gas(&local, &out, &kernel, j);
+                    } // kernel.r > 0
+                } // if(r2 < h2)
+            } // numngb_inbox loop
+        } // while(startnode)
+        if(mode == 1) {listindex++; if(listindex < NODELISTLENGTH) {startnode = DATAGET_NAME[target].NodeList[listindex]; if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode; /* open it */}}} /* continue to open leaves if needed */
+    }
+    if(mode == 0) {hydrokerneldensity_out2particle(&out, target, 0, loop_iteration);} else {DATARESULT_NAME[target] = out;} /* collects the result at the right place */
+    return 0;
+}
+
+
+
+/*! this is an extra function to simplify additional computations within the kernel that need to be done as part of the evaluation above */
+void density_evaluate_extra_physics_gas(struct INPUT_STRUCT_NAME *local, struct OUTPUT_STRUCT_NAME *out, struct kernel_density *kernel, int j)
+{
+    kernel->mj_dwk_r = P[j].Mass * kernel->dwk / kernel->r;
+
+    if(local->Type != 0)
+    {
+#if defined(GRAIN_FLUID)
+        out->Gas_InternalEnergy += kernel->mj_wk * SphP[j].InternalEnergyPred;
+        out->GasVel[0] += kernel->mj_wk * (local->Vel[0]-kernel->dv[0]);
+        out->GasVel[1] += kernel->mj_wk * (local->Vel[1]-kernel->dv[1]);
+        out->GasVel[2] += kernel->mj_wk * (local->Vel[2]-kernel->dv[2]);
+#ifdef GRAIN_LORENTZFORCE
+        out->Gas_B[0] += kernel->wk * SphP[j].BPred[0];
+        out->Gas_B[1] += kernel->wk * SphP[j].BPred[1];
+        out->Gas_B[2] += kernel->wk * SphP[j].BPred[2];
+#endif
+#endif
+        
+#if defined(BLACK_HOLES)
+        if(local->Type == 5)
+        {
+            P[j].SwallowID = 0;  // this way we don't have to do a global loop over local particles in blackhole_accretion() to reset these quantities...
+            short int TimeBin_j = P[j].TimeBin; if(TimeBin_j < 0) {TimeBin_j = -TimeBin_j - 1;} // need to make sure we correct for the fact that TimeBin is used as a 'switch' here to determine if a particle is active for iteration, otherwise this gives nonsense!
+            if(out->BH_TimeBinGasNeighbor > TimeBin_j) {out->BH_TimeBinGasNeighbor = TimeBin_j;}
+#if (SINGLE_STAR_SINK_FORMATION & 8)
+        P[j].BH_Ngb_Flag = 1;
+#endif
+#ifdef SINGLE_STAR_SINK_DYNAMICS
+        P[j].SwallowTime = MAX_REAL_NUMBER;
+#endif
+#if defined(BH_ACCRETE_NEARESTFIRST) || defined(SINGLE_STAR_TIMESTEPPING)
+            double dr_eff_wtd = Get_Particle_Size(j); dr_eff_wtd=sqrt(dr_eff_wtd*dr_eff_wtd + (kernel->r)*(kernel->r)); /* effective distance for Gaussian-type kernel, weighted by density */
+            if((dr_eff_wtd < out->BH_dr_to_NearestGasNeighbor) && (P[j].Mass > 0)) {out->BH_dr_to_NearestGasNeighbor = dr_eff_wtd;}
+#endif
+        }
+#endif
+        
+#ifdef DO_DENSITY_AROUND_STAR_PARTICLES
+        /* this is here because for the models of BH growth and self-shielding of stars, we
+         just need a quick-and-dirty, single-pass approximation for the gradients (the error from
+         using this as opposed to the higher-order gradient estimators is small compared to the
+         Sobolev approximation): use only for -non-gas- particles */
+        out->GradRho[0] += kernel->mj_dwk_r * kernel->dp[0];
+        out->GradRho[1] += kernel->mj_dwk_r * kernel->dp[1];
+        out->GradRho[2] += kernel->mj_dwk_r * kernel->dp[2];
+#endif
+        
+    } else { /* local.Type == 0 */
+
+#if defined(TURB_DRIVING)
+        out->GasVel[0] += kernel->mj_wk * (local->Vel[0]-kernel->dv[0]);
+        out->GasVel[1] += kernel->mj_wk * (local->Vel[1]-kernel->dv[1]);
+        out->GasVel[2] += kernel->mj_wk * (local->Vel[2]-kernel->dv[2]);
+#endif
+
+#if defined(SPHAV_CD10_VISCOSITY_SWITCH)
+        double wk = kernel->wk;
+        out->NV_A[0][0] += (local->Accel[0] - All.cf_a2inv*P[j].GravAccel[0] - SphP[j].HydroAccel[0]) * kernel->dp[0] * wk;
+        out->NV_A[0][1] += (local->Accel[0] - All.cf_a2inv*P[j].GravAccel[0] - SphP[j].HydroAccel[0]) * kernel->dp[1] * wk;
+        out->NV_A[0][2] += (local->Accel[0] - All.cf_a2inv*P[j].GravAccel[0] - SphP[j].HydroAccel[0]) * kernel->dp[2] * wk;
+        out->NV_A[1][0] += (local->Accel[1] - All.cf_a2inv*P[j].GravAccel[1] - SphP[j].HydroAccel[1]) * kernel->dp[0] * wk;
+        out->NV_A[1][1] += (local->Accel[1] - All.cf_a2inv*P[j].GravAccel[1] - SphP[j].HydroAccel[1]) * kernel->dp[1] * wk;
+        out->NV_A[1][2] += (local->Accel[1] - All.cf_a2inv*P[j].GravAccel[1] - SphP[j].HydroAccel[1]) * kernel->dp[2] * wk;
+        out->NV_A[2][0] += (local->Accel[2] - All.cf_a2inv*P[j].GravAccel[2] - SphP[j].HydroAccel[2]) * kernel->dp[0] * wk;
+        out->NV_A[2][1] += (local->Accel[2] - All.cf_a2inv*P[j].GravAccel[2] - SphP[j].HydroAccel[2]) * kernel->dp[1] * wk;
+        out->NV_A[2][2] += (local->Accel[2] - All.cf_a2inv*P[j].GravAccel[2] - SphP[j].HydroAccel[2]) * kernel->dp[2] * wk;
+        
+        out->NV_D[0][0] += kernel->dv[0] * kernel->dp[0] * wk;
+        out->NV_D[0][1] += kernel->dv[0] * kernel->dp[1] * wk;
+        out->NV_D[0][2] += kernel->dv[0] * kernel->dp[2] * wk;
+        out->NV_D[1][0] += kernel->dv[1] * kernel->dp[0] * wk;
+        out->NV_D[1][1] += kernel->dv[1] * kernel->dp[1] * wk;
+        out->NV_D[1][2] += kernel->dv[1] * kernel->dp[2] * wk;
+        out->NV_D[2][0] += kernel->dv[2] * kernel->dp[0] * wk;
+        out->NV_D[2][1] += kernel->dv[2] * kernel->dp[1] * wk;
+        out->NV_D[2][2] += kernel->dv[2] * kernel->dp[2] * wk;
+#endif
+    
+    } // Type = 0 check
+}
+
+
+
+
+
+/*! This function computes the local neighbor kernel for each active hydro element, the number of neighbours in the current kernel radius, and the divergence
+ * and rotation of the velocity field.  This is used then to compute the effective volume of the element in MFM/MFV/SPH-type methods, which is then used to
+ * update volumetric quantities like density and pressure. The routine iterates to attempt to find a target kernel size set adaptively -- see code user guide for details
  */
 void density(void)
 {
-  MyFloat *Left, *Right;
-  int i, j, k, k1, k2, ndone, ndone_flag, npleft, iter = 0;
-  int ngrp, recvTask, place;
-  long long ntot;
-  double fac, fac_lim;
-  double Tinv[3][3], detT, CNumHolder=0, ConditionNumber=0;
-  double timeall = 0, timecomp1 = 0, timecomp2 = 0, timecommsumm1 = 0, timecommsumm2 = 0, timewait1 =
-    0, timewait2 = 0;
-  double timecomp, timecomm, timewait;
-  double tstart, tend, t0, t1;
-  double desnumngb, desnumngbdev;
-  int save_NextParticle;
-  long long n_exported = 0;
-  int redo_particle;
-  int particle_set_to_minhsml_flag = 0;
-  int particle_set_to_maxhsml_flag = 0;
-
-  CPU_Step[CPU_DENSMISC] += measure_time();
-
-  long long NTaskTimesNumPart;
-  NTaskTimesNumPart = maxThreads * NumPart;
-  Ngblist = (int *) mymalloc("Ngblist", NTaskTimesNumPart * sizeof(int));
-
-  Left = (MyFloat *) mymalloc("Left", NumPart * sizeof(MyFloat));
-  Right = (MyFloat *) mymalloc("Right", NumPart * sizeof(MyFloat));
-
-  for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
-    {
-        if(density_isactive(i))
-        {
+    /* initialize variables used below, in particlar the structures we need to call throughout the iteration */
+    MyFloat *Left, *Right; double fac, fac_lim, desnumngb, desnumngbdev; long long ntot;
+    int i, npleft, iter=0, redo_particle, particle_set_to_minhsml_flag = 0, particle_set_to_maxhsml_flag = 0;
+    Left = (MyFloat *) mymalloc("Left", NumPart * sizeof(MyFloat));
+    Right = (MyFloat *) mymalloc("Right", NumPart * sizeof(MyFloat));
+    
+    /* initialize anything we need to about the active particles before their loop */
+    for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) {
+        if(density_isactive(i)) {
             Left[i] = Right[i] = 0;
 #ifdef BLACK_HOLES
-            P[i].SwallowID = 0;   
+            P[i].SwallowID = 0;
 #ifdef SINGLE_STAR_SINK_DYNAMICS
-	    P[i].SwallowTime = MAX_REAL_NUMBER;
+            P[i].SwallowTime = MAX_REAL_NUMBER;
 #endif
-#if (SINGLE_STAR_SINK_FORMATION & 8)	    
-	    P[i].BH_Ngb_Flag = 0;
-#endif		
+#if (SINGLE_STAR_SINK_FORMATION & 8)
+            P[i].BH_Ngb_Flag = 0;
 #endif
-        }
-    } /* done with intial zero-out loop */
-
-  /* allocate buffers to arrange communication */
-  size_t MyBufferSize = All.BufferSize;
-  All.BunchSize = (int) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
-					     sizeof(struct densdata_in) + sizeof(struct densdata_out) +
-					     sizemax(sizeof(struct densdata_in),sizeof(struct densdata_out))));
-  DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
-  DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
-
-  t0 = my_second();
-
-  desnumngb = All.DesNumNgb;
-  desnumngbdev = All.MaxNumNgbDeviation;
+#endif
+        }} /* done with intial zero-out loop */
+    desnumngb = All.DesNumNgb; desnumngbdev = All.MaxNumNgbDeviation;
     /* in the initial timestep and iteration, use a much more strict tolerance for the neighbor number */
     if(All.Time==All.TimeBegin) {if(All.MaxNumNgbDeviation > 0.05) desnumngbdev=0.05;}
-    double desnumngbdev_0 = desnumngbdev;
+    double desnumngbdev_0 = desnumngbdev, Tinv[3][3], detT, CNumHolder=0, ConditionNumber=0; int k,k1,k2; k=0;
 
-  /* we will repeat the whole thing for those particles where we didn't find enough neighbours */
-  do
+    /* allocate buffers to arrange communication */
+    #include "../system/code_block_xchange_perform_ops_malloc.h" /* this calls the large block of code which contains the memory allocations for the MPI/OPENMP/Pthreads parallelization block which must appear below */
+    /* we will repeat the whole thing for those particles where we didn't find enough neighbours */
+    do
     {
-      NextParticle = FirstActiveParticle;	/* begin with this index */
-
-      do
-	{
-	  BufferFullFlag = 0;
-	  Nexport = 0;
-	  save_NextParticle = NextParticle;
-
-	  tstart = my_second();
-
-#ifdef PTHREADS_NUM_THREADS
-	  pthread_t mythreads[PTHREADS_NUM_THREADS - 1];
-
-	  int threadid[PTHREADS_NUM_THREADS - 1];
-
-	  pthread_attr_t attr;
-
-	  pthread_attr_init(&attr);
-	  pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-	  pthread_mutex_init(&mutex_nexport, NULL);
-	  pthread_mutex_init(&mutex_partnodedrift, NULL);
-
-	  TimerFlag = 0;
-
-	  for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++)
-	    {
-	      threadid[j] = j + 1;
-	      pthread_create(&mythreads[j], &attr, density_evaluate_primary, &threadid[j]);
-	    }
-#endif
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-	  {
-#ifdef _OPENMP
-	    int mainthreadid = omp_get_thread_num();
-#else
-	    int mainthreadid = 0;
-#endif
-	    density_evaluate_primary(&mainthreadid);	/* do local particles and prepare export list */
-	  }
-
-#ifdef PTHREADS_NUM_THREADS
-	  for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++)
-	    pthread_join(mythreads[j], NULL);
-#endif
-
-	  tend = my_second();
-	  timecomp1 += timediff(tstart, tend);
-
-	  if(BufferFullFlag)
-	    {
-	      int last_nextparticle = NextParticle;
-
-	      NextParticle = save_NextParticle;
-
-	      while(NextParticle >= 0)
-		{
-		  if(NextParticle == last_nextparticle)
-		    break;
-
-		  if(ProcessedFlag[NextParticle] != 1)
-		    break;
-
-		  ProcessedFlag[NextParticle] = 2;
-
-		  NextParticle = NextActiveParticle[NextParticle];
-		}
-
-	      if(NextParticle == save_NextParticle)
-		{
-		  /* in this case, the buffer is too small to process even a single particle */
-		  printf("Task %d: Type=%d pos=(%g,%g,%g) mass=%g\n",ThisTask,P[NextParticle].Type,
-			 P[NextParticle].Pos[0],P[NextParticle].Pos[1],P[NextParticle].Pos[2],P[NextParticle].Mass);
-		  if(P[NextParticle].Type == 0)
-		    printf("   rho=%g hsml=%g\n",SphP[NextParticle].Density,PPP[NextParticle].Hsml);
-
-		  endrun(112208);
-		}
-
-
-	      int new_export = 0;
-
-	      for(j = 0, k = 0; j < Nexport; j++)
-		if(ProcessedFlag[DataIndexTable[j].Index] != 2)
-		  {
-		    if(k < j + 1)
-		      k = j + 1;
-
-		    for(; k < Nexport; k++)
-		      if(ProcessedFlag[DataIndexTable[k].Index] == 2)
-			{
-			  int old_index = DataIndexTable[j].Index;
-
-			  DataIndexTable[j] = DataIndexTable[k];
-			  DataNodeList[j] = DataNodeList[k];
-			  DataIndexTable[j].IndexGet = j;
-			  new_export++;
-
-			  DataIndexTable[k].Index = old_index;
-			  k++;
-			  break;
-			}
-		  }
-		else
-		  new_export++;
-
-	      Nexport = new_export;
-
-	    }
-
-
-	  n_exported += Nexport;
-
-	  for(j = 0; j < NTask; j++)
-	    Send_count[j] = 0;
-	  for(j = 0; j < Nexport; j++)
-	    Send_count[DataIndexTable[j].Task]++;
-
-	  MYSORT_DATAINDEX(DataIndexTable, Nexport, sizeof(struct data_index), data_index_compare);
-
-	  tstart = my_second();
-
-	  MPI_Alltoall(Send_count, 1, MPI_INT, Recv_count, 1, MPI_INT, MPI_COMM_WORLD);
-
-	  tend = my_second();
-	  timewait1 += timediff(tstart, tend);
-
-	  for(j = 0, Nimport = 0, Recv_offset[0] = 0, Send_offset[0] = 0; j < NTask; j++)
-	    {
-	      Nimport += Recv_count[j];
-
-	      if(j > 0)
-		{
-		  Send_offset[j] = Send_offset[j - 1] + Send_count[j - 1];
-		  Recv_offset[j] = Recv_offset[j - 1] + Recv_count[j - 1];
-		}
-	    }
-
-	  DensDataGet = (struct densdata_in *) mymalloc("DensDataGet", Nimport * sizeof(struct densdata_in));
-	  DensDataIn = (struct densdata_in *) mymalloc("DensDataIn", Nexport * sizeof(struct densdata_in));
-
-	  /* prepare particle data for export */
-	  for(j = 0; j < Nexport; j++)
-	    {
-	      place = DataIndexTable[j].Index;
-
-	      particle2in_density(&DensDataIn[j], place);
-
-	      memcpy(DensDataIn[j].NodeList,
-		     DataNodeList[DataIndexTable[j].IndexGet].NodeList, NODELISTLENGTH * sizeof(int));
-	    }
-	  /* exchange particle data */
-	  tstart = my_second();
-	  for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-	    {
-	      recvTask = ThisTask ^ ngrp;
-
-	      if(recvTask < NTask)
-		{
-		  if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
-		    {
-		      /* get the particles */
-		      MPI_Sendrecv(&DensDataIn[Send_offset[recvTask]],
-				   Send_count[recvTask] * sizeof(struct densdata_in), MPI_BYTE,
-				   recvTask, TAG_DENS_A,
-				   &DensDataGet[Recv_offset[recvTask]],
-				   Recv_count[recvTask] * sizeof(struct densdata_in), MPI_BYTE,
-				   recvTask, TAG_DENS_A, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		    }
-		}
-	    }
-	  tend = my_second();
-	  timecommsumm1 += timediff(tstart, tend);
-
-	  myfree(DensDataIn);
-	  DensDataResult =
-	    (struct densdata_out *) mymalloc("DensDataResult", Nimport * sizeof(struct densdata_out));
-	  DensDataOut =
-	    (struct densdata_out *) mymalloc("DensDataOut", Nexport * sizeof(struct densdata_out));
-
-	  report_memory_usage(&HighMark_sphdensity, "SPH_DENSITY");
-
-	  /* now do the particles that were sent to us */
-
-	  tstart = my_second();
-
-	  NextJ = 0;
-
-#ifdef PTHREADS_NUM_THREADS
-	  for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++)
-	    pthread_create(&mythreads[j], &attr, density_evaluate_secondary, &threadid[j]);
-#endif
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-	  {
-#ifdef _OPENMP
-	    int mainthreadid = omp_get_thread_num();
-#else
-	    int mainthreadid = 0;
-#endif
-	    density_evaluate_secondary(&mainthreadid);
-	  }
-
-#ifdef PTHREADS_NUM_THREADS
-	  for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++)
-	    pthread_join(mythreads[j], NULL);
-
-	  pthread_mutex_destroy(&mutex_partnodedrift);
-	  pthread_mutex_destroy(&mutex_nexport);
-	  pthread_attr_destroy(&attr);
-#endif
-
-	  tend = my_second();
-	  timecomp2 += timediff(tstart, tend);
-
-	  if(NextParticle < 0)
-	    ndone_flag = 1;
-	  else
-	    ndone_flag = 0;
-
-	  tstart = my_second();
-	  MPI_Allreduce(&ndone_flag, &ndone, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-	  tend = my_second();
-	  timewait2 += timediff(tstart, tend);
-
-
-	  /* get the result */
-	  tstart = my_second();
-	  for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-	    {
-	      recvTask = ThisTask ^ ngrp;
-	      if(recvTask < NTask)
-		{
-		  if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
-		    {
-		      /* send the results */
-		      MPI_Sendrecv(&DensDataResult[Recv_offset[recvTask]],
-				   Recv_count[recvTask] * sizeof(struct densdata_out),
-				   MPI_BYTE, recvTask, TAG_DENS_B,
-				   &DensDataOut[Send_offset[recvTask]],
-				   Send_count[recvTask] * sizeof(struct densdata_out),
-				   MPI_BYTE, recvTask, TAG_DENS_B, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		    }
-		}
-
-	    }
-	  tend = my_second();
-	  timecommsumm2 += timediff(tstart, tend);
-
-
-	  /* add the result to the local particles */
-	  tstart = my_second();
-	  for(j = 0; j < Nexport; j++)
-	    {
-	      place = DataIndexTable[j].Index;
-	      out2particle_density(&DensDataOut[j], place, 1);
-	    }
-	  tend = my_second();
-	  timecomp1 += timediff(tstart, tend);
-
-
-	  myfree(DensDataOut);
-	  myfree(DensDataResult);
-	  myfree(DensDataGet);
-	}
-      while(ndone < NTask);
-
+        #include "../system/code_block_xchange_perform_ops.h" /* this calls the large block of code which actually contains all the loops, MPI/OPENMP/Pthreads parallelization */
 
         /* do check on whether we have enough neighbors, and iterate for density-hsml solution */
-        tstart = my_second();
+        double tstart = my_second(), tend;
         for(i = FirstActiveParticle, npleft = 0; i >= 0; i = NextActiveParticle[i])
         {
             if(density_isactive(i))
@@ -793,13 +695,9 @@ void density(void)
                 if((redo_particle==0)&&(P[i].Type == 0))
                 {
                     /* ok we have reached the desired number of neighbors: save the condition number for next timestep */
-                    if(ConditionNumber > 1000.0 * (double)CONDITION_NUMBER_DANGER)
-                    {
-#ifndef IO_REDUCED_MODE
-                        printf("Warning: Condition number=%g CNum_prevtimestep=%g Num_Ngb=%g desnumngb=%g Hsml=%g Hsml_min=%g Hsml_max=%g\n",
-                               ConditionNumber,SphP[i].ConditionNumber,PPP[i].NumNgb,desnumngb,PPP[i].Hsml,All.MinHsml,All.MaxHsml);
-#endif
-                    }
+                    if(ConditionNumber > 1e6 * (double)CONDITION_NUMBER_DANGER) {
+                        PRINT_WARNING("Warning: Condition number=%g CNum_prevtimestep=%g Num_Ngb=%g desnumngb=%g Hsml=%g Hsml_min=%g Hsml_max=%g\n",
+                               ConditionNumber,SphP[i].ConditionNumber,PPP[i].NumNgb,desnumngb,PPP[i].Hsml,All.MinHsml,All.MaxHsml);}
                     SphP[i].ConditionNumber = ConditionNumber;
                 }
                 
@@ -807,7 +705,7 @@ void density(void)
                 {
                     if(iter >= MAXITER - 10)
                     {
-                        printf("i=%d task=%d ID=%llu Type=%d Hsml=%g dhsml=%g Left=%g Right=%g Ngbs=%g Right-Left=%g maxh_flag=%d minh_flag=%d  minsoft=%g maxsoft=%g desnum=%g desnumtol=%g redo=%d pos=(%g|%g|%g)\n",
+                        PRINT_WARNING("i=%d task=%d ID=%llu Type=%d Hsml=%g dhsml=%g Left=%g Right=%g Ngbs=%g Right-Left=%g maxh_flag=%d minh_flag=%d  minsoft=%g maxsoft=%g desnum=%g desnumtol=%g redo=%d pos=(%g|%g|%g)\n",
                                i, ThisTask, (unsigned long long) P[i].ID, P[i].Type, PPP[i].Hsml, PPP[i].DhsmlNgbFactor, Left[i], Right[i],
                                (float) PPP[i].NumNgb, Right[i] - Left[i], particle_set_to_maxhsml_flag, particle_set_to_minhsml_flag, minsoft,
                                maxsoft, desnumngb, desnumngbdev, redo_particle, P[i].Pos[0], P[i].Pos[1], P[i].Pos[2]);
@@ -828,17 +726,10 @@ void density(void)
                     
                     if((particle_set_to_maxhsml_flag==0)&&(particle_set_to_minhsml_flag==0))
                     {
-                        if(PPP[i].NumNgb < (desnumngb - desnumngbdev))
-                            Left[i] = DMAX(PPP[i].Hsml, Left[i]);
+                        if(PPP[i].NumNgb < (desnumngb - desnumngbdev)) {Left[i] = DMAX(PPP[i].Hsml, Left[i]);}
                         else
                         {
-                            if(Right[i] != 0)
-                            {
-                                if(PPP[i].Hsml < Right[i])
-                                    Right[i] = PPP[i].Hsml;
-                            }
-                            else
-                                Right[i] = PPP[i].Hsml;
+                            if(Right[i] != 0) {if(PPP[i].Hsml < Right[i]) {Right[i] = PPP[i].Hsml;}} else {Right[i] = PPP[i].Hsml;}
                         }
                         
                         // right/left define upper/lower bounds from previous iterations
@@ -873,9 +764,7 @@ void density(void)
                         {
                             if(Right[i] == 0 && Left[i] == 0)
                             {
-                                char buf[1000];
-                                sprintf(buf, "Right[i] == 0 && Left[i] == 0 && PPP[i].Hsml=%g\n", PPP[i].Hsml);
-                                terminate(buf);
+                                char buf[1000]; sprintf(buf, "Right[i] == 0 && Left[i] == 0 && PPP[i].Hsml=%g\n", PPP[i].Hsml); terminate(buf);
                             }
                             
                             if(Right[i] == 0 && Left[i] > 0)
@@ -943,41 +832,26 @@ void density(void)
                     if(PPP[i].Hsml > maxsoft) PPP[i].Hsml = maxsoft;
                     if(particle_set_to_maxhsml_flag==1) PPP[i].Hsml = maxsoft;
                 }
-                else
-                    P[i].TimeBin = -P[i].TimeBin - 1;	/* Mark as inactive */
-            }
-        }
+                else {P[i].TimeBin = -P[i].TimeBin - 1;}	/* Mark as inactive */
+            } //  if(density_isactive(i))
+        } // for(i = FirstActiveParticle, npleft = 0; i >= 0; i = NextActiveParticle[i])
+
         tend = my_second();
-        timecomp1 += timediff(tstart, tend);
+        timecomp += timediff(tstart, tend);
         sumup_large_ints(1, &npleft, &ntot);
         if(ntot > 0)
         {
             iter++;
-            if(iter > 0 && ThisTask == 0)
-            {
-#ifdef IO_REDUCED_MODE
-                if(iter > 10)
-#endif
-                printf("ngb iteration %d: need to repeat for %d%09d particles.\n", iter,
-                       (int) (ntot / 1000000000), (int) (ntot % 1000000000));
-            }
-            if(iter > MAXITER)
-            {
-                printf("failed to converge in neighbour iteration in density()\n");
-                fflush(stdout);
-                endrun(1155);
-            }
+            if(iter > 10) {PRINT_STATUS("ngb iteration %d: need to repeat for %d%09d particles", iter, (int) (ntot / 1000000000), (int) (ntot % 1000000000));}
+            if(iter > MAXITER) {printf("failed to converge in neighbour iteration in density()\n"); fflush(stdout); endrun(1155);}
         }
     }
     while(ntot > 0);
     
-    myfree(DataNodeList);
-    myfree(DataIndexTable);
-    myfree(Right);
-    myfree(Left);
-    myfree(Ngblist);
-    
-    
+    /* iteration is done - de-malloc everything now */
+    #include "../system/code_block_xchange_perform_ops_demalloc.h" /* this de-allocates the memory for the MPI/OPENMP/Pthreads parallelization block which must appear above */
+    myfree(Right); myfree(Left);
+
     /* mark as active again */
     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
     {
@@ -1160,332 +1034,10 @@ void density(void)
     
     
     /* collect some timing information */
-    t1 = WallclockTime = my_second();
-    timeall += timediff(t0, t1);
-    timecomp = timecomp1 + timecomp2;
-    timewait = timewait1 + timewait2;
-    timecomm = timecommsumm1 + timecommsumm2;
-    CPU_Step[CPU_DENSCOMPUTE] += timecomp;
-    CPU_Step[CPU_DENSWAIT] += timewait;
-    CPU_Step[CPU_DENSCOMM] += timecomm;
-    CPU_Step[CPU_DENSMISC] += timeall - (timecomp + timewait + timecomm);
+    double t1; t1 = WallclockTime = my_second(); timeall += timediff(t0, t1);
+    CPU_Step[CPU_DENSCOMPUTE] += timecomp; CPU_Step[CPU_DENSWAIT] += timewait;
+    CPU_Step[CPU_DENSCOMM] += timecomm; CPU_Step[CPU_DENSMISC] += timeall - (timecomp + timewait + timecomm);
 }
-
-
-
-
-
-
-/*! This function represents the core of the SPH density computation. The
- *  target particle may either be local, or reside in the communication
- *  buffer.
- */
-int density_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex,
-                     int *ngblist)
-{
-    int j, n;
-    int startnode, numngb_inbox, listindex = 0;
-    double r2, h2, u, mass_j, wk;
-    struct kernel_density kernel;
-    struct densdata_in local;
-    struct densdata_out out;
-    memset(&out, 0, sizeof(struct densdata_out));
-#if defined(BLACK_HOLES)
-    out.BH_TimeBinGasNeighbor = TIMEBINS;
-#ifdef BH_ACCRETE_NEARESTFIRST
-    out.BH_dr_to_NearestGasNeighbor = MAX_REAL_NUMBER;
-#endif 
-#endif
-    
-    if(mode == 0)
-        particle2in_density(&local, target);
-    else
-        local = DensDataGet[target];
-    h2 = local.Hsml * local.Hsml;
-    kernel_hinv(local.Hsml, &kernel.hinv, &kernel.hinv3, &kernel.hinv4);
-    
-    if(mode == 0)
-    {
-        startnode = All.MaxPart;	/* root node */
-    }
-    else
-    {
-        startnode = DensDataGet[target].NodeList[0];
-        startnode = Nodes[startnode].u.d.nextnode;	/* open it */
-    }
-    
-    while(startnode >= 0)
-    {
-        while(startnode >= 0)
-        {
-            numngb_inbox = ngb_treefind_variable_threads(local.Pos, local.Hsml, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist);
-            
-            if(numngb_inbox < 0) return -1;
-            
-            for(n = 0; n < numngb_inbox; n++)
-            {
-                j = ngblist[n];
-#ifdef GALSF_SUBGRID_WINDS
-                if(SphP[j].DelayTime > 0)	/* partner is a wind particle */
-                    if(!(local.DelayTime > 0))	/* if I'm not wind, then ignore the wind particle */
-                        continue;
-#endif
-                if(P[j].Mass <= 0) continue;
-                
-                kernel.dp[0] = local.Pos[0] - P[j].Pos[0];
-                kernel.dp[1] = local.Pos[1] - P[j].Pos[1];
-                kernel.dp[2] = local.Pos[2] - P[j].Pos[2];
-#ifdef BOX_PERIODIC
-                NEAREST_XYZ(kernel.dp[0],kernel.dp[1],kernel.dp[2],1);
-#endif
-                r2 = kernel.dp[0] * kernel.dp[0] + kernel.dp[1] * kernel.dp[1] + kernel.dp[2] * kernel.dp[2];
-                
-                if(r2 < h2)
-                {
-                    kernel.r = sqrt(r2);
-                    u = kernel.r * kernel.hinv;
-                    kernel_main(u, kernel.hinv3, kernel.hinv4, &kernel.wk, &kernel.dwk, 0);
-                    mass_j = P[j].Mass;
-                    kernel.mj_wk = FLT(mass_j * kernel.wk);
-                    
-                    out.Ngb += kernel.wk;
-                    out.Rho += kernel.mj_wk;
-
-#if defined(HYDRO_MESHLESS_FINITE_VOLUME) && ((HYDRO_FIX_MESH_MOTION==5)||(HYDRO_FIX_MESH_MOTION==6))
-                    if(local.Type == 0 && kernel.r==0) {int kv; for(kv=0;kv<3;kv++) {out.ParticleVel[kv] += kernel.mj_wk * SphP[j].VelPred[kv];}} // just the self-contribution //
-#endif
-#if defined(RT_SOURCE_INJECTION)
-                    if((1 << local.Type) & (RT_SOURCES)) {out.KernelSum_Around_RT_Source += 1.-u*u;}
-#endif
-                    out.DhsmlNgb += -(NUMDIMS * kernel.hinv * kernel.wk + u * kernel.dwk);
-#ifdef HYDRO_SPH
-                    double mass_eff = mass_j;
-#ifdef HYDRO_PRESSURE_SPH
-                    mass_eff *= SphP[j].InternalEnergyPred;
-                    out.EgyRho += kernel.wk * mass_eff;
-#endif
-                    out.DhsmlHydroSumFactor += -mass_eff * (NUMDIMS * kernel.hinv * kernel.wk + u * kernel.dwk);
-#endif
-                    
-#if defined(ADAPTIVE_GRAVSOFT_FORGAS) || (ADAPTIVE_GRAVSOFT_FORALL & 1)
-                    if(local.Type == 0) {out.AGS_zeta += mass_j * kernel_gravity(u, kernel.hinv, kernel.hinv3, 0);}
-#endif
-                    /* for everything below, we do NOT include the particle self-contribution! */
-                    if(kernel.r > 0)
-                    {
-                        if(local.Type == 0)
-                        {
-                            wk = kernel.wk; /* MAKE SURE THIS MATCHES CHOICE IN GRADIENTS.c!!! */
-                            /* the weights for the MLS tensor used for gradient estimation */
-                            out.NV_T[0][0] +=  wk * kernel.dp[0] * kernel.dp[0];
-                            out.NV_T[0][1] +=  wk * kernel.dp[0] * kernel.dp[1];
-                            out.NV_T[0][2] +=  wk * kernel.dp[0] * kernel.dp[2];
-                            out.NV_T[1][1] +=  wk * kernel.dp[1] * kernel.dp[1];
-                            out.NV_T[1][2] +=  wk * kernel.dp[1] * kernel.dp[2];
-                            out.NV_T[2][2] +=  wk * kernel.dp[2] * kernel.dp[2];
-                        }
-                        kernel.dv[0] = local.Vel[0] - SphP[j].VelPred[0];
-                        kernel.dv[1] = local.Vel[1] - SphP[j].VelPred[1];
-                        kernel.dv[2] = local.Vel[2] - SphP[j].VelPred[2];
-#ifdef BOX_SHEARING
-                        if(local.Pos[0] - P[j].Pos[0] > +boxHalf_X) {kernel.dv[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;}
-                        if(local.Pos[0] - P[j].Pos[0] < -boxHalf_X) {kernel.dv[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;}
-#endif
-#if defined(HYDRO_MESHLESS_FINITE_VOLUME) && ((HYDRO_FIX_MESH_MOTION==5)||(HYDRO_FIX_MESH_MOTION==6))
-                        // do neighbor contribution to smoothed particle velocity here, after wrap, so can account for shearing boxes correctly //
-                        {int kv; for(kv=0;kv<3;kv++) {out.ParticleVel[kv] += kernel.mj_wk * (local.Vel[kv] - kernel.dv[kv]);}}
-#endif
-                        out.Particle_DivVel -= kernel.dwk * (kernel.dp[0] * kernel.dv[0] + kernel.dp[1] * kernel.dv[1] + kernel.dp[2] * kernel.dv[2]) / kernel.r;
-                        /* this is the -particle- divv estimator, which determines how Hsml will evolve (particle drift) */
-                        
-                        density_evaluate_extra_physics_gas(&local, &out, &kernel, j);
-                    } // kernel.r > 0 //
-                }
-            }
-        }
-        
-        if(mode == 1)
-        {
-            listindex++;
-            if(listindex < NODELISTLENGTH)
-            {
-                startnode = DensDataGet[target].NodeList[listindex];
-                if(startnode >= 0)
-                    startnode = Nodes[startnode].u.d.nextnode;	/* open it */
-            }
-        }
-    }
-    
-    if(mode == 0)
-        out2particle_density(&out, target, 0);
-    else
-        DensDataResult[target] = out;
-    
-    return 0;
-}
-
-
-
-void *density_evaluate_primary(void *p)
-{
-#define CONDITION_FOR_EVALUATION if(density_isactive(i))
-#define EVALUATION_CALL density_evaluate(i, 0, exportflag, exportnodecount, exportindex, ngblist)
-#include "../system/code_block_primary_loop_evaluation.h"
-#undef CONDITION_FOR_EVALUATION
-#undef EVALUATION_CALL
-}
-void *density_evaluate_secondary(void *p)
-{
-#define EVALUATION_CALL density_evaluate(j, 1, &dummy, &dummy, &dummy, ngblist);
-#include "../system/code_block_secondary_loop_evaluation.h"
-#undef EVALUATION_CALL
-}
-
-
-
-
-int density_isactive(int n)
-{
-    /* first check our 'marker' for particles which have finished iterating to an Hsml solution (if they have, dont do them again) */
-    if(P[n].TimeBin < 0) return 0;
-    
-#if defined(GRAIN_FLUID)
-    /* all particles can potentially interact with the gas in this mode, if drag > 0 */
-    if(P[n].Type >= 0) return 1;
-#endif
-    
-#if defined(RT_SOURCE_INJECTION)
-    if((1 << P[n].Type) & (RT_SOURCES)) 
-    {
-#if defined(GALSF)
-       if(((P[n].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[n].Type == 2)||(P[n].Type==3))))&&(P[n].Mass>0)) 
-        {
-            double star_age = evaluate_stellar_age_Gyr(P[n].StellarAge);
-	        if((star_age < 0.1)&&(star_age > 0)&&(!isnan(star_age))) return 1;
-        }
-#else
-        if(Flag_FullStep) {return 1;} // only do on full timesteps
-#endif
-    }
-#endif
-    
-#ifdef DO_DENSITY_AROUND_STAR_PARTICLES
-    if(((P[n].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[n].Type == 2)||(P[n].Type==3))))&&(P[n].Mass>0))
-    {
-#if defined(GALSF_FB_MECHANICAL) || defined(GALSF_FB_THERMAL)
-        /* check if there is going to be a SNe this timestep, in which case, we want the density info! */
-        if(P[n].SNe_ThisTimeStep>0) return 1;
-#endif
-#if defined(GALSF)
-        if(P[n].DensAroundStar<=0) return 1;
-        // only do stellar age evaluation if we have to //
-        if(All.ComovingIntegrationOn==0)
-        {
-            float star_age=0;
-            star_age = evaluate_stellar_age_Gyr(P[n].StellarAge);
-            if(star_age < 0.035) return 1;
-        }
-#endif
-    }
-#endif
-    
-#ifdef BLACK_HOLES
-    if(P[n].Type == 5) return 1;
-#endif
-    
-    if(P[n].Type == 0 && P[n].Mass > 0) return 1;
-    
-    return 0;
-}
-
-
-
-
-
-void density_evaluate_extra_physics_gas(struct densdata_in *local, struct densdata_out *out,
-                                        struct kernel_density *kernel, int j)
-{
-    kernel->mj_dwk_r = P[j].Mass * kernel->dwk / kernel->r;
-
-
-    if(local->Type != 0)
-    {
-        
-#if defined(GRAIN_FLUID)
-        out->Gas_InternalEnergy += kernel->mj_wk * SphP[j].InternalEnergyPred;
-        out->GasVel[0] += kernel->mj_wk * (local->Vel[0]-kernel->dv[0]);
-        out->GasVel[1] += kernel->mj_wk * (local->Vel[1]-kernel->dv[1]);
-        out->GasVel[2] += kernel->mj_wk * (local->Vel[2]-kernel->dv[2]);
-#ifdef GRAIN_LORENTZFORCE
-        out->Gas_B[0] += kernel->wk * SphP[j].BPred[0];
-        out->Gas_B[1] += kernel->wk * SphP[j].BPred[1];
-        out->Gas_B[2] += kernel->wk * SphP[j].BPred[2];
-#endif
-#endif
-        
-#if defined(BLACK_HOLES)
-        if(local->Type == 5)
-        {
-            P[j].SwallowID = 0;  // this way we don't have to do a global loop over local particles in blackhole_accretion() to reset these quantities...
-            short int TimeBin_j = P[j].TimeBin; if(TimeBin_j < 0) {TimeBin_j = -TimeBin_j - 1;} // need to make sure we correct for the fact that TimeBin is used as a 'switch' here to determine if a particle is active for iteration, otherwise this gives nonsense!
-            if(out->BH_TimeBinGasNeighbor > TimeBin_j) {out->BH_TimeBinGasNeighbor = TimeBin_j;}
-#if (SINGLE_STAR_SINK_FORMATION & 8)
-	    P[j].BH_Ngb_Flag = 1;
-#endif
-#ifdef SINGLE_STAR_SINK_DYNAMICS
-	    P[j].SwallowTime = MAX_REAL_NUMBER;
-#endif	    
-#if defined(BH_ACCRETE_NEARESTFIRST) || defined(FLAG_NOT_IN_PUBLIC_CODE)
-            double dr_eff_wtd = Get_Particle_Size(j); dr_eff_wtd=sqrt(dr_eff_wtd*dr_eff_wtd + (kernel->r)*(kernel->r)); /* effective distance for Gaussian-type kernel, weighted by density */
-            if((dr_eff_wtd < out->BH_dr_to_NearestGasNeighbor) && (P[j].Mass > 0)) {out->BH_dr_to_NearestGasNeighbor = dr_eff_wtd;}
-#endif
-        }
-#endif
-        
-#ifdef DO_DENSITY_AROUND_STAR_PARTICLES
-        /* this is here because for the models of BH growth and self-shielding of stars, we
-         just need a quick-and-dirty, single-pass approximation for the gradients (the error from
-         using this as opposed to the higher-order gradient estimators is small compared to the
-         Sobolev approximation): use only for -non-gas- particles */
-        out->GradRho[0] += kernel->mj_dwk_r * kernel->dp[0];
-        out->GradRho[1] += kernel->mj_dwk_r * kernel->dp[1];
-        out->GradRho[2] += kernel->mj_dwk_r * kernel->dp[2];
-#endif
-        
-    } else { /* local.Type == 0 */
-
-#if defined(TURB_DRIVING)
-        out->GasVel[0] += kernel->mj_wk * (local->Vel[0]-kernel->dv[0]);
-        out->GasVel[1] += kernel->mj_wk * (local->Vel[1]-kernel->dv[1]);
-        out->GasVel[2] += kernel->mj_wk * (local->Vel[2]-kernel->dv[2]);
-#endif
-
-#if defined(SPHAV_CD10_VISCOSITY_SWITCH)
-        double wk = kernel->wk;
-        out->NV_A[0][0] += (local->Accel[0] - All.cf_a2inv*P[j].GravAccel[0] - SphP[j].HydroAccel[0]) * kernel->dp[0] * wk;
-        out->NV_A[0][1] += (local->Accel[0] - All.cf_a2inv*P[j].GravAccel[0] - SphP[j].HydroAccel[0]) * kernel->dp[1] * wk;
-        out->NV_A[0][2] += (local->Accel[0] - All.cf_a2inv*P[j].GravAccel[0] - SphP[j].HydroAccel[0]) * kernel->dp[2] * wk;
-        out->NV_A[1][0] += (local->Accel[1] - All.cf_a2inv*P[j].GravAccel[1] - SphP[j].HydroAccel[1]) * kernel->dp[0] * wk;
-        out->NV_A[1][1] += (local->Accel[1] - All.cf_a2inv*P[j].GravAccel[1] - SphP[j].HydroAccel[1]) * kernel->dp[1] * wk;
-        out->NV_A[1][2] += (local->Accel[1] - All.cf_a2inv*P[j].GravAccel[1] - SphP[j].HydroAccel[1]) * kernel->dp[2] * wk;
-        out->NV_A[2][0] += (local->Accel[2] - All.cf_a2inv*P[j].GravAccel[2] - SphP[j].HydroAccel[2]) * kernel->dp[0] * wk;
-        out->NV_A[2][1] += (local->Accel[2] - All.cf_a2inv*P[j].GravAccel[2] - SphP[j].HydroAccel[2]) * kernel->dp[1] * wk;
-        out->NV_A[2][2] += (local->Accel[2] - All.cf_a2inv*P[j].GravAccel[2] - SphP[j].HydroAccel[2]) * kernel->dp[2] * wk;
-        
-        out->NV_D[0][0] += kernel->dv[0] * kernel->dp[0] * wk;
-        out->NV_D[0][1] += kernel->dv[0] * kernel->dp[1] * wk;
-        out->NV_D[0][2] += kernel->dv[0] * kernel->dp[2] * wk;
-        out->NV_D[1][0] += kernel->dv[1] * kernel->dp[0] * wk;
-        out->NV_D[1][1] += kernel->dv[1] * kernel->dp[1] * wk;
-        out->NV_D[1][2] += kernel->dv[1] * kernel->dp[2] * wk;
-        out->NV_D[2][0] += kernel->dv[2] * kernel->dp[0] * wk;
-        out->NV_D[2][1] += kernel->dv[2] * kernel->dp[1] * wk;
-        out->NV_D[2][2] += kernel->dv[2] * kernel->dp[2] * wk;
-#endif
-    
-    } // Type = 0 check
-}
-
-
+#include "../system/code_block_xchange_finalize.h" /* de-define the relevant variables and macros to avoid compilation errors and memory leaks */
 
 

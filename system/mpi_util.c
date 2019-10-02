@@ -3,7 +3,7 @@
 */
 /*
  * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org). The code has been modified
+ * Volker Springel. The code has been modified
  * in part (cleaned up, some routines re-organized and consolidated and a 
  * couple others added) by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
  */
@@ -310,9 +310,7 @@ int MPI_Check_Sendrecv(void *sendbuf, int sendcount, MPI_Datatype sendtype,
                 sendCheckSum += *p;
             
             printf("Task=%d gas send_checksum=%d %d\n", Local_ThisTask, (int) (sendCheckSum >> 32), (int) sendCheckSum);
-#ifndef IO_REDUCED_MODE
-            fflush(stdout);
-#endif
+
             if(dest > Local_ThisTask)
             {
                 if(sendcount > 0)

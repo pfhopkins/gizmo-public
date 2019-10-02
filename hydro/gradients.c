@@ -58,6 +58,9 @@ extern pthread_mutex_t mutex_partnodedrift;
 
 #define NV_MYSIGN(x) (( x > 0 ) - ( x < 0 ))
 
+void *GasGrad_evaluate_primary(void *p, int gradient_iteration);
+void *GasGrad_evaluate_secondary(void *p, int gradient_iteration);
+
 /* define a common 'gradients' structure to hold
  everything we're going to take derivatives of */
 struct Quantities_for_Gradients
@@ -547,7 +550,7 @@ void construct_gradient(double *grad, int i)
 
 void hydro_gradient_calc(void)
 {
-    int i, j, k, k1, ngrp, ndone, ndone_flag;
+    int i, j, k, k1, ndone, ndone_flag;
     int recvTask, place;
     double timeall = 0, timecomp1 = 0, timecomp2 = 0, timecommsumm1 = 0, timecommsumm2 = 0, timewait1 = 0, timewait2 = 0;
     double timecomp, timecomm, timewait, tstart, tend, t0, t1;
@@ -653,37 +656,13 @@ void hydro_gradient_calc(void)
         NextParticle = FirstActiveParticle;	/* begin with this index */
         do
         {
-            
-            BufferFullFlag = 0;
-            Nexport = 0;
-            save_NextParticle = NextParticle;
-            
-            for(j = 0; j < NTask; j++)
-            {
-                Send_count[j] = 0;
-                Exportflag[j] = -1;
-            }
-            
-            /* do local particles and prepare export list */
-            tstart = my_second();
-            
+            BufferFullFlag = 0; Nexport = 0; save_NextParticle = NextParticle; tstart = my_second();
+            for(j = 0; j < NTask; j++) {Send_count[j] = 0; Exportflag[j] = -1;} /* do local particles and prepare export list */
 #ifdef PTHREADS_NUM_THREADS
-            pthread_t mythreads[PTHREADS_NUM_THREADS - 1];
-            int threadid[PTHREADS_NUM_THREADS - 1];
-            pthread_attr_t attr;
-            
-            pthread_attr_init(&attr);
-            pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-            pthread_mutex_init(&mutex_nexport, NULL);
-            pthread_mutex_init(&mutex_partnodedrift, NULL);
-            
-            TimerFlag = 0;
-            
-            for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++)
-            {
-                threadid[j] = j + 1;
-                pthread_create(&mythreads[j], &attr, GasGrad_evaluate_primary, &threadid[j]);
-            }
+            pthread_t mythreads[PTHREADS_NUM_THREADS - 1]; int threadid[PTHREADS_NUM_THREADS - 1]; pthread_attr_t attr;
+            pthread_attr_init(&attr); pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
+            pthread_mutex_init(&mutex_nexport, NULL); pthread_mutex_init(&mutex_partnodedrift, NULL);
+            TimerFlag = 0; for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++) {threadid[j] = j + 1; pthread_create(&mythreads[j], &attr, GasGrad_evaluate_primary, &threadid[j]);}
 #endif
 #ifdef _OPENMP
 #pragma omp parallel
@@ -696,220 +675,169 @@ void hydro_gradient_calc(void)
 #endif
                 GasGrad_evaluate_primary(&mainthreadid, gradient_iteration);	/* do local particles and prepare export list */
             }
-            
 #ifdef PTHREADS_NUM_THREADS
-            for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++)
-                pthread_join(mythreads[j], NULL);
+            for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++) {pthread_join(mythreads[j], NULL);}
 #endif
+            tend = my_second(); timecomp1 += timediff(tstart, tend);
             
-            
-            tend = my_second();
-            timecomp1 += timediff(tstart, tend);
-            
-            if(BufferFullFlag)
+            if(BufferFullFlag) /* we've filled the buffer or reached the end of the list, prepare for communications */
             {
-                int last_nextparticle = NextParticle;
-                
-                NextParticle = save_NextParticle;
-                
+                int last_nextparticle = NextParticle; NextParticle = save_NextParticle; /* figure out where we are */
                 while(NextParticle >= 0)
                 {
-                    if(NextParticle == last_nextparticle)
-                        break;
-                    
-                    if(ProcessedFlag[NextParticle] != 1)
-                        break;
-                    
-                    ProcessedFlag[NextParticle] = 2;
-                    
-                    NextParticle = NextActiveParticle[NextParticle];
+                    if(NextParticle == last_nextparticle) {break;}
+                    if(ProcessedFlag[NextParticle] != 1) {break;}
+                    ProcessedFlag[NextParticle] = 2; NextParticle = NextActiveParticle[NextParticle];
                 }
+                if(NextParticle == save_NextParticle) {endrun(113308);} /* in this case, the buffer is too small to process even a single particle */
                 
-                if(NextParticle == save_NextParticle)
-                {
-                    /* in this case, the buffer is too small to process even a single particle */
-                    endrun(113308);
-                }
-                
-                int new_export = 0;
-                
+                int new_export = 0; /* actually calculate exports [so we can tell other tasks] */
                 for(j = 0, k = 0; j < Nexport; j++)
+                {
                     if(ProcessedFlag[DataIndexTable[j].Index] != 2)
                     {
-                        if(k < j + 1)
-                            k = j + 1;
-                        
+                        if(k < j + 1) {k = j + 1;}
                         for(; k < Nexport; k++)
                             if(ProcessedFlag[DataIndexTable[k].Index] == 2)
                             {
                                 int old_index = DataIndexTable[j].Index;
-                                
-                                DataIndexTable[j] = DataIndexTable[k];
-                                DataNodeList[j] = DataNodeList[k];
-                                DataIndexTable[j].IndexGet = j;
-                                new_export++;
-                                
-                                DataIndexTable[k].Index = old_index;
-                                k++;
+                                DataIndexTable[j] = DataIndexTable[k]; DataNodeList[j] = DataNodeList[k]; DataIndexTable[j].IndexGet = j; new_export++;
+                                DataIndexTable[k].Index = old_index; k++;
                                 break;
                             }
                     }
-                    else
-                        new_export++;
-                
-                Nexport = new_export;
-                
-            }
-            
-            n_exported += Nexport;
-            
-            for(j = 0; j < NTask; j++)
-                Send_count[j] = 0;
-            for(j = 0; j < Nexport; j++)
-                Send_count[DataIndexTable[j].Task]++;
-            
-            MYSORT_DATAINDEX(DataIndexTable, Nexport, sizeof(struct data_index), data_index_compare);
-            
-            tstart = my_second();
-            
-            MPI_Alltoall(Send_count, 1, MPI_INT, Recv_count, 1, MPI_INT, MPI_COMM_WORLD);
-            
-            tend = my_second();
-            timewait1 += timediff(tstart, tend);
-            
-            for(j = 0, Nimport = 0, Recv_offset[0] = 0, Send_offset[0] = 0; j < NTask; j++)
-            {
-                Nimport += Recv_count[j];
-                
-                if(j > 0)
-                {
-                    Send_offset[j] = Send_offset[j - 1] + Send_count[j - 1];
-                    Recv_offset[j] = Recv_offset[j - 1] + Recv_count[j - 1];
+                    else {new_export++;}
                 }
+                Nexport = new_export; /* counting exports... */
             }
+            n_exported += Nexport;
+            for(j = 0; j < NTask; j++) {Send_count[j] = 0;}
+            for(j = 0; j < Nexport; j++) {Send_count[DataIndexTable[j].Task]++;}
+            MYSORT_DATAINDEX(DataIndexTable, Nexport, sizeof(struct data_index), data_index_compare); /* construct export count tables */
+            tstart = my_second();
+            MPI_Alltoall(Send_count, 1, MPI_INT, Recv_count, 1, MPI_INT, MPI_COMM_WORLD); /* broadcast import/export counts */
+            tend = my_second(); timewait1 += timediff(tstart, tend);
             
-            GasGradDataGet = (struct GasGraddata_in *) mymalloc("GasGradDataGet", Nimport * sizeof(struct GasGraddata_in));
-            GasGradDataIn = (struct GasGraddata_in *) mymalloc("GasGradDataIn", Nexport * sizeof(struct GasGraddata_in));
-            
-            /* prepare particle data for export */
-            
-            for(j = 0; j < Nexport; j++)
+            for(j = 0, Send_offset[0] = 0; j < NTask; j++) {if(j > 0) {Send_offset[j] = Send_offset[j - 1] + Send_count[j - 1];}} /* calculate export table offsets */
+            GasGradDataIn = (struct GasGraddata_in *) mymalloc("GasGradDataIn", Nexport * sizeof(struct GasGraddata_in)); /* allocate memory for exports */
+            if(gradient_iteration==0) /* allocate memory for exports: here we have a different structure for the different iterations, which makes this especially complicated */
+            {
+                GasGradDataOut = (struct GasGraddata_out *) mymalloc("GasGradDataOut", Nexport * sizeof(struct GasGraddata_out));
+            } else {
+                GasGradDataOut_iter = (struct GasGraddata_out_iter *) mymalloc("GasGradDataOut_iter", Nexport * sizeof(struct GasGraddata_out_iter));
+            }
+            for(j = 0; j < Nexport; j++) /* prepare particle data for export [fill in the structures to be passed] */
             {
                 place = DataIndexTable[j].Index;
                 particle2in_GasGrad(&GasGradDataIn[j], place, gradient_iteration);
-                memcpy(GasGradDataIn[j].NodeList,
-                       DataNodeList[DataIndexTable[j].IndexGet].NodeList, NODELISTLENGTH * sizeof(int));
+                memcpy(GasGradDataIn[j].NodeList,DataNodeList[DataIndexTable[j].IndexGet].NodeList, NODELISTLENGTH * sizeof(int));
             }
             
-            /* exchange particle data */
-            tstart = my_second();
-            for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
+            /* ok now we have to figure out if there is enough memory to handle all the tasks sending us their data, and if not, break it into sub-chunks */
+            int N_chunks_for_import, ngrp_initial, ngrp;
+            for(ngrp_initial = 1; ngrp_initial < (1 << PTask); ngrp_initial += N_chunks_for_import) /* sub-chunking loop opener */
             {
-                recvTask = ThisTask ^ ngrp;
-                
-                if(recvTask < NTask)
-                {
-                    if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
+                N_chunks_for_import = (1 << PTask) - ngrp_initial;
+                do {
+                    int flag = 0, flagall; Nimport = 0;
+                    for(ngrp = ngrp_initial; ngrp < ngrp_initial + N_chunks_for_import; ngrp++)
                     {
-                        /* get the particles */
-                        MPI_Sendrecv(&GasGradDataIn[Send_offset[recvTask]],
-                                     Send_count[recvTask] * sizeof(struct GasGraddata_in), MPI_BYTE,
-                                     recvTask, TAG_GRADLOOP_A,
-                                     &GasGradDataGet[Recv_offset[recvTask]],
-                                     Recv_count[recvTask] * sizeof(struct GasGraddata_in), MPI_BYTE,
-                                     recvTask, TAG_GRADLOOP_A, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                        recvTask = ThisTask ^ ngrp;
+                        if(recvTask < NTask) {if(Recv_count[recvTask] > 0) {Nimport += Recv_count[recvTask];}}
+                    }
+                    size_t space_needed = Nimport * sizeof(struct GasGraddata_in) + Nimport * sizeof(struct GasGraddata_out) + 16384; /* extra bitflag is a padding, to avoid overflows */
+                    if(space_needed > FreeBytes) {flag = 1;}
+                    
+                    MPI_Allreduce(&flag, &flagall, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+                    if(flagall) {N_chunks_for_import /= 2;} else {break;}
+                } while(N_chunks_for_import > 0);
+                if(N_chunks_for_import == 0) {printf("Memory is insufficient for even one import-chunk: N_chunks_for_import=%d  ngrp_initial=%d  Nimport=%ld  FreeBytes=%lld , but we need to allocate=%lld \n",N_chunks_for_import, ngrp_initial, Nimport, (long long)FreeBytes,(long long)(Nimport * sizeof(struct GasGraddata_in) + Nimport * sizeof(struct GasGraddata_out) + 16384)); endrun(9999);}
+                if(ngrp_initial == 1 && N_chunks_for_import != ((1 << PTask) - ngrp_initial) && ThisTask == 0) PRINT_WARNING("Splitting import operation into sub-chunks as we are hitting memory limits (check this isn't imposing large communication cost)");
+                
+                /* now allocated the import and results buffers */
+                GasGradDataGet = (struct GasGraddata_in *) mymalloc("GasGradDataGet", Nimport * sizeof(struct GasGraddata_in));
+                if(gradient_iteration==0)
+                {
+                    GasGradDataResult = (struct GasGraddata_out *) mymalloc("GasGradDataResult", Nimport * sizeof(struct GasGraddata_out));
+                } else {
+                    GasGradDataResult_iter = (struct GasGraddata_out_iter *) mymalloc("GasGradDataResult_iter", Nimport * sizeof(struct GasGraddata_out_iter));
+                }
+                
+
+                tstart = my_second(); Nimport = 0; /* reset because this will be cycled below to calculate the recieve offsets (Recv_offset) */
+                for(ngrp = ngrp_initial; ngrp < ngrp_initial + N_chunks_for_import; ngrp++) /* exchange particle data */
+                {
+                    recvTask = ThisTask ^ ngrp;
+                    if(recvTask < NTask)
+                    {
+                        if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0) /* get the particles */
+                        {
+                            MPI_Sendrecv(&GasGradDataIn[Send_offset[recvTask]], Send_count[recvTask] * sizeof(struct GasGraddata_in), MPI_BYTE, recvTask, TAG_GRADLOOP_A,
+                                         &GasGradDataGet[Nimport], Recv_count[recvTask] * sizeof(struct GasGraddata_in), MPI_BYTE, recvTask, TAG_GRADLOOP_A,
+                                         MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                            Nimport += Recv_count[recvTask];
+                        }
                     }
                 }
-            }
-            tend = my_second();
-            timecommsumm1 += timediff(tstart, tend);
+                tend = my_second(); timecommsumm1 += timediff(tstart, tend);
             
-            myfree(GasGradDataIn);
-            if(gradient_iteration==0)
-            {
-                GasGradDataResult = (struct GasGraddata_out *) mymalloc("GasGradDataResult", Nimport * sizeof(struct GasGraddata_out));
-                GasGradDataOut = (struct GasGraddata_out *) mymalloc("GasGradDataOut", Nexport * sizeof(struct GasGraddata_out));
-                report_memory_usage(&HighMark_GasGrad, "GRADIENTS_LOOP");
-            } else {
-                GasGradDataResult_iter = (struct GasGraddata_out_iter *) mymalloc("GasGradDataResult_iter", Nimport * sizeof(struct GasGraddata_out_iter));
-                GasGradDataOut_iter = (struct GasGraddata_out_iter *) mymalloc("GasGradDataOut_iter", Nexport * sizeof(struct GasGraddata_out_iter));
-            }
-            
-            /* now do the particles that were sent to us */
-            tstart = my_second();
-            NextJ = 0;
-            
+                
+                
+                /* now do the particles that were sent to us */
+                tstart = my_second(); NextJ = 0;
 #ifdef PTHREADS_NUM_THREADS
-            for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++)
-                pthread_create(&mythreads[j], &attr, GasGrad_evaluate_secondary, &threadid[j]);
+                for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++) {pthread_create(&mythreads[j], &attr, GasGrad_evaluate_secondary, &threadid[j]);}
 #endif
 #ifdef _OPENMP
 #pragma omp parallel
 #endif
-            {
-#ifdef _OPENMP
-                int mainthreadid = omp_get_thread_num();
-#else
-                int mainthreadid = 0;
-#endif
-                GasGrad_evaluate_secondary(&mainthreadid, gradient_iteration);
-            }
-            
-#ifdef PTHREADS_NUM_THREADS
-            for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++)
-                pthread_join(mythreads[j], NULL);
-            
-            pthread_mutex_destroy(&mutex_partnodedrift);
-            pthread_mutex_destroy(&mutex_nexport);
-            pthread_attr_destroy(&attr);
-#endif
-            
-            tend = my_second();
-            timecomp2 += timediff(tstart, tend);
-            
-            if(NextParticle < 0)
-                ndone_flag = 1;
-            else
-                ndone_flag = 0;
-            
-            tstart = my_second();
-            MPI_Allreduce(&ndone_flag, &ndone, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-            tend = my_second();
-            timewait2 += timediff(tstart, tend);
-            
-            /* get the result */
-            tstart = my_second();
-            for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-            {
-                recvTask = ThisTask ^ ngrp;
-                if(recvTask < NTask)
                 {
-                    if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
+#ifdef _OPENMP
+                    int mainthreadid = omp_get_thread_num();
+#else
+                    int mainthreadid = 0;
+#endif
+                    GasGrad_evaluate_secondary(&mainthreadid, gradient_iteration);
+                }
+#ifdef PTHREADS_NUM_THREADS
+                for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++) {pthread_join(mythreads[j], NULL);}
+                pthread_mutex_destroy(&mutex_partnodedrift);
+                pthread_mutex_destroy(&mutex_nexport);
+                pthread_attr_destroy(&attr);
+#endif
+                tend = my_second(); timecomp2 += timediff(tstart, tend);
+
+                
+                tstart = my_second(); Nimport = 0;
+                for(ngrp = ngrp_initial; ngrp < ngrp_initial + N_chunks_for_import; ngrp++) /* send the results for imported elements back to their host tasks */
+                {
+                    recvTask = ThisTask ^ ngrp;
+                    if(recvTask < NTask)
                     {
-                        /* send the results */
-                        if(gradient_iteration==0)
+                        if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
                         {
-                            MPI_Sendrecv(&GasGradDataResult[Recv_offset[recvTask]],
-                                         Recv_count[recvTask] * sizeof(struct GasGraddata_out),
-                                         MPI_BYTE, recvTask, TAG_GRADLOOP_B,
-                                         &GasGradDataOut[Send_offset[recvTask]],
-                                         Send_count[recvTask] * sizeof(struct GasGraddata_out),
-                                         MPI_BYTE, recvTask, TAG_GRADLOOP_B, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                        } else {
-                            MPI_Sendrecv(&GasGradDataResult_iter[Recv_offset[recvTask]],
-                                         Recv_count[recvTask] * sizeof(struct GasGraddata_out_iter),
-                                         MPI_BYTE, recvTask, TAG_GRADLOOP_C,
-                                         &GasGradDataOut_iter[Send_offset[recvTask]],
-                                         Send_count[recvTask] * sizeof(struct GasGraddata_out_iter),
-                                         MPI_BYTE, recvTask, TAG_GRADLOOP_C, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                            if(gradient_iteration==0) /* send the results */
+                            {
+                                MPI_Sendrecv(&GasGradDataResult[Nimport], Recv_count[recvTask] * sizeof(struct GasGraddata_out), MPI_BYTE, recvTask, TAG_GRADLOOP_B,
+                                             &GasGradDataOut[Send_offset[recvTask]], Send_count[recvTask] * sizeof(struct GasGraddata_out), MPI_BYTE, recvTask, TAG_GRADLOOP_B,
+                                             MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                            } else {
+                                MPI_Sendrecv(&GasGradDataResult_iter[Nimport], Recv_count[recvTask] * sizeof(struct GasGraddata_out_iter), MPI_BYTE, recvTask, TAG_GRADLOOP_C,
+                                             &GasGradDataOut_iter[Send_offset[recvTask]], Send_count[recvTask] * sizeof(struct GasGraddata_out_iter), MPI_BYTE, recvTask, TAG_GRADLOOP_C,
+                                             MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                            }
+                            Nimport += Recv_count[recvTask];
                         }
                     }
                 }
-            }
-            tend = my_second();
-            timecommsumm2 += timediff(tstart, tend);
-            
-            /* add the result to the local particles */
+                tend = my_second(); timecommsumm2 += timediff(tstart, tend);
+                if(gradient_iteration==0) {myfree(GasGradDataResult);} else {myfree(GasGradDataResult_iter);} /* free the structures used to send data back to tasks, its sent */
+                myfree(GasGradDataGet); /* free the structures used to send data back to tasks, its sent */
+                
+            } /* close the sub-chunking loop: for(ngrp_initial = 1; ngrp_initial < (1 << PTask); ngrp_initial += N_chunks_for_import) */
+
+
+            /* we have all our results back from the elements we exported: add the result to the local elements */
             tstart = my_second();
             for(j = 0; j < Nexport; j++)
             {
@@ -921,17 +849,14 @@ void hydro_gradient_calc(void)
                     out2particle_GasGrad_iter(&GasGradDataOut_iter[j], place, 1, gradient_iteration);
                 }
             }
-            tend = my_second();
-            timecomp1 += timediff(tstart, tend);
-            if(gradient_iteration==0)
-            {
-                myfree(GasGradDataOut);
-                myfree(GasGradDataResult);
-            } else {
-                myfree(GasGradDataOut_iter);
-                myfree(GasGradDataResult_iter);
-            }
-            myfree(GasGradDataGet);
+            tend = my_second(); timecomp1 += timediff(tstart, tend);
+            if(gradient_iteration==0) {myfree(GasGradDataOut);} else {myfree(GasGradDataOut_iter);} /* free the structures used to receive results, weve used it */
+            myfree(GasGradDataIn); /* free the structures used to prepare our initial export data, we're done here! */
+
+            if(NextParticle < 0) {ndone_flag = 1;} else {ndone_flag = 0;} /* figure out if we are done with the particular active set here */
+            tstart = my_second();
+            MPI_Allreduce(&ndone_flag, &ndone, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD); /* call an allreduce to figure out if all tasks are also done here, otherwise we need to iterate */
+            tend = my_second(); timewait2 += timediff(tstart, tend);
         }
         while(ndone < NTask);
         
@@ -1476,6 +1401,9 @@ void hydro_gradient_calc(void)
 #endif
                         for(k=0;k<3;k++) {SphP[i].Gradients.E_gamma_ET[k_freq][k] = chifac_ot*SphP[i].Gradients.E_gamma_ET[k_freq][k] + chifac_iso/3.*GasGradDataPasser[i].Gradients_E_gamma[k_freq][k];}
 #endif // ifdef otvet
+#ifdef RT_FLUXLIMITEDDIFFUSION /* this is simple because the Eddington tensor is always isotropic */
+                        for(k=0;k<3;k++) {SphP[i].Gradients.E_gamma_ET[k_freq][k] = GasGradDataPasser[i].Gradients_E_gamma[k_freq][k]/3.;}
+#endif
                     }
 #endif // ifdef fluxlimiter
                     SphP[i].Lambda_FluxLim[k_freq] = lambda;
@@ -1906,7 +1834,7 @@ int GasGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount
                     if((r2 >= (hhat_i * hhat_i)) && (r2 >= (hhat_j * hhat_j))) continue;
                     double h_avg = 0.5 * (hhat_i + hhat_j), particle_distance = sqrt(r2);
                     kernel_hinv(h_avg, &hhatinv_i, &hhatinv3_i, &hhatinv4_i); u = DMIN(particle_distance * hhatinv_i, 1.0);
-                    kernel_main(u, hhatinv3_i, hhatinv4_i, &wkhat_i, &dwkhat_i, 0); /* wkhat is symmetric in this case W_{ij} = W_{ji} */
+                    if(u<1) {kernel_main(u, hhatinv3_i, hhatinv4_i, &wkhat_i, &dwkhat_i, 0);} else {wkhat_i=dwkhat_i=0;} /* wkhat is symmetric in this case W_{ij} = W_{ji} */
                     double mean_weight = wkhat_i * 0.5 * (SphP[j].Norm_hat + local.Norm_hat) / (local.Norm_hat * SphP[j].Norm_hat);
                     double weight_i = P[j].Mass * mean_weight, weight_j = local.Mass * mean_weight, Velocity_bar_diff[3];
                     if(particle_distance < h_avg) {

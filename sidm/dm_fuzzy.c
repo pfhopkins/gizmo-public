@@ -7,16 +7,11 @@
 #include "../allvars.h"
 #include "../proto.h"
 #include "../kernel.h"
-#define LOCK_NEXPORT
-#define UNLOCK_NEXPORT
-
 
 /*! \file dm_fuzzy.c
  *  \brief routines needed for fuzzy-DM implementation
  *         This file was written by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
  */
-
-
 
 #ifdef DM_FUZZY
 
@@ -149,7 +144,6 @@ void do_dm_fuzzy_flux_computation_old(double HLLwt, double dt, double m0, double
  mode=0 -> 'kick', mode=1 -> 'drift' */
 void do_dm_fuzzy_drift_kick(int i, double dt, int mode)
 {
-    double vol_inv = P[i].AGS_Density / P[i].Mass;
     if(mode==0)
     {
         // calculate various energies: quantum potential QP0, 'stored' numerical pressure NQ0, kinetic energy KE0
@@ -163,6 +157,7 @@ void do_dm_fuzzy_drift_kick(int i, double dt, int mode)
     }
     
 #if (DM_FUZZY > 0) /* if using direct-wavefunction integration methods */
+    double vol_inv = P[i].AGS_Density / P[i].Mass;
     if(mode == 0)
     {
         double psimag_mass_old = (P[i].AGS_Psi_Re*P[i].AGS_Psi_Re + P[i].AGS_Psi_Im*P[i].AGS_Psi_Im) * vol_inv;
@@ -236,7 +231,7 @@ void dm_fuzzy_reconstruct_and_slopelimit_sub(double *u_R_f, double *u_L_f, doubl
     double dq_L=0; for(k=0;k<3;k++) {dq_L += 0.5*dx[k]*dq_L_0[k];}
     double dq_R=0; for(k=0;k<3;k++) {dq_R -= 0.5*dx[k]*dq_R_0[k];}
     double q0=q_L, u_L=0, u_R=0; q_L-=q0; q_R-=q0;
-    double qmid = 0.5*q_R;
+    //double qmid = 0.5*q_R;
     
     if(dq_L*q_R<0) {dq_L=0;}
     if(dq_R*q_R<0) {dq_R=0;}
@@ -282,38 +277,36 @@ struct Quantities_for_Gradients_DM
 #endif
 };
 
-struct DMGraddata_in
-{
-    MyDouble Pos[3], AGS_Hsml;
-    struct Quantities_for_Gradients_DM GQuant;
-    int NodeList[NODELISTLENGTH], Type;
-}
-*DMGradDataIn, *DMGradDataGet;
-
-struct DMGraddata_out
-{
-    struct Quantities_for_Gradients_DM Gradients[3];
-    struct Quantities_for_Gradients_DM Maxima;
-    struct Quantities_for_Gradients_DM Minima;
-}
-*DMGradDataResult, *DMGradDataOut;
-
 /* this is a temporary structure for quantities used ONLY in the loop below, for example for computing the slope-limiters (for the Reimann problem) */
-static struct temporary_data_topass
+static struct temporary_dmgradients_data_topass
 {
     struct Quantities_for_Gradients_DM Maxima;
     struct Quantities_for_Gradients_DM Minima;
 }
 *DMGradDataPasser;
 
-struct kernel_DMGrad
+struct kernel_DMGrad {double dp[3],r,wk_i, wk_j, dwk_i, dwk_j,h_i;};
+
+
+
+#define MASTER_FUNCTION_NAME DMGrad_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define INPUTFUNCTION_NAME particle2in_DMGrad    /* name of the function which loads the element data needed (for e.g. broadcast to other processors, neighbor search) */
+#define OUTPUTFUNCTION_NAME out2particle_DMGrad  /* name of the function which takes the data returned from other processors and combines it back to the original elements */
+#define CONDITIONFUNCTION_FOR_EVALUATION if(ags_density_isactive(i)) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
+#include "../system/code_block_xchange_initialize.h" /* pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
+
+
+/* this structure defines the variables that need to be sent -from- the 'searching' element */
+struct INPUT_STRUCT_NAME
 {
-    double dp[3],r,wk_i, wk_j, dwk_i, dwk_j,h_i;
-};
+    MyDouble Pos[3], AGS_Hsml;
+    struct Quantities_for_Gradients_DM GQuant;
+    int NodeList[NODELISTLENGTH], Type;
+}
+*DATAIN_NAME, *DATAGET_NAME;
 
-static inline void particle2in_DMGrad(struct DMGraddata_in *in, int i);
-
-static inline void particle2in_DMGrad(struct DMGraddata_in *in, int i)
+/* this subroutine assigns the values to the variables that need to be sent -from- the 'searching' element */
+static inline void particle2in_DMGrad(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
 {
     int k; for(k=0;k<3;k++) {in->Pos[k] = P[i].Pos[k];}
     in->AGS_Hsml = PPP[i].AGS_Hsml;
@@ -328,16 +321,25 @@ static inline void particle2in_DMGrad(struct DMGraddata_in *in, int i)
 #endif
 }
 
+
+/* this structure defines the variables that need to be sent -back to- the 'searching' element */
+struct OUTPUT_STRUCT_NAME
+{
+    struct Quantities_for_Gradients_DM Gradients[3];
+    struct Quantities_for_Gradients_DM Maxima;
+    struct Quantities_for_Gradients_DM Minima;
+}
+*DATARESULT_NAME, *DATAOUT_NAME;
+
 #define ASSIGN_ADD_PRESET(x,y,mode) (mode == 0 ? (x=y) : (x+=y))
 #define MINMAX_CHECK(x,xmin,xmax) ((x<xmin)?(xmin=x):((x>xmax)?(xmax=x):(1)))
 #define MAX_ADD(x,y,mode) ((y > x) ? (x = y) : (1)) // simpler definition now used
 #define MIN_ADD(x,y,mode) ((y < x) ? (x = y) : (1))
 
-static inline void out2particle_DMGrad(struct DMGraddata_out *out, int i, int mode, int gradient_iteration);
-
-static inline void out2particle_DMGrad(struct DMGraddata_out *out, int i, int mode, int gradient_iteration)
+/* this subroutine assigns the values to the variables that need to be sent -back to- the 'searching' element */
+static inline void out2particle_DMGrad(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration)
 {
-    if(gradient_iteration <= 0)
+    if(loop_iteration <= 0)
     {
         int k;
         MAX_ADD(DMGradDataPasser[i].Maxima.AGS_Density,out->Maxima.AGS_Density,mode);
@@ -363,9 +365,8 @@ static inline void out2particle_DMGrad(struct DMGraddata_out *out, int i, int mo
     }
 }
 
-
+/* this actually builds the final gradients out of the data passed */
 void construct_gradient_DMGrad(double *grad, int i);
-
 void construct_gradient_DMGrad(double *grad, int i)
 {
     /* use the NV_T matrix-based gradient estimator */
@@ -375,226 +376,119 @@ void construct_gradient_DMGrad(double *grad, int i)
 }
 
 
+/* this subroutine does the actual neighbor-element calculations (this is the 'core' of the loop, essentially) */
+int DMGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
+{
+    /* define variables */
+    int startnode, numngb_inbox, listindex = 0, j, k, n;
+    double hinv, hinv3, hinv4, r2, u;
+    struct kernel_DMGrad kernel;
+    struct INPUT_STRUCT_NAME local;
+    struct OUTPUT_STRUCT_NAME out;
+    /* zero memory and import data for local target */
+    memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME));
+    memset(&kernel, 0, sizeof(struct kernel_DMGrad));
+    if(mode == 0) {particle2in_DMGrad(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];}
+    /* check if we should bother doing a neighbor loop */
+    if(local.AGS_Hsml <= 0) return 0;
+    if(local.GQuant.AGS_Density <= 0) return 0;
+    /* now set particle-i centric quantities so we don't do it inside the loop */
+    kernel.h_i = local.AGS_Hsml;
+    double h2_i = kernel.h_i*kernel.h_i;
+    kernel_hinv(kernel.h_i, &hinv, &hinv3, &hinv4);
+    int AGS_kernel_shared_BITFLAG = ags_gravity_kernel_shared_BITFLAG(local.Type); // determine allowed particle types for search for adaptive gravitational softening terms
+    
+    /* Now start the actual neighbor computation for this particle */
+    if(mode == 0) {startnode = All.MaxPart; /* root node */} else {startnode = DATAGET_NAME[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode;    /* open it */}
+    while(startnode >= 0)
+    {
+        while(startnode >= 0)
+        {
+            numngb_inbox = ngb_treefind_variable_threads_targeted(local.Pos, local.AGS_Hsml, target, &startnode, mode, exportflag,
+                                                                  exportnodecount, exportindex, ngblist, AGS_kernel_shared_BITFLAG);
+            if(numngb_inbox < 0) {return -1;} /* no neighbors! */
+            for(n = 0; n < numngb_inbox; n++) /* neighbor loop */
+            {
+                j = ngblist[n];
+                if((P[j].Mass <= 0)||(P[j].AGS_Density <= 0)) {continue;} /* make sure neighbor is valid */
+                /* calculate position relative to target */
+                kernel.dp[0] = local.Pos[0] - P[j].Pos[0]; kernel.dp[1] = local.Pos[1] - P[j].Pos[1]; kernel.dp[2] = local.Pos[2] - P[j].Pos[2];
+#ifdef BOX_PERIODIC            /*  now find the closest image in the given box size  */
+                NEAREST_XYZ(kernel.dp[0],kernel.dp[1],kernel.dp[2],1);
+#endif
+                r2 = kernel.dp[0]*kernel.dp[0] + kernel.dp[1]*kernel.dp[1] + kernel.dp[2]*kernel.dp[2];
+                if((r2 <= 0) || (r2 >= h2_i)) continue;
+                /* calculate kernel quantities needed below */
+                kernel.r = sqrt(r2); u = kernel.r * hinv;
+                kernel_main(u, hinv3, hinv4, &kernel.wk_i, &kernel.dwk_i, -1);
+                /* DIFFERENCE & SLOPE LIMITING: need to check maxima and minima of particle values in the kernel, to avoid 'overshoot' with our gradient estimators. this check should be among all interacting pairs */
+                if(loop_iteration <= 0)
+                {
+                    double d_rho = P[j].AGS_Density - local.GQuant.AGS_Density;
+                    MINMAX_CHECK(d_rho,out.Minima.AGS_Density,out.Maxima.AGS_Density);
+                    for(k=0;k<3;k++) {out.Gradients[k].AGS_Density += -kernel.wk_i * kernel.dp[k] * d_rho;} /* sign is important here! */
+#if (DM_FUZZY > 0)
+                    d_rho = P[j].AGS_Psi_Re_Pred * P[j].AGS_Density / P[j].Mass - local.GQuant.AGS_Psi_Re;
+                    for(k=0;k<3;k++) {out.Gradients[k].AGS_Psi_Re += -kernel.wk_i * kernel.dp[k] * d_rho;}
+                    d_rho = P[j].AGS_Psi_Im_Pred * P[j].AGS_Density / P[j].Mass - local.GQuant.AGS_Psi_Im;
+                    for(k=0;k<3;k++) {out.Gradients[k].AGS_Psi_Im += -kernel.wk_i * kernel.dp[k] * d_rho;}
+#endif
+                } else {
+                    int k2; double d_grad_rho;
+                    for(k=0;k<3;k++)
+                    {
+                        d_grad_rho = P[j].AGS_Gradients_Density[k] - local.GQuant.AGS_Gradients_Density[k];
+                        MINMAX_CHECK(d_grad_rho,out.Minima.AGS_Gradients_Density[k],out.Maxima.AGS_Gradients_Density[k]);
+                        for(k2=0;k2<3;k2++) {out.Gradients[k2].AGS_Gradients_Density[k] += -kernel.wk_i * kernel.dp[k2] * d_grad_rho;}
+#if (DM_FUZZY > 0)
+                        d_grad_rho = P[j].AGS_Gradients_Psi_Re[k] - local.GQuant.AGS_Gradients_Psi_Re[k];
+                        for(k2=0;k2<3;k2++) {out.Gradients[k2].AGS_Gradients_Psi_Re[k] += -kernel.wk_i * kernel.dp[k2] * d_grad_rho;}
+                        d_grad_rho = P[j].AGS_Gradients_Psi_Im[k] - local.GQuant.AGS_Gradients_Psi_Im[k];
+                        for(k2=0;k2<3;k2++) {out.Gradients[k2].AGS_Gradients_Psi_Im[k] += -kernel.wk_i * kernel.dp[k2] * d_grad_rho;}
+#endif
+                    }
+                } // loop_iteration
+            } // numngb_inbox loop
+        } // while(startnode)
+        /* continue to open leaves if needed */
+        if(mode == 1)
+        {
+            listindex++;
+            if(listindex < NODELISTLENGTH)
+            {
+                startnode = DATAGET_NAME[target].NodeList[listindex];
+                if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;    /* open it */}
+            }
+        }
+    }
+    /* Collect the result at the right place */
+    if(mode == 0) {out2particle_DMGrad(&out, target, 0, loop_iteration);} else {DATARESULT_NAME[target] = out;}
+    return 0;
+}
+
+
 
 
 void DMGrad_gradient_calc(void)
 {
-    /* define the number of iterations needed to compute gradients and optional gradients-of-gradients */
-    int gradient_iteration, number_of_gradient_iterations = 1;
-    number_of_gradient_iterations = 2; // need extra iteration to get gradients-of-gradients
-    /* loop over the number of iterations needed to actually compute the gradients fully */
+    PRINT_STATUS(" ..calculating higher-order gradients for DM density field\n");
+    /* initialize data, if needed */
     if(All.Time==All.TimeBegin) {int i; for(i=FirstActiveParticle; i>=0; i=NextActiveParticle[i]) {P[i].AGS_Numerical_QuantumPotential=0;}}
-    for(gradient_iteration=0; gradient_iteration<number_of_gradient_iterations; gradient_iteration++)
+
+    /* allocate memory shared across all loops */
+    DMGradDataPasser = (struct temporary_dmgradients_data_topass *) mymalloc("DMGradDataPasser",NumPart * sizeof(struct temporary_dmgradients_data_topass));
+    #include "../system/code_block_xchange_perform_ops_malloc.h" /* this calls the large block of code which contains the memory allocations for the MPI/OPENMP/Pthreads parallelization block which must appear below */
+
+    /* loop over the number of iterations needed to actually compute the gradients fully */
+    for(loop_iteration=0; loop_iteration<2; loop_iteration++) // need 2 iterations to compute gradients-of-gradients
     {
-        int i, j, k, ngrp, ndone, ndone_flag, recvTask, place, save_NextParticle;
-        double timeall = 0, timecomp1 = 0, timecomp2 = 0, timecommsumm1 = 0, timecommsumm2 = 0, timewait1 = 0, timewait2 = 0;
-        double timecomp, timecomm, timewait, tstart, tend, t0, t1;
-        long long n_exported = 0, NTaskTimesNumPart;
-        /* allocate buffers to arrange communication */
-        DMGradDataPasser = (struct temporary_data_topass *) mymalloc("DMGradDataPasser",NumPart * sizeof(struct temporary_data_topass));
+        #include "../system/code_block_xchange_perform_ops.h" /* this calls the large block of code which actually contains all the loops, MPI/OPENMP/Pthreads parallelization */
 
-        NTaskTimesNumPart = maxThreads * NumPart;
-        size_t MyBufferSize = All.BufferSize;
-        All.BunchSize = (int) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
-                                                               sizeof(struct DMGraddata_in) + sizeof(struct DMGraddata_out) + sizemax(sizeof(struct DMGraddata_in),sizeof(struct DMGraddata_out))));
-        CPU_Step[CPU_AGSDENSMISC] += measure_time();
-        t0 = my_second();
-        Ngblist = (int *) mymalloc("Ngblist", NTaskTimesNumPart * sizeof(int));
-        DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
-        DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
-
-        /* before doing any operations, need to zero the appropriate memory so we can correctly do pair-wise operations */
-        for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) {memset(&DMGradDataPasser[i], 0, sizeof(struct temporary_data_topass));}
-        
-        /* begin the main gradient loop */
-        NextParticle = FirstActiveParticle;    /* begin with this index */
-        do
-        {
-            BufferFullFlag = 0;
-            Nexport = 0;
-            save_NextParticle = NextParticle;
-            for(j = 0; j < NTask; j++)
-            {
-                Send_count[j] = 0;
-                Exportflag[j] = -1;
-            }
-            /* do local particles and prepare export list */
-            tstart = my_second();
-            
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-            {
-#ifdef _OPENMP
-                int mainthreadid = omp_get_thread_num();
-#else
-                int mainthreadid = 0;
-#endif
-                DMGrad_evaluate_primary(&mainthreadid, gradient_iteration);    /* do local particles and prepare export list */
-            }
-            
-            tend = my_second();
-            timecomp1 += timediff(tstart, tend);
-            
-            if(BufferFullFlag)
-            {
-                int last_nextparticle = NextParticle;
-                NextParticle = save_NextParticle;
-                while(NextParticle >= 0)
-                {
-                    if(NextParticle == last_nextparticle) break;
-                    if(ProcessedFlag[NextParticle] != 1) break;
-                    ProcessedFlag[NextParticle] = 2;
-                    NextParticle = NextActiveParticle[NextParticle];
-                }
-                if(NextParticle == save_NextParticle)
-                {
-                    endrun(123708); /* in this case, the buffer is too small to process even a single particle */
-                }
-                int new_export = 0;
-                for(j = 0, k = 0; j < Nexport; j++)
-                    if(ProcessedFlag[DataIndexTable[j].Index] != 2)
-                    {
-                        if(k < j + 1) {k = j + 1;}
-                        for(; k < Nexport; k++)
-                            if(ProcessedFlag[DataIndexTable[k].Index] == 2)
-                            {
-                                int old_index = DataIndexTable[j].Index;
-                                DataIndexTable[j] = DataIndexTable[k];
-                                DataNodeList[j] = DataNodeList[k];
-                                DataIndexTable[j].IndexGet = j;
-                                new_export++;
-                                DataIndexTable[k].Index = old_index;
-                                k++;
-                                break;
-                            }
-                    }
-                    else {new_export++;}
-                Nexport = new_export;
-            }
-            n_exported += Nexport;
-            for(j = 0; j < NTask; j++) {Send_count[j] = 0;}
-            for(j = 0; j < Nexport; j++) {Send_count[DataIndexTable[j].Task]++;}
-            MYSORT_DATAINDEX(DataIndexTable, Nexport, sizeof(struct data_index), data_index_compare);
-            tstart = my_second();
-            MPI_Alltoall(Send_count, 1, MPI_INT, Recv_count, 1, MPI_INT, MPI_COMM_WORLD);
-            tend = my_second();
-            timewait1 += timediff(tstart, tend);
-            for(j = 0, Nimport = 0, Recv_offset[0] = 0, Send_offset[0] = 0; j < NTask; j++)
-            {
-                Nimport += Recv_count[j];
-                if(j > 0)
-                {
-                    Send_offset[j] = Send_offset[j - 1] + Send_count[j - 1];
-                    Recv_offset[j] = Recv_offset[j - 1] + Recv_count[j - 1];
-                }
-            }
-            
-            /* prepare particle data for export */
-            DMGradDataGet = (struct DMGraddata_in *) mymalloc("DMGradDataGet", Nimport * sizeof(struct DMGraddata_in));
-            DMGradDataIn = (struct DMGraddata_in *) mymalloc("DMGradDataIn", Nexport * sizeof(struct DMGraddata_in));
-            for(j = 0; j < Nexport; j++)
-            {
-                place = DataIndexTable[j].Index;
-                particle2in_DMGrad(&DMGradDataIn[j], place);
-                memcpy(DMGradDataIn[j].NodeList,DataNodeList[DataIndexTable[j].IndexGet].NodeList, NODELISTLENGTH * sizeof(int));
-            }
-            
-            /* exchange particle data */
-            tstart = my_second();
-            for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-            {
-                recvTask = ThisTask ^ ngrp;
-                if(recvTask < NTask)
-                {
-                    if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
-                    {
-                        /* get the particles */
-                        MPI_Sendrecv(&DMGradDataIn[Send_offset[recvTask]],
-                                     Send_count[recvTask] * sizeof(struct DMGraddata_in), MPI_BYTE,
-                                     recvTask, TAG_GRADLOOP_A,
-                                     &DMGradDataGet[Recv_offset[recvTask]],
-                                     Recv_count[recvTask] * sizeof(struct DMGraddata_in), MPI_BYTE,
-                                     recvTask, TAG_GRADLOOP_A, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                    }
-                }
-            }
-            tend = my_second();
-            timecommsumm1 += timediff(tstart, tend);
-            myfree(DMGradDataIn);
-            DMGradDataResult = (struct DMGraddata_out *) mymalloc("DMGradDataResult", Nimport * sizeof(struct DMGraddata_out));
-            DMGradDataOut = (struct DMGraddata_out *) mymalloc("DMGradDataOut", Nexport * sizeof(struct DMGraddata_out));
-            
-            /* now do the particles that were sent to us */
-            tstart = my_second();
-            NextJ = 0;
-            
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-            {
-#ifdef _OPENMP
-                int mainthreadid = omp_get_thread_num();
-#else
-                int mainthreadid = 0;
-#endif
-                DMGrad_evaluate_secondary(&mainthreadid, gradient_iteration);
-            }
-            
-            tend = my_second();
-            timecomp2 += timediff(tstart, tend);
-            
-            if(NextParticle < 0) {ndone_flag = 1;} else {ndone_flag = 0;}
-            tstart = my_second();
-            MPI_Allreduce(&ndone_flag, &ndone, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-            tend = my_second();
-            timewait2 += timediff(tstart, tend);
-            
-            /* get the result */
-            tstart = my_second();
-            for(ngrp = 1; ngrp < (1 << PTask); ngrp++)
-            {
-                recvTask = ThisTask ^ ngrp;
-                if(recvTask < NTask)
-                {
-                    if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
-                    {
-                        /* send the results */
-                        MPI_Sendrecv(&DMGradDataResult[Recv_offset[recvTask]],
-                                     Recv_count[recvTask] * sizeof(struct DMGraddata_out),
-                                     MPI_BYTE, recvTask, TAG_GRADLOOP_B,
-                                     &DMGradDataOut[Send_offset[recvTask]],
-                                     Send_count[recvTask] * sizeof(struct DMGraddata_out),
-                                     MPI_BYTE, recvTask, TAG_GRADLOOP_B, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                    }
-                }
-            }
-            tend = my_second();
-            timecommsumm2 += timediff(tstart, tend);
-            
-            /* add the result to the local particles */
-            tstart = my_second();
-            for(j = 0; j < Nexport; j++)
-            {
-                place = DataIndexTable[j].Index;
-                out2particle_DMGrad(&DMGradDataOut[j], place, 1, gradient_iteration);
-            }
-            tend = my_second();
-            timecomp1 += timediff(tstart, tend);
-            myfree(DMGradDataOut);
-            myfree(DMGradDataResult);
-            myfree(DMGradDataGet);
-        }
-        while(ndone < NTask);
-        
-        myfree(DataNodeList);
-        myfree(DataIndexTable);
-        myfree(Ngblist);
-        
-        /* do final operations on results: these are operations that can be done after the complete set of iterations */
+        /* do post-loop operations on the results */
+        int i;
         for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
         {
-            if(gradient_iteration <= 0)
+            if(loop_iteration <= 0)
             {
                 /* now we can properly calculate (second-order accurate) gradients of hydrodynamic quantities from this loop */
                 construct_gradient_DMGrad(P[i].AGS_Gradients_Density,i);
@@ -633,131 +527,16 @@ void DMGrad_gradient_calc(void)
                 }
             }
         }
-        myfree(DMGradDataPasser); /* free the temporary structure we created for the MinMax and additional data passing */
-        MPI_Barrier(MPI_COMM_WORLD); // force barrier so we know the first derivatives are fully-computed //
-
-        /* collect some timing information */
-        t1 = WallclockTime = my_second();
-        timeall += timediff(t0, t1);
-        timecomp = timecomp1 + timecomp2;
-        timewait = timewait1 + timewait2;
-        timecomm = timecommsumm1 + timecommsumm2;
-        CPU_Step[CPU_AGSDENSCOMPUTE] += timecomp;
-        CPU_Step[CPU_AGSDENSWAIT] += timewait;
-        CPU_Step[CPU_AGSDENSCOMM] += timecomm;
-        CPU_Step[CPU_AGSDENSMISC] += timeall - (timecomp + timewait + timecomm);
-    } // close loop over gradient_iterations (master loop)
+    } // end of loop_iteration
+        
+    /* de-allocate memory and collect timing information */
+    #include "../system/code_block_xchange_perform_ops_demalloc.h" /* this de-allocates the memory for the MPI/OPENMP/Pthreads parallelization block which must appear above */
+    myfree(DMGradDataPasser); /* free the temporary structure we created for the MinMax and additional data passing */
+    CPU_Step[CPU_AGSDENSCOMPUTE] += timecomp; CPU_Step[CPU_AGSDENSWAIT] += timewait; CPU_Step[CPU_AGSDENSCOMM] += timecomm; CPU_Step[CPU_AGSDENSMISC] += timeall - (timecomp + timewait + timecomm);
 }
+#include "../system/code_block_xchange_finalize.h" /* de-define the relevant variables and macros to avoid compilation errors and memory leaks */
 
 
-int DMGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int gradient_iteration)
-{
-    /* define variables */
-    int startnode, numngb_inbox, listindex = 0, j, k, n;
-    double hinv, hinv3, hinv4, r2, u;
-    struct kernel_DMGrad kernel;
-    struct DMGraddata_in local;
-    struct DMGraddata_out out;
-    /* zero memory and import data for local target */
-    memset(&out, 0, sizeof(struct DMGraddata_out));
-    memset(&kernel, 0, sizeof(struct kernel_DMGrad));
-    if(mode == 0) {particle2in_DMGrad(&local, target);} else {local = DMGradDataGet[target];}
-    /* check if we should bother doing a neighbor loop */
-    if(local.AGS_Hsml <= 0) return 0;
-    if(local.GQuant.AGS_Density <= 0) return 0;
-    /* now set particle-i centric quantities so we don't do it inside the loop */
-    kernel.h_i = local.AGS_Hsml;
-    double h2_i = kernel.h_i*kernel.h_i;
-    kernel_hinv(kernel.h_i, &hinv, &hinv3, &hinv4);
-    int AGS_kernel_shared_BITFLAG = ags_gravity_kernel_shared_BITFLAG(local.Type); // determine allowed particle types for search for adaptive gravitational softening terms
-    
-    /* Now start the actual neighbor computation for this particle */
-    if(mode == 0) {startnode = All.MaxPart; /* root node */} else {startnode = DMGradDataGet[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode;    /* open it */}
-    while(startnode >= 0)
-    {
-        while(startnode >= 0)
-        {
-            numngb_inbox = ngb_treefind_variable_threads_targeted(local.Pos, local.AGS_Hsml, target, &startnode, mode, exportflag,
-                                                                  exportnodecount, exportindex, ngblist, AGS_kernel_shared_BITFLAG);
-            if(numngb_inbox < 0) {return -1;} /* no neighbors! */
-            for(n = 0; n < numngb_inbox; n++) /* neighbor loop */
-            {
-                j = ngblist[n];
-                if((P[j].Mass <= 0)||(P[j].AGS_Density <= 0)) {continue;} /* make sure neighbor is valid */
-                /* calculate position relative to target */
-                kernel.dp[0] = local.Pos[0] - P[j].Pos[0]; kernel.dp[1] = local.Pos[1] - P[j].Pos[1]; kernel.dp[2] = local.Pos[2] - P[j].Pos[2];
-#ifdef BOX_PERIODIC            /*  now find the closest image in the given box size  */
-                NEAREST_XYZ(kernel.dp[0],kernel.dp[1],kernel.dp[2],1);
-#endif
-                r2 = kernel.dp[0]*kernel.dp[0] + kernel.dp[1]*kernel.dp[1] + kernel.dp[2]*kernel.dp[2];
-                if((r2 <= 0) || (r2 >= h2_i)) continue;
-                /* calculate kernel quantities needed below */
-                kernel.r = sqrt(r2); u = kernel.r * hinv;
-                kernel_main(u, hinv3, hinv4, &kernel.wk_i, &kernel.dwk_i, -1);
-                /* DIFFERENCE & SLOPE LIMITING: need to check maxima and minima of particle values in the kernel, to avoid 'overshoot' with our gradient estimators. this check should be among all interacting pairs */
-                if(gradient_iteration <= 0)
-                {
-                    double d_rho = P[j].AGS_Density - local.GQuant.AGS_Density;
-                    MINMAX_CHECK(d_rho,out.Minima.AGS_Density,out.Maxima.AGS_Density);
-                    for(k=0;k<3;k++) {out.Gradients[k].AGS_Density += -kernel.wk_i * kernel.dp[k] * d_rho;} /* sign is important here! */
-#if (DM_FUZZY > 0)
-                    d_rho = P[j].AGS_Psi_Re_Pred * P[j].AGS_Density / P[j].Mass - local.GQuant.AGS_Psi_Re;
-                    for(k=0;k<3;k++) {out.Gradients[k].AGS_Psi_Re += -kernel.wk_i * kernel.dp[k] * d_rho;}
-                    d_rho = P[j].AGS_Psi_Im_Pred * P[j].AGS_Density / P[j].Mass - local.GQuant.AGS_Psi_Im;
-                    for(k=0;k<3;k++) {out.Gradients[k].AGS_Psi_Im += -kernel.wk_i * kernel.dp[k] * d_rho;}
-#endif
-                } else {
-                    int k2; double d_grad_rho;
-                    for(k=0;k<3;k++)
-                    {
-                        d_grad_rho = P[j].AGS_Gradients_Density[k] - local.GQuant.AGS_Gradients_Density[k];
-                        MINMAX_CHECK(d_grad_rho,out.Minima.AGS_Gradients_Density[k],out.Maxima.AGS_Gradients_Density[k]);
-                        for(k2=0;k2<3;k2++) {out.Gradients[k2].AGS_Gradients_Density[k] += -kernel.wk_i * kernel.dp[k2] * d_grad_rho;}
-#if (DM_FUZZY > 0)
-                        d_grad_rho = P[j].AGS_Gradients_Psi_Re[k] - local.GQuant.AGS_Gradients_Psi_Re[k];
-                        for(k2=0;k2<3;k2++) {out.Gradients[k2].AGS_Gradients_Psi_Re[k] += -kernel.wk_i * kernel.dp[k2] * d_grad_rho;}
-                        d_grad_rho = P[j].AGS_Gradients_Psi_Im[k] - local.GQuant.AGS_Gradients_Psi_Im[k];
-                        for(k2=0;k2<3;k2++) {out.Gradients[k2].AGS_Gradients_Psi_Im[k] += -kernel.wk_i * kernel.dp[k2] * d_grad_rho;}
-#endif
-                    }
-                } // gradient_iteration
-            } // numngb_inbox loop
-        } // while(startnode)
-        /* continue to open leaves if needed */
-        if(mode == 1)
-        {
-            listindex++;
-            if(listindex < NODELISTLENGTH)
-            {
-                startnode = DMGradDataGet[target].NodeList[listindex];
-                if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;    /* open it */}
-            }
-        }
-    }
-    /* Collect the result at the right place */
-    if(mode == 0) {out2particle_DMGrad(&out, target, 0, gradient_iteration);} else {DMGradDataResult[target] = out;}
-    return 0;
-}
-
-
-
-
-
-void *DMGrad_evaluate_primary(void *p, int gradient_iteration)
-{
-#define CONDITION_FOR_EVALUATION if(ags_density_isactive(i))
-#define EVALUATION_CALL DMGrad_evaluate(i,0,exportflag,exportnodecount,exportindex,ngblist,gradient_iteration)
-#include "../system/code_block_primary_loop_evaluation.h"
-#undef CONDITION_FOR_EVALUATION
-#undef EVALUATION_CALL
-}
-
-void *DMGrad_evaluate_secondary(void *p, int gradient_iteration)
-{
-#define EVALUATION_CALL DMGrad_evaluate(j, 1, &dummy, &dummy, &dummy, ngblist, gradient_iteration);
-#include "../system/code_block_secondary_loop_evaluation.h"
-#undef EVALUATION_CALL
-}
 
 
 #endif // DM_FUZZY

@@ -11,7 +11,7 @@
 
 /*
  * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org). The code has been modified
+ * Volker Springel. The code has been modified
  * substantially in detail (although the actual algorithm 
  * structure remains essentially the same) 
  * by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
@@ -120,6 +120,26 @@ void drift_particle(int i, integertime time1)
 #if !defined(FREEZE_HYDRO)
 #if defined(HYDRO_MESHLESS_FINITE_VOLUME)
     if(P[i].Type==0) {advect_mesh_point(i,dt_drift);} else {for(j=0;j<3;j++) {P[i].Pos[j] += P[i].Vel[j] * dt_drift;}}
+#elif (SINGLE_STAR_TIMESTEPPING > 0)
+    double fewbody_drift_dx[3], fewbody_kick_dv[3]; // if super-timestepping, the updates above account for COM motion of the binary; now we account for the internal motion
+    if( (P[i].Type == 5) && (P[i].SuperTimestepFlag>=2) ) 
+    {
+        double COM_Vel[3]; //center of mass velocity
+        for(j=0;j<3;j++) 
+        {
+            COM_Vel[j] = P[i].Vel[j] + P[i].comp_dv[j] * P[i].comp_Mass/(P[i].Mass+P[i].comp_Mass); //center of mass velocity
+            P[i].Pos[j] += COM_Vel[j] * dt_drift; //center of mass drift
+        }
+        odeint_super_timestep(i, dt_drift, fewbody_kick_dv, fewbody_drift_dx, 1); // do_fewbody_drift
+        for(j=0;j<3;j++)
+        {
+            P[i].GravAccel[j] = P[i].COM_GravAccel[j]; //Overwrite the acceleration with center of mass value
+            P[i].Pos[j] += fewbody_drift_dx[j]; //Keplerian evolution
+            P[i].Vel[j] += fewbody_kick_dv[j]; //move on binary.orbit
+        }
+    } else {
+       for(j=0;j<3;j++) {P[i].Pos[j] += P[i].Vel[j] * dt_drift;}
+    }
 #else
     for(j=0;j<3;j++) {P[i].Pos[j] += P[i].Vel[j] * dt_drift;}
 #endif
@@ -189,6 +209,9 @@ void drift_particle(int i, integertime time1)
                 SphP[i].VelPred[j] += P[i].GravAccel[j] * dt_gravkick +
                     SphP[i].HydroAccel[j]*All.cf_atime * dt_hydrokick; /* make sure v is in code units */
 #endif
+#if (SINGLE_STAR_TIMESTEPPING > 0)
+	        if((P[i].Type==5) && (P[i].SuperTimestepFlag>=2)) {for(j=0;j<3;j++)	{SphP[i].VelPred[j] += fewbody_kick_dv[j];}}
+#endif	    
             
 #if defined(TURB_DRIVING)
             for(j = 0; j < 3; j++)

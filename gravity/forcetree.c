@@ -7,6 +7,9 @@
 #include "../allvars.h"
 #include "../proto.h"
 #include "../kernel.h"
+#ifdef SUBFIND
+#include "../structure/subfind/subfind.h"
+#endif
 #ifdef PTHREADS_NUM_THREADS
 #include <pthread.h>
 #endif
@@ -25,7 +28,7 @@
  */
 /*
  * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org). The code has been modified
+ * Volker Springel. The code has been modified
  * substantially (condensed, new feedback routines added,
  * some optimizatins, and new variable/memory conventions added)
  * by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
@@ -578,7 +581,7 @@ void force_update_node_recursive(int no, int sib, int father)
 #ifdef BH_CALC_DISTANCES
         MyFloat bh_mass=0;
         MyFloat bh_pos_times_mass[3]={0,0,0};   /* position of each black hole in the node times its mass; divide by total mass at the end to get COM */
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_FIND_BINARIES)
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(SINGLE_STAR_FIND_BINARIES)
         MyFloat bh_mom[3] = {0,0,0};
         int N_BH = 0;
 #endif	
@@ -660,7 +663,7 @@ void force_update_node_recursive(int no, int sib, int father)
                         bh_pos_times_mass[0] += Nodes[p].bh_pos[0] * Nodes[p].bh_mass;
                         bh_pos_times_mass[1] += Nodes[p].bh_pos[1] * Nodes[p].bh_mass;
                         bh_pos_times_mass[2] += Nodes[p].bh_pos[2] * Nodes[p].bh_mass;
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_FIND_BINARIES)
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(SINGLE_STAR_FIND_BINARIES)
                         bh_mom[0] += Nodes[p].bh_vel[0] * Nodes[p].bh_mass;
                         bh_mom[1] += Nodes[p].bh_vel[1] * Nodes[p].bh_mass;
                         bh_mom[2] += Nodes[p].bh_vel[2] * Nodes[p].bh_mass;
@@ -751,6 +754,11 @@ void force_update_node_recursive(int no, int sib, int father)
                         bh_pos_times_mass[0] += pa->Pos[0] * pa->Mass;  /* positition times mass; divide by total mass later */
                         bh_pos_times_mass[1] += pa->Pos[1] * pa->Mass;
                         bh_pos_times_mass[2] += pa->Pos[2] * pa->Mass;
+#ifdef SINGLE_STAR_TIMESTEPPING
+                        bh_mom[0] += pa->Vel[0] * pa->Mass;
+                        bh_mom[1] += pa->Vel[1] * pa->Mass;
+                        bh_mom[2] += pa->Vel[2] * pa->Mass;
+#endif
                     }
 #endif
                     
@@ -900,7 +908,7 @@ void force_update_node_recursive(int no, int sib, int father)
                 Nodes[no].bh_pos[0] = bh_pos_times_mass[0] / bh_mass;  /* weighted position is sum(pos*mass)/sum(mass) */
                 Nodes[no].bh_pos[1] = bh_pos_times_mass[1] / bh_mass;
                 Nodes[no].bh_pos[2] = bh_pos_times_mass[2] / bh_mass;
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_FIND_BINARIES)
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(SINGLE_STAR_FIND_BINARIES)
                 Nodes[no].bh_vel[0] = bh_mom[0] / bh_mass;
                 Nodes[no].bh_vel[1] = bh_mom[1] / bh_mass;
                 Nodes[no].bh_vel[2] = bh_mom[2] / bh_mass;
@@ -1001,7 +1009,7 @@ void force_exchange_pseudodata(void)
 #ifdef BH_CALC_DISTANCES
         MyFloat bh_mass;
         MyFloat bh_pos[3];
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_FIND_BINARIES)
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(SINGLE_STAR_FIND_BINARIES)
         MyFloat bh_vel[3];
         int N_BH;
 #endif      
@@ -1074,7 +1082,7 @@ void force_exchange_pseudodata(void)
             DomainMoment[i].bh_pos[0] = Nodes[no].bh_pos[0];
             DomainMoment[i].bh_pos[1] = Nodes[no].bh_pos[1];
             DomainMoment[i].bh_pos[2] = Nodes[no].bh_pos[2];
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_FIND_BINARIES)
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(SINGLE_STAR_FIND_BINARIES)
             DomainMoment[i].bh_vel[0] = Nodes[no].bh_vel[0];
             DomainMoment[i].bh_vel[1] = Nodes[no].bh_vel[1];
             DomainMoment[i].bh_vel[2] = Nodes[no].bh_vel[2];
@@ -1163,7 +1171,7 @@ void force_exchange_pseudodata(void)
                     Nodes[no].bh_pos[0] = DomainMoment[i].bh_pos[0];
                     Nodes[no].bh_pos[1] = DomainMoment[i].bh_pos[1];
                     Nodes[no].bh_pos[2] = DomainMoment[i].bh_pos[2];
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_FIND_BINARIES)
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(SINGLE_STAR_FIND_BINARIES)
                     Nodes[no].bh_vel[0] = DomainMoment[i].bh_vel[0];
                     Nodes[no].bh_vel[1] = DomainMoment[i].bh_vel[1];
                     Nodes[no].bh_vel[2] = DomainMoment[i].bh_vel[2];
@@ -1232,7 +1240,7 @@ void force_treeupdate_pseudos(int no)
 #ifdef BH_CALC_DISTANCES
     MyFloat bh_mass=0;
     MyFloat bh_pos_times_mass[3]={0,0,0};
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_FIND_BINARIES)
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(SINGLE_STAR_FIND_BINARIES)
     MyFloat bh_mom[3] = {0,0,0};
     int N_BH = 0;
 #endif   
@@ -1293,7 +1301,7 @@ void force_treeupdate_pseudos(int no)
             bh_pos_times_mass[0] += Nodes[p].bh_pos[0] * Nodes[p].bh_mass;
             bh_pos_times_mass[1] += Nodes[p].bh_pos[1] * Nodes[p].bh_mass;
             bh_pos_times_mass[2] += Nodes[p].bh_pos[2] * Nodes[p].bh_mass;
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_FIND_BINARIES)
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(SINGLE_STAR_FIND_BINARIES)
             bh_mom[0] += Nodes[p].bh_vel[0] * Nodes[p].bh_mass;
             bh_mom[1] += Nodes[p].bh_vel[1] * Nodes[p].bh_mass;
             bh_mom[2] += Nodes[p].bh_vel[2] * Nodes[p].bh_mass;
@@ -1431,7 +1439,7 @@ void force_treeupdate_pseudos(int no)
             Nodes[no].bh_pos[0] = bh_pos_times_mass[0] / bh_mass;
             Nodes[no].bh_pos[1] = bh_pos_times_mass[1] / bh_mass;
             Nodes[no].bh_pos[2] = bh_pos_times_mass[2] / bh_mass;
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_FIND_BINARIES)
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(SINGLE_STAR_FIND_BINARIES)
             Nodes[no].bh_vel[0] = bh_mom[0] / bh_mass;
             Nodes[no].bh_vel[1] = bh_mom[1] / bh_mass;
             Nodes[no].bh_vel[2] = bh_mom[2] / bh_mass;
@@ -1575,7 +1583,7 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #endif    
     double pos_x, pos_y, pos_z, aold;
 
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(COMPUTE_JERK_IN_GRAVTREE)
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(COMPUTE_JERK_IN_GRAVTREE)
     double vel_x, vel_y, vel_z;
 #endif    
 #ifdef PMGRID
@@ -1621,6 +1629,11 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
     double min_xyz_to_bh[3]={1.e37,1.e37,1.e37};
 #ifdef SINGLE_STAR_FIND_BINARIES
     double min_bh_t_orbital=MAX_REAL_NUMBER, comp_dx[3], comp_dv[3], comp_Mass;
+#endif    
+#ifdef SINGLE_STAR_TIMESTEPPING
+    double min_bh_approach_time = MAX_REAL_NUMBER;
+    double min_bh_freefall_time = MAX_REAL_NUMBER;
+    double min_bh_periastron = MAX_REAL_NUMBER;
 #endif    
 #endif
     
@@ -1670,7 +1683,7 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #if defined(RT_USE_GRAVTREE) || defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS)
         pmass = P[target].Mass;
 #endif
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(COMPUTE_JERK_IN_GRAVTREE)
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(COMPUTE_JERK_IN_GRAVTREE)
         vel_x = P[target].Vel[0];
         vel_y = P[target].Vel[1];
         vel_z = P[target].Vel[2];
@@ -1707,7 +1720,7 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #if defined(RT_USE_GRAVTREE) || defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS)
         pmass = GravDataGet[target].Mass;
 #endif
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(COMPUTE_JERK_IN_GRAVTREE)
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(COMPUTE_JERK_IN_GRAVTREE)
         vel_x = GravDataGet[target].Vel[0];
         vel_y = GravDataGet[target].Vel[1];
         vel_z = GravDataGet[target].Vel[2];
@@ -1833,6 +1846,35 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                         min_xyz_to_bh[1] = dy;
                         min_xyz_to_bh[2] = dz;
                     }
+#ifdef SINGLE_STAR_TIMESTEPPING
+                    double bh_dvx=P[no].Vel[0]-vel_x, bh_dvy=P[no].Vel[1]-vel_y, bh_dvz=P[no].Vel[2]-vel_z, vSqr=bh_dvx*bh_dvx+bh_dvy*bh_dvy+bh_dvz*bh_dvz, M_total=P[no].Mass+pmass, r2soft;
+		            r2soft = DMAX(All.SofteningTable[5], soft/2.8);
+                    r2soft = r2 + r2soft*r2soft;
+                    double tSqr = r2soft/(vSqr + MIN_REAL_NUMBER), tff4 = r2soft*r2soft*r2soft/(M_total*M_total);
+                    if(tSqr < min_bh_approach_time) {min_bh_approach_time = tSqr;}
+                    if(tff4 < min_bh_freefall_time) {min_bh_freefall_time = tff4;}
+#ifdef SINGLE_STAR_FIND_BINARIES
+                    if (ptype==5) // only for BH particles and for non center of mass calculation
+                    {
+                        double r_p5=sqrt(r2), specific_energy = 0.5*vSqr - All.G*M_total/r_p5;
+                        if(r2 < All.ForceSoftening[5]*All.ForceSoftening[5])
+                        {   
+                            double hinv_p5 = 1/All.ForceSoftening[5];
+                            specific_energy = 0.5*vSqr + All.G*M_total*kernel_gravity(r_p5*hinv_p5, hinv_p5, hinv_p5*hinv_p5*hinv_p5, -1);
+                        }
+                        if (specific_energy < 0)
+                        {
+                            double semimajor_axis= -All.G*M_total/(2.*specific_energy);
+                            double t_orbital = 2.*M_PI*sqrt( semimajor_axis*semimajor_axis*semimajor_axis / (All.G*M_total) );
+                            if(t_orbital < min_bh_t_orbital) /* Save parameters of companion */ 
+                            {
+                                min_bh_t_orbital=t_orbital; comp_Mass=P[no].Mass; 
+                                comp_dx[0]=dx; comp_dx[1]=dy; comp_dx[2]=dz; comp_dv[0]=bh_dvx; comp_dv[1]=bh_dvy; comp_dv[2]=bh_dvz;
+                            }
+                        } /* specific_energy < 0 */
+                    } /* ptype==5 */
+#endif //#ifdef SINGLE_STAR_FIND_BINARIES
+#endif //#ifdef SINGLE_STAR_TIMESTEPPING
                 }
 #endif
 
@@ -2201,6 +2243,30 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                         min_xyz_to_bh[1] = bh_dy;
                         min_xyz_to_bh[2] = bh_dz;
                     }
+#ifdef SINGLE_STAR_TIMESTEPPING
+                    double bh_dvx=nop->bh_vel[0]-vel_x, bh_dvy=nop->bh_vel[1]-vel_y, bh_dvz=nop->bh_vel[2]-vel_z, vSqr=bh_dvx*bh_dvx+bh_dvy*bh_dvy+bh_dvz*bh_dvz, M_total=nop->bh_mass+pmass, r2soft;
+                    r2soft = DMAX(All.SofteningTable[5], soft/2.8);
+                    r2soft = r2 + r2soft*r2soft;
+                    double tSqr = r2soft/(vSqr + MIN_REAL_NUMBER), tff4 = r2soft*r2soft*r2soft/(M_total*M_total);
+                    if(tSqr < min_bh_approach_time) {min_bh_approach_time = tSqr;}		    
+                    if(tff4 < min_bh_freefall_time) {min_bh_freefall_time = tff4;}
+#ifdef SINGLE_STAR_FIND_BINARIES
+                    if(ptype==5 && nop->N_BH==1) // only do it if we're looking at a single star in the node
+                    { 
+                        double specific_energy = 0.5*vSqr - All.G*M_total/sqrt(r2);
+                        if (specific_energy<0)
+                        {
+                            double semimajor_axis= -All.G*M_total/(2.*specific_energy);
+                            double t_orbital = 2.*M_PI*sqrt( semimajor_axis*semimajor_axis*semimajor_axis / (All.G*M_total) );
+                            if(t_orbital < min_bh_t_orbital) /* Save parameters of companion */
+                            {
+                                min_bh_t_orbital=t_orbital; comp_Mass=nop->bh_mass;
+                                comp_dx[0]=bh_dx; comp_dx[1]=bh_dy; comp_dx[2]=bh_dz; comp_dv[0]=bh_dvx; comp_dv[1]=bh_dvy; comp_dv[2]=bh_dvz;
+                            }
+                        } /* specific_energy < 0 */
+                    } /* ptype==5 */
+#endif //#ifdef SINGLE_STAR_FIND_BINARIES
+#endif //#ifdef SINGLE_STAR_TIMESTEPPING
                 }
 #endif
             }
@@ -2506,6 +2572,11 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
             for(i1=0;i1<3;i1++) {P[target].comp_dx[i1]=comp_dx[i1]; P[target].comp_dv[i1]=comp_dv[i1];}
         }
 #endif	
+#ifdef SINGLE_STAR_TIMESTEPPING
+        P[target].min_bh_approach_time = sqrt(min_bh_approach_time);
+        P[target].min_bh_freefall_time = sqrt(sqrt(min_bh_freefall_time)/All.G);
+        P[target].min_bh_periastron = min_bh_periastron;
+#endif
 #endif
     }
     else
@@ -2538,6 +2609,11 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
             for(i1=0;i1<3;i1++) {GravDataResult[target].comp_dx[i1]=comp_dx[i1]; GravDataResult[target].comp_dv[i1]=comp_dv[i1];}
 	    }
 #endif	    
+#ifdef SINGLE_STAR_TIMESTEPPING
+        GravDataResult[target].min_bh_approach_time = sqrt(min_bh_approach_time);
+        GravDataResult[target].min_bh_freefall_time = sqrt(sqrt(min_bh_freefall_time)/All.G);
+        GravDataResult[target].min_bh_periastron = min_bh_periastron;
+#endif	
 #endif
         *exportflag = nodesinlist;
     }
@@ -3021,10 +3097,7 @@ int force_treeevaluate_potential(int target, int mode, int *nexport, int *nsend_
             {
                 /* the index of the node is the index of the particle */
                 /* observe the sign  */
-#ifndef FLAG_NOT_IN_PUBLIC_CODE_RESHUFFLE_AND_POTENTIAL
-                if(P[no].Ti_current != All.Ti_Current)
-                    drift_particle(no, All.Ti_Current);
-#endif
+                if(P[no].Ti_current != All.Ti_Current) {drift_particle(no, All.Ti_Current);}
                 dx = P[no].Pos[0] - pos_x;
                 dy = P[no].Pos[1] - pos_y;
                 dz = P[no].Pos[2] - pos_z;
@@ -3089,10 +3162,7 @@ int force_treeevaluate_potential(int target, int mode, int *nexport, int *nsend_
                     no = nop->u.d.nextnode;
                     continue;
                 }
-#ifndef FLAG_NOT_IN_PUBLIC_CODE_RESHUFFLE_AND_POTENTIAL
-                if(nop->Ti_current != All.Ti_Current)
-                    force_drift_node(no, All.Ti_Current);
-#endif
+                if(nop->Ti_current != All.Ti_Current) {force_drift_node(no, All.Ti_Current);}
                 mass = nop->u.d.mass;
                 dx = nop->u.d.s[0] - pos_x;
                 dy = nop->u.d.s[1] - pos_y;
@@ -3316,6 +3386,179 @@ int force_treeevaluate_potential(int target, int mode, int *nexport, int *nsend_
 
 
 
+#ifdef SUBFIND
+int subfind_force_treeevaluate_potential(int target, int mode, int *nexport, int *nsend_local)
+{
+    struct NODE *nop = 0;
+    MyLongDouble pot;
+    int no, ptype, task, nexport_save, listindex = 0;
+    double r2, dx, dy, dz, mass, r, u, h, h_inv;
+    double pos_x, pos_y, pos_z;
+    
+    nexport_save = *nexport;
+    pot = 0;
+    if(mode == 0)
+    {
+        pos_x = P[target].Pos[0];
+        pos_y = P[target].Pos[1];
+        pos_z = P[target].Pos[2];
+        ptype = P[target].Type;
+    }
+    else
+    {
+        pos_x = GravDataGet[target].Pos[0];
+        pos_y = GravDataGet[target].Pos[1];
+        pos_z = GravDataGet[target].Pos[2];
+        ptype = GravDataGet[target].Type;
+    }
+    
+    h = All.ForceSoftening[ptype];
+    h_inv = 1.0 / h;
+    
+    if(mode == 0)
+    {
+        no = All.MaxPart;		/* root node */
+    }
+    else
+    {
+        no = GravDataGet[target].NodeList[0];
+        no = Nodes[no].u.d.nextnode;	/* open it */
+    }
+    
+    while(no >= 0)
+    {
+        while(no >= 0)
+        {
+            if(no < All.MaxPart)	/* single particle */
+            {
+                /* the index of the node is the index of the particle */
+                /* observe the sign */
+                
+                dx = P[no].Pos[0] - pos_x;
+                dy = P[no].Pos[1] - pos_y;
+                dz = P[no].Pos[2] - pos_z;
+                mass = P[no].Mass;
+            }
+            else
+            {
+                if(no >= All.MaxPart + MaxNodes)	/* pseudo particle */
+                {
+                    if(mode == 0)
+                    {
+                        if(Exportflag[task = DomainTask[no - (All.MaxPart + MaxNodes)]] != target)
+                        {
+                            Exportflag[task] = target;
+                            Exportnodecount[task] = NODELISTLENGTH;
+                        }
+                        
+                        if(Exportnodecount[task] == NODELISTLENGTH)
+                        {
+                            if(*nexport >= All.BunchSize)
+                            {
+                                *nexport = nexport_save;
+                                if(nexport_save == 0)
+                                    endrun(13001);	/* in this case, the buffer is too small to process even a single particle */
+                                for(task = 0; task < NTask; task++)
+                                    nsend_local[task] = 0;
+                                for(no = 0; no < nexport_save; no++)
+                                    nsend_local[DataIndexTable[no].Task]++;
+                                return -1;
+                            }
+                            Exportnodecount[task] = 0;
+                            Exportindex[task] = *nexport;
+                            DataIndexTable[*nexport].Task = task;
+                            DataIndexTable[*nexport].Index = target;
+                            DataIndexTable[*nexport].IndexGet = *nexport;
+                            *nexport = *nexport + 1;
+                            nsend_local[task]++;
+                        }
+                        
+                        DataNodeList[Exportindex[task]].NodeList[Exportnodecount[task]++] =
+                        DomainNodeIndex[no - (All.MaxPart + MaxNodes)];
+                        if(Exportnodecount[task] < NODELISTLENGTH)
+                            DataNodeList[Exportindex[task]].NodeList[Exportnodecount[task]] = -1;
+                    }
+                    no = Nextnode[no - MaxNodes];
+                    continue;
+                }
+                
+                nop = &Nodes[no];
+                if(mode == 1)
+                {
+                    if(nop->u.d.bitflags & (1 << BITFLAG_TOPLEVEL))	/* we reached a top-level node again, which means that we are done with the branch */
+                    {
+                        no = -1;
+                        continue;
+                    }
+                }
+                
+                mass = nop->u.d.mass;
+                if(!(nop->u.d.bitflags & (1 << BITFLAG_MULTIPLEPARTICLES)))
+                {
+                    /* open cell */
+                    if(mass)
+                    {
+                        no = nop->u.d.nextnode;
+                        continue;
+                    }
+                }
+                
+                dx = nop->u.d.s[0] - pos_x;
+                dy = nop->u.d.s[1] - pos_y;
+                dz = nop->u.d.s[2] - pos_z;
+            }
+            GRAVITY_NEAREST_XYZ(dx,dy,dz,-1);
+            r2 = dx * dx + dy * dy + dz * dz;
+            if(no < All.MaxPart)
+            {
+                no = Nextnode[no];
+            }
+            else			/* we have an internal node. Need to check opening criterion */
+            {
+                /* check Barnes-Hut opening criterion */
+                double ErrTolThetaSubfind = All.ErrTolTheta;
+                if(nop->len * nop->len > r2 * ErrTolThetaSubfind * ErrTolThetaSubfind)
+                {
+                    /* open cell */
+                    if(mass)
+                    {
+                        no = nop->u.d.nextnode;
+                        continue;
+                    }
+                }
+                no = nop->u.d.sibling;	/* node can be used */
+            }
+            
+            r = sqrt(r2);
+            if(r >= h)
+                pot += FLT(-mass / r);
+            else
+            {
+                u = r * h_inv;
+                pot += FLT( mass * kernel_gravity(u, h_inv, 1, -1) );
+            }
+        }
+        if(mode == 1)
+        {
+            listindex++;
+            if(listindex < NODELISTLENGTH)
+            {
+                no = GravDataGet[target].NodeList[listindex];
+                if(no >= 0)
+                    no = Nodes[no].u.d.nextnode;	/* open it */
+            }
+        }
+    }
+    
+    /* store result at the proper place */
+    
+    if(mode == 0)
+        P[target].u.DM_Potential = pot;
+    else
+        PotDataResult[target].Potential = pot;
+    return 0;
+}
+#endif // SUBFIND //
 
 
 
@@ -3357,13 +3600,13 @@ void force_treeallocate(int maxnodes, int maxpart)
     {
         printf("Failed to allocate %d spaces for 'Nextnode' array (%g MB)\n",
                maxpart + NTopnodes, bytes / (1024.0 * 1024.0));
-        exit(0);
+        endrun(8267342);
     }
     allbytes += bytes;
     if(!(Father = (int *) mymalloc("Father", bytes = (maxpart) * sizeof(int))))
     {
         printf("Failed to allocate %d spaces for 'Father' array (%g MB)\n", maxpart, bytes / (1024.0 * 1024.0));
-        exit(0);
+        endrun(438965237);
     }
     allbytes += bytes;
     if(first_flag == 0)
@@ -3371,7 +3614,7 @@ void force_treeallocate(int maxnodes, int maxpart)
         first_flag = 1;
         if(ThisTask == 0)
             printf
-            ("\nAllocated %g MByte for BH-tree, and %g Mbyte for top-leaves.  (presently allocted %g MB)\n\n",
+            ("Allocated %g MByte for tree, and %g Mbyte for top-leaves.  (presently allocated %g MB)\n",
              allbytes / (1024.0 * 1024.0), allbytes_topleaves / (1024.0 * 1024.0),
              AllocatedBytes / (1024.0 * 1024.0));
         for(i = 0; i < NTAB; i++)
@@ -3455,13 +3698,7 @@ void ewald_init(void)
     char buf[200];
     FILE *fd;
     
-    if(ThisTask == 0)
-    {
-        printf("initialize Ewald correction...\n");
-#ifndef IO_REDUCED_MODE
-        fflush(stdout);
-#endif
-    }
+    if(ThisTask == 0) {printf("Initializing Ewald correction...\n");}
     
 #ifdef DOUBLEPRECISION
     sprintf(buf, "ewald_spc_table_%d_dbl.dat", EN);
@@ -3478,13 +3715,7 @@ void ewald_init(void)
     }
     else
     {
-        if(ThisTask == 0)
-        {
-            printf("\nNo Ewald tables in file `%s' found.\nRecomputing them...\n", buf);
-#ifndef IO_REDUCED_MODE
-            fflush(stdout);
-#endif
-        }
+        printf("\nNo Ewald tables in file `%s' found.\nRecomputing them...\n", buf);
         
         /* ok, let's recompute things. Actually, we do that in parallel. */
         
@@ -3500,17 +3731,7 @@ void ewald_init(void)
                     n = (i * (EN + 1) + j) * (EN + 1) + k;
                     if(n >= beg && n < (beg + len))
                     {
-                        if(ThisTask == 0)
-                        {
-#ifndef IO_REDUCED_MODE
-                            if((count % (len / 20)) == 0)
-                            {
-                                printf("%4.1f percent done\n", count / (len / 100.0));
-                                fflush(stdout);
-                            }
-#endif
-                        }
-                        
+                        if((count % (len / 20)) == 0) {PRINT_STATUS("%4.1f percent done", count / (len / 100.0));}
                         x[0] = 0.5 * ((double) i) / EN;
                         x[1] = 0.5 * ((double) j) / EN;
                         x[2] = 0.5 * ((double) k) / EN;
@@ -3563,10 +3784,7 @@ void ewald_init(void)
                 fcorrz[i][j][k] /= All.BoxSize * All.BoxSize;
             }
     
-    if(ThisTask == 0)
-    {
-        printf("initialization of periodic boundaries finished.\n");
-    }
+    if(ThisTask == 0) {printf(" ..initialization of periodic boundaries finished.\n");}
 #endif // #ifndef SELFGRAVITY_OFF
 }
 

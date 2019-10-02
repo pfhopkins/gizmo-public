@@ -51,7 +51,7 @@
 ###########
 #
 # This file was originally part of the GADGET3 code developed by
-#   Volker Springel (volker.springel@h-its.org). The code has been modified
+#   Volker Springel. The code has been modified
 #   slighty by Phil Hopkins (phopkins@caltech.edu) for GIZMO (mostly 
 #   dealing with new files and filename conventions)
 #
@@ -67,7 +67,7 @@ HG_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null)
 HG_REPO := $(shell git config --get remote.origin.url)
 HG_BRANCH := $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null)
 BUILDINFO = "Build on $(HOSTNAME) by $(USER) from $(HG_BRANCH):$(HG_COMMIT) at $(HG_REPO)"
-#OPT += -DBUILDINFO='$(BUILDINFO)'
+OPT += -DBUILDINFO='$(BUILDINFO)'
 
 ifeq (FIRE_PHYSICS_DEFAULTS,$(findstring FIRE_PHYSICS_DEFAULTS,$(CONFIGVARS)))  # using 'fire default' instead of all the above
     CONFIGVARS += COOLING COOL_LOW_TEMPERATURES COOL_METAL_LINES_BY_SPECIES
@@ -264,8 +264,8 @@ GMP_INCL = #
 GMP_LIBS = #
 MKL_INCL = -I$(TACC_MKL_INC)
 MKL_LIBS = -L$(TACC_MKL_LIB) -mkl=sequential
-GSL_INCL = -I$(HOME_GSL_DIR)
-GSL_LIBS = -L$(HOME_GSL_DIR)/.libs -L$(HOME_GSL_DIR)/cblas/.libs
+GSL_INCL = -I$(TACC_GSL_INC)
+GSL_LIBS = -L$(TACC_GSL_LIB)
 FFTW_INCL= -I$(TACC_FFTW2_INC)
 FFTW_LIBS= -L$(TACC_FFTW2_LIB)
 ifeq (USE_FFTW3, $(findstring USE_FFTW3, $(CONFIGVARS)))
@@ -277,7 +277,11 @@ HDF5LIB  = -L$(TACC_HDF5_LIB) -lhdf5 -lz
 MPICHLIB =
 OPT     += -DUSE_MPI_IN_PLACE -DNO_ISEND_IRECV_IN_DOMAIN
 ##
-# IMPORTANT: presently must use intel/18.x versions. 19.x versions compile and work, but lots of problems (+slower), esp. for high Ntasks or OpenMP
+# UPDATE (9/19): Intel/19.0.5 is now working, and Intel/18 is actually sometimes running slower now because of some of the changes made to the impi installation.
+#          Depending on when your code was compiled and exactly which flags you used, you may notice a performance drop with intel/18, and should switch to 19.
+#          For intel/19: module load intel/19 impi hdf5 fftw3 gsl
+#
+# Previous: presently must use intel/18.x versions. 19.x versions compile and work, but lots of problems (+slower), esp. for high Ntasks or OpenMP
 #  e.g.: module load intel/18.0.5 impi hdf5 fftw3 gsl
 #  until recently, GSL module did -not- support intel/18.x, so needed to build it yourself (see update below). example instructions below:
 #    -- 1. get newest GSL: ftp://ftp.gnu.org/gnu/gsl/gsl-latest.tar.gz
@@ -286,8 +290,11 @@ OPT     += -DUSE_MPI_IN_PLACE -DNO_ISEND_IRECV_IN_DOMAIN
 #       6. in your .bashrc file, add "export HOME_GSL_DIR=$HOME/gsl-2.5" and
 #           "export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$HOME_GSL_DIR:$HOME_GSL_DIR/.libs:$HOME_GSL_DIR/cblas/.libs"
 #           (obviously if you use a different parent install directory, change the directory name here accordingly).
-#       7. when you submit jobs, make sure you include a "source $HOME/.bashrc" in your run script or the export flags above, to link the libraries
+#       7. when you submit jobs, make sure you include a "source $HOME/.bashrc" in your run script or the export flags above, to link the libraries. I was using
+#			GSL_INCL = -I$(HOME_GSL_DIR)
+#			GSL_LIBS = -L$(HOME_GSL_DIR)/.libs -L$(HOME_GSL_DIR)/cblas/.libs
 # [update: GSL module is now installed for intel/18.0.5, so you can simply load the module. but I'll keep the install instructions above, they can be useful]
+#
 # As usual include "umask 022" and "ulimit -s unlimited" in your .bashrc file to save headaches later
 # fftw2/3 work equally well. usual intuition re: multipledomains, pmgrid, treedomainfreq, etc, apply.
 # The different code optimizations above make very tiny differences. for stability I am for now using -O2 -xCORE-AVX2, nothing 'fancy' but this doesn't cost us
@@ -300,11 +307,14 @@ OPT     += -DUSE_MPI_IN_PLACE -DNO_ISEND_IRECV_IN_DOMAIN
 #     where quantities in (X) are the things you want to set.
 # With these options, hybrid MPI+OpenMP works well. Because of the node configuration, optimal hybrid performance will typically use either
 #   OPENMP=4 (ntasks-per-node=14) or OPENMP=7 (ntasks-per-node=8). Small jobs (<200 cores) might be better with smaller/no OPENMP, very large jobs higher,
-#   (OPENMP can be any integer, ntasks-per-node must be even or severe performance hits apply)
+#   (OPENMP can be any integer, ntasks-per-node must be even or severe performance hits apply).
+#   Intel/19 now functional seems to favor slightly lower OPENMP number, shifting to perhaps OPENMP=2 (ntasks-per-node=28) for small jobs, =4 for medium, =7 for very large
+#
 # Note that the Frontera setup is NOT built for hyperthreading, even though the CLX nodes are supposed to support it. If you ask for 112 threads/node (insteady of 56),
 #   the code will actually work, but very slowly. Stick to 56 for now.
-# There are still odd memory issues. The machine should have 3.3gb/core available after OS, etc, but in practice we need to allocate less than this. MPI errors
-#   have also been appearing in large runs (for almost all users) related to memory. Be careful for now, and communicate to TACC support staff re: memory issues.
+#
+# [old: There are still odd memory issues. The machine should have 3.3gb/core available after OS, etc, but in practice we need to allocate less than this. MPI errors
+#   have also been appearing in large runs (for almost all users) related to memory. Be careful for now, and communicate to TACC support staff re: memory issues.]
 #   I am using ~3gb/core for low task numbers, lower still for higher task numbers. 
 ##
 endif
@@ -1214,10 +1224,19 @@ OBJS	+= radiation/rt_utilities.o radiation/rt_CGmethod.o radiation/rt_source_inj
 endif
 
 ifeq (SUBFIND,$(findstring SUBFIND,$(CONFIGVARS)))
-OBJS	+= subfind/subfind.o subfind/subfind_vars.o subfind/subfind_collective.o subfind/subfind_serial.o subfind/subfind_so.o subfind/subfind_cont.o \
-	subfind/subfind_distribute.o subfind/subfind_findlinkngb.o subfind/subfind_nearesttwo.o subfind/subfind_loctree.o subfind/subfind_alternative_collective.o subfind/subfind_reshuffle.o \
-	subfind/subfind_potential.o subfind/subfind_density.o
-INCL	+= subfind/subfind.h
+OBJS	+=  structure/subfind/subfind.o \
+			structure/subfind/subfind_vars.o \
+			structure/subfind/subfind_collective.o \
+			structure/subfind/subfind_serial.o \
+			structure/subfind/subfind_so.o \
+			structure/subfind/subfind_cont.o \
+			structure/subfind/subfind_distribute.o \
+			structure/subfind/subfind_findlinkngb.o \
+			structure/subfind/subfind_nearesttwo.o \
+			structure/subfind/subfind_loctree.o \
+			structure/subfind/subfind_potential.o \
+			structure/subfind/subfind_density.o
+INCL	+= structure/subfind/subfind.h
 endif
 
 ifeq (TURB_DIFF_DYNAMIC,$(findstring TURB_DIFF_DYNAMIC,$(CONFIGVARS)))
@@ -1254,14 +1273,7 @@ FFLAGS = $(OPTIONS)
 endif
 
 
-ifeq (ALTERNATIVE_PSORT,$(findstring ALTERNATIVE_PSORT,$(CONFIGVARS)))
-OBJS  += fof_alt_psort.o modules/psort-1.0/error_handling.o
-CXXFLAGS = $(CFLAGS)
-FC    = $(CXX)
-endif
-
-FFTW = $(FFTW_LIBS)  $(FFTW_LIBNAMES) 
-
+FFTW = $(FFTW_LIBS)  $(FFTW_LIBNAMES)
 
 LIBS   = $(HDF5LIB) -g $(MPICHLIB) $(GSL_LIBS) -lgsl -lgslcblas $(FFTW) -lm $(GRACKLELIBS)
 

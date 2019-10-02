@@ -10,12 +10,11 @@
 #include "../allvars.h"
 #include "../proto.h"
 
-/* compute line-of-sight integrated quantities (for e.g. Lyman-alpha forest studies) */
+/*! compute line-of-sight integrated quantities (for e.g. Lyman-alpha forest studies) */
 
 /*
- * This file was originally part of the GADGET3 code developed by
- * Volker Springel (volker.springel@h-its.org). It is here in GIZMO
- * as legacy code at the moment, and needs to be re-written or removed.
+ * This file was originally part of the GADGET3 code developed by Volker Springel.
+ * It has been updated by PFH for basic compatibility with GIZMO.
  */
 
 
@@ -82,13 +81,7 @@ void lineofsight_output(void)
   next = find_next_lineofsighttime(All.Ti_nextlineofsight);
 
   ti = All.TimeBegin * exp(next * All.Timebase_interval);
-
-#ifndef IO_REDUCED_MODE
-  if(ThisTask == 0)
-    {
-      printf("Line of sight output! ThisTask=%d Time=%g  NextTime=%g\n", ThisTask, All.Time, ti);
-    }
-#endif
+  PRINT_STATUS("Line of sight output! ThisTask=%d Time=%g  NextTime=%g", ThisTask, All.Time, ti);
   H_a = hubble_function(All.Time);
   Wmax = All.Time * H_a * All.BoxSize;
 
@@ -494,7 +487,7 @@ void output_lines_of_sight(int num)
   if(!(fd = fopen(fname, "w")))
     {
       printf("can't open file `%s`\n", fname);
-      exit(1);
+      endrun(1);
     }
 
   dummy = PIXELS;
