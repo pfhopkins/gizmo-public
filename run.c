@@ -230,9 +230,6 @@ void calculate_non_standard_physics(void)
 #endif
     
 #if defined(TURB_DRIVING)
-#ifdef EOS_ENFORCE_ADIABAT
-    reset_turb_temp();
-#endif
 #if defined(TURB_DRIVING_SPECTRUMGRID)
     if(All.Time >= All.TimeNextTurbSpectrum)
     {

@@ -1262,7 +1262,7 @@ void hydro_gradient_calc(void)
 		        double mean_molecular_weight = mu_meanwt;
 #else
 		        double mean_molecular_weight = 2.38; // molecular H2, +He with solar mass fractions and metals
-		        double temperature = GAMMA_MINUS1 / BOLTZMANN * (SphP[i].InternalEnergy*All.UnitPressure_in_cgs/All.UnitDensity_in_cgs) * (mean_molecular_weight*PROTONMASS);
+                double temperature = mean_molecular_weight * (1.4-1.) * U_TO_TEMP_UNITS * SphP[i].InternalEnergy; // assume molecular eos with gamma=1.4
 #endif
 		        // define some variables we need below //
 		        double zeta_cr = 1.0e-17; // cosmic ray ionization rate (fixed as constant for non-CR runs)
@@ -1326,7 +1326,7 @@ void hydro_gradient_calc(void)
                 double nu_e = nu_ei + 6.21e-9*pow(temperature/100.,0.65)/m_neutral; // Pinto & Galli 2008 for latter (e-neutral)
                 double nu_i = (xe/xi)*nu_ei + 1.57e-9/(m_neutral+m_ion); // // Pandey & Wardle 2008 for former (e-ion), Pinto & Galli 2008 for latter (i-neutral)
                 // use the cross sections to determine the hall parameters and conductivities //
-                double beta_prefac = ELECTRONCHARGE * B_Gauss / (PROTONMASS * C * n_eff);
+                double beta_prefac = ELECTRONCHARGE * B_Gauss / (PROTONMASS * C_LIGHT * n_eff);
                 double beta_i = beta_prefac / (m_ion * nu_i); // standard beta factors (Hall parameters) 
                 double beta_e = beta_prefac / (ELECTRONMASS/PROTONMASS * nu_e);
                 double beta_g = beta_prefac / (m_grain * nu_g) * Z_grain;
@@ -1335,7 +1335,7 @@ void hydro_gradient_calc(void)
                 double sigma_H = -xe*be_inv + xi*bi_inv - xg*Z_grain*bg_inv; // hall conductivity
                 double sigma_P = xe*beta_e*be_inv + xi*beta_i*bi_inv + xg*Z_grain*beta_g*bg_inv; // pedersen conductivity
                 // now we can finally calculate the diffusivities // 
-                double eta_prefac = B_Gauss * C / (4 * M_PI * ELECTRONCHARGE * n_eff );
+                double eta_prefac = B_Gauss * C_LIGHT / (4 * M_PI * ELECTRONCHARGE * n_eff );
                 double eta_O = eta_prefac / sigma_O;
                 double sigma_perp2 = sigma_H*sigma_H + sigma_P*sigma_P;
                 double eta_H = eta_prefac * sigma_H / sigma_perp2;

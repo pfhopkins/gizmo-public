@@ -218,11 +218,6 @@ int force_treebuild_single(int npart, struct unbind_data *mp)
         else
             i = k;
         
-#ifdef NEUTRINOS
-        if(P[i].Type == 2)
-            continue;
-#endif
-        
         rep = 0;
         
         key = peano_and_morton_key((int) ((P[i].Pos[0] - DomainCorner[0]) * DomainFac),

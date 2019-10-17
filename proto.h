@@ -34,7 +34,6 @@ void get_core_set(void);
 void init_turb(void);
 void set_turb_ampl(void);
 void add_turb_accel(void);
-void reset_turb_temp(void);
 void log_turb_temp(void);
 
 void mpi_report_comittable_memory(long long BaseMem);
@@ -50,6 +49,7 @@ double ref_mass_factor(int i);
 void merge_particles_ij(int i, int j);
 //void split_particle_i(int i, int n_particles_split, int i_nearest, double r2_nearest);
 void split_particle_i(int i, int n_particles_split, int i_nearest); 
+static inline double gamma_eos(int i);
 
 void do_first_halfstep_kick(void);
 void do_second_halfstep_kick(void);
@@ -277,6 +277,7 @@ double INLINE_FUNC Get_Particle_Expected_Area(double h);
 #ifdef EOS_ELASTIC
 void elastic_body_update_driftkick(int i, double dt_entr, int mode);
 #endif
+double INLINE_FUNC convert_internalenergy_soundspeed2(int i, double u);
 double INLINE_FUNC Particle_effective_soundspeed_i(int i);
 #ifdef MAGNETIC
 double INLINE_FUNC Get_Particle_BField(int i_particle_id, int k_vector_component);
@@ -682,13 +683,14 @@ void rt_diffusion_cg_solve(void);
 
 #ifdef RT_CHEM_PHOTOION
 double rt_return_photon_number_density(int i, int k);
+double rt_photoion_chem_return_temperature(int i, double internal_energy);
 void rt_update_chemistry(void);
 void rt_get_sigma(void);
 double rt_GetCoolingTime(int i, double u, double rho);
 double rt_cooling_photoheating(int i, double dt);
-double rt_DoCooling(int, double);
-double rt_DoHeating(int, double);
-double rt_get_cooling_rate(int i, double entropy);
+double rt_DoCooling(int i, double dt_internal);
+double rt_DoHeating(int i, double dt_internal);
+double rt_get_cooling_rate(int i, double internal_energy);
 void rt_write_chemistry_stats(void);
 #endif
 

@@ -15,7 +15,7 @@
         if (gsl_rng_uniform(random_generator) < prob)
         {
 #ifdef WAKEUP
-            if(!(TimeBinActive[P[j].TimeBin])) {if(WAKEUP*local.dt_step < P[j].dt_step) {PPPZ[j].wakeup=1;}}
+            if(!(TimeBinActive[P[j].TimeBin])) {if(WAKEUP*local.dt_step < P[j].dt_step) {PPPZ[j].wakeup=1; NeedToWakeupParticles_local = 1;}}
 #endif
             double kick[3]; calculate_interact_kick(kernel.dv, kick, m_si);
             int k; for(k=0;k<3;k++) {P[j].Vel[k] += (local.Mass/m_si)*kick[k]; out.sidm_kick[k] -= (P[j].Mass/m_si)*kick[k];}

@@ -42,9 +42,6 @@ void force_kick_node(int i, MyDouble * dp)
 #ifdef DM_SCALARFIELD_SCREENING
   MyFloat dp_dm[3];
 #endif
-#ifdef NEUTRINOS
- if(P[i].Type == 2) {return;}
-#endif
 
   for(j = 0; j < 3; j++)
     {

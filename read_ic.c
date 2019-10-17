@@ -152,9 +152,8 @@ void read_ic(char *fname)
 #endif
     
     
-    u_init = (1.0 / GAMMA_MINUS1) * (BOLTZMANN / PROTONMASS) * All.InitGasTemp;
-    u_init *= All.UnitMass_in_g / All.UnitEnergy_in_cgs;	/* unit conversion */
-    
+    u_init = All.InitGasTemp / ((GAMMA_DEFAULT-1) * U_TO_TEMP_UNITS);
+
     if(All.InitGasTemp > 1.0e4)	/* assuming FULL ionization */
         molecular_weight = 4 / (8 - 5 * (1 - HYDROGEN_MASSFRAC));
     else				/* assuming NEUTRAL GAS */
@@ -354,8 +353,13 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
             
         case IO_GRAINSIZE:
 #ifdef GRAIN_FLUID
-            for(n = 0; n < pc; n++)
-                P[offset + n].Grain_Size = *fp++;
+            for(n = 0; n < pc; n++) {P[offset + n].Grain_Size = *fp++;}
+#endif
+            break;
+
+        case IO_GRAINTYPE:
+#if defined(PIC_MHD)
+            for(n = 0; n < pc; n++) {P[offset + n].Grain_SubType = *fp++;}
 #endif
             break;
             
@@ -865,7 +869,8 @@ void read_file(char *fname, int readTask, int lastTask)
         if(blockpresent(blocknr))
         {
                 /* blocks only for restartflag == 0 */
-                if(RestartFlag == 0 && blocknr > IO_U && blocknr != IO_BFLD
+                if(RestartFlag == 0 && blocknr > IO_U
+                   && blocknr != IO_BFLD
 #ifdef INPUT_READ_HSML
                    && blocknr != IO_HSML
 #endif
@@ -886,6 +891,9 @@ void read_file(char *fname, int readTask, int lastTask)
 #endif
 #if defined(BH_GRAVCAPTURE_FIXEDSINKRADIUS) 
                    && blocknr != IO_SINKRAD
+#endif
+#ifdef PIC_MHD
+                   && blocknr != IO_GRAINTYPE
 #endif
                    )
 #if defined(GDE_DISTORTIONTENSOR) && defined(GDE_READIC)

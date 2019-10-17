@@ -753,21 +753,11 @@ int pmforce_nonperiodic(int grnr)
   MPI_Status status;
 
 #ifdef DM_SCALARFIELD_SCREENING
-  int phase;
-  double kscreening2;
-
+  int phase; double kscreening2;
   kscreening2 = pow(All.BoxSize / All.ScalarScreeningLength / (2 * M_PI), 2);
 #endif
 
-#ifdef KSPACE_NEUTRINOS
-  terminate("this option is not implemented here");
-#endif
-
-
-  if(ThisTask == 0)
-    printf("Starting non-periodic PM calculation (grid=%d , presently allocated=%g MB).\n", grnr,
-	   AllocatedBytes / (1024.0 * 1024.0));
-
+  if(ThisTask == 0) {printf("Starting non-periodic PM calculation (grid=%d , presently allocated=%g MB).\n", grnr, AllocatedBytes / (1024.0 * 1024.0));}
   fac = All.G / pow(All.TotalMeshSize[grnr], 4) * pow(All.TotalMeshSize[grnr] / GRID, 3);	/* to get potential */
   fac *= 1 / (2 * All.TotalMeshSize[grnr] / GRID);	/* for finite differencing */
 

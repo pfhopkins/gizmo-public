@@ -13,7 +13,7 @@
 #ifdef RT_EVOLVE_INTENSITIES
 if(local.Mass>0 && P[j].Mass>0 && dt_hydrostep>0 && Face_Area_Norm>0)
 {
-    double c_light = RT_SPEEDOFLIGHT_REDUCTION * (C/All.UnitVelocity_in_cm_per_s); // RSOL
+    double c_light = C_LIGHT_CODE_REDUCED; // RSOL
     double c_hll = 0.5*fabs(face_vel_i-face_vel_j) + c_light, V_i_phys = V_i / All.cf_a3inv, V_j_phys = V_j / All.cf_a3inv, sthreeinv = 1./sqrt(3.); // physical units
     int k_freq, k_angle;
     for(k_freq=0; k_freq<N_RT_FREQ_BINS; k_freq++)
@@ -38,7 +38,7 @@ if(local.Mass>0 && P[j].Mass>0 && dt_hydrostep>0 && Face_Area_Norm>0)
                     face_dot_flux += Face_Area_Vec[k] * grad; /* remember, our 'flux' variable is a volume-integral */
                 }
                 grad_norm = sqrt(grad_norm) + MIN_REAL_NUMBER;
-                double reduced_flux = grad_norm / ((C/All.UnitVelocity_in_cm_per_s) * 0.5*(scalar_i+scalar_j)); // |F|/(c*E): ratio of flux to optically thin limit
+                double reduced_flux = grad_norm / (C_LIGHT_CODE * 0.5*(scalar_i+scalar_j)); // |F|/(c*E): ratio of flux to optically thin limit. this does -not- use RSOL.
                 if(reduced_flux > 1) {reduced_flux=1;} else {if(reduced_flux < 0) {reduced_flux=0;}}
                 double cos_theta_face_flux = face_dot_flux / (Face_Area_Norm * grad_norm); // angle between flux and face vector normal
                 if(cos_theta_face_flux < -1) {cos_theta_face_flux=-1;} else {if(cos_theta_face_flux > 1) {cos_theta_face_flux=1;}}

@@ -214,7 +214,7 @@ int ags_density_evaluate(int target, int mode, int *exportflag, int *exportnodec
                         if(TimeBinActive[TimeBin_j]) {if(vsig > PPP[j].AGS_vsig) PPP[j].AGS_vsig = vsig;}
                         if(vsig > out.AGS_vsig) {out.AGS_vsig = vsig;}
 #if defined(WAKEUP) && (defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(DM_FUZZY) || defined(FLAG_NOT_IN_PUBLIC_CODE))
-                        if(!(TimeBinActive[TimeBin_j]) && (All.Time > All.TimeBegin)) {if(vsig > WAKEUP*P[j].AGS_vsig) {P[j].wakeup = 1;}}
+                        if(!(TimeBinActive[TimeBin_j]) && (All.Time > All.TimeBegin)) {if(vsig > WAKEUP*P[j].AGS_vsig) {P[j].wakeup = 1; NeedToWakeupParticles_local = 1;}}
 #if defined(GALSF)
                         if((P[j].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[j].Type == 2)||(P[j].Type==3)))) {P[j].wakeup = 0;} // don't wakeup star particles, or risk 2x-counting feedback events! //
 #endif

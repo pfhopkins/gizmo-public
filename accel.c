@@ -46,9 +46,8 @@ void compute_grav_accelerations(void)
 
   gravity_tree();		/* computes gravity accel. */
 
-  /* For the first timestep, we redo it to allow usage of 
-   relative opening criterion for consistent accuracy */
-    if(All.TypeOfOpeningCriterion == 1 && All.Ti_Current == 0) {gravity_tree();}
+  /* For the first timestep, we redo it to allow usage of relative opening criterion for consistent accuracy */
+  if(All.TypeOfOpeningCriterion == 1 && All.Ti_Current == 0) {gravity_tree();}
 
   PRINT_STATUS(" ..gravity force computation done");
 }
@@ -110,7 +109,6 @@ void compute_additional_forces_for_all_particles(void)
 #endif
 #ifdef GRAIN_FLUID
     apply_grain_dragforce(); /* if we are solving a coupled set of grains via aerodynamic drag, this is where their acceleration should be calculated */
-    if(ThisTask == 0) {printf("grain aerodynamic force evaluation done.\n");}
 #endif
 }
 

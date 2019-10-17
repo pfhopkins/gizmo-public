@@ -220,6 +220,7 @@ double bh_angleweight(double bh_lum_input, MyFloat bh_angle[3], double hR, doubl
 void set_blackhole_mdot(int i, int n, double dt)
 {
     double mdot=0; int k; k=0;
+    double soundspeed2 = convert_internalenergy_soundspeed2(n,BlackholeTempInfo[i].BH_InternalEnergy);
 #ifdef BH_GRAVACCRETION
     double m_tmp_for_bhar, mdisk_for_bhar, bh_mass, fac;
     double rmax_for_bhar,fgas_for_bhar,f_disk_for_bhar, f0_for_bhar;
@@ -231,7 +232,7 @@ void set_blackhole_mdot(int i, int n, double dt)
 #ifdef BH_ENFORCE_EDDINGTON_LIMIT
     double meddington = bh_eddington_mdot(BPP(n).BH_Mass);
 #endif
-    
+
     
     
 #ifdef BH_GRAVACCRETION
@@ -299,12 +300,12 @@ void set_blackhole_mdot(int i, int n, double dt)
             mdot = (mdisk_for_bhar / menc_all) * (mdisk_for_bhar / menc_all) * mgas_in_racc * omega_dyn;
 #endif
 #if (BH_GRAVACCRETION == 4) || (BH_GRAVACCRETION == 6) || (BH_GRAVACCRETION == 7) // accrete constant fraction per free-fall time from accretion radius set to minimum of BH radius of gravitational dominance over Vc or cs (basically where gas more tightly bound to BH) - has Bondi-like form
-            double soundspeed = GAMMA*GAMMA_MINUS1 * BlackholeTempInfo[i].BH_InternalEnergy, Vc2_rmax = All.G * menc_all / rmax_for_bhar; // this is in physical units now
-            mdot = 4.*M_PI * All.G*All.G * BPP(n).BH_Mass*menc_all * (BPP(n).DensAroundStar*All.cf_a3inv) / pow(soundspeed + Vc2_rmax, 1.5);
+            double Vc2_rmax = All.G * menc_all / rmax_for_bhar; // this is in physical units now
+            mdot = 4.*M_PI * All.G*All.G * BPP(n).BH_Mass*menc_all * (BPP(n).DensAroundStar*All.cf_a3inv) / pow(soundspeed2 + Vc2_rmax, 1.5);
 #if (BH_GRAVACCRETION == 6) || (BH_GRAVACCRETION == 7)
-            double bhvel=0; for(k=0;k<3;k++) {bhvel += BlackholeTempInfo[i].BH_SurroundingGasVel[k]*BlackholeTempInfo[i].BH_SurroundingGasVel[k];}
-            double veldisp2_eff = bhvel/3. + soundspeed, masscorrfac = pow( menc_all/(1.e-10*menc_all + BPP(n).BH_Mass) , 0.25 );
-            mdot = masscorrfac * 4.*M_PI * All.G*All.G * BPP(n).BH_Mass*menc_all * (BPP(n).DensAroundStar*All.cf_a3inv) / pow(1.e-5*soundspeed + Vc2_rmax, 1.5);
+            double bhvel2=0; for(k=0;k<3;k++) {bhvel2 += BlackholeTempInfo[i].BH_SurroundingGasVel[k]*BlackholeTempInfo[i].BH_SurroundingGasVel[k];}
+            double veldisp2_eff = bhvel2/3. + soundspeed2, masscorrfac = pow( menc_all/(1.e-10*menc_all + BPP(n).BH_Mass) , 0.25 );
+            mdot = masscorrfac * 4.*M_PI * All.G*All.G * BPP(n).BH_Mass*menc_all * (BPP(n).DensAroundStar*All.cf_a3inv) / pow(1.e-5*soundspeed2 + Vc2_rmax, 1.5);
             mdot /= 1 + sqrt(veldisp2_eff/Vc2_rmax) * DMIN( veldisp2_eff/Vc2_rmax , masscorrfac );
 #if (BH_GRAVACCRETION == 7)
             mdot = 4.*M_PI * All.G*All.G * menc_all*menc_all * (BPP(n).DensAroundStar*All.cf_a3inv) / pow(veldisp2_eff + Vc2_rmax, 1.5);
@@ -317,10 +318,9 @@ void set_blackhole_mdot(int i, int n, double dt)
             jcirc_crit *= pow(bh_mass/m_tmp_for_bhar,2./3.);
             if(j_tmp_for_bhar < jcirc_crit) /* circularization within BH-dominated region, Bondi accretion valid */
             {
-                double bhvel=0; for(k=0;k<3;k++) {bhvel += BlackholeTempInfo[i].BH_SurroundingGasVel[k]*BlackholeTempInfo[i].BH_SurroundingGasVel[k];}
+                double bhvel2=0; for(k=0;k<3;k++) {bhvel2 += BlackholeTempInfo[i].BH_SurroundingGasVel[k]*BlackholeTempInfo[i].BH_SurroundingGasVel[k];}
                 double rho = BPP(n).DensAroundStar*All.cf_a3inv; /* we want all quantities in physical units */
-                double soundspeed = GAMMA*GAMMA_MINUS1 * BlackholeTempInfo[i].BH_InternalEnergy; // this is in physical units now
-                double vcs_fac = pow(soundspeed+bhvel, 1.5);
+                double vcs_fac = pow(soundspeed2+bhvel2, 1.5);
                 mdot = 4.*M_PI * All.G*All.G * BPP(n).BH_Mass*BPP(n).BH_Mass * rho / vcs_fac;
             } /* otherwise, circularization outside BH-dominated region, efficiency according to usual [above] */
 #endif
@@ -344,11 +344,11 @@ void set_blackhole_mdot(int i, int n, double dt)
     
     
 #ifdef BH_BONDI /* heres where we calculate the Bondi accretion rate, if that's going to be used */
-    double bhvel = 0, rho = BPP(n).DensAroundStar * All.cf_a3inv, soundspeed = GAMMA*GAMMA_MINUS1 * BlackholeTempInfo[i].BH_InternalEnergy; /* we want all quantities in physical units */
+    double bhvel2 = 0, rho = BPP(n).DensAroundStar * All.cf_a3inv; /* we want all quantities in physical units */
 #if (BH_BONDI != 1)
-    for(k=0;k<3;k++) bhvel += BlackholeTempInfo[i].BH_SurroundingGasVel[k]*BlackholeTempInfo[i].BH_SurroundingGasVel[k];
+    for(k=0;k<3;k++) bhvel2 += BlackholeTempInfo[i].BH_SurroundingGasVel[k]*BlackholeTempInfo[i].BH_SurroundingGasVel[k];
 #endif
-    double fac = pow(soundspeed+bhvel, 1.5);
+    double fac = pow(soundspeed2+bhvel2, 1.5);
     if(fac > 0)
     {
         double AccretionFactor = All.BlackHoleAccretionFactor;
@@ -413,8 +413,7 @@ void set_blackhole_mdot(int i, int n, double dt)
         t_acc_disk = DMAX(10. * 2.*M_PI*t_acc_disk, t_dyn_eff); // 10 orbits at circularization radius to spiral all the way in (very fast), but should be no less than the resolution-scale dynamical time	
 #else
         if(j*j*Gm_i < 6.957e11 / All.UnitLength_in_cm) {t_acc_disk = 0;} // when angular momentum is low enough, we're falling straight onto the protostellar surface, here taking 10R_solar as a rough number
-        double soundspeed = GAMMA*GAMMA_MINUS1 * BlackholeTempInfo[i].BH_InternalEnergy;
-        t_acc_disk = DMAX(100. * t_acc_disk * (1 / (Gm_i * reff)) / soundspeed, t_dyn_eff); // Shakura-Sunyaev prescription with alpha=0.01
+        t_acc_disk = DMAX(100. * t_acc_disk * (1 / (Gm_i * DMIN(reff, j*j*Gm_i))) / soundspeed2, t_dyn_eff); // Shakura-Sunyaev prescription with alpha=0.01, using minimum of sink and circularization radius
 #endif // SLOPE2_SINKS
 #endif // BH_FOLLOW_ACCRETED_ANGMOM
 #endif // SINGLE_STAR_SINK_DYNAMICS
@@ -586,15 +585,15 @@ void set_blackhole_drag(int i, int n, double dt)
 #ifdef BH_ALPHADISK_ACCRETION
         bh_mass += BPP(n).BH_Mass_AlphaDisk;
 #endif
-        double bhvel_df=0; for(k=0;k<3;k++) bhvel_df += BlackholeTempInfo[i].DF_mean_vel[k]*BlackholeTempInfo[i].DF_mean_vel[k];
+        double bhvel2_df=0; for(k=0;k<3;k++) bhvel2_df += BlackholeTempInfo[i].DF_mean_vel[k]*BlackholeTempInfo[i].DF_mean_vel[k];
         double fac, fac_friction;
         /* First term is approximation of the error function */
         fac = 8 * (M_PI - 3) / (3 * M_PI * (4. - M_PI));
-        x = sqrt(bhvel_df) / (sqrt(2) * BlackholeTempInfo[i].DF_rms_vel);
+        x = sqrt(bhvel2_df) / (sqrt(2) * BlackholeTempInfo[i].DF_rms_vel);
         fac_friction =  x / fabs(x) * sqrt(1 - exp(-x * x * (4 / M_PI + fac * x * x) / (1 + fac * x * x))) - 2 * x / sqrt(M_PI) * exp(-x * x);
         /* now the Coulomb logarithm */
         fac = 50. * 3.086e21 / (All.UnitLength_in_cm/All.HubbleParam); /* impact parameter */
-        fac_friction *= log(1. + fac * bhvel_df / (All.G * bh_mass));        
+        fac_friction *= log(1. + fac * bhvel2_df / (All.G * bh_mass));
         /* now we add a correction to only apply this force if M_BH is not >> <m_particles> */
         fac_friction *= 1 / (1 + bh_mass / (5.*BlackholeTempInfo[i].DF_mmax_particles));
         /* now the dimensional part of the force */
@@ -609,16 +608,16 @@ void set_blackhole_drag(int i, int n, double dt)
 #endif
         //fac = BlackholeTempInfo[i].Malt_in_Kernel / ( (4*M_PI/3) * pow(PPP[n].Hsml*All.cf_atime,3) ); /* mean density of all mass inside kernel */
         fac = Mass_in_Kernel / ( (4*M_PI/3) * pow(PPP[n].Hsml*All.cf_atime,3) ); /* mean density of all mass inside kernel */
-        fac_friction *= 4*M_PI * All.G * All.G * fac * bh_mass / (bhvel_df*sqrt(bhvel_df));
+        fac_friction *= 4*M_PI * All.G * All.G * fac * bh_mass / (bhvel2_df*sqrt(bhvel2_df));
         /* now apply this to the actual acceleration */
         if(fac_friction<0) fac_friction=0; if(isnan(fac_friction)) fac_friction=0;
 #if (BH_REPOSITION_ON_POTMIN == 2)
         /* ok, here we have a special catch - the friction isn't standard dynamical friction, but rather we are already moving
             towards a potential mininum and want to be sure that we don't overshoot or retain large velocities that will
             launch us out, so we want the BH to 'relax' towards moving with the local flow */
-        if(bhvel_df > 0 && dt > 0)
+        if(bhvel2_df > 0 && dt > 0)
         {
-            double dv_magnitude=sqrt(bhvel_df)*All.cf_atime, fac_vel=0, afac_vel=0; // physical velocity difference between 'target' and BH
+            double dv_magnitude=sqrt(bhvel2_df)*All.cf_atime, fac_vel=0, afac_vel=0; // physical velocity difference between 'target' and BH
             afac_vel = All.G * Mass_in_Kernel / pow(PPP[n].Hsml*All.cf_atime,2); // GMenc/r^2 estimate of local acceleration //
             afac_vel = DMIN(dv_magnitude/(3.155e13/(All.UnitTime_in_s/All.HubbleParam)) , DMAX( DMIN(DMAX(-2.*BPP(n).BH_MinPot/(PPP[n].Hsml*All.cf_atime*All.cf_atime), 0), 10.*dv_magnitude/dt), afac_vel)); // free-fall-acceleration [checked-to-zero], limited to multiple of actual vel difference in timestep
             fac_vel = afac_vel * dt / dv_magnitude; // rate at which de-celeration/damping occurs

@@ -489,10 +489,8 @@ void split_particle_i(int i, int n_particles_split, int i_nearest)
             // if(dp[2]==1) {dx=d_r; dy=0; dz=0;} else {dz = sqrt(dp[1]*dp[1] + dp[0]*dp[0]); dx = -d_r * dp[1]/dz; dy = d_r * dp[0]/dz; dz = 0.0;}
         }
 #endif
-#ifdef WAKEUP 
-        /* TO: rather conservative. But we want to update Density and Hsml after the particle masses were changed */
-        PPPZ[i].wakeup = 1;
-        PPPZ[j].wakeup = 1;
+#ifdef WAKEUP  /* TO: rather conservative. But we want to update Density and Hsml after the particle masses were changed */
+        PPPZ[i].wakeup = 1; PPPZ[j].wakeup = 1; NeedToWakeupParticles_local = 1;
 #endif
         
     } // closes special operations required only of gas particles
@@ -580,7 +578,7 @@ void merge_particles_ij(int i, int j)
     if(P[i].TimeBin < P[j].TimeBin)
     {
 #ifdef WAKEUP
-        PPPZ[j].wakeup = 1;
+        PPPZ[j].wakeup = 1; NeedToWakeupParticles_local = 1;
 #endif
     }
     double dm_i=0,dm_j=0,de_i=0,de_j=0,dp_i[3],dp_j[3],dm_ij,de_ij,dp_ij[3];

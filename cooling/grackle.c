@@ -49,7 +49,7 @@ double CallGrackle(double u_old, double rho, double dt, double ne_guess, int tar
 #else
     metal_density = density * 0.02;
 #endif
-    gamma         = GAMMA;
+    gamma         = GAMMA(target);
     
 #if (COOL_GRACKLE_CHEMISTRY >  0) // non-tabular
     gr_float ne_density;
@@ -352,7 +352,7 @@ void InitGrackle(void)
     // common reason to set this to off is to iterate the chemistry network to an equilibrium state. Default: 1.
     grackle_data.with_radiative_cooling = 1;                   // cooling on
     // The ratio of specific heats for an ideal gas. A direct calculation for the molecular component is used if primordial_chemistry > 1. Default: 5/3.
-    grackle_data.Gamma                  = GAMMA;              // our eos set in Config.sh
+    grackle_data.Gamma                  = GAMMA_DEFAULT;       // our eos set in Config.sh
     // Flag to control which primordial chemistry network is used (set by Config file)
 #ifndef COOL_GRACKLE_CHEMISTRY
     grackle_data.primordial_chemistry = 0;                     // fully tabulated cooling

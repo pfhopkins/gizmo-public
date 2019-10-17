@@ -158,7 +158,8 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
                 double wk = (1 - r2*hinv*hinv) / local.KernelSum_Around_RT_Source;
 #if defined(RT_INJECT_PHOTONS_DISCRETELY_ADD_MOMENTUM_FOR_LOCAL_EXTINCTION)
                 double r = sqrt(r2);
-                double dv0 = -1. / (RT_SPEEDOFLIGHT_REDUCTION * (C / All.UnitVelocity_in_cm_per_s) * r);
+                double c_light_eff = C_LIGHT_CODE_REDUCED;
+                double dv0 = -1. / (c_light_eff * r);
                 double lmax_0 = DMAX(local.Hsml, r);
 #ifdef RT_EVOLVE_INTENSITIES
                 int kx; double angle_wt_Inu_sum=0, angle_wt_Inu[N_RT_INTENSITY_BINS];
@@ -191,11 +192,11 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
                     double dv = slabfac_x * dv0 * dE / P[j].Mass; // total absorbed momentum (needs multiplication by dp[kv] for directionality)
                     int kv; for(kv=0;kv<3;kv++) {P[j].Vel[kv] += dv*dp[kv]; SphP[j].VelPred[kv] += dv*dp[kv];}
 #if defined(RT_EVOLVE_FLUX)
-                    double dflux = -dE * (RT_SPEEDOFLIGHT_REDUCTION * (C / All.UnitVelocity_in_cm_per_s)) / r;
+                    double dflux = -dE * c_light_eff / r;
                     for(kv=0;kv<3;kv++) {SphP[j].Flux[k][kv] += dflux*dp[kv]; SphP[j].Flux_Pred[k][kv] += dflux*dp[kv];}
 #endif
 #ifdef RT_EVOLVE_INTENSITIES
-                    double dflux = dE * (RT_SPEEDOFLIGHT_REDUCTION * (C / All.UnitVelocity_in_cm_per_s)) / angle_wt_Inu_sum;
+                    double dflux = dE * c_light_eff / angle_wt_Inu_sum;
                     for(kv=0;kv<N_RT_INTENSITY_BINS;kv++) {SphP[j].Intensity[k][kv] += dflux * angle_wt_Inu[N_RT_INTENSITY_BINS]; SphP[j].Intensity_Pred[k][kv] += dflux * angle_wt_Inu[N_RT_INTENSITY_BINS];}
 #endif
 #endif

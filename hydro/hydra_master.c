@@ -702,7 +702,7 @@ void hydro_final_operations_and_cleanup(void)
             if(PPP[i].Hsml >= 0.99*All.MaxHsml) {SphP[i].DtInternalEnergy = 0;}
             
             // need to explicitly include adiabatic correction from the hubble-flow (for drifting) here //
-            if(All.ComovingIntegrationOn) SphP[i].DtInternalEnergy -= 3*GAMMA_MINUS1 * SphP[i].InternalEnergyPred * All.cf_hubble_a;
+            if(All.ComovingIntegrationOn) SphP[i].DtInternalEnergy -= 3*(GAMMA(i)-1) * SphP[i].InternalEnergyPred * All.cf_hubble_a;
             // = du/dlna -3*(gamma-1)*u ; then dlna/dt = H(z) =  All.cf_hubble_a //
             
             
@@ -710,36 +710,32 @@ void hydro_final_operations_and_cleanup(void)
 #if defined(RT_EVOLVE_FLUX)
             /* calculate the radiation pressure force */
             double radacc[3]; radacc[0]=radacc[1]=radacc[2]=0; int k2;
-            // a = kappa*F/c = Gradients.E_gamma_ET[gradient of photon energy density] / rho[gas_density] //
-            //double L_particle = Get_Particle_Size(i)*All.cf_atime; // particle effective size/slab thickness
-            //double Sigma_particle = P[i].Mass / (M_PI*L_particle*L_particle); // effective surface density through particle
-            //double abs_per_kappa_dt = RT_SPEEDOFLIGHT_REDUCTION * (C/All.UnitVelocity_in_cm_per_s) * (SphP[i].Density*All.cf_a3inv) * dt; // fractional absorption over timestep
             for(k2=0;k2<N_RT_FREQ_BINS;k2++)
             {
                 // want to average over volume (through-slab) and over time (over absorption): both give one 'slab_fac' below //
                 double slabfac = 1;// slab_averaging_function(SphP[i].Kappa_RT[k2]*Sigma_particle) * slab_averaging_function(SphP[i].Kappa_RT[k2]*abs_per_kappa_dt); // (actually dt average not appropriate if there is a source, dx average implicit -already- in averaging operation of Riemann problem //
 #ifdef RT_DISABLE_R15_GRADIENTFIX
                 // use actual flux -- appropriate for highly optically-thick, multiple scattering bands //
-                for(k=0;k<3;k++) {radacc[k] += slabfac * SphP[i].Kappa_RT[k2] * (SphP[i].Flux_Pred[k2][k] * SphP[i].Density/P[i].Mass) / (RT_SPEEDOFLIGHT_REDUCTION * C / All.UnitVelocity_in_cm_per_s);}
+                for(k=0;k<3;k++) {radacc[k] += slabfac * SphP[i].Kappa_RT[k2] * (SphP[i].Flux_Pred[k2][k] * SphP[i].Density/P[i].Mass) / C_LIGHT_CODE_REDUCED;}
 #else
                 // use optically-thin flux: for optically thin cases this is better, but actually for thick cases, if optical depth is highly un-resolved, this is also better (see Appendices and discussion of Rosdahl et al. 2015)
                 double Fmag=0; for(k=0;k<3;k++) {Fmag+=SphP[i].Flux_Pred[k2][k]*SphP[i].Flux_Pred[k2][k];}
 #ifdef RT_INFRARED
                 if(k2==RT_FREQ_BIN_INFRARED)
-                    for(k=0;k<3;k++) {radacc[k] += slabfac * SphP[i].Kappa_RT[k2] * (SphP[i].Flux_Pred[k2][k] * SphP[i].Density/P[i].Mass) / (RT_SPEEDOFLIGHT_REDUCTION * C / All.UnitVelocity_in_cm_per_s);}
+                    for(k=0;k<3;k++) {radacc[k] += slabfac * SphP[i].Kappa_RT[k2] * (SphP[i].Flux_Pred[k2][k] * SphP[i].Density/P[i].Mass) / C_LIGHT_CODE_REDUCED;}
                 else
 #endif
                 if(Fmag > 0)
                 {
                     Fmag = sqrt(Fmag);
-                    double Fthin = SphP[i].E_gamma[k2] * (RT_SPEEDOFLIGHT_REDUCTION * C / All.UnitVelocity_in_cm_per_s);
+                    double Fthin = SphP[i].E_gamma[k2] * C_LIGHT_CODE_REDUCED;
                     double F_eff = DMAX(Fthin , Fmag), work_band=0;
                     double kappa_abs = SphP[i].Kappa_RT[k2];
                     double kappa_scatter = 0;
                     for(k=0;k<3;k++)
                     {
-                        double radacc_abs = (F_eff/Fmag) * slabfac * kappa_abs * (SphP[i].Flux_Pred[k2][k] * SphP[i].Density/P[i].Mass) / (RT_SPEEDOFLIGHT_REDUCTION * C / All.UnitVelocity_in_cm_per_s);
-                        double radacc_scatter = (F_eff/Fmag) * slabfac * kappa_scatter * (SphP[i].Flux_Pred[k2][k] * SphP[i].Density/P[i].Mass) / (RT_SPEEDOFLIGHT_REDUCTION * C / All.UnitVelocity_in_cm_per_s);
+                        double radacc_abs = (F_eff/Fmag) * slabfac * kappa_abs * (SphP[i].Flux_Pred[k2][k] * SphP[i].Density/P[i].Mass) / C_LIGHT_CODE_REDUCED;
+                        double radacc_scatter = (F_eff/Fmag) * slabfac * kappa_scatter * (SphP[i].Flux_Pred[k2][k] * SphP[i].Density/P[i].Mass) / C_LIGHT_CODE_REDUCED;
                         radacc[k] += radacc_abs + radacc_scatter; // contribution to acceleration
                         work_band += radacc_scatter * P[i].Vel[k]/All.cf_atime * P[i].Mass; // PdV work done by photons [absorbed ones are fully-destroyed, so their loss of energy and momentum is already accounted for by their deletion in this limit //
                     }

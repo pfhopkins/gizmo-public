@@ -82,19 +82,7 @@ void find_timesteps(void)
     
     if(All.HighestActiveTimeBin == All.HighestOccupiedTimeBin || dt_displacement == 0)
         find_dt_displacement_constraint(All.cf_hubble_a * All.cf_atime * All.cf_atime);
- 
-#ifdef BH_WIND_SPAWN
-    if(All.HighestActiveTimeBin >= All.HighestOccupiedTimeBin-5)
-    {
-        double local_max_u=0.0, global_max_u, global_max_t;
-        for(i = 0; i < NumPart; i++) {if(P[i].Type==0) {local_max_u = DMAX( local_max_u, SphP[i].InternalEnergy );}}
-        MPI_Allreduce(&local_max_u, &global_max_u, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-        double u_to_temp_fac = PROTONMASS / BOLTZMANN * GAMMA_MINUS1 * All.UnitEnergy_in_cgs / All.UnitMass_in_g;
-        global_max_t = global_max_u * u_to_temp_fac;
-        if(ThisTask==0)  printf("Global Maximum SphP.u = %g (Max Temperature = %g) \n", global_max_u, global_max_t);
-    }
-#endif
-    
+     
 #ifdef DIVBCLEANING_DEDNER
     /* need to calculate the global fastest wave speed to manage the damping terms stably */
     if((All.HighestActiveTimeBin == All.HighestOccupiedTimeBin)||(All.FastestWaveSpeed == 0))
@@ -487,11 +475,11 @@ integertime get_timestep(int p,		/*!< particle index */
 
 
 #ifdef GRAIN_FLUID
-    if(P[p].Type > 0)
+    if((1 << P[p].Type) & (GRAIN_PTYPES))
     {
-        csnd = GAMMA * GAMMA_MINUS1 * P[p].Gas_InternalEnergy;
+        csnd = convert_internalenergy_soundspeed2(p, P[p].Gas_InternalEnergy);
         int k; for(k=0;k<3;k++) {csnd += (P[p].Gas_Velocity[k]-P[p].Vel[k])*(P[p].Gas_Velocity[k]-P[p].Vel[k]);}
-#ifdef GRAIN_LORENTZFORCE
+#if defined(GRAIN_LORENTZFORCE)
         for(k=0;k<3;k++) {csnd += P[p].Gas_B[k]*P[p].Gas_B[k] / (2.0 * P[p].Gas_Density);}
 #endif
         csnd = sqrt(csnd);
@@ -597,7 +585,7 @@ integertime get_timestep(int p,		/*!< particle index */
 #endif
                 }
                 /* even with a fully-implicit solver, we require a CFL-like criterion on timesteps (much larger steps allowed for stability, but not accuracy) */
-                dt_courant = All.CourantFac * (L_particle*All.cf_atime) / (RT_SPEEDOFLIGHT_REDUCTION * (C/All.UnitVelocity_in_cm_per_s)); /* courant-type criterion, using the reduced speed of light */
+                dt_courant = All.CourantFac * (L_particle*All.cf_atime) / C_LIGHT_CODE_REDUCED; /* courant-type criterion, using the reduced speed of light */
 #ifdef RT_M1
 #ifndef GALSF
                 dt_rad = dt_courant;
@@ -1065,7 +1053,7 @@ int get_timestep_bin(integertime ti_step)
 
 #ifdef WAKEUP
 void process_wake_ups(void)
-{
+{   
     int i, n;
     integertime dt_bin, ti_next_for_bin, ti_next_kick, ti_next_kick_global;
     int max_time_bin_active;
@@ -1117,84 +1105,88 @@ void process_wake_ups(void)
         }
     }
     n = 0;
+
+    MPI_Allreduce(&NeedToWakeupParticles_local, &NeedToWakeupParticles, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD); // if one process processes wakeups then they all should, just in case a woke particle gets swapped to another process before we get here
     
-    for(i = 0; i < NumPart; i++)
-    {
-	if(!PPPZ[i].wakeup)
-            continue;
+    if(NeedToWakeupParticles){
+	for(i = 0; i < NumPart; i++)
+	{
+	    if(!PPPZ[i].wakeup)
+		continue;
 	
 #if !defined(AGS_HSML_CALCULATION_IS_ACTIVE)
-        if(P[i].Type != 0) {continue;} // only gas particles can be awakened
+	    if(P[i].Type != 0) {continue;} // only gas particles can be awakened
 #endif
         
-        if(P[i].Mass <= 0)
-            continue;       
+	    if(P[i].Mass <= 0)
+		continue;       
         
-        binold = P[i].TimeBin;
-        if(TimeBinActive[binold])
-            continue;
+	    binold = P[i].TimeBin;
+	    if(TimeBinActive[binold])
+		continue;
         
-        bin = max_time_bin_active < binold ? max_time_bin_active : binold;
+	    bin = max_time_bin_active < binold ? max_time_bin_active : binold;
         
-        if(bin != binold)
-        {
-            integertime dt_0 = P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0;
-            integertime tstart = P[i].Ti_begstep + dt_0;
-            integertime t_2 = P[i].Ti_current;
-            if(t_2 > tstart) {tstart = t_2;}
-            integertime tend = All.Ti_Current;
+	    if(bin != binold)
+	    {
+		integertime dt_0 = P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0;
+		integertime tstart = P[i].Ti_begstep + dt_0;
+		integertime t_2 = P[i].Ti_current;
+		if(t_2 > tstart) {tstart = t_2;}
+		integertime tend = All.Ti_Current;
 
-            TimeBinCount[binold]--;
-            if(P[i].Type == 0)
-                TimeBinCountSph[binold]--;
+		TimeBinCount[binold]--;
+		if(P[i].Type == 0)
+		    TimeBinCountSph[binold]--;
             
-            prev = PrevInTimeBin[i];
-            next = NextInTimeBin[i];
+		prev = PrevInTimeBin[i];
+		next = NextInTimeBin[i];
             
-            if(FirstInTimeBin[binold] == i)
-                FirstInTimeBin[binold] = next;
-            if(LastInTimeBin[binold] == i)
-                LastInTimeBin[binold] = prev;
-            if(prev >= 0)
-                NextInTimeBin[prev] = next;
-            if(next >= 0)
-                PrevInTimeBin[next] = prev;
+		if(FirstInTimeBin[binold] == i)
+		    FirstInTimeBin[binold] = next;
+		if(LastInTimeBin[binold] == i)
+		    LastInTimeBin[binold] = prev;
+		if(prev >= 0)
+		    NextInTimeBin[prev] = next;
+		if(next >= 0)
+		    PrevInTimeBin[next] = prev;
             
-            if(TimeBinCount[bin] > 0)
-            {
-                PrevInTimeBin[i] = LastInTimeBin[bin];
-                NextInTimeBin[LastInTimeBin[bin]] = i;
-                NextInTimeBin[i] = -1;
-                LastInTimeBin[bin] = i;
-            }
-            else
-            {
-                FirstInTimeBin[bin] = LastInTimeBin[bin] = i;
-                PrevInTimeBin[i] = NextInTimeBin[i] = -1;
-            }
-            TimeBinCount[bin]++;
-            if(P[i].Type == 0)
-                TimeBinCountSph[bin]++;
+		if(TimeBinCount[bin] > 0)
+		{
+		    PrevInTimeBin[i] = LastInTimeBin[bin];
+		    NextInTimeBin[LastInTimeBin[bin]] = i;
+		    NextInTimeBin[i] = -1;
+		    LastInTimeBin[bin] = i;
+		}
+		else
+		{
+		    FirstInTimeBin[bin] = LastInTimeBin[bin] = i;
+		    PrevInTimeBin[i] = NextInTimeBin[i] = -1;
+		}
+		TimeBinCount[bin]++;
+		if(P[i].Type == 0)
+		    TimeBinCountSph[bin]++;
             
-            P[i].TimeBin = bin;
+		P[i].TimeBin = bin;
             
-            if(TimeBinActive[bin])
-                NumForceUpdate++;
+		if(TimeBinActive[bin])
+		    NumForceUpdate++;
                         
-            n++;
+		n++;
 
-            /* reverse part of the last second-half kick this particle received 
-                (to correct it back to its new active time) */
-            if(tend < tstart)
-            {
-                do_the_kick(i, tstart, tend, P[i].Ti_current, 1);
-                set_predicted_sph_quantities_for_extra_physics(i);
-            }
-            P[i].Ti_begstep = All.Ti_Current;
-            P[i].dt_step = bin ? (((integertime) 1) << bin) : 0;
-            if(P[i].Ti_current < All.Ti_Current) {P[i].Ti_current=All.Ti_Current;}
+		/* reverse part of the last second-half kick this particle received 
+		   (to correct it back to its new active time) */
+		if(tend < tstart)
+		{
+		    do_the_kick(i, tstart, tend, P[i].Ti_current, 1);
+		    set_predicted_sph_quantities_for_extra_physics(i);
+		}
+		P[i].Ti_begstep = All.Ti_Current;
+		P[i].dt_step = bin ? (((integertime) 1) << bin) : 0;
+		if(P[i].Ti_current < All.Ti_Current) {P[i].Ti_current=All.Ti_Current;}
             
-        }
+	    }
+	}
     }
     
     sumup_large_ints(1, &n, &ntot);
@@ -1202,5 +1194,7 @@ void process_wake_ups(void)
     {
         if(ntot > 0) {printf("%d%09d particles woken up.\n", (int) (ntot / 1000000000), (int) (ntot % 1000000000));}
     }
+    NeedToWakeupParticles = 0;
+    NeedToWakeupParticles_local = 0;
 }
 #endif

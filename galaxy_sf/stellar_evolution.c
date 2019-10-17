@@ -35,7 +35,7 @@ double calculate_individual_stellar_luminosity(double mdot, double mass, long i)
 {
     double lum = 0;
 #ifdef SINGLE_STAR_SINK_DYNAMICS
-    double c_code = C / All.UnitVelocity_in_cm_per_s;
+    double c_code = C_LIGHT_CODE;
     double m_solar = mass * All.UnitMass_in_g / (All.HubbleParam * SOLAR_MASS);
     /* if below the deuterium burning limit, just use the potential energy efficiency at the surface of a jupiter-density object */
     double rad_eff_protostar = 5.0e-7;

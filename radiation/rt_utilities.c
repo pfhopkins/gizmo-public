@@ -422,8 +422,8 @@ double rt_kappa(int i, int k_freq)
 #if defined(RADTRANSFER) || defined(RT_USE_GRAVTREE)
 double rt_absorption_rate(int i, int k_freq)
 {
-    /* should be equal to (C * Kappa_opacity * rho) */
-    return RT_SPEEDOFLIGHT_REDUCTION * (C/All.UnitVelocity_in_cm_per_s) * rt_kappa(i, k_freq) * SphP[i].Density*All.cf_a3inv;
+    /* should be equal to (c * Kappa_opacity * rho) */
+    return C_LIGHT_CODE_REDUCED * rt_kappa(i, k_freq) * SphP[i].Density*All.cf_a3inv;
 }
 #endif 
 
@@ -437,8 +437,7 @@ double rt_absorption_rate(int i, int k_freq)
 /***********************************************************************************************************/
 double rt_diffusion_coefficient(int i, int k_freq)
 {
-    double c_light = (C / All.UnitVelocity_in_cm_per_s) * RT_SPEEDOFLIGHT_REDUCTION;
-    return SphP[i].Lambda_FluxLim[k_freq] * c_light / (1.e-37 + SphP[i].Kappa_RT[k_freq] * SphP[i].Density*All.cf_a3inv);
+    return SphP[i].Lambda_FluxLim[k_freq] * C_LIGHT_CODE_REDUCED / (1.e-45 + SphP[i].Kappa_RT[k_freq] * SphP[i].Density*All.cf_a3inv);
 }
 
 
@@ -450,7 +449,7 @@ void rt_eddington_update_calculation(int j)
 {
 #ifdef RT_M1
     int k_freq, k;
-    double c_light = RT_SPEEDOFLIGHT_REDUCTION * (C/All.UnitVelocity_in_cm_per_s);
+    double c_light = C_LIGHT_CODE_REDUCED;
     double n_flux_j[3], fmag_j, V_j_inv = SphP[j].Density / P[j].Mass;
     for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++)
     {
@@ -506,7 +505,7 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
 #endif
 #ifdef RT_INFRARED
     double E_abs_tot = 0;/* energy absorbed in other bands is transfered to IR, by default: track it here */
-    double c_light = (C / All.UnitVelocity_in_cm_per_s) * RT_SPEEDOFLIGHT_REDUCTION;
+    double c_light = C_LIGHT_CODE_REDUCED;
     double E_gamma_tot = 0; // dust temperature defined by total radiation energy density //
     {int j; for(j=0;j<N_RT_FREQ_BINS;j++) {E_gamma_tot += SphP[i].E_gamma[j];}}
     double u_gamma = E_gamma_tot * (SphP[i].Density*All.cf_a3inv/P[i].Mass) * All.UnitPressure_in_cgs * All.HubbleParam*All.HubbleParam; // photon energy density in CGS //
@@ -596,7 +595,7 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
             {
                 double radacc[3]={0}, rmag=0, L_particle = Get_Particle_Size(i)*All.cf_atime; // particle effective size/slab thickness
                 double Sigma_particle = P[i].Mass / (M_PI*L_particle*L_particle); // effective surface density through particle
-                double abs_per_kappa_dt = RT_SPEEDOFLIGHT_REDUCTION * (C/All.UnitVelocity_in_cm_per_s) * (SphP[i].Density*All.cf_a3inv) * dt_entr; // fractional absorption over timestep
+                double abs_per_kappa_dt = c_light * (SphP[i].Density*All.cf_a3inv) * dt_entr; // fractional absorption over timestep
                 double slabfac_rp = slab_averaging_function(SphP[i].Kappa_RT[kf]*Sigma_particle) * slab_averaging_function(SphP[i].Kappa_RT[kf]*abs_per_kappa_dt); // reduction factor for absorption over dt
                 int kx; for(kx=0;kx<3;kx++)
                 {
@@ -606,7 +605,7 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
                 if(rmag > 0)
                 {
                     rmag = sqrt(rmag); for(kx=0;kx<3;kx++) {radacc[kx] /= rmag;} // normalize
-                    double rmag_max = de_abs / (P[i].Mass * RT_SPEEDOFLIGHT_REDUCTION * C / All.UnitVelocity_in_cm_per_s); // limit magnitude to absorbed photon momentum
+                    double rmag_max = de_abs / (P[i].Mass * c_light); // limit magnitude to absorbed photon momentum
 #if defined(RT_DISABLE_R15_GRADIENTFIX)
                     if(rmag > rmag_max) {rmag=rmag_max;}
 #else
@@ -686,7 +685,7 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
             }
             if(f_mag > 0) // limit the flux according the physical (optically thin) maximum //
             {
-                f_mag=sqrt(f_mag); double fmag_max = 1.1 * (C/All.UnitVelocity_in_cm_per_s) * ef; // maximum flux should be optically-thin limit: e_gamma/C: here allow some tolerance for numerical leapfrogging in timestepping
+                f_mag=sqrt(f_mag); double fmag_max = 1.1 * C_LIGHT_CODE * ef; // maximum flux should be optically-thin limit: e_gamma/c: here allow some tolerance for numerical leapfrogging in timestepping. NOT the reduced RSOL here.
                 if(f_mag > fmag_max) {for(k_dir=0;k_dir<3;k_dir++) {if(mode==0) {SphP[i].Flux[kf][k_dir] *= fmag_max/f_mag;} else {SphP[i].Flux_Pred[kf][k_dir] *= fmag_max/f_mag;}}}
             }
 #endif

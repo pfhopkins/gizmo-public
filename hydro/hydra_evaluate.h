@@ -499,9 +499,9 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
 #ifdef WAKEUP
                 if(!(TimeBinActive[P[j].TimeBin]))
                 {
-                    if(kernel.vsig > WAKEUP*SphP[j].MaxSignalVel) PPPZ[j].wakeup = 1;
+                    if(kernel.vsig > WAKEUP*SphP[j].MaxSignalVel) {PPPZ[j].wakeup = 1; NeedToWakeupParticles_local = 1;}
 #if (SLOPE_LIMITER_TOLERANCE <= 0)
-                    if(local.Timestep*WAKEUP < TimeStep_J) PPPZ[j].wakeup = 1;
+                    if(local.Timestep*WAKEUP < TimeStep_J) {PPPZ[j].wakeup = 1; NeedToWakeupParticles_local = 1;}
 #endif
                 }
 #endif

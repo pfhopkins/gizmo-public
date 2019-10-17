@@ -160,7 +160,7 @@ void drift_particle(int i, integertime time1)
     if(divv_fac < -divv_fac_max) divv_fac = -divv_fac_max;
     
 #ifdef GRAIN_FLUID
-    if(P[i].Type > 0)
+    if((1 << P[i].Type) & (GRAIN_PTYPES))
     {
         PPP[i].Hsml *= exp((double)divv_fac / ((double)NUMDIMS));
         if(PPP[i].Hsml < All.MinHsml) {PPP[i].Hsml = All.MinHsml;}
@@ -245,11 +245,7 @@ void drift_particle(int i, integertime time1)
 #endif
             drift_sph_extra_physics(i, time0, time1, dt_entr);
 
-        
             SphP[i].Pressure = get_pressure(i);
-#ifdef EOS_ENFORCE_ADIABAT
-            SphP[i].InternalEnergyPred = SphP[i].Pressure / (SphP[i].Density * GAMMA_MINUS1);
-#endif
         }
     
     /* check for reflecting boundaries: if so, do the reflection! */

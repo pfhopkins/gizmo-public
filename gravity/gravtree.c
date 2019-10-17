@@ -55,9 +55,6 @@ void gravity_tree(void)
     double t0, t1, timeall = 0, timetree1 = 0, timetree2 = 0, timetree, timewait, timecomm;
     double timecommsumm1 = 0, timecommsumm2 = 0, timewait1 = 0, timewait2 = 0, sum_costtotal, ewaldtot;
     double maxt, sumt, maxt1, sumt1, maxt2, sumt2, sumcommall, sumwaitall, plb, plb_max;
-#ifdef FIXEDTIMEINFIRSTPHASE
-    int counter; double min_time_first_phase, min_time_first_phase_glob;
-#endif
     CPU_Step[CPU_MISC] += measure_time();
     
     /* set new softening lengths */
@@ -88,7 +85,7 @@ void gravity_tree(void)
     if(All.HighestActiveTimeBin == All.HighestOccupiedTimeBin) {if(ThisTask == 0) printf(" ..All.BunchSize=%d\n", All.BunchSize);}
     int k, ewald_max, diff, save_NextParticle, ndone, ndone_flag, place, recvTask; double tstart, tend, ax, ay, az; MPI_Status status;
     Ewaldcount = 0; Costtotal = 0; N_nodesinlist = 0; ewald_max=0;
-#if defined(BOX_PERIODIC) && !defined(PMGRID) && !defined(GRAVITY_NOT_PERIODIC)
+#if defined(BOX_PERIODIC) && !defined(GRAVITY_NOT_PERIODIC) && !defined(PMGRID)
     ewald_max = 1; /* the tree-code will need to iterate to perform the periodic boundary condition corrections */
 #endif
 
@@ -516,10 +513,6 @@ void gravity_tree(void)
     CPU_Step[CPU_TREEWALK1] += timetree1; CPU_Step[CPU_TREEWALK2] += timetree2;
     CPU_Step[CPU_TREESEND] += timecommsumm1; CPU_Step[CPU_TREERECV] += timecommsumm2;
     CPU_Step[CPU_TREEWAIT1] += timewait1; CPU_Step[CPU_TREEWAIT2] += timewait2;
-#ifdef FIXEDTIMEINFIRSTPHASE
-    MPI_Reduce(&min_time_first_phase, &min_time_first_phase_glob, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
-    PRINT_STATUS("FIXEDTIMEINFIRSTPHASE=%g  min_time_first_phase_glob=%g\n", FIXEDTIMEINFIRSTPHASE, min_time_first_phase_glob);
-#endif
 #ifndef IO_REDUCED_MODE
     if(ThisTask == 0)
     {
@@ -548,14 +541,8 @@ void gravity_tree(void)
 void *gravity_primary_loop(void *p)
 {
     int i, j, ret, thread_id = *(int *) p, *exportflag, *exportnodecount, *exportindex;
-    exportflag = Exportflag + thread_id * NTask;
-    exportnodecount = Exportnodecount + thread_id * NTask;
-    exportindex = Exportindex + thread_id * NTask;
+    exportflag = Exportflag + thread_id * NTask; exportnodecount = Exportnodecount + thread_id * NTask; exportindex = Exportindex + thread_id * NTask;
     for(j = 0; j < NTask; j++) {exportflag[j] = -1;} /* Note: exportflag is local to each thread */
-#ifdef FIXEDTIMEINFIRSTPHASE
-    int counter = 0; double tstart;
-    if(thread_id == 0) {tstart = my_second();}
-#endif
     
     while(1)
     {
@@ -564,21 +551,13 @@ void *gravity_primary_loop(void *p)
 #ifdef _OPENMP
 #pragma omp critical(_nexport_)
 #endif
-        if(BufferFullFlag != 0 || NextParticle < 0)
-        {
-            exitFlag = 1;
-        }
-        else
-        {
-            i = NextParticle;
-            ProcessedFlag[i] = 0;
-            NextParticle = NextActiveParticle[NextParticle];
-        }
+        if(BufferFullFlag != 0 || NextParticle < 0) {exitFlag=1;}
+            else {i=NextParticle; ProcessedFlag[i]=0; NextParticle=NextActiveParticle[NextParticle];}
         UNLOCK_NEXPORT;
         if(exitFlag) {break;}
-		    
-#if !defined(PMGRID)
-#if defined(BOX_PERIODIC) && !defined(GRAVITY_NOT_PERIODIC)
+		 
+
+#if defined(BOX_PERIODIC) && !defined(GRAVITY_NOT_PERIODIC) && !defined(PMGRID)
         if(Ewald_iter)
         {
             ret = force_treeevaluate_ewald_correction(i, 0, exportflag, exportnodecount, exportindex);
@@ -591,36 +570,8 @@ void *gravity_primary_loop(void *p)
             if(ret < 0) {break;} /* export buffer has filled up */
             Costtotal += ret;
         }
-#else
-        
-#ifdef NEUTRINOS
-        if(P[i].Type != 2)
-#endif
-        {
-            ret = force_treeevaluate(i, 0, exportflag, exportnodecount, exportindex);
-            if(ret < 0) {break;} /* export buffer has filled up */
-            Costtotal += ret;
-        }
-        
-#endif
         ProcessedFlag[i] = 1;	/* particle successfully finished */
-        
-#ifdef FIXEDTIMEINFIRSTPHASE
-        if(thread_id == 0)
-        {
-            counter++;
-            if((counter & 255) == 0)
-            {
-                if(timediff(tstart, my_second()) > FIXEDTIMEINFIRSTPHASE)
-                {
-                    TimerFlag = 1;
-                    break;
-                }
-            }
-        }
-        else {if(TimerFlag) {break;}}
-#endif
-    }
+    } // while loop
     return NULL;
 }
 
@@ -641,8 +592,7 @@ void *gravity_secondary_loop(void *p)
         UNLOCK_NEXPORT;
         if(j >= Nimport) {break;}
 
-#if !defined(PMGRID)
-#if defined(BOX_PERIODIC) && !defined(GRAVITY_NOT_PERIODIC)
+#if defined(BOX_PERIODIC) && !defined(GRAVITY_NOT_PERIODIC) && !defined(PMGRID)
         if(Ewald_iter)
         {
             int cost = force_treeevaluate_ewald_correction(j, 1, &dummy, &dummy, &dummy);
@@ -654,10 +604,6 @@ void *gravity_secondary_loop(void *p)
             ret = force_treeevaluate(j, 1, &nodesinlist, &dummy, &dummy);
             N_nodesinlist += nodesinlist; Costtotal += ret;
         }
-#else
-        ret = force_treeevaluate(j, 1, &nodesinlist, &dummy, &dummy);
-        N_nodesinlist += nodesinlist; Costtotal += ret;
-#endif
     }
     return NULL;
 }

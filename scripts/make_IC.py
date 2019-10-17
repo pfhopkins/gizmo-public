@@ -81,6 +81,8 @@ def make_IC():
     vz_d = np.random.randn(Ngrains) * vgrainrms/np.sqrt(3.)
     # set the masses, again a list with all the same mass
     mv_d = dust_to_gas_ratio * (1.*Ngas)/(1.*Ngrains) * mv_g[0] + 0.*xv_d
+    # set the types for grains. GrainType = 1: Epstein/Stokes; 2: Charged Epstein/Stokes; 3: Cosmic Rays
+    type_d = (np.ones(Ngrains) * 3).astype("int")
 
 
 
@@ -168,6 +170,7 @@ def make_IC():
     p.create_dataset("Velocities",data=q)
     p.create_dataset("ParticleIDs",data=id_d)
     p.create_dataset("Masses",data=mv_d)
+    p.create_dataset("GrainType",data=type_d)
 
     # no PartType4 for this IC
     # no PartType5 for this IC

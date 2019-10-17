@@ -174,7 +174,7 @@ void init(void)
     /* To construct the BH-tree for N particles, somewhat less than N
      internal tree-nodes are necessary for ‘normal’ particle distributions. 
      TreeAllocFactor sets the number of internal tree-nodes allocated in units of the particle number. 
-     By experience, space for ≃ 0.65N internal nodes is usually fully sufficient for typical clustered 
+     By experience, space for ~0.65N internal nodes is usually fully sufficient for typical clustered 
      particle distributions, so a value of 0.7 should put you on the safe side. If the employed particle 
      number per processor is very small (less than a thousand or so), or if there are many particle pairs 
      with identical or nearly identical coordinates, a higher value may be required. Since the number of 
@@ -322,55 +322,56 @@ void init(void)
 #endif
         
 #ifdef GRAIN_FLUID
-        if(RestartFlag == 0)
+        if((RestartFlag == 0) && ((1 << P[i].Type) & (GRAIN_PTYPES)))
         {
+            int grain_subtype = 1; P[i].Grain_Size = 0; /* default assumption about particulate sub-type for operations below */
+#if defined(PIC_MHD)
+            grain_subtype = P[i].Grain_SubType; /* check if the 'grains' are really PIC elements */
+#endif
             /* Change grain mass to change the distribution of sizes.  Grain_Size_Spectrum_Powerlaw parameter sets d\mu/dln(R_d) ~ R_d^Grain_Size_Spectrum_Powerlaw */
-            P[i].Grain_Size = All.Grain_Size_Min * exp( gsl_rng_uniform(random_generator) * log(All.Grain_Size_Max/All.Grain_Size_Min) );
-            if(P[i].Type==3) {if(All.Grain_Size_Max > All.Grain_Size_Min*1.0001 && fabs(All.Grain_Size_Spectrum_Powerlaw) != 0) {P[i].Mass *= (All.Grain_Size_Spectrum_Powerlaw/(pow(All.Grain_Size_Max/All.Grain_Size_Min,All.Grain_Size_Spectrum_Powerlaw)-1.)) * pow(P[i].Grain_Size/All.Grain_Size_Min,All.Grain_Size_Spectrum_Powerlaw) * log(All.Grain_Size_Max/All.Grain_Size_Min);}}
-
-
-#ifdef GRAIN_RDI_TESTPROBLEM
-	    if(P[i].Type == 3) /* initialize various quantities for test problems from parameters set in the ICs */
-	    {
-		P[i].Mass *= All.Dust_to_Gas_Mass_Ratio;
-		{ 	
-			double tS0 = 0.626657 * P[i].Grain_Size * sqrt(GAMMA); /* stopping time [Epstein] for driftvel->0 */
-            double a0 = tS0 * All.Vertical_Grain_Accel / (1.+All.Dust_to_Gas_Mass_Ratio); /* acc * tS0 / (1+mu) */
+            if(grain_subtype <= 2)
+            {
+                P[i].Grain_Size = All.Grain_Size_Min * exp( gsl_rng_uniform(random_generator) * log(All.Grain_Size_Max/All.Grain_Size_Min) );
+                if(All.Grain_Size_Max > All.Grain_Size_Min*1.0001 && fabs(All.Grain_Size_Spectrum_Powerlaw) != 0) {
+                    P[i].Mass *= (All.Grain_Size_Spectrum_Powerlaw/(pow(All.Grain_Size_Max/All.Grain_Size_Min,All.Grain_Size_Spectrum_Powerlaw)-1.)) *
+                    pow(P[i].Grain_Size/All.Grain_Size_Min,All.Grain_Size_Spectrum_Powerlaw) * log(All.Grain_Size_Max/All.Grain_Size_Min);}
+#ifdef GRAIN_RDI_TESTPROBLEM /* initialize various quantities for test problems from parameters set in the ICs */
+                P[i].Mass *= All.Dust_to_Gas_Mass_Ratio;
+                double tS0 = 0.626657 * P[i].Grain_Size * sqrt(GAMMA_DEFAULT); /* stopping time [Epstein] for driftvel->0 */
+                double a0 = tS0 * All.Vertical_Grain_Accel / (1.+All.Dust_to_Gas_Mass_Ratio); /* acc * tS0 / (1+mu) */
 #ifdef GRAIN_RDI_TESTPROBLEM_ACCEL_DEPENDS_ON_SIZE
-			a0 *= All.Grain_Size_Max / P[i].Grain_Size;
+                a0 *= All.Grain_Size_Max / P[i].Grain_Size;
 #endif
-            double ct = cos(All.Vertical_Grain_Accel_Angle * M_PI/180.), st = sin(All.Vertical_Grain_Accel_Angle * M_PI/180.); /* relevant angles */
-			int k; double agamma=0.220893; // 9pi/128 //
-			double tau2=0, ct2=0, w0=sqrt((sqrt(1.+4.*agamma*a0*a0)-1.)/(2.*agamma)); // exact solution if no Lorentz forces and Epstein drag //
+                double ct = cos(All.Vertical_Grain_Accel_Angle * M_PI/180.), st = sin(All.Vertical_Grain_Accel_Angle * M_PI/180.); /* relevant angles */
+                int k; double agamma=0.220893; // 9pi/128 //
+                double tau2=0, ct2=0, w0=sqrt((sqrt(1.+4.*agamma*a0*a0)-1.)/(2.*agamma)); // exact solution if no Lorentz forces and Epstein drag //
 #ifdef GRAIN_LORENTZFORCE
-			double tL_i = All.Grain_Charge_Parameter/All.Grain_Size_Max * pow(All.Grain_Size_Max/P[i].Grain_Size,2) * All.BiniZ; // 1/Lorentz in code units
-            ct2=ct*ct; double tau2_0=pow(tS0*tL_i,2), f_tau_guess2=0; // variables for below //
-			for(k=0;k<20;k++)
-			{
-			   tau2 = tau2_0 / (1. + agamma*w0*w0); // guess tau [including velocity dependence] //
-			   f_tau_guess2 = (1.+tau2*ct2) / (1.+tau2); // what the projection factor (reduction in w from projection) would be //
-			   w0 = sqrt((sqrt(1.+4.*agamma*a0*a0*f_tau_guess2)-1.)/(2.*agamma)); // re-calculate w0 with this // 
-			}
+                double tL_i = All.Grain_Charge_Parameter/All.Grain_Size_Max * pow(All.Grain_Size_Max/P[i].Grain_Size,2) * All.BiniZ; // 1/Lorentz in code units
+                ct2=ct*ct; double tau2_0=pow(tS0*tL_i,2), f_tau_guess2=0; // variables for below //
+                for(k=0;k<20;k++)
+                {
+                   tau2 = tau2_0 / (1. + agamma*w0*w0); // guess tau [including velocity dependence] //
+                   f_tau_guess2 = (1.+tau2*ct2) / (1.+tau2); // what the projection factor (reduction in w from projection) would be //
+                   w0 = sqrt((sqrt(1.+4.*agamma*a0*a0*f_tau_guess2)-1.)/(2.*agamma)); // re-calculate w0 with this //
+                }
 #endif
-		w0 /= sqrt((1.+tau2)*(1.+tau2*ct2)); // ensures normalization to unity with convention below //
-        int non_gdir=1; 
-        if(GRAV_DIRECTION_RDI==1) {non_gdir=2;}
-		P[i].Vel[0] = w0*st; P[i].Vel[non_gdir] = w0*sqrt(tau2)*st; P[i].Vel[GRAV_DIRECTION_RDI] = w0*(1.+tau2)*ct;
-        a0 = tS0 * All.Vertical_Gravity_Strength / (1.+All.Dust_to_Gas_Mass_Ratio); w0=sqrt((sqrt(1.+4.*agamma*a0*a0)-1.)/(2.*agamma));
-        P[i].Vel[GRAV_DIRECTION_RDI] -= w0;
-		}
-	    }	    
-#endif
-
+                w0 /= sqrt((1.+tau2)*(1.+tau2*ct2)); // ensures normalization to unity with convention below //
+                int non_gdir=1;
+                if(GRAV_DIRECTION_RDI==1) {non_gdir=2;}
+                P[i].Vel[0] = w0*st; P[i].Vel[non_gdir] = w0*sqrt(tau2)*st; P[i].Vel[GRAV_DIRECTION_RDI] = w0*(1.+tau2)*ct;
+                a0 = tS0 * All.Vertical_Gravity_Strength / (1.+All.Dust_to_Gas_Mass_Ratio); w0=sqrt((sqrt(1.+4.*agamma*a0*a0)-1.)/(2.*agamma));
+                P[i].Vel[GRAV_DIRECTION_RDI] -= w0;
+#endif // closes rdi_testproblem
+            }
             P[i].Gas_Density = P[i].Gas_InternalEnergy = P[i].Gas_Velocity[0]=P[i].Gas_Velocity[1]=P[i].Gas_Velocity[2]=0;
-#ifdef GRAIN_BACKREACTION
+#if defined(GRAIN_BACKREACTION)
             P[i].Grain_DeltaMomentum[0]=P[i].Grain_DeltaMomentum[1]=P[i].Grain_DeltaMomentum[2]=0;
 #endif
-#ifdef GRAIN_LORENTZFORCE
+#if defined(GRAIN_LORENTZFORCE)
             P[i].Gas_B[0]=P[i].Gas_B[1]=P[i].Gas_B[2]=0;
 #endif
-        }
-#endif
+        } // closes check on restartflag and particle type
+#endif // closes grain_fluid
         
         
         
@@ -440,7 +441,7 @@ void init(void)
 #endif
 #ifdef BH_FOLLOW_ACCRETED_ANGMOM
                 double bh_mu=2*get_random_number(P[i].ID+3)-1, bh_phi=2*M_PI*get_random_number(P[i].ID+4), bh_sin=sqrt(1-bh_mu*bh_mu);
-                double spin_prefac = All.G * P[i].BH_Mass / (C/All.UnitVelocity_in_cm_per_s); // assume initially maximally-spinning BH with random orientation
+                double spin_prefac = All.G * P[i].BH_Mass / C_LIGHT_CODE; // assume initially maximally-spinning BH with random orientation
                 P[i].BH_Specific_AngMom[0]=spin_prefac*bh_sin*cos(bh_phi); P[i].BH_Specific_AngMom[1]=spin_prefac*bh_sin*sin(bh_phi); P[i].BH_Specific_AngMom[2]=spin_prefac*bh_mu;
 #endif		
 #ifdef BH_COUNTPROGS
@@ -706,17 +707,9 @@ void init(void)
     for(i=0;i<NumPart;i++) {P[i].wakeup=0;}
 #endif
 
-#if defined(TURB_DRIVING)
-    {
-        double mass = 0, glob_mass; int i;
-        for(i=0; i< N_gas; i++) {mass += P[i].Mass;}
-        MPI_Allreduce(&mass, &glob_mass, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        All.RefDensity = glob_mass / (boxSize_X*boxSize_Y*boxSize_Z);
-        All.RefInternalEnergy = All.IsoSoundSpeed*All.IsoSoundSpeed / (GAMMA*GAMMA_MINUS1);
-    }
-#endif
     
     /* HELLO! This here is where you should insert custom code for hard-wiring the ICs of various test problems */
+
     
     density();
     for(i = 0; i < N_gas; i++)	/* initialize sph_properties */
@@ -724,13 +717,8 @@ void init(void)
         int k; k=0;
         SphP[i].InternalEnergyPred = SphP[i].InternalEnergy;
         
-#if defined(TURB_DRIVING) && defined(EOS_ENFORCE_ADIABAT)
-        SphP[i].InternalEnergy = All.RefInternalEnergy;
-        SphP[i].InternalEnergyPred = All.RefInternalEnergy;
-#endif
         // re-match the predicted and initial velocities and B-field values, just to be sure //
         for(j=0;j<3;j++) SphP[i].VelPred[j]=P[i].Vel[j];
-        
 #if defined(HYDRO_MESHLESS_FINITE_VOLUME) && (HYDRO_FIX_MESH_MOTION==0)
         for(j=0;j<3;j++) {SphP[i].ParticleVel[k] = 0;} // set these to zero and forget them, for the rest of the run //
 #endif
@@ -760,6 +748,8 @@ void init(void)
 #endif
 #ifdef WAKEUP
         if(RestartFlag!=0) {PPPZ[i].wakeup=0;}
+        NeedToWakeupParticles = 0;
+        NeedToWakeupParticles_local = 0;
 #endif
 #ifdef SUPER_TIMESTEP_DIFFUSION
         SphP[i].Super_Timestep_Dt_Explicit = 0;
@@ -992,9 +982,9 @@ void setup_smoothinglengths(void)
 #if defined(DO_DENSITY_AROUND_STAR_PARTICLES) || defined(GRAIN_FLUID)
         for(i = 0; i < NumPart; i++)
 #else
-            for(i = 0; i < N_gas; i++)
+        for(i = 0; i < N_gas; i++)
 #endif
-            {
+        {
                 no = Father[i];
                 
                 while(10 * All.DesNumNgb * P[i].Mass > Nodes[no].u.d.mass)
@@ -1048,8 +1038,7 @@ void setup_smoothinglengths(void)
     if(RestartFlag == 0 || RestartFlag == 2)
     {
         for(i = 0; i < NumPart; i++)
-            if(P[i].Type > 0)
-                PPP[i].Hsml = All.SofteningTable[P[i].Type];
+            if(P[i].Type > 0) {PPP[i].Hsml = All.SofteningTable[P[i].Type];}
     }
 #endif
  

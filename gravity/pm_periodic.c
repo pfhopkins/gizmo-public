@@ -72,9 +72,6 @@ static MPI_Datatype MPI_TYPE_PTRDIFF;
 
 static fftw_real *rhogrid, *forcegrid, *workspace;
 static d_fftw_real *d_rhogrid, *d_forcegrid, *d_workspace;
-#ifdef KSPACE_NEUTRINOS
-static fftw_complex *Cdata;
-#endif
 
 #ifdef COMPUTE_TIDAL_TENSOR_IN_GRAVTREE
 static fftw_real *tidal_workspace;
@@ -203,10 +200,6 @@ void pm_init_periodic(void)
 
 #endif
 
-
-#ifdef KSPACE_NEUTRINOS
-  kspace_neutrinos_init();
-#endif
 }
 
 
@@ -356,11 +349,6 @@ void pmforce_periodic(int mode, int *typelist)
 
   fac = All.G / (M_PI * All.BoxSize);	/* to get potential */
   fac *= 1 / (2 * All.BoxSize / PMGRID);	/* for finite differencing */
-
-#ifdef KSPACE_NEUTRINOS
-  double rhocrit = 3 * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits / (8 * M_PI * All.G);
-  double kspace_prefac = sqrt(pow(2 * M_PI / All.BoxSize, 3.0)) * All.OmegaNu * rhocrit * pow(All.BoxSize, 3);
-#endif
 
   pm_init_periodic_allocate();
 
@@ -685,15 +673,6 @@ void pmforce_periodic(int mode, int *typelist)
 		      ip = PMGRID * (PMGRID / 2 + 1) * (y - slabstart_y) + (PMGRID / 2 + 1) * x + z;
 		      cmplx_re(fft_of_rhogrid[ip]) *= smth;
 		      cmplx_im(fft_of_rhogrid[ip]) *= smth;
-
-#ifdef KSPACE_NEUTRINOS
-		      double ampl =
-			smth * kspace_prefac *
-			sqrt(get_neutrino_powerspec(sqrt(k2) * 2 * M_PI / All.BoxSize, All.Time));
-
-		      cmplx_re(fft_of_rhogrid[ip]) += ampl * cmplx_re(Cdata[ip]);
-		      cmplx_im(fft_of_rhogrid[ip]) += ampl * cmplx_im(Cdata[ip]);
-#endif
 		    }
 		}
 
@@ -3585,210 +3564,6 @@ void dump_potential(void)
   PRINT_STATUS("finished writing potential (took=%g sec)", timediff(tstart, tend));
 }
 #endif
-
-
-
-#ifdef KSPACE_NEUTRINOS
-#include <gsl/gsl_rng.h>
-
-static gsl_rng *random_generator_neutrinos;
-static unsigned int *seedtable;
-
-void kspace_neutrinos_set_seeds(void)
-{
-  int i, j;
-
-  random_generator_neutrinos = gsl_rng_alloc(gsl_rng_ranlxd1);
-  gsl_rng_set(random_generator_neutrinos, All.KspaceNeutrinoSeed);
-  seedtable = mymalloc("seedtable", PMGRID * PMGRID * sizeof(unsigned int));
-
-  for(i = 0; i < PMGRID / 2; i++)
-    {
-      for(j = 0; j < i; j++)
-	seedtable[i * PMGRID + j] = 0x7fffffff * gsl_rng_uniform(random_generator_neutrinos);
-
-      for(j = 0; j < i + 1; j++)
-	seedtable[j * PMGRID + i] = 0x7fffffff * gsl_rng_uniform(random_generator_neutrinos);
-
-      for(j = 0; j < i; j++)
-	seedtable[(PMGRID - 1 - i) * PMGRID + j] = 0x7fffffff * gsl_rng_uniform(random_generator_neutrinos);
-
-      for(j = 0; j < i + 1; j++)
-	seedtable[(PMGRID - 1 - j) * PMGRID + i] = 0x7fffffff * gsl_rng_uniform(random_generator_neutrinos);
-
-      for(j = 0; j < i; j++)
-	seedtable[i * PMGRID + (PMGRID - 1 - j)] = 0x7fffffff * gsl_rng_uniform(random_generator_neutrinos);
-
-      for(j = 0; j < i + 1; j++)
-	seedtable[j * PMGRID + (PMGRID - 1 - i)] = 0x7fffffff * gsl_rng_uniform(random_generator_neutrinos);
-
-      for(j = 0; j < i; j++)
-	seedtable[(PMGRID - 1 - i) * PMGRID + (PMGRID - 1 - j)] =
-	  0x7fffffff * gsl_rng_uniform(random_generator_neutrinos);
-
-      for(j = 0; j < i + 1; j++)
-	seedtable[(PMGRID - 1 - j) * PMGRID + (PMGRID - 1 - i)] =
-	  0x7fffffff * gsl_rng_uniform(random_generator_neutrinos);
-    }
-}
-
-
-
-void kspace_neutrinos_init(void)
-{
-  double kvec[3], kmag, kmag2, p_of_k;
-  double delta, phase, ampl;
-  int x, y, z, xx, yy, ip;
-
-  init_transfer_functions();
-
-  kspace_neutrinos_set_seeds();	/* set seeds */
-
-  Cdata = (fftw_complex *) mymalloc("Cdata", maxfftsize * sizeof(d_fftw_real));	/* this will hold the neutrine waves */
-
-  /* first, clean the array */
-
-  /* note: we use TRANSPOSED_ORDER in pm_periodic, while in N-GenIC we use NORMAL_ORDER */
-  for(y = slabstart_y; y < slabstart_y + nslab_y; y++)
-    for(x = 0; x < PMGRID; x++)
-      for(z = 0; z < PMGRID / 2 + 1; z++)
-	{
-	  ip = PMGRID * (PMGRID / 2 + 1) * (y - slabstart_y) + (PMGRID / 2 + 1) * x + z;
-	  cmplx_re(Cdata[ip]) = 0;
-	  cmplx_im(Cdata[ip]) = 0;
-	}
-
-
-  for(x = 0; x < PMGRID; x++)
-    for(y = 0; y < PMGRID; y++)
-      {
-	gsl_rng_set(random_generator_neutrinos, seedtable[x * PMGRID + y]);
-
-	for(z = 0; z < PMGRID / 2; z++)
-	  {
-	    phase = gsl_rng_uniform(random_generator_neutrinos) * 2 * M_PI;
-	    do
-	      ampl = gsl_rng_uniform(random_generator_neutrinos);
-	    while(ampl == 0);
-
-	    if(x == PMGRID / 2 || y == PMGRID / 2 || z == PMGRID / 2)
-	      continue;
-	    if(x == 0 && y == 0 && z == 0)
-	      continue;
-
-	    if(x < PMGRID / 2)
-	      kvec[0] = x * 2 * M_PI / All.BoxSize;
-	    else
-	      kvec[0] = -(PMGRID - x) * 2 * M_PI / All.BoxSize;
-
-	    if(y < PMGRID / 2)
-	      kvec[1] = y * 2 * M_PI / All.BoxSize;
-	    else
-	      kvec[1] = -(PMGRID - y) * 2 * M_PI / All.BoxSize;
-
-	    if(z < PMGRID / 2)
-	      kvec[2] = z * 2 * M_PI / All.BoxSize;
-	    else
-	      kvec[2] = -(PMGRID - z) * 2 * M_PI / All.BoxSize;
-
-	    kmag2 = kvec[0] * kvec[0] + kvec[1] * kvec[1] + kvec[2] * kvec[2];
-	    kmag = sqrt(kmag2);
-
-	    if(All.SphereMode == 1)
-	      {
-		if(kmag * All.BoxSize / (2 * M_PI) > All.Nsample / 2)	/* select a sphere in k-space */
-		  continue;
-	      }
-	    else
-	      {
-		if(fabs(kvec[0]) * All.BoxSize / (2 * M_PI) > All.Nsample / 2)
-		  continue;
-		if(fabs(kvec[1]) * All.BoxSize / (2 * M_PI) > All.Nsample / 2)
-		  continue;
-		if(fabs(kvec[2]) * All.BoxSize / (2 * M_PI) > All.Nsample / 2)
-		  continue;
-	      }
-
-	    p_of_k = 1.0;
-
-	    p_of_k *= -log(ampl);
-
-	    delta = sqrt(p_of_k);
-
-	    if(z > 0)
-	      {
-		if(y >= slabstart_y && y < (slabstart_y + nslab_y))
-		  {
-		    ip = PMGRID * (PMGRID / 2 + 1) * (y - slabstart_y) + (PMGRID / 2 + 1) * x + z;
-		    cmplx_re(Cdata[ip]) = delta * cos(phase);
-		    cmplx_im(Cdata[ip]) = delta * sin(phase);
-		  }
-		else		/* z=0 plane needs special treatment */
-		  {
-		    if(x == 0)
-		      {
-			if(y >= PMGRID / 2)
-			  continue;
-			else
-			  {
-			    yy = PMGRID - y;	/* note: y!=0 surely holds at this point */
-
-			    if(y >= slabstart_y && y < (slabstart_y + nslab_y))
-			      {
-				ip = PMGRID * (PMGRID / 2 + 1) * (y - slabstart_y) + (PMGRID / 2 + 1) * x + z;
-
-				cmplx_re(Cdata[ip]) = delta * cos(phase);
-				cmplx_im(Cdata[ip]) = delta * sin(phase);
-			      }
-
-			    if(yy >= slabstart_y && yy < (slabstart_y + nslab_y))
-			      {
-				ip =
-				  PMGRID * (PMGRID / 2 + 1) * (yy - slabstart_y) + (PMGRID / 2 + 1) * x + z;
-
-				cmplx_re(Cdata[ip]) = delta * cos(phase);
-				cmplx_im(Cdata[ip]) = -delta * sin(phase);
-			      }
-			  }
-		      }
-		    else	/* here comes x!=0 : conjugate can be on other processor! */
-		      {
-			if(x >= PMGRID / 2)
-			  continue;
-			else
-			  {
-			    xx = PMGRID - x;
-			    if(xx == PMGRID)
-			      xx = 0;
-			    yy = PMGRID - y;
-			    if(yy == PMGRID)
-			      yy = 0;
-
-			    if(y >= slabstart_y && y < (slabstart_y + nslab_y))
-			      {
-				ip = PMGRID * (PMGRID / 2 + 1) * (y - slabstart_y) + (PMGRID / 2 + 1) * x + z;
-
-				cmplx_re(Cdata[ip]) = delta * cos(phase);
-				cmplx_im(Cdata[ip]) = delta * sin(phase);
-			      }
-
-			    if(yy >= slabstart_y && yy < (slabstart_y + nslab_y))
-			      {
-				ip =
-				  PMGRID * (PMGRID / 2 + 1) * (yy - slabstart_y) + (PMGRID / 2 + 1) * xx + z;
-
-				cmplx_re(Cdata[ip]) = delta * cos(phase);
-				cmplx_im(Cdata[ip]) = -delta * sin(phase);
-			      }
-			  }
-		      }
-		  }
-	      }
-	  }
-      }
-}
-
-#endif /* KSPACE_NEUTRINOS */
 
 
 

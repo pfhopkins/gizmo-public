@@ -34,8 +34,7 @@ int density_isactive(int n)
     if(P[n].TimeBin < 0) return 0;
     
 #if defined(GRAIN_FLUID)
-    /* all particles can potentially interact with the gas in this mode, if drag > 0 */
-    if(P[n].Type >= 0) return 1;
+    if((1 << P[n].Type) & (GRAIN_PTYPES)) {return 1;} /* any of the particle types flagged as a valid grain-type is active here */
 #endif
     
 #if defined(RT_SOURCE_INJECTION)
@@ -166,7 +165,7 @@ static struct OUTPUT_STRUCT_NAME
 #endif
 #if defined(GRAIN_FLUID)
     MyDouble Gas_InternalEnergy;
-#ifdef GRAIN_LORENTZFORCE
+#if defined(GRAIN_LORENTZFORCE)
     MyDouble Gas_B[3];
 #endif
 #endif
@@ -216,12 +215,12 @@ void hydrokerneldensity_out2particle(struct OUTPUT_STRUCT_NAME *out, int i, int 
     } // P[i].Type == 0 //
 
 #if defined(GRAIN_FLUID)
-    if(P[i].Type > 0)
+    if((1 << P[i].Type) & (GRAIN_PTYPES))
     {
         ASSIGN_ADD(P[i].Gas_Density, out->Rho, mode);
         ASSIGN_ADD(P[i].Gas_InternalEnergy, out->Gas_InternalEnergy, mode);
         for(k = 0; k<3; k++) {ASSIGN_ADD(P[i].Gas_Velocity[k], out->GasVel[k], mode);}
-#ifdef GRAIN_LORENTZFORCE
+#if defined(GRAIN_LORENTZFORCE)
         for(k = 0; k<3; k++) {ASSIGN_ADD(P[i].Gas_B[k], out->Gas_B[k], mode);}
 #endif
     }
@@ -361,15 +360,18 @@ void density_evaluate_extra_physics_gas(struct INPUT_STRUCT_NAME *local, struct 
     if(local->Type != 0)
     {
 #if defined(GRAIN_FLUID)
-        out->Gas_InternalEnergy += kernel->mj_wk * SphP[j].InternalEnergyPred;
-        out->GasVel[0] += kernel->mj_wk * (local->Vel[0]-kernel->dv[0]);
-        out->GasVel[1] += kernel->mj_wk * (local->Vel[1]-kernel->dv[1]);
-        out->GasVel[2] += kernel->mj_wk * (local->Vel[2]-kernel->dv[2]);
-#ifdef GRAIN_LORENTZFORCE
-        out->Gas_B[0] += kernel->wk * SphP[j].BPred[0];
-        out->Gas_B[1] += kernel->wk * SphP[j].BPred[1];
-        out->Gas_B[2] += kernel->wk * SphP[j].BPred[2];
+        if((1 << local->Type) & (GRAIN_PTYPES))
+        {
+            out->Gas_InternalEnergy += kernel->mj_wk * SphP[j].InternalEnergyPred;
+            out->GasVel[0] += kernel->mj_wk * (local->Vel[0]-kernel->dv[0]);
+            out->GasVel[1] += kernel->mj_wk * (local->Vel[1]-kernel->dv[1]);
+            out->GasVel[2] += kernel->mj_wk * (local->Vel[2]-kernel->dv[2]);
+#if defined(GRAIN_LORENTZFORCE)
+            out->Gas_B[0] += kernel->wk * SphP[j].BPred[0];
+            out->Gas_B[1] += kernel->wk * SphP[j].BPred[1];
+            out->Gas_B[2] += kernel->wk * SphP[j].BPred[2];
 #endif
+        }
 #endif
         
 #if defined(BLACK_HOLES)
@@ -600,14 +602,11 @@ void density(void)
                 }
 #endif
 
-#ifdef GRAIN_FLUID
-                /* for the grains, we only need to estimate neighboring gas properties, we don't need to worry about 
-                    condition numbers or conserving an exact neighbor number */
-                if(P[i].Type>0)
+#ifdef GRAIN_FLUID /* for the grains, we only need to estimate neighboring gas properties, we don't need to worry about condition numbers or conserving an exact neighbor number */
+                if((1 << P[i].Type) & (GRAIN_PTYPES))
                 {
-                    desnumngb = All.DesNumNgb;
-                    desnumngbdev = All.DesNumNgb / 4;
-#ifdef GRAIN_BACKREACTION
+                    desnumngb = All.DesNumNgb; desnumngbdev = All.DesNumNgb / 4;
+#if defined(GRAIN_BACKREACTION)
                     desnumngbdev = desnumngbdev_0;
 #endif
                 }
@@ -640,6 +639,9 @@ void density(void)
                 if(P[i].Type == 5) {maxsoft = All.BlackHoleMaxAccretionRadius / All.cf_atime;}  // MaxAccretionRadius is now defined in params.txt in PHYSICAL units
 #ifdef SINGLE_STAR_SINK_DYNAMICS
 		        if(P[i].Type == 5) {minsoft = All.ForceSoftening[5] / All.cf_atime;} // we should always find all neighbours within the softening kernel/accretion radius, which is a lower bound on the accretion radius
+#ifdef BH_GRAVCAPTURE_FIXEDSINKRADIUS
+			if(P[i].Type == 5) {minsoft = DMAX(minsoft, P[i].SinkRadius);}
+#endif			
 #endif		
 #endif
 
@@ -967,7 +969,7 @@ void density(void)
 
             
 #if defined(GRAIN_FLUID)
-            if(P[i].Type > 0)
+            if((1 << P[i].Type) & (GRAIN_PTYPES))
             {
                 if(P[i].Gas_Density > 0)
                 {
@@ -976,7 +978,7 @@ void density(void)
                 } else {
                     P[i].Gas_InternalEnergy = 0;
                     for(k = 0; k<3; k++) {P[i].Gas_Velocity[k] = 0;}
-#ifdef GRAIN_LORENTZFORCE
+#if defined(GRAIN_LORENTZFORCE)
                     for(k = 0; k<3; k++) {P[i].Gas_B[k] = 0;}
 #endif
                 }

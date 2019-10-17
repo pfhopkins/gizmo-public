@@ -10,7 +10,7 @@
  * This file was written by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
  */
 /* --------------------------------------------------------------------------------- */
-double c_light = RT_SPEEDOFLIGHT_REDUCTION * (C/All.UnitVelocity_in_cm_per_s);
+double c_light = C_LIGHT_CODE_REDUCED;
 {
 #if !defined(RT_EVOLVE_FLUX) /* this means we just solve the diffusion equation for the eddington tensor, done in the loop below */
     int k_freq;
@@ -122,7 +122,7 @@ double c_light = RT_SPEEDOFLIGHT_REDUCTION * (C/All.UnitVelocity_in_cm_per_s);
                 face_dot_flux += Face_Area_Vec[k] * grad; /* remember, our 'flux' variable is a volume-integral */
             }
             grad_norm = sqrt(grad_norm) + MIN_REAL_NUMBER;
-            double reduced_flux = grad_norm / ((C/All.UnitVelocity_in_cm_per_s) * 0.5*(scalar_i+scalar_j)); // |F|/(c*E): ratio of flux to optically thin limit
+            double reduced_flux = grad_norm / (C_LIGHT_CODE * 0.5*(scalar_i+scalar_j)); // |F|/(c*E): ratio of flux to optically thin limit
             if(reduced_flux > 1) {reduced_flux=1;} else {if(reduced_flux < 0) {reduced_flux=0;}}
             double cos_theta_face_flux = face_dot_flux / (Face_Area_Norm * grad_norm); // angle between flux and face vector normal
             if(cos_theta_face_flux < -1) {cos_theta_face_flux=-1;} else {if(cos_theta_face_flux > 1) {cos_theta_face_flux=1;}}

@@ -17,6 +17,15 @@ double rt_return_photon_number_density(int i, int k)
     return SphP[i].E_gamma[k] * (SphP[i].Density*All.cf_a3inv/P[i].Mass) / (rt_nu_eff_eV[k]*ELECTRONVOLT_IN_ERGS / All.UnitEnergy_in_cgs * All.HubbleParam);
 }
 
+double rt_photoion_chem_return_temperature(int i, double internal_energy)
+{
+#ifdef RT_ILIEV_TEST1
+    return 1e4; // use a fixed temp if this special flag for numerical testing is enabled
+#endif
+    double mol_wt = 4 / (1 + 3 * HYDROGEN_MASSFRAC + 4 * HYDROGEN_MASSFRAC * SphP[i].Ne);
+    return mol_wt * (GAMMA(i)-1) * internal_energy * U_TO_TEMP_UNITS;
+}
+
 
 void rt_get_sigma(void)
 {
@@ -43,7 +52,7 @@ void rt_get_sigma(void)
     int i_vec[N_BINS_FOR_IONIZATION] = {RT_FREQ_BIN_H0, RT_FREQ_BIN_He0, RT_FREQ_BIN_He1, RT_FREQ_BIN_He2};
     
     int i, j, integral=10000;
-    double e, d_nu, e_start, e_end, sum_HI_sigma=0, sum_HI_G=0, hc=C*PLANCK, I_nu, sig, f, fac_two, T_eff, sum_egy_allbands=0;
+    double e, d_nu, e_start, e_end, sum_HI_sigma=0, sum_HI_G=0, hc=C_LIGHT*6.6262e-27, I_nu, sig, f, fac_two, T_eff, sum_egy_allbands=0;
 #if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(GALSF)
     T_eff = 4.0e4;
 #else 
@@ -138,13 +147,13 @@ void rt_get_sigma(void)
 void rt_update_chemistry(void)
 {
     int i;
-    double nH, temp, molecular_weight, rho, nHII, dtime, c_light, A, B, CC, n_photons_vol, alpha_HII, gamma_HI, fac;
+    double nH, temp, rho, nHII, dtime, c_light, A, B, CC, n_photons_vol, alpha_HII, gamma_HI, fac;
 #ifdef RT_CHEM_PHOTOION_HE
     double alpha_HeII, alpha_HeIII, gamma_HeI, gamma_HeII, nHeII, nHeIII, D, E, F, G, J, L, y_fac;
 #endif
     
     fac = All.UnitTime_in_s / pow(All.UnitLength_in_cm, 3) * All.HubbleParam * All.HubbleParam;
-    c_light = C / All.UnitVelocity_in_cm_per_s;
+    c_light = C_LIGHT_CODE;
     
     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
         if(P[i].Type == 0)
@@ -152,12 +161,7 @@ void rt_update_chemistry(void)
             dtime = (P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0) * All.Timebase_interval / All.cf_hubble_a;
             rho = SphP[i].Density * All.cf_a3inv;
             nH = HYDROGEN_MASSFRAC * rho / PROTONMASS * All.UnitMass_in_g / All.HubbleParam;
-            molecular_weight = 4 / (1 + 3 * HYDROGEN_MASSFRAC + 4 * HYDROGEN_MASSFRAC * SphP[i].Ne);
-#ifdef RT_ILIEV_TEST1
-            temp = 1.0e4;
-#else
-            temp = GAMMA_MINUS1 * SphP[i].InternalEnergyPred * molecular_weight * PROTONMASS / All.UnitMass_in_g * All.HubbleParam / BOLTZMANN * All.UnitEnergy_in_cgs / All.HubbleParam;
-#endif
+            temp = rt_photoion_chem_return_temperature(i,SphP[i].InternalEnergyPred);
             /* collisional ionization rate */
             gamma_HI = 5.85e-11 * sqrt(temp) * exp(-157809.1 / temp) / (1.0 + sqrt(temp / 1e5)) * fac;
             /* alpha_B recombination coefficient */
@@ -240,13 +244,13 @@ void rt_update_chemistry(void)
 void rt_update_chemistry(void)
 {
     int i, j;
-    double nH, temp, molecular_weight, rho, nHII, c_light, n_photons_vol, dtime, A, B, CC, alpha_HII, gamma_HI, fac, k_HI;
+    double nH, temp, rho, nHII, c_light, n_photons_vol, dtime, A, B, CC, alpha_HII, gamma_HI, fac, k_HI;
 #ifdef RT_CHEM_PHOTOION_HE
     double alpha_HeII, alpha_HeIII, gamma_HeI, gamma_HeII, nHeII, nHeIII, D, E, F, G, J, L, k_HeI, k_HeII, y_fac;
 #endif
     
     fac = All.UnitTime_in_s / pow(All.UnitLength_in_cm, 3) * All.HubbleParam * All.HubbleParam;
-    c_light = C / All.UnitVelocity_in_cm_per_s;
+    c_light = C_LIGHT_CODE;
     
     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
         if(P[i].Type == 0)
@@ -269,9 +273,7 @@ void rt_update_chemistry(void)
             dtime = (P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0) * All.Timebase_interval / All.cf_hubble_a;
             rho = SphP[i].Density * All.cf_a3inv;
             nH = HYDROGEN_MASSFRAC * rho / PROTONMASS * All.UnitMass_in_g / All.HubbleParam;
-            molecular_weight = 4 / (1 + 3 * HYDROGEN_MASSFRAC + 4 * HYDROGEN_MASSFRAC * SphP[i].Ne);
-            temp = GAMMA_MINUS1 * SphP[i].InternalEnergyPred * molecular_weight * PROTONMASS /
-            All.UnitMass_in_g * All.HubbleParam / BOLTZMANN * All.UnitEnergy_in_cgs / All.HubbleParam;
+            temp = rt_photoion_chem_return_temperature(i,SphP[i].InternalEnergyPred);
             /* collisional ionization rate */
             gamma_HI = 5.85e-11 * sqrt(temp) * exp(-157809.1 / temp) / (1.0 + sqrt(temp / 1e5)) * fac;
             /* alpha_B recombination coefficient */

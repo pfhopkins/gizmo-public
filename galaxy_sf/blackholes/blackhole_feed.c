@@ -144,7 +144,7 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
     double dt_min_to_accrete = DMAX(0.001 * sqrt(pow(All.SofteningTable[5],3.0)/(All.G * local.Mass)), 20.0*DMAX(All.MinSizeTimestep,All.Timebase_interval) ); //0.001 = tolerance factor for dt_min, defined in part (ii) of 2.3.5 in Hubber 2013.
 #endif
 #if defined(BH_WIND_KICK) && !defined(BH_GRAVCAPTURE_GAS) /* DAA: increase the effective mass-loading of BAL winds to reach the desired momentum flux given the outflow velocity "All.BAL_v_outflow" chosen --> appropriate for cosmological simulations where particles are effectively kicked from ~kpc scales (i.e. we need lower velocity and higher mass outflow rates compared to accretion disk scales) - */
-    f_accreted = All.BAL_f_accretion; if((All.BlackHoleFeedbackFactor > 0) && (All.BlackHoleFeedbackFactor != 1.)) {f_accreted /= All.BlackHoleFeedbackFactor;} else {if(All.BAL_v_outflow > 0) {f_accreted = 1./(1. + fabs(1.*BH_WIND_KICK)*All.BlackHoleRadiativeEfficiency*(C/All.UnitVelocity_in_cm_per_s)/(All.BAL_v_outflow));}}
+    f_accreted = All.BAL_f_accretion; if((All.BlackHoleFeedbackFactor > 0) && (All.BlackHoleFeedbackFactor != 1.)) {f_accreted /= All.BlackHoleFeedbackFactor;} else {if(All.BAL_v_outflow > 0) {f_accreted = 1./(1. + fabs(1.*BH_WIND_KICK)*All.BlackHoleRadiativeEfficiency*C_LIGHT_CODE/(All.BAL_v_outflow));}}
 #endif
 #if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)
     double norm=0; for(k=0;k<3;k++) {norm+=J_dir[k]*J_dir[k];}

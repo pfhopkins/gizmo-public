@@ -122,7 +122,7 @@ void blackhole_end(void)
 /* return the eddington accretion-rate = L_edd/(epsilon_r*c*c) */
 double bh_eddington_mdot(double bh_mass)
 {
-    return (4 * M_PI * GRAVITY*C * PROTONMASS / (All.BlackHoleRadiativeEfficiency * C * C * THOMPSON)) * (bh_mass/All.HubbleParam) * All.UnitTime_in_s;
+    return (4 * M_PI * GRAVITY_G*C_LIGHT * PROTONMASS / (All.BlackHoleRadiativeEfficiency * C_LIGHT * C_LIGHT * THOMPSON)) * (bh_mass/All.HubbleParam) * All.UnitTime_in_s;
 }
 
 
@@ -130,8 +130,7 @@ double bh_eddington_mdot(double bh_mass)
 /* return the bh luminosity given some accretion rate and mass (allows for non-standard models: radiatively inefficient flows, stellar sinks, etc) */
 double bh_lum_bol(double mdot, double mass, long id)
 {
-    double c_code = C / All.UnitVelocity_in_cm_per_s;
-    double lum = All.BlackHoleRadiativeEfficiency * mdot * c_code*c_code;
+    double lum = All.BlackHoleRadiativeEfficiency * mdot * C_LIGHT_CODE*C_LIGHT_CODE;
 #ifdef SINGLE_STAR_SINK_DYNAMICS
     lum = calculate_individual_stellar_luminosity(mdot,mass,id);
 #endif

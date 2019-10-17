@@ -34,14 +34,14 @@ void do_first_halfstep_kick(void)
         apply_long_range_kick(tstart, tend);
     }
 #endif
-    
+#ifdef HYDRO_MESHLESS_FINITE_VOLUME    
     /* as currently written with some revisions to MFV methods, should only update on active timesteps */
     for(i = 0; i < NumPart; i++)
     {
-#ifdef HYDRO_MESHLESS_FINITE_VOLUME
         if((TimeBinActive[P[i].TimeBin]) || (P[i].Type==0)) /* active OR gas, need to check each timestep to ensure manifest conservation */
 #else
-        if(TimeBinActive[P[i].TimeBin]) /* 'full' kick for active particles */
+    for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) /* 'full' kick for active particles */
+    {	    
 #endif
         {
             if(P[i].Mass > 0)
@@ -69,13 +69,13 @@ void do_second_halfstep_kick(void)
         apply_long_range_kick(tstart, tend);
     }
 #endif
-
+#ifdef HYDRO_MESHLESS_FINITE_VOLUME
     for(i = 0; i < NumPart; i++)
     {
-#ifdef HYDRO_MESHLESS_FINITE_VOLUME
         if((TimeBinActive[P[i].TimeBin]) || (P[i].Type==0)) /* active OR gas, need to check each timestep to ensure manifest conservation */
 #else
-        if(TimeBinActive[P[i].TimeBin]) /* 'full' kick for active particles */
+    for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) /* 'full' kick for active particles */
+    {
 #endif
         {
             if(P[i].Mass > 0)
@@ -241,7 +241,7 @@ void do_the_kick(int i, integertime tstart, integertime tend, integertime tcurre
                 SphP[i].DtPhi = (1./3.) * (SphP[i].Phi*All.cf_a3inv) * P[i].Particle_DivVel*All.cf_a2inv; // cf_a3inv from mass-based phi-fluxes
 #endif
 #endif
-                if(All.ComovingIntegrationOn) SphP[i].DtInternalEnergy -= 3*GAMMA_MINUS1 * SphP[i].InternalEnergyPred * All.cf_hubble_a;
+                if(All.ComovingIntegrationOn) SphP[i].DtInternalEnergy -= 3*(GAMMA(i)-1) * SphP[i].InternalEnergyPred * All.cf_hubble_a;
                 dEnt = SphP[i].InternalEnergy + SphP[i].DtInternalEnergy * dt_hydrokick; /* gravity term not included here, as it makes this unstable */
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
                 SphP[i].dMass = SphP[i].DtMass = 0;
@@ -373,9 +373,6 @@ void set_predicted_sph_quantities_for_extra_physics(int i)
 #endif
         
         SphP[i].Pressure = get_pressure(i);
-#ifdef EOS_ENFORCE_ADIABAT
-        SphP[i].InternalEnergy = SphP[i].InternalEnergyPred = SphP[i].Pressure / (SphP[i].Density * GAMMA_MINUS1);
-#endif
     }
 }
 

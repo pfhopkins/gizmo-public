@@ -115,8 +115,7 @@ void do_the_cooling_for_particle(int i)
         /* Call the actual COOLING subroutine! */
         unew = DoCooling(uold, SphP[i].Density * All.cf_a3inv, dtime, SphP[i].Ne, i);
 #else
-        double fac_entr_to_u = pow(SphP[i].Density * All.cf_a3inv, GAMMA_MINUS1) / GAMMA_MINUS1;
-        unew = uold + dt * fac_entr_to_u * (rt_DoHeating(i, dt) + rt_DoCooling(i, dt));
+        unew = uold + dt * (rt_DoHeating(i, dt) + rt_DoCooling(i, dt));
 #endif
         
         
@@ -360,9 +359,10 @@ double convert_u_to_temp(double u, double rho, int target, double *ne_guess, dou
 {
     int iter = 0;
     double temp, temp_old, temp_old_old = 0, temp_new, max = 0, ne_old, mu;
-    double u_input = u, rho_input = rho, temp_guess = GAMMA_MINUS1 / BOLTZMANN * u * PROTONMASS;
+    double u_input = u, rho_input = rho, temp_guess;
+    temp_guess = (GAMMA(target)-1) / BOLTZMANN * u * PROTONMASS;
     mu = get_mu(temp_guess, rho, ne_guess, target);
-    temp = GAMMA_MINUS1 / BOLTZMANN * u * PROTONMASS * mu;
+    temp = (GAMMA(target)-1) / BOLTZMANN * u * PROTONMASS * mu;
     
     do
     {
@@ -371,7 +371,7 @@ double convert_u_to_temp(double u, double rho, int target, double *ne_guess, dou
         temp_old = temp;
         
         mu = get_mu(temp, rho, ne_guess, target);
-        temp_new = GAMMA_MINUS1 / BOLTZMANN * u * PROTONMASS * mu;
+        temp_new = (GAMMA(target)-1) / BOLTZMANN * u * PROTONMASS * mu;
         
         max = DMAX(max, temp_new * mu * HYDROGEN_MASSFRAC * fabs((*ne_guess - ne_old) / (temp_new - temp_old + 1.0)));
         temp = temp_old + (temp_new - temp_old) / (1 + max);
@@ -470,7 +470,7 @@ double find_abundances_and_rates(double logT, double rho, int target, double shi
         double L_particle = Get_Particle_Size(target)*All.cf_atime; // particle effective size/slab thickness
         double cx_to_kappa = HYDROGEN_MASSFRAC / PROTONMASS * All.UnitMass_in_g / All.HubbleParam; // pre-factor for converting cross sections into opacities
         Sigma_particle = cx_to_kappa * P[target].Mass / (M_PI*L_particle*L_particle); // effective surface density through particle
-        abs_per_kappa_dt = cx_to_kappa * RT_SPEEDOFLIGHT_REDUCTION * (C/All.UnitVelocity_in_cm_per_s) * (SphP[target].Density*All.cf_a3inv) * dt; // fractional absorption over timestep
+        abs_per_kappa_dt = cx_to_kappa * C_LIGHT_CODE_REDUCED * (SphP[target].Density*All.cf_a3inv) * dt; // fractional absorption over timestep
         nH0 = SphP[target].HI; // need to initialize a value for the iteration below
 #ifdef RT_CHEM_PHOTOION_HE
         nHe0 = SphP[target].HeI; nHep = SphP[target].HeII; // need to intialize a value for the iteration below
@@ -519,7 +519,7 @@ double find_abundances_and_rates(double logT, double rho, int target, double shi
         if(target >= 0)
         {
             int k;
-            c_light_ne = C / ((MIN_REAL_NUMBER + necgs) * All.UnitLength_in_cm / All.HubbleParam); // want physical cgs units for quantities below
+            c_light_ne = C_LIGHT / ((MIN_REAL_NUMBER + necgs) * All.UnitLength_in_cm / All.HubbleParam); // want physical cgs units for quantities below
             double gJH0ne_0=gJH0 * local_gammamultiplier / (MIN_REAL_NUMBER + necgs), gJHe0ne_0=gJHe0 * local_gammamultiplier / (MIN_REAL_NUMBER + necgs), gJHepne_0=gJHep * local_gammamultiplier / (MIN_REAL_NUMBER + necgs); // need a baseline, so we don't over-shoot below
 #if defined(RT_DISABLE_UV_BACKGROUND)
             gJH0ne_0=gJHe0ne_0=gJHepne_0=MAX_REAL_NUMBER;
@@ -723,7 +723,7 @@ double CoolingRate(double logT, double rho, double n_elec_guess, int target)
         double L_particle = Get_Particle_Size(target)*All.cf_atime; // particle effective size/slab thickness
         double dt = (P[target].TimeBin ? (((integertime) 1) << P[target].TimeBin) : 0) * All.Timebase_interval / All.cf_hubble_a; // dtime [code units]
         Sigma_particle = P[target].Mass / (M_PI*L_particle*L_particle); // effective surface density through particle
-        abs_per_kappa_dt = RT_SPEEDOFLIGHT_REDUCTION * (C/All.UnitVelocity_in_cm_per_s) * (SphP[target].Density*All.cf_a3inv) * dt; // fractional absorption over timestep
+        abs_per_kappa_dt = C_LIGHT_CODE_REDUCED * (SphP[target].Density*All.cf_a3inv) * dt; // fractional absorption over timestep
         cx_to_kappa = HYDROGEN_MASSFRAC / PROTONMASS * All.UnitMass_in_g / All.HubbleParam; // pre-factor for converting cross sections into opacities
     }
 #endif
@@ -801,7 +801,7 @@ double CoolingRate(double logT, double rho, double n_elec_guess, int target)
         /* add in photons from explicit radiative transfer (on top of assumed background) */
         if((target >= 0) && (nHcgs > MIN_REAL_NUMBER))
         {
-            int k; double c_light_nH = C / (nHcgs * All.UnitLength_in_cm / All.HubbleParam) * All.UnitEnergy_in_cgs / All.HubbleParam; // want physical cgs units for quantities below
+            int k; double c_light_nH = C_LIGHT / (nHcgs * All.UnitLength_in_cm / All.HubbleParam) * All.UnitEnergy_in_cgs / All.HubbleParam; // want physical cgs units for quantities below
             for(k = 0; k < N_RT_FREQ_BINS; k++)
             {
                 if((k==RT_FREQ_BIN_H0)||(k==RT_FREQ_BIN_He0)||(k==RT_FREQ_BIN_He1)||(k==RT_FREQ_BIN_He2))
@@ -841,7 +841,7 @@ double CoolingRate(double logT, double rho, double n_elec_guess, int target)
         if(logT <= 5.2)
         {
             // multiplied by background of ~5eV/cm^3 (Goldsmith & Langer (1978),  van Dishoeck & Black (1986) //
-            double prefac_CR=1; if(All.ComovingIntegrationOn) {if(rho < 1000.*All.OmegaBaryon*(All.HubbleParam*HUBBLE)*(All.HubbleParam*HUBBLE)*(3./(8.*M_PI*GRAVITY))*All.cf_a3inv) {prefac_CR=0;}} // in cosmological runs, turn off CR heating for any gas with density unless it's >1000 times the cosmic mean density
+            double prefac_CR=1; if(All.ComovingIntegrationOn) {if(rho < 1000.*All.OmegaBaryon*(All.HubbleParam*HUBBLE_CGS)*(All.HubbleParam*HUBBLE_CGS)*(3./(8.*M_PI*GRAVITY_G))*All.cf_a3inv) {prefac_CR=0;}} // in cosmological runs, turn off CR heating for any gas with density unless it's >1000 times the cosmic mean density
             Heat += prefac_CR * 1.0e-16 * (0.98 + 1.65*n_elec*HYDROGEN_MASSFRAC) / (1.e-2 + nHcgs) * 9.0e-12;
         }
 #endif
@@ -1029,7 +1029,7 @@ void MakeCoolingTable(void)
 
     if(All.MinGasTemp > 0.0) {Tmin = log10(All.MinGasTemp);} else {Tmin=1.0;} 
     deltaT = (Tmax - Tmin) / NCOOLTAB;
-    //double ethmin = pow(10.0, Tmin) * (1. + YHELIUM_0) / ((1. + 4. * YHELIUM_0) * (PROTONMASS / BOLTZMANN) * GAMMA_MINUS1); /* minimum internal energy for neutral gas */
+    
     /* minimum internal energy for neutral gas */
     for(i = 0; i <= NCOOLTAB; i++)
     {

@@ -539,6 +539,17 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                 }
 #endif
             break;
+
+        case IO_GRAINTYPE:      /* grain type */
+#if defined(PIC_MHD)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = P[pindex].Grain_SubType;
+                    n++;
+                }
+#endif
+            break;
             
             
         case IO_VSTURB_DISS:
@@ -1604,6 +1615,7 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_AGE:
         case IO_OSTAR:
         case IO_GRAINSIZE:
+        case IO_GRAINTYPE:
         case IO_DELAYTIME:
         case IO_HSMS:
         case IO_POT:
@@ -1871,6 +1883,7 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_AGE:
         case IO_OSTAR:
         case IO_GRAINSIZE:
+        case IO_GRAINTYPE:
         case IO_DELAYTIME:
         case IO_HSMS:
         case IO_POT:
@@ -2186,16 +2199,19 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
             return nstars;
             break;
              
+#ifdef GRAIN_FLUID
         case IO_GRAINSIZE:
-            nngb = 0;
-            for(i = 0; i < 6; i++)
-            {
-                if(i == 0) typelist[i] = 0;
-                if(i == 4) typelist[i] = 0;
-                nngb += header.npart[i];
-            }
+            nngb=0;
+            for(i=0;i<6;i++) {if((1 << i) & (GRAIN_PTYPES)) {nngb+=header.npart[i];} else {typelist[i]=0;}}
             return nngb;
             break;
+
+        case IO_GRAINTYPE:
+            nngb=0;
+            for(i=0;i<6;i++) {if((1 << i) & (GRAIN_PTYPES)) {nngb+=header.npart[i];} else {typelist[i]=0;}}
+            return nngb;
+            break;
+#endif
 
 
         case IO_IMF:
@@ -2218,16 +2234,12 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
             break;
             
         case IO_HSMS:
-            for(i = 0; i < 6; i++)
-                if(i != 4)
-                    typelist[i] = 0;
+            for(i = 0; i < 6; i++) {if(i != 4) {typelist[i] = 0;}}
             return nstars;
             break;
             
         case IO_Z:
-            for(i = 0; i < 6; i++)
-                if(i != 0 && i != 4)
-                    typelist[i] = 0;
+            for(i = 0; i < 6; i++) {if(i != 0 && i != 4) {typelist[i] = 0;}}
             return ngas + nstars;
             break;
 
@@ -2342,6 +2354,14 @@ int blockpresent(enum iofields blocknr)
 
         case IO_GRAINSIZE:
 #ifdef GRAIN_FLUID
+            return 1;
+#else
+            return 0;
+#endif
+            break;
+
+        case IO_GRAINTYPE:
+#ifdef PIC_MHD
             return 1;
 #else
             return 0;
@@ -2978,6 +2998,9 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
         case IO_GRAINSIZE:
             strncpy(label, "GRSZ", 4);
             break;
+        case IO_GRAINTYPE:
+            strncpy(label, "GRTP", 4);
+            break;
         case IO_DELAYTIME:
             strncpy(label, "DETI", 4);
             break;
@@ -3395,6 +3418,9 @@ void get_dataset_name(enum iofields blocknr, char *buf)
             break;
         case IO_GRAINSIZE:
             strcpy(buf, "GrainSize");
+            break;
+        case IO_GRAINTYPE:
+            strcpy(buf, "PICParticleType");
             break;
         case IO_HSMS:
             strcpy(buf, "StellarSmoothingLength");
@@ -4325,8 +4351,7 @@ size_t my_fread(void *ptr, size_t size, size_t nmemb, FILE * stream)
     return nread;
 }
 
-/** This is so we don't have to preface every printf call with the if
- statement to only make it print once. */
+/** This is so we don't have to preface every printf call with the if statement to only make it print once. */
 void mpi_printf(const char *fmt, ...)
 {
     if(ThisTask == 0)

@@ -1135,6 +1135,10 @@ endif
 
 ifeq (GRAIN_FLUID,$(findstring GRAIN_FLUID,$(CONFIGVARS)))
 OBJS    += solids/grain_physics.o
+else
+ifeq (PIC_MHD,$(findstring PIC_MHD,$(CONFIGVARS)))
+OBJS    += solids/grain_physics.o
+endif
 endif
 
 ifeq (GALSF,$(findstring GALSF,$(CONFIGVARS)))
