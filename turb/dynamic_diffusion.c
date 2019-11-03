@@ -96,7 +96,7 @@ struct DynamicDiffdata_out {
 
 struct DynamicDiffdata_out_iter {
     MyDouble dynamic_fac[3][3];
-#ifdef TURB_DIFF_DYNAMIC_ERROR
+#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
     MyDouble dynamic_fac_const[3][3];
 #endif
 }
@@ -115,7 +115,7 @@ static struct temporary_data_dyndiff {
     MyDouble Dynamic_denominator_hat;
     MyDouble GradVelocity_hat[3][3];
     MyDouble dynamic_fac[3][3];
-#ifdef TURB_DIFF_DYNAMIC_ERROR
+#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
     MyDouble dynamic_fac_const[3][3];
 #endif
     MyDouble ProductVelocity_hat[3][3];
@@ -163,7 +163,7 @@ static inline void out2particle_DynamicDiff_iter(struct DynamicDiffdata_out_iter
     for (j = 0; j < 3; j++) {
         for (k = 0; k < 3; k++) {
             ASSIGN_ADD_PRESET(DynamicDiffDataPasser[i].dynamic_fac[j][k], out->dynamic_fac[j][k], mode);
-#ifdef TURB_DIFF_DYNAMIC_ERROR
+#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
             ASSIGN_ADD_PRESET(DynamicDiffDataPasser[i].dynamic_fac_const[j][k], out->dynamic_fac_const[j][k], mode);
 #endif
         } 
@@ -257,7 +257,7 @@ void dynamic_diff_calc(void) {
     PRINT_STATUS("Start dynamic diffusion calculations...");
     int i, j, k, v, k1, u, ngrp, ndone, ndone_flag, dynamic_iteration;
     double shear_factor, dynamic_denominator, trace = 0, trace_dynamic_fac = 0, hhat2 = 0, leonardTensor[3][3], prefactor = 0;
-#ifdef TURB_DIFF_DYNAMIC_ERROR
+#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
     double trace_dynamic_fac_const = 0;
 #endif
     double smoothInv = 1.0 / All.TurbDynamicDiffSmoothing;
@@ -292,7 +292,7 @@ void dynamic_diff_calc(void) {
 
             /* A little optimization to save calculating this 9 times per active particle */
             prefactor = SphP[i].TD_DynDiffCoeff * SphP[i].FilterWidth_bar * SphP[i].FilterWidth_bar * SphP[i].MagShear_bar * smoothInv;
-#ifdef TURB_DIFF_DYNAMIC_ERROR
+#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
             double prefactor_error = SphP[i].FilterWidth_bar * SphP[i].FilterWidth_bar * SphP[i].MagShear_bar * smoothInv;
 #endif
 
@@ -304,7 +304,7 @@ void dynamic_diff_calc(void) {
                     DynamicDiffDataPasser[i].dynamic_fac[j][k] = prefactor * SphP[i].VelShear_bar[j][k];
                     DynamicDiffDataPasser[i].ProductVelocity_hat[j][k] = SphP[i].Velocity_bar[j] * SphP[i].Velocity_bar[k] * smoothInv;
 
-#ifdef TURB_DIFF_DYNAMIC_ERROR
+#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
                     DynamicDiffDataPasser[i].dynamic_fac_const[j][k] = prefactor_error * SphP[i].VelShear_bar[j][k];
 #endif
                 }
@@ -594,7 +594,7 @@ void dynamic_diff_calc(void) {
                     SphP[i].Dynamic_numerator = 0;
                     SphP[i].Dynamic_denominator = 0;
                     trace = trace_dynamic_fac = 0;
-#ifdef TURB_DIFF_DYNAMIC_ERROR
+#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
                     SphP[i].TD_DynDiffCoeff_error = 0;
                     SphP[i].TD_DynDiffCoeff_error_default = 0;
                     trace_dynamic_fac_const = 0;
@@ -661,7 +661,7 @@ void dynamic_diff_calc(void) {
                             if (k == v) {
                                 trace += leonardTensor[k][k];
                                 trace_dynamic_fac += DynamicDiffDataPasser[i].dynamic_fac[k][k];
-#ifdef TURB_DIFF_DYNAMIC_ERROR
+#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
                                 trace_dynamic_fac_const += DynamicDiffDataPasser[i].dynamic_fac_const[k][k];
 #endif
                             }
@@ -681,7 +681,7 @@ void dynamic_diff_calc(void) {
                                 DynamicDiffDataPasser[i].dynamic_fac[u][u] -= (1.0 / NUMDIMS) * trace_dynamic_fac;
                             }
 
-#ifdef TURB_DIFF_DYNAMIC_ERROR
+#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
                             if (trace_dynamic_fac_const != 0) {
                                 DynamicDiffDataPasser[i].dynamic_fac_const[u][u] -= (1.0 / NUMDIMS) * trace_dynamic_fac_const;
                             }
@@ -707,7 +707,7 @@ void dynamic_diff_calc(void) {
 
                     SphP[i].TD_DynDiffCoeff = DMIN(DMAX(0, SphP[i].TD_DynDiffCoeff), All.TurbDynamicDiffMax);
 
-#ifdef TURB_DIFF_DYNAMIC_ERROR
+#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
                     double error[3][3], trace_error = 0, defaultError[3][3], trace_defaultError = 0, leonardTensorMag = 0;
 
                     for (k = 0; k < 3; k++) {
@@ -854,7 +854,7 @@ int DynamicDiff_evaluate(int target, int mode, int *exportflag, int *exportnodec
     /* This is a bit of optimization to save calculating this 9 times for each neighbor */
     //double prefactor_i = local.Density_bar * local.Hsml * local.Hsml * local.TD_DynDiffCoeff * local.MagShear_bar;
     double prefactor_i = local.FilterWidth_bar * local.FilterWidth_bar * local.TD_DynDiffCoeff * local.MagShear_bar;
-#ifdef TURB_DIFF_DYNAMIC_ERROR
+#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
     double prefactor_const_i = local.FilterWidth_bar * local.FilterWidth_bar * local.MagShear_bar;
 #endif
 
@@ -902,9 +902,7 @@ int DynamicDiff_evaluate(int target, int mode, int *exportflag, int *exportnodec
                 kernel.dp[0] = local.Pos[0] - P[j].Pos[0];
                 kernel.dp[1] = local.Pos[1] - P[j].Pos[1];
                 kernel.dp[2] = local.Pos[2] - P[j].Pos[2];
-#ifdef BOX_PERIODIC			/*  now find the closest image in the given box size  */
-                NEAREST_XYZ(kernel.dp[0], kernel.dp[1], kernel.dp[2], 1);
-#endif
+                NEAREST_XYZ(kernel.dp[0], kernel.dp[1], kernel.dp[2], 1); /*  now find the closest image in the given box size  */
                 r2 = kernel.dp[0] * kernel.dp[0] + kernel.dp[1] * kernel.dp[1] + kernel.dp[2] * kernel.dp[2];
                 double h_j = All.TurbDynamicDiffFac * PPP[j].Hsml;
                 double h_avg = 0.5 * (kernel.h_i + h_j);
@@ -1003,7 +1001,7 @@ int DynamicDiff_evaluate(int target, int mode, int *exportflag, int *exportnodec
                 double prefactor_j = SphP[j].FilterWidth_bar * SphP[j].FilterWidth_bar * SphP[j].TD_DynDiffCoeff * SphP[j].MagShear_bar;
                 double dynamic_fac_diff[3][3], ProductVelocity_diff[3][3], Dynamic_numerator_diff, Dynamic_denominator_diff;
 
-#ifdef TURB_DIFF_DYNAMIC_ERROR
+#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
                 double prefactor_const_j = SphP[j].FilterWidth_bar * SphP[j].FilterWidth_bar * SphP[j].MagShear_bar;
                 double dynamic_fac_const_diff[3][3];
 #endif
@@ -1021,12 +1019,12 @@ int DynamicDiff_evaluate(int target, int mode, int *exportflag, int *exportnodec
                     for (k = 0; k < 3; k++) {
                         for (v = 0; v < 3; v++) {
                             dynamic_fac_diff[k][v] = prefactor_j * SphP[j].VelShear_bar[k][v] - prefactor_i * local.VelShear_bar[k][v];
-#ifdef TURB_DIFF_DYNAMIC_ERROR
+#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
                             dynamic_fac_const_diff[k][v] = prefactor_const_j * SphP[j].VelShear_bar[k][v] - prefactor_const_i * local.VelShear_bar[k][v];
 #endif
 
                             out_iter.dynamic_fac[k][v] += dynamic_fac_diff[k][v] * weight_i;
-#ifdef TURB_DIFF_DYNAMIC_ERROR
+#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
                             out_iter.dynamic_fac_const[k][v] += dynamic_fac_const_diff[k][v] * weight_i;
 #endif
 
@@ -1046,7 +1044,7 @@ int DynamicDiff_evaluate(int target, int mode, int *exportflag, int *exportnodec
                         for (k = 0; k < 3; k++) {
                             for (v = 0; v < 3; v++) {
                                 DynamicDiffDataPasser[j].dynamic_fac[k][v] -= dynamic_fac_diff[k][v] * weight_j;
-#ifdef TURB_DIFF_DYNAMIC_ERROR
+#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
                                 DynamicDiffDataPasser[j].dynamic_fac_const[k][v] -= dynamic_fac_const_diff[k][v] * weight_j;
 #endif
 

@@ -413,9 +413,7 @@ int DMGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount,
                 if((P[j].Mass <= 0)||(P[j].AGS_Density <= 0)) {continue;} /* make sure neighbor is valid */
                 /* calculate position relative to target */
                 kernel.dp[0] = local.Pos[0] - P[j].Pos[0]; kernel.dp[1] = local.Pos[1] - P[j].Pos[1]; kernel.dp[2] = local.Pos[2] - P[j].Pos[2];
-#ifdef BOX_PERIODIC            /*  now find the closest image in the given box size  */
-                NEAREST_XYZ(kernel.dp[0],kernel.dp[1],kernel.dp[2],1);
-#endif
+                NEAREST_XYZ(kernel.dp[0],kernel.dp[1],kernel.dp[2],1); /*  now find the closest image in the given box size  */
                 r2 = kernel.dp[0]*kernel.dp[0] + kernel.dp[1]*kernel.dp[1] + kernel.dp[2]*kernel.dp[2];
                 if((r2 <= 0) || (r2 >= h2_i)) continue;
                 /* calculate kernel quantities needed below */

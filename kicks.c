@@ -354,7 +354,7 @@ void set_predicted_sph_quantities_for_extra_physics(int i)
 #endif
 #endif
         
-#if defined(RT_EVOLVE_NGAMMA)
+#if defined(RT_EVOLVE_ENERGY)
         for(kf=0;kf<N_RT_FREQ_BINS;kf++)
         {
             SphP[i].E_gamma_Pred[kf] = SphP[i].E_gamma[kf];

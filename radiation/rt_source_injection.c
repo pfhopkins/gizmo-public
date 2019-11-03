@@ -21,13 +21,14 @@
  * This file was written by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
  */
 
-#if defined(RT_RAD_PRESSURE_FORCES)
+#if defined(GALSF) && !defined(RT_INJECT_PHOTONS_DISCRETELY)
+#define RT_INJECT_PHOTONS_DISCRETELY // modules will not work correctly with differential timestepping with point sources without discrete injection
+#endif
+#if defined(RT_INJECT_PHOTONS_DISCRETELY) && defined(RT_RAD_PRESSURE_FORCES) && (defined(RT_ENABLE_R15_GRADIENTFIX) || defined(GALSF))
 #define RT_INJECT_PHOTONS_DISCRETELY_ADD_MOMENTUM_FOR_LOCAL_EXTINCTION // adds correction for un-resolved extinction which cannot generate photon momentum with M1, FLD, OTVET, etc.
 #endif
 
-#if defined(GALSF) && !defined(RT_INJECT_PHOTONS_DISCRETELY)
-#define RT_INJECT_PHOTONS_DISCRETELY
-#endif
+
 
 #ifdef RT_SOURCE_INJECTION
 
@@ -40,10 +41,7 @@
 /*! Structure for communication during the kernel computation. Holds data that is sent to other processors  */
 static struct INPUT_STRUCT_NAME
 {
-    MyDouble Pos[3];
-    MyFloat Hsml;
-    MyFloat KernelSum_Around_RT_Source;
-    MyFloat Luminosity[N_RT_FREQ_BINS];
+    MyDouble Pos[3]; MyFloat Hsml, KernelSum_Around_RT_Source, Luminosity[N_RT_FREQ_BINS], Vel[3];
     int NodeList[NODELISTLENGTH];
 }
 *DATAIN_NAME, *DATAGET_NAME;
@@ -66,11 +64,11 @@ void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
 #else
     dt = P[i].dt_step * All.Timebase_interval / All.cf_hubble_a;
 #endif
+#if defined(RT_EVOLVE_FLUX)
+    for(k=0; k<3; k++) {if(P[i].Type==0) {in->Vel[k] = SphP[i].VelPred[k];} else {in->Vel[k] = P[i].Vel[k];}}
 #endif
-    for(k=0; k<N_RT_FREQ_BINS; k++)
-    {
-        if(P[i].Type==0 || active_check==0) {in->Luminosity[k]=0;} else {in->Luminosity[k] = lum[k] * dt;}
-    }
+#endif
+    for(k=0; k<N_RT_FREQ_BINS; k++) {if(P[i].Type==0 || active_check==0) {in->Luminosity[k]=0;} else {in->Luminosity[k] = lum[k] * dt;}}
 }
 
 
@@ -148,28 +146,23 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
                 if(P[j].Type != 0) continue; // require a gas particle //
                 if(P[j].Mass <= 0) continue; // require the particle has mass //
                 double dp[3]; for(k=0; k<3; k++) {dp[k] = local.Pos[k] - P[j].Pos[k];}
-#ifdef BOX_PERIODIC	/* find the closest image in the given box size  */
-                NEAREST_XYZ(dp[0],dp[1],dp[2],1);
-#endif
-                double r2=0; for(k=0;k<3;k++) {r2 += dp[k]*dp[k];}
+                NEAREST_XYZ(dp[0],dp[1],dp[2],1); /* find the closest image in the given box size  */
+                double r2=0,r,c_light_eff; for(k=0;k<3;k++) {r2 += dp[k]*dp[k];}
                 if(r2<=0) continue; // same particle //
                 if(r2>=h2) continue; // outside kernel //
                 // calculate kernel quantities //
                 double wk = (1 - r2*hinv*hinv) / local.KernelSum_Around_RT_Source;
+                r = sqrt(r2); c_light_eff = C_LIGHT_CODE_REDUCED;
 #if defined(RT_INJECT_PHOTONS_DISCRETELY_ADD_MOMENTUM_FOR_LOCAL_EXTINCTION)
-                double r = sqrt(r2);
-                double c_light_eff = C_LIGHT_CODE_REDUCED;
-                double dv0 = -1. / (c_light_eff * r);
+                double dv0 = -1. / (c_light_eff * r) * All.cf_atime;
                 double lmax_0 = DMAX(local.Hsml, r);
 #ifdef RT_EVOLVE_INTENSITIES
                 int kx; double angle_wt_Inu_sum=0, angle_wt_Inu[N_RT_INTENSITY_BINS];
                 // pre-compute a set of weights based on the projection of the particle position along the radial direction for the radiation direction //
                 for(kx=0;kx<N_RT_INTENSITY_BINS;kx++)
                 {
-                    double cos_t=0; int kq; for(kq=0;kq<3;kq++) {cos_t+=dp[kq]*All.RT_Intensity_Direction[kx][kq];}
-                    cos_t *= -1/r;
-                    double wt_function = cos_t*cos_t*cos_t*cos_t;
-                    if(cos_t < 0) {wt_function=0;}
+                    double cos_t=0; int kq; for(kq=0;kq<3;kq++) {cos_t+=All.RT_Intensity_Direction[kx][kq]*dp[kq]/r;}
+                    double wt_function = cos_t*cos_t*cos_t*cos_t; if(cos_t < 0) {wt_function=0;}
                     angle_wt_Inu[kx] = wt_function; angle_wt_Inu_sum += angle_wt_Inu[kx];
                 }
 #endif
@@ -180,7 +173,7 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
                     double dE = wk * local.Luminosity[k];
 #if defined(RT_INJECT_PHOTONS_DISCRETELY)
                     SphP[j].E_gamma[k] += dE;
-#ifdef RT_EVOLVE_NGAMMA
+#ifdef RT_EVOLVE_ENERGY
                     SphP[j].E_gamma_Pred[k] += dE; // dump discreetly (noisier, but works smoothly with large timebin hierarchy)
 #endif
 #if defined(RT_INJECT_PHOTONS_DISCRETELY_ADD_MOMENTUM_FOR_LOCAL_EXTINCTION)
@@ -196,11 +189,14 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
                     for(kv=0;kv<3;kv++) {SphP[j].Flux[k][kv] += dflux*dp[kv]; SphP[j].Flux_Pred[k][kv] += dflux*dp[kv];}
 #endif
 #ifdef RT_EVOLVE_INTENSITIES
-                    double dflux = dE * c_light_eff / angle_wt_Inu_sum;
+                    double dflux = dE / angle_wt_Inu_sum;
                     for(kv=0;kv<N_RT_INTENSITY_BINS;kv++) {SphP[j].Intensity[k][kv] += dflux * angle_wt_Inu[N_RT_INTENSITY_BINS]; SphP[j].Intensity_Pred[k][kv] += dflux * angle_wt_Inu[N_RT_INTENSITY_BINS];}
 #endif
+#endif // local extinction-corrected version gets the 'full' thin flux above: more general formulation allows these to build up self-consistently, since we don't know what the flux 'should' be in fact
+#if defined(RT_EVOLVE_FLUX) // add relativistic corrections here, which should be there in general. however we will ignore [here] the 'back-reaction' term, since we're assuming the source is a star or something like that, where this would be negligible. gas self gain/loss is handled separately.
+                    for(kv=0;kv<3;kv++) {SphP[j].Flux[k][kv] += dE*local.Vel[kv]/All.cf_atime; SphP[j].Flux_Pred[k][kv] += dE*local.Vel[kv]/All.cf_atime;}
 #endif
-#else
+#else // end discrete injection clause
                     SphP[j].Je[k] += dE; // treat continuously
 #endif
                 }

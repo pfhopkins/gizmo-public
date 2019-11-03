@@ -236,9 +236,7 @@ void merge_and_split_particles(void)
                         if((j>=0)&&(j!=i)&&(P[j].Type==P[i].Type) && (P[j].Mass > 0) && (Ptmp[j].flag == 0)) {
                             double dp[3]; int k; double r2=0;
                             for(k=0;k<3;k++) {dp[k]=P[i].Pos[k]-P[j].Pos[k];}
-#ifdef BOX_PERIODIC
                             NEAREST_XYZ(dp[0],dp[1],dp[2],1);
-#endif
                             for(k=0;k<3;k++) {r2+=dp[k]*dp[k];}
                             if(r2<threshold_val) {threshold_val=r2; target_for_merger=j;} // position-based //
                         }
@@ -329,9 +327,7 @@ void split_particle_i(int i, int n_particles_split, int i_nearest)
     cos_theta = 2.0*(get_random_number(i+3+2*ThisTask)-0.5); // random between 1 to -1 //
     double d_r = 0.25 * KERNEL_CORE_SIZE*PPP[i].Hsml; // needs to be epsilon*Hsml where epsilon<<1, to maintain stability //
     double dp[3], r_near=0; for(k = 0; k < 3; k++) {dp[k] =P[i].Pos[k] - P[i_nearest].Pos[k];}
-#ifdef BOX_PERIODIC 
     NEAREST_XYZ(dp[0],dp[1],dp[2],1);
-#endif
     for(k = 0; k < 3; k++) {r_near += dp[k]*dp[k];}
     r_near = 0.35 * sqrt(r_near); 
     d_r = DMIN(d_r , r_near); // use a 'buffer' to limit to some multiple of the distance to the nearest particle //
@@ -434,7 +430,7 @@ void split_particle_i(int i, int n_particles_split, int i_nearest)
         {
             int k_dir; k_dir=0;
             SphP[j].E_gamma[k] = mass_of_new_particle * SphP[i].E_gamma[k]; SphP[i].E_gamma[k] -= SphP[j].E_gamma[k];
-#if defined(RT_EVOLVE_NGAMMA)
+#if defined(RT_EVOLVE_ENERGY)
             SphP[j].E_gamma_Pred[k] = mass_of_new_particle * SphP[i].E_gamma_Pred[k]; SphP[i].E_gamma_Pred[k] -= SphP[j].E_gamma_Pred[k];
             SphP[j].Dt_E_gamma[k] = mass_of_new_particle * SphP[i].Dt_E_gamma[k]; SphP[i].Dt_E_gamma[k] -= SphP[j].Dt_E_gamma[k];
 #endif
@@ -536,9 +532,7 @@ void merge_particles_ij(int i, int j)
     {
         double pos_new_xyz[3], dp[3];
         for(k=0;k<3;k++) {dp[k]=P[j].Pos[k]-P[i].Pos[k];}
-#ifdef BOX_PERIODIC
         NEAREST_XYZ(dp[0],dp[1],dp[2],-1);
-#endif
         for(k=0;k<3;k++) {pos_new_xyz[k] = P[i].Pos[k] + wt_j * dp[k];}
         
         double p_old_i[3],p_old_j[3];
@@ -615,9 +609,7 @@ void merge_particles_ij(int i, int j)
     /* for periodic boxes, we need to (arbitrarily) pick one position as our coordinate center. we pick i. then everything defined in 
         position differences relative to i. the final position will be appropriately box-wrapped after these operations are completed */
     for(k=0;k<3;k++) {dp[k]=P[j].Pos[k]-P[i].Pos[k];}
-#ifdef BOX_PERIODIC
     NEAREST_XYZ(dp[0],dp[1],dp[2],-1);
-#endif
     for(k=0;k<3;k++) {pos_new_xyz[k] = P[i].Pos[k] + wt_j * dp[k];}
 
     for(k=0;k<3;k++)
@@ -703,7 +695,7 @@ void merge_particles_ij(int i, int j)
         int k_dir;
         for(k_dir=0;k_dir<6;k_dir++) SphP[j].ET[k][k_dir] = wt_j*SphP[j].ET[k][k_dir] + wt_i*SphP[i].ET[k][k_dir];
         SphP[j].E_gamma[k] = SphP[j].E_gamma[k] + SphP[i].E_gamma[k]; /* this is a photon number, so its conserved (we simply add) */
-#if defined(RT_EVOLVE_NGAMMA)
+#if defined(RT_EVOLVE_ENERGY)
         SphP[j].E_gamma_Pred[k] = SphP[j].E_gamma_Pred[k] + SphP[i].E_gamma_Pred[k];
         SphP[j].Dt_E_gamma[k] = SphP[j].Dt_E_gamma[k] + SphP[i].Dt_E_gamma[k];
 #endif

@@ -381,7 +381,7 @@ void density_evaluate_extra_physics_gas(struct INPUT_STRUCT_NAME *local, struct 
             short int TimeBin_j = P[j].TimeBin; if(TimeBin_j < 0) {TimeBin_j = -TimeBin_j - 1;} // need to make sure we correct for the fact that TimeBin is used as a 'switch' here to determine if a particle is active for iteration, otherwise this gives nonsense!
             if(out->BH_TimeBinGasNeighbor > TimeBin_j) {out->BH_TimeBinGasNeighbor = TimeBin_j;}
 #if (SINGLE_STAR_SINK_FORMATION & 8)
-        P[j].BH_Ngb_Flag = 1;
+            if(kernel->r < DMAX(P[j].Hsml, All.ForceSoftening[5])) P[j].BH_Ngb_Flag = 1; 
 #endif
 #ifdef SINGLE_STAR_SINK_DYNAMICS
         P[j].SwallowTime = MAX_REAL_NUMBER;

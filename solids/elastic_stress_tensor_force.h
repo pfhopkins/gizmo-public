@@ -13,11 +13,12 @@
         int k_v, j_v;
         double cmag[3]={0}, v_interface[3], wt_i=-0.5, wt_j=-0.5; // we need a minus sign at some point; its handy to just include it now in the weights //
         for(k=0;k<3;k++) {v_interface[k] = (wt_i*local.Vel[k] + wt_j*VelPred_j[k]) / All.cf_atime;} // physical units //
+        double rho_i = local.Density * All.cf_a3inv, rho_j = SphP[j].Density * All.cf_a3inv;
         // terms for HLL fluxes
-        double wt_r = local.Density*local.SoundSpeed * SphP[j].Density*SphP[j].SoundSpeed / (local.Density*local.SoundSpeed + SphP[j].Density*SphP[j].SoundSpeed) * Face_Area_Norm;
-        double cT_i=sqrt(All.Tillotson_EOS_params[local.CompositionType][10]/local.Density), cT_j=sqrt(All.Tillotson_EOS_params[SphP[j].CompositionType][10]/SphP[j].Density);
-        double wt_t = local.Density*cT_i * SphP[j].Density*cT_j / (local.Density*cT_i + SphP[j].Density*cT_j) * Face_Area_Norm;
-        double wt_rt = (wt_r - wt_t) * kernel.vdotr2 * rinv*rinv;
+        double wt_r = rho_i*local.SoundSpeed * rho_j*SphP[j].SoundSpeed / (rho_i*local.SoundSpeed + rho_j*SphP[j].SoundSpeed) * Face_Area_Norm; // physical
+        double cT_i=sqrt(All.Tillotson_EOS_params[local.CompositionType][10]/rho_i), cT_j=sqrt(All.Tillotson_EOS_params[SphP[j].CompositionType][10]/rho_j); // physical
+        double wt_t = rho_i*cT_i * rho_j*cT_j / (rho_i*cT_i + rho_j*cT_j) * Face_Area_Norm; // physical
+        double wt_rt = (wt_r - wt_t) * kernel.vdotr2 * rinv*rinv*All.cf_atime*All.cf_atime;
         // evaluate force from deviatoric stress tensor //
         for(j_v=0;j_v<3;j_v++)
         {
@@ -26,7 +27,7 @@
                 // direct flux
                 cmag[j_v] += (wt_i*local.Elastic_Stress_Tensor[j_v][k_v] + wt_j*SphP[j].Elastic_Stress_Tensor[j_v][k_v]) * Face_Area_Vec[k_v]*All.cf_a2inv;
             }
-            cmag[j_v] -= wt_rt * kernel.dp[j_v] + wt_t * kernel.dv[j_v]; // HLL-type fluxes
+            cmag[j_v] -= wt_rt * kernel.dp[j_v]*All.cf_atime + wt_t * kernel.dv[j_v]/All.cf_atime; // HLL-type fluxes
         }
         /* // below limiter doesn't actually appear necessary in our tests, thus far; worth more detailed testing the future //
         if(kernel.vdotr2 < 0) // check if particles are approaching

@@ -86,7 +86,6 @@ void particle2in_rt_cg(struct rt_cg_data_in *in, int i)
     in->Mass = P[i].Mass;
     in->Density = SphP[i].Density;
     for(k=0; k<N_RT_FREQ_BINS; k++) in->RT_DiffusionCoeff[k] = rt_diffusion_coefficient(i,k);
-    //for(k=0; k<N_RT_FREQ_BINS; k++) in->Lambda[k] = SphP[i].Lambda_FluxLim[k];
 }
 
 /* internal product of two vectors (for all gas particles) */
@@ -476,9 +475,7 @@ int rt_diffusion_cg_evaluate(int target, int mode, double **matrixmult_in, doubl
                 if(P[j].Type != 0) continue; // require a gas particle //
                 if(P[j].Mass <= 0) continue; // require the particle has mass //
                 double dp[3]; for(k=0; k<3; k++) {dp[k] = local.Pos[k] - P[j].Pos[k];}
-#ifdef BOX_PERIODIC	/* find the closest image in the given box size  */
-                NEAREST_XYZ(dp[0],dp[1],dp[2],1);
-#endif
+                NEAREST_XYZ(dp[0],dp[1],dp[2],1); /* find the closest image in the given box size */
                 double r2=0; for(k=0;k<3;k++) {r2 += dp[k]*dp[k];}
                 if(r2<=0) continue; // same particle //
                 if((r2>h2)||(r2>PPP[j].Hsml*PPP[j].Hsml)) continue; // outside kernel //

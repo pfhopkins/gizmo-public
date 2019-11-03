@@ -134,9 +134,7 @@ int addthermalFB_evaluate(int target, int mode, int *exportflag, int *exportnode
                 if(P[j].Type != 0) continue; // require a gas particle //
                 if(P[j].Mass <= 0) continue; // require the particle has mass //
                 for(k=0; k<3; k++) {kernel.dp[k] = local.Pos[k] - P[j].Pos[k];}
-#ifdef BOX_PERIODIC
                 NEAREST_XYZ(kernel.dp[0],kernel.dp[1],kernel.dp[2],1); // find the closest image in the given box size  //
-#endif
                 r2=0; for(k=0;k<3;k++) {r2 += kernel.dp[k]*kernel.dp[k];}
                 if(r2<=0) continue; // same particle //
                 if(r2>=h2) continue; // outside kernel //

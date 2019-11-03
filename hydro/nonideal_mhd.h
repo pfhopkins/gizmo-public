@@ -8,6 +8,9 @@
  *  restriction is necessary (since the equations are not strictly hyperbolic); this is in timestep.c
  *
  * This file was written by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
+ *
+ * IMPORTANT the code below is not updated with full cosmological units included, as it has only been used for
+ *   non-cosmological simulations. Be sure to check carefully to convert to physical units for any cosmological run[s].
  */
 /* --------------------------------------------------------------------------------- */
 double bflux_from_nonideal_effects[3]={0};

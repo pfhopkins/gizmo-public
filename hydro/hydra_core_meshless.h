@@ -145,13 +145,13 @@
         if(V_j < V_i) // if Vj<Vi, Aj<Ai, so we need to use A_j
         {
 #if (NUMDIMS==2)
-            Amax = 2. * sqrt(V_j/M_PI); // 2d Aj
+            Amax = 2. * sqrt(V_j/M_PI) * All.cf_atime; // 2d Aj
 #endif
 #if (NUMDIMS==3)
-            Amax = M_PI * pow((3.*V_j)/(4.*M_PI), 2./3.); // 3d Aj
+            Amax = M_PI * pow((3.*V_j)/(4.*M_PI), 2./3.) * All.cf_atime*All.cf_atime; // 3d Aj
 #endif
         }
-        Amax *= 2.0;
+        Amax *= 4.0;
         if(Face_Area_Norm > Amax)
         {
             Face_Area_Norm = Amax; /* set the face area to the maximum limit, and reset the face vector as well */

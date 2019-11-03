@@ -96,13 +96,6 @@
 */
 
 
-
-/* determine if we need to evolve the radiation fields in the hydro routine with the flag below */
-#if defined(RT_EVOLVE_NGAMMA)
-#define RT_EVOLVE_NGAMMA_IN_HYDRO
-#endif
-
-
 static double fac_mu, fac_vsic_fix;
 #ifdef MAGNETIC
 static double fac_magnetic_pressure;
@@ -212,7 +205,7 @@ struct INPUT_STRUCT_NAME
 #ifdef DOGRAD_SOUNDSPEED
         MyDouble SoundSpeed[3];
 #endif
-#if defined(RT_DIFFUSION_EXPLICIT) && defined(RT_EVOLVE_EDDINGTON_TENSOR)
+#if defined(RT_SOLVER_EXPLICIT) && defined(RT_COMPGRAD_EDDINGTON_TENSOR)
         MyDouble E_gamma_ET[N_RT_FREQ_BINS][3];
 #endif
     } Gradients;
@@ -233,7 +226,7 @@ struct INPUT_STRUCT_NAME
     MyDouble ChimesNIons[TOTSIZE]; 
 #endif 
     
-#ifdef RT_DIFFUSION_EXPLICIT
+#ifdef RT_SOLVER_EXPLICIT
     MyDouble E_gamma[N_RT_FREQ_BINS];
     MyDouble Kappa_RT[N_RT_FREQ_BINS];
     MyDouble RT_DiffusionCoeff[N_RT_FREQ_BINS];
@@ -245,6 +238,9 @@ struct INPUT_STRUCT_NAME
 #endif
 #ifdef RT_INFRARED
     MyDouble Radiation_Temperature;
+#endif
+#if defined(RT_EVOLVE_INTENSITIES)
+    MyDouble Intensity_Pred[N_RT_FREQ_BINS][N_RT_INTENSITY_BINS];
 #endif
 #endif
     
@@ -322,14 +318,19 @@ struct OUTPUT_STRUCT_NAME
     MyDouble ChimesIonsYield[TOTSIZE]; 
 #endif 
     
-#if defined(RT_EVOLVE_NGAMMA_IN_HYDRO)
+#if defined(RT_SOLVER_EXPLICIT)
+#if defined(RT_EVOLVE_ENERGY)
     MyFloat Dt_E_gamma[N_RT_FREQ_BINS];
-#if defined(RT_INFRARED)
-    MyFloat Dt_E_gamma_T_weighted_IR;
-#endif
 #endif
 #if defined(RT_EVOLVE_FLUX)
     MyFloat Dt_Flux[N_RT_FREQ_BINS][3];
+#endif
+#if defined(RT_INFRARED)
+    MyFloat Dt_E_gamma_T_weighted_IR;
+#endif
+#if defined(RT_EVOLVE_INTENSITIES)
+    MyFloat Dt_Intensity[N_RT_FREQ_BINS][N_RT_INTENSITY_BINS];
+#endif
 #endif
     
 #if defined(MAGNETIC)
@@ -424,22 +425,29 @@ static inline void particle2in_hydra(struct INPUT_STRUCT_NAME *in, int i, int lo
 #ifdef DOGRAD_SOUNDSPEED
         in->Gradients.SoundSpeed[k] = SphP[i].Gradients.SoundSpeed[k];
 #endif
-#if defined(RT_DIFFUSION_EXPLICIT) && defined(RT_EVOLVE_EDDINGTON_TENSOR)
+#if defined(RT_SOLVER_EXPLICIT) && defined(RT_COMPGRAD_EDDINGTON_TENSOR)
         for(j=0;j<N_RT_FREQ_BINS;j++) {in->Gradients.E_gamma_ET[j][k] = SphP[i].Gradients.E_gamma_ET[j][k];}
 #endif
     }
 
-#ifdef RT_DIFFUSION_EXPLICIT
+#ifdef RT_SOLVER_EXPLICIT
     for(k=0;k<N_RT_FREQ_BINS;k++)
     {
+#ifdef RT_EVOLVE_ENERGY
         in->E_gamma[k] = SphP[i].E_gamma_Pred[k];
+#else
+        in->E_gamma[k] = SphP[i].E_gamma[k];
+#endif
         in->Kappa_RT[k] = SphP[i].Kappa_RT[k];
         in->RT_DiffusionCoeff[k] = rt_diffusion_coefficient(i,k);
 #if defined(RT_EVOLVE_FLUX) || defined(HYDRO_SPH)
-        int k_dir; for(k_dir=0;k_dir<6;k_dir++) in->ET[k][k_dir] = SphP[i].ET[k][k_dir];
+        {int k_dir; for(k_dir=0;k_dir<6;k_dir++) in->ET[k][k_dir] = SphP[i].ET[k][k_dir];}
 #endif
 #ifdef RT_EVOLVE_FLUX
-        for(k_dir=0;k_dir<3;k_dir++) in->Flux[k][k_dir] = SphP[i].Flux_Pred[k][k_dir];
+        {int k_dir; for(k_dir=0;k_dir<3;k_dir++) in->Flux[k][k_dir] = SphP[i].Flux_Pred[k][k_dir];}
+#endif
+#if defined(RT_EVOLVE_INTENSITIES)
+        {int k_dir; for(k_dir=0;k_dir<N_RT_INTENSITY_BINS;k_dir++) {in->Intensity_Pred[k][k_dir] = SphP[i].Intensity_Pred[k][k_dir];}}
 #endif
     }
 #ifdef RT_INFRARED
@@ -541,16 +549,20 @@ static inline void out2particle_hydra(struct OUTPUT_STRUCT_NAME *out, int i, int
       SphP[i].ChimesNIons[k] = DMAX(SphP[i].ChimesNIons[k] + out->ChimesIonsYield[k], 0.5 * SphP[i].ChimesNIons[k]); 
 #endif 
     
-#if defined(RT_EVOLVE_NGAMMA_IN_HYDRO)
+#if defined(RT_SOLVER_EXPLICIT)
+#if defined(RT_EVOLVE_ENERGY)
     for(k=0;k<N_RT_FREQ_BINS;k++) {SphP[i].Dt_E_gamma[k] += out->Dt_E_gamma[k];}
-#if defined(RT_INFRARED)
-    SphP[i].Dt_E_gamma_T_weighted_IR += out->Dt_E_gamma_T_weighted_IR;
-#endif
 #endif
 #if defined(RT_EVOLVE_FLUX)
     for(k=0;k<N_RT_FREQ_BINS;k++) {int k_dir; for(k_dir=0;k_dir<3;k_dir++) {SphP[i].Dt_Flux[k][k_dir] += out->Dt_Flux[k][k_dir];}}
 #endif
-
+#if defined(RT_INFRARED)
+    SphP[i].Dt_E_gamma_T_weighted_IR += out->Dt_E_gamma_T_weighted_IR;
+#endif
+#if defined(RT_EVOLVE_INTENSITIES)
+    for(k=0;k<N_RT_FREQ_BINS;k++) {int k_dir; for(k_dir=0;k_dir<N_RT_INTENSITY_BINS;k_dir++) {SphP[i].Dt_Intensity[k][k_dir] += out->Dt_Intensity[k][k_dir];}}
+#endif
+#endif
     
 #if defined(MAGNETIC)
     /* can't just do DtB += out-> DtB, because for SPH methods, the induction equation is solved in the density loop; need to simply add it here */
@@ -706,55 +718,35 @@ void hydro_final_operations_and_cleanup(void)
             // = du/dlna -3*(gamma-1)*u ; then dlna/dt = H(z) =  All.cf_hubble_a //
             
             
-#ifdef RT_RAD_PRESSURE_FORCES
-#if defined(RT_EVOLVE_FLUX)
+#if defined(RT_RAD_PRESSURE_FORCES) && defined(RT_EVOLVE_FLUX) //#elif defined(RT_COMPGRAD_EDDINGTON_TENSOR) /* // -- moved for OTVET+FLD to drift-kick operation to deal with limiters more accurately -- // */
             /* calculate the radiation pressure force */
-            double radacc[3]; radacc[0]=radacc[1]=radacc[2]=0; int k2;
-            for(k2=0;k2<N_RT_FREQ_BINS;k2++)
+            double radacc[3],fluxcorr; radacc[0]=radacc[1]=radacc[2]=0;  int kfreq;
+            for(kfreq=0;kfreq<N_RT_FREQ_BINS;kfreq++)
             {
-                // want to average over volume (through-slab) and over time (over absorption): both give one 'slab_fac' below //
-                double slabfac = 1;// slab_averaging_function(SphP[i].Kappa_RT[k2]*Sigma_particle) * slab_averaging_function(SphP[i].Kappa_RT[k2]*abs_per_kappa_dt); // (actually dt average not appropriate if there is a source, dx average implicit -already- in averaging operation of Riemann problem //
-#ifdef RT_DISABLE_R15_GRADIENTFIX
-                // use actual flux -- appropriate for highly optically-thick, multiple scattering bands //
-                for(k=0;k<3;k++) {radacc[k] += slabfac * SphP[i].Kappa_RT[k2] * (SphP[i].Flux_Pred[k2][k] * SphP[i].Density/P[i].Mass) / C_LIGHT_CODE_REDUCED;}
-#else
-                // use optically-thin flux: for optically thin cases this is better, but actually for thick cases, if optical depth is highly un-resolved, this is also better (see Appendices and discussion of Rosdahl et al. 2015)
-                double Fmag=0; for(k=0;k<3;k++) {Fmag+=SphP[i].Flux_Pred[k2][k]*SphP[i].Flux_Pred[k2][k];}
-#ifdef RT_INFRARED
-                if(k2==RT_FREQ_BIN_INFRARED)
-                    for(k=0;k<3;k++) {radacc[k] += slabfac * SphP[i].Kappa_RT[k2] * (SphP[i].Flux_Pred[k2][k] * SphP[i].Density/P[i].Mass) / C_LIGHT_CODE_REDUCED;}
-                else
+                double vol_inv = SphP[i].Density*All.cf_a3inv/P[i].Mass, f_kappa_abs = rt_absorb_frac_albedo(i,kfreq), vel_i[3], vdot_h[3], flux_i[3], flux_mag=0, erad_i=0, flux_corr=1, work_band=0;
+                erad_i = SphP[i].E_gamma_Pred[kfreq]*vol_inv; for(k=0;k<3;k++) {flux_i[k]=SphP[i].Flux_Pred[kfreq][k]*vol_inv; vel_i[k]=SphP[i].VelPred[k]/All.cf_atime; vdot_h[k]=vel_i[k]*erad_i*(1. + SphP[i].ET[kfreq][k]); flux_mag+=flux_i[k]*flux_i[k];}
+                vdot_h[0] += erad_i*(vel_i[1]*SphP[i].ET[kfreq][3] + vel_i[2]*SphP[i].ET[kfreq][5]); vdot_h[1] += erad_i*(vel_i[0]*SphP[i].ET[kfreq][3] + vel_i[2]*SphP[i].ET[kfreq][4]); vdot_h[2] += erad_i*(vel_i[0]*SphP[i].ET[kfreq][5] + vel_i[1]*SphP[i].ET[kfreq][4]);
+                double flux_thin = erad_i * C_LIGHT_CODE_REDUCED; if(flux_mag>0) {flux_mag=sqrt(flux_mag);} else {flux_mag=1.e-20*flux_thin;}
+                flux_corr = DMIN(1., flux_thin/flux_mag);
+#if defined(RT_ENABLE_R15_GRADIENTFIX)
+                flux_corr = flux_thin/flux_mag; // set to maximum (optically thin limit)
 #endif
-                if(Fmag > 0)
+                for(k=0;k<3;k++)
                 {
-                    Fmag = sqrt(Fmag);
-                    double Fthin = SphP[i].E_gamma[k2] * C_LIGHT_CODE_REDUCED;
-                    double F_eff = DMAX(Fthin , Fmag), work_band=0;
-                    double kappa_abs = SphP[i].Kappa_RT[k2];
-                    double kappa_scatter = 0;
-                    for(k=0;k<3;k++)
-                    {
-                        double radacc_abs = (F_eff/Fmag) * slabfac * kappa_abs * (SphP[i].Flux_Pred[k2][k] * SphP[i].Density/P[i].Mass) / C_LIGHT_CODE_REDUCED;
-                        double radacc_scatter = (F_eff/Fmag) * slabfac * kappa_scatter * (SphP[i].Flux_Pred[k2][k] * SphP[i].Density/P[i].Mass) / C_LIGHT_CODE_REDUCED;
-                        radacc[k] += radacc_abs + radacc_scatter; // contribution to acceleration
-                        work_band += radacc_scatter * P[i].Vel[k]/All.cf_atime * P[i].Mass; // PdV work done by photons [absorbed ones are fully-destroyed, so their loss of energy and momentum is already accounted for by their deletion in this limit //
-                    }
-                    SphP[i].Dt_E_gamma[k2] -= work_band;
+                    radacc[k] += (SphP[i].Kappa_RT[kfreq]/C_LIGHT_CODE_REDUCED) * (flux_corr*flux_i[k] - vdot_h[k]); // note these 'vdoth' terms shouldn't be included in FLD, since its really assuming the entire right-hand-side of the flux equation reaches equilibrium with the pressure tensor, which gives the expression in rt_utilities
+                    work_band += radacc[k] * vel_i[k] * P[i].Mass; // PdV work done by photons [absorbed ones are fully-destroyed, so their loss of energy and momentum is already accounted for by their deletion in this limit -- note that we have to be careful about the RSOL factors here! //
                 }
-#endif
-//#elif defined(RT_EVOLVE_EDDINGTON_TENSOR)
-                    /* // -- moved for OTVET+FLD to drift-kick operation to deal with limiters more accurately -- // */
-                    //radacc[k] += -slabfac * SphP[i].Lambda_FluxLim[k2] * SphP[i].Gradients.E_gamma_ET[k2][k] / SphP[i].Density; // no speed of light reduction multiplier here //
+                SphP[i].Dt_E_gamma[kfreq] += (2.*f_kappa_abs-1.)*work_band;
+                SphP[i].DtInternalEnergy -= 2.*f_kappa_abs*work_band;
             }
             for(k=0;k<3;k++)
             {
 #ifdef RT_RAD_PRESSURE_OUTPUT
-                SphP[i].RadAccel[k] = radacc[k];
+                SphP[i].RadAccel[k] = radacc[k]; // physical units, as desired
 #else
-                SphP[i].HydroAccel[k] += radacc[k];
+                SphP[i].HydroAccel[k] += radacc[k]; // physical units, as desired
 #endif
             } 
-#endif
 #endif
 
             
@@ -833,14 +825,22 @@ void hydro_force_initial_operations_preloop(void)
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
             SphP[i].DtMass = 0; SphP[i].dMass = 0; for(k=0;k<3;k++) SphP[i].GravWorkTerm[k] = 0;
 #endif
-#if defined(RT_EVOLVE_NGAMMA_IN_HYDRO)
+#if defined(RT_SOLVER_EXPLICIT)
+#if defined(RT_EVOLVE_ENERGY)
             for(k=0;k<N_RT_FREQ_BINS;k++) {SphP[i].Dt_E_gamma[k] = 0;}
-#if defined(RT_INFRARED)
-            SphP[i].Dt_E_gamma_T_weighted_IR = 0;
-#endif
 #endif
 #if defined(RT_EVOLVE_FLUX)
             for(k=0;k<N_RT_FREQ_BINS;k++) {int k_dir; for(k_dir=0;k_dir<3;k_dir++) {SphP[i].Dt_Flux[k][k_dir] = 0;}}
+#endif
+#if defined(RT_INFRARED)
+            SphP[i].Dt_E_gamma_T_weighted_IR = 0;
+#endif
+#if defined(RT_EVOLVE_FLUX)
+            for(k=0;k<N_RT_FREQ_BINS;k++) {int k_dir; for(k_dir=0;k_dir<3;k_dir++) {SphP[i].Dt_Flux[k][k_dir] = 0;}}
+#endif
+#if defined(RT_EVOLVE_INTENSITIES)
+            for(k=0;k<N_RT_FREQ_BINS;k++) {int k_dir; for(k_dir=0;k_dir<N_RT_INTENSITY_BINS;k_dir++) {SphP[i].Dt_Intensity[k][k_dir] = 0;}}
+#endif
 #endif
 #ifdef MAGNETIC
             SphP[i].divB = 0; for(k=0;k<3;k++) {SphP[i].Face_Area[k] = 0;}

@@ -94,7 +94,7 @@ void dynamic_diff_vel_calc_initial_operations_preloop(void)
             SphP[i].h_turb = Get_Particle_Size(i); // All.cf_atime unnecessary, will multiply later
             SphP[i].FilterWidth_bar = 0;
             SphP[i].MaxDistance_for_grad = 0;
-            for (k = 0; k < 3; k++) {SphP[i].Velocity_bar[k] = SphP[i].VelPred[k] * smoothInv;}
+            int k; for (k = 0; k < 3; k++) {SphP[i].Velocity_bar[k] = SphP[i].VelPred[k] / All.TurbDynamicDiffSmoothing;}
         }
     }
 }
@@ -181,9 +181,7 @@ int DiffFilter_evaluate(int target, int mode, int *exportflag, int *exportnodeco
                 kernel.dp[0] = local.Pos[0] - P[j].Pos[0];
                 kernel.dp[1] = local.Pos[1] - P[j].Pos[1];
                 kernel.dp[2] = local.Pos[2] - P[j].Pos[2];
-#ifdef BOX_PERIODIC			/*  now find the closest image in the given box size  */
-                NEAREST_XYZ(kernel.dp[0],kernel.dp[1],kernel.dp[2],1);
-#endif
+                NEAREST_XYZ(kernel.dp[0],kernel.dp[1],kernel.dp[2],1); /*  now find the closest image in the given box size  */
                 r2 = kernel.dp[0] * kernel.dp[0] + kernel.dp[1] * kernel.dp[1] + kernel.dp[2] * kernel.dp[2];
                 double mean_weight = 0.5 * (local.Density + SphP[j].Density) / (local.Density * SphP[j].Density);
                 double h_j = PPP[j].Hsml;
@@ -293,7 +291,7 @@ int DiffFilter_evaluate(int target, int mode, int *exportflag, int *exportnodeco
     /* ------------------------------------------------------------------------------------------------ */
     /* Now collect the result at the right place */
     if (mode == 0) {
-        out2particle_DiffFilter(&out, target, 0);
+        out2particle_DiffFilter(&out, target, 0, loop_iteration);
     }
     else {
         DATARESULT_NAME[target] = out;

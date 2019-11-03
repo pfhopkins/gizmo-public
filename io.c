@@ -1496,7 +1496,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
         break;
             
     case IO_DYNERROR:
-#ifdef TURB_DIFF_DYNAMIC_ERROR
+#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
         for (n = 0; n < pc; pindex++) {
             if (P[pindex].Type == type) {
                 *fp++ = SphP[pindex].TD_DynDiffCoeff_error;
@@ -1507,7 +1507,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
         break;
 
     case IO_DYNERRORDEFAULT:
-#ifdef TURB_DIFF_DYNAMIC_ERROR
+#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
         for (n = 0; n < pc; pindex++) {
             if (P[pindex].Type == type) {
                 *fp++ = SphP[pindex].TD_DynDiffCoeff_error_default;
@@ -2884,7 +2884,7 @@ int blockpresent(enum iofields blocknr)
 
     case IO_DYNERRORDEFAULT:
     case IO_DYNERROR:
-#ifdef TURB_DIFF_DYNAMIC_ERROR
+#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
         return 1;
 #else
         return 0;

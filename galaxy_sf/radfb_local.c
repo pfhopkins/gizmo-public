@@ -153,9 +153,7 @@ void chimes_HII_regions_singledomain(void)
 			    dx = pos[0] - P[j].Pos[0];
 			    dy = pos[1] - P[j].Pos[1];
 			    dz = pos[2] - P[j].Pos[2];
-#ifdef BOX_PERIODIC         /*  now find the closest image in the given box size  */
-			    NEAREST_XYZ(dx, dy, dz, 1);
-#endif
+			    NEAREST_XYZ(dx, dy, dz, 1); /*  now find the closest image in the given box size  */
 			    r2 = dx * dx + dy * dy + dz * dz;
 			    r = sqrt(r2);
 			   

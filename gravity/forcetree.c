@@ -519,7 +519,7 @@ void force_update_node_recursive(int no, int sib, int father)
     MyFloat divVmax, divVel;
     MyFloat s[3], vs[3], mass;
     struct particle_data *pa;
-    
+
 #ifdef DM_SCALARFIELD_SCREENING
     MyFloat s_dm[3], vs_dm[3], mass_dm;
 #endif
@@ -565,6 +565,9 @@ void force_update_node_recursive(int no, int sib, int father)
         
         last = no;
         
+#ifdef RT_USE_TREECOL_FOR_NH
+        MyFloat gasmass = 0;
+#endif            
 #ifdef RT_USE_GRAVTREE
         for(j=0;j<N_RT_FREQ_BINS;j++) {stellar_lum[j]=0;}
 #endif
@@ -634,15 +637,18 @@ void force_update_node_recursive(int no, int sib, int father)
                         vs[0] += (Nodes[p].u.d.mass * Extnodes[p].vs[0]);
                         vs[1] += (Nodes[p].u.d.mass * Extnodes[p].vs[1]);
                         vs[2] += (Nodes[p].u.d.mass * Extnodes[p].vs[2]);
+#ifdef RT_USE_TREECOL_FOR_NH
+                        gasmass += Nodes[p].gasmass;
+#endif			    
 #ifdef RT_USE_GRAVTREE
                         for(k=0;k<N_RT_FREQ_BINS;k++) {stellar_lum[k] += (Nodes[p].stellar_lum[k]);}
 #ifdef CHIMES_STELLAR_FLUXES 
-			for (k = 0; k < CHIMES_LOCAL_UV_NBINS; k++) 
-			  {
-			    chimes_stellar_lum_G0[k] += Nodes[p].chimes_stellar_lum_G0[k]; 
-			    chimes_stellar_lum_ion[k] += Nodes[p].chimes_stellar_lum_ion[k]; 
-			  }
-#endif 
+                        for (k = 0; k < CHIMES_LOCAL_UV_NBINS; k++)
+                        {
+                            chimes_stellar_lum_G0[k] += Nodes[p].chimes_stellar_lum_G0[k];
+                            chimes_stellar_lum_ion[k] += Nodes[p].chimes_stellar_lum_ion[k];
+                        }
+#endif
 #endif
 #ifdef RT_SEPARATELY_TRACK_LUMPOS
                         double l_tot=0; for(k=0;k<N_RT_FREQ_BINS;k++) {l_tot += (Nodes[p].stellar_lum[k]);}
@@ -709,13 +715,15 @@ void force_update_node_recursive(int no, int sib, int father)
                     vs[0] += (pa->Mass * pa->Vel[0]);
                     vs[1] += (pa->Mass * pa->Vel[1]);
                     vs[2] += (pa->Mass * pa->Vel[2]);
-                    
+#ifdef RT_USE_TREECOL_FOR_NH
+                    if(pa->Type == 0) gasmass += pa->Mass;
+#endif		    
 #ifdef RT_USE_GRAVTREE
                     double lum[N_RT_FREQ_BINS];
 #ifdef CHIMES_STELLAR_FLUXES 
-		    double chimes_lum_G0[CHIMES_LOCAL_UV_NBINS]; 
-		    double chimes_lum_ion[CHIMES_LOCAL_UV_NBINS]; 
-		    int active_check = rt_get_source_luminosity(p,sigma_eff,lum,chimes_lum_G0, chimes_lum_ion);
+                    double chimes_lum_G0[CHIMES_LOCAL_UV_NBINS];
+                    double chimes_lum_ion[CHIMES_LOCAL_UV_NBINS];
+                    int active_check = rt_get_source_luminosity(p,sigma_eff,lum,chimes_lum_G0, chimes_lum_ion);
 #else 
                     int active_check = rt_get_source_luminosity(p,sigma_eff,lum);
 #endif 
@@ -800,7 +808,7 @@ void force_update_node_recursive(int no, int sib, int father)
 #endif
 #endif
 #ifdef SINGLE_STAR_SINK_DYNAMICS
-		    if(pa->Type == 5) if (PPP[p].Hsml > maxsoft) maxsoft = PPP[p].Hsml;
+                    if(pa->Type == 5) if (PPP[p].Hsml > maxsoft) maxsoft = PPP[p].Hsml;
 #endif
                 }
             }
@@ -875,14 +883,17 @@ void force_update_node_recursive(int no, int sib, int father)
         Nodes[no].u.d.s[1] = s[1];
         Nodes[no].u.d.s[2] = s[2];
         Nodes[no].GravCost = 0;
+#ifdef RT_USE_TREECOL_FOR_NH
+        Nodes[no].gasmass = gasmass;
+#endif	
 #ifdef RT_USE_GRAVTREE
         for(k=0;k<N_RT_FREQ_BINS;k++) {Nodes[no].stellar_lum[k] = stellar_lum[k];}
 #ifdef CHIMES_STELLAR_FLUXES 
-	for (k = 0; k < CHIMES_LOCAL_UV_NBINS; k++) 
-	  {
-	    Nodes[no].chimes_stellar_lum_G0[k] = chimes_stellar_lum_G0[k]; 
-	    Nodes[no].chimes_stellar_lum_ion[k] = chimes_stellar_lum_ion[k]; 
-	  }
+        for (k = 0; k < CHIMES_LOCAL_UV_NBINS; k++)
+        {
+            Nodes[no].chimes_stellar_lum_G0[k] = chimes_stellar_lum_G0[k];
+            Nodes[no].chimes_stellar_lum_ion[k] = chimes_stellar_lum_ion[k];
+        }
 #endif
 #endif
 #ifdef RT_SEPARATELY_TRACK_LUMPOS
@@ -1198,7 +1209,7 @@ void force_treeupdate_pseudos(int no)
     MyFloat hmax, vmax;
     MyFloat divVmax;
     MyFloat s[3], vs[3], mass;
-    
+
 #ifdef RT_USE_GRAVTREE
     MyFloat stellar_lum[N_RT_FREQ_BINS];
 #ifdef CHIMES_STELLAR_FLUXES 
@@ -1246,6 +1257,9 @@ void force_treeupdate_pseudos(int no)
     s_dm[1] = vs_dm[1] = 0;
     s_dm[2] = vs_dm[2] = 0;
 #endif
+#ifdef RT_USE_TREECOL_FOR_NH
+    MyFloat gasmass = 0;
+#endif    
     mass = 0;
     s[0] = 0;
     s[1] = 0;
@@ -1572,6 +1586,10 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
     struct NODE *nop = 0;
     int no, nodesinlist, ptype, ninteractions, nexp, task, listindex = 0;
     double r2, dx, dy, dz, mass, r, fac, u, h, h_inv, h3_inv, xtmp;
+#ifdef RT_USE_TREECOL_FOR_NH
+    double gasmass, angular_bin_size = 4*M_PI / RT_USE_TREECOL_FOR_NH, treecol_angular_bins[RT_USE_TREECOL_FOR_NH] = {0};
+
+#endif    
 #ifdef COMPUTE_JERK_IN_GRAVTREE
     double dvx, dvy, dvz;
     double jerk[3] = {0,0,0};
@@ -1599,7 +1617,6 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #if defined(REDUCE_TREEWALK_BRANCHING) && defined(PMGRID)
     double dxx, dyy, dzz, pdxx, pdyy, pdzz;
 #endif
-    
 #ifdef RT_USE_GRAVTREE
     double mass_stellarlum[N_RT_FREQ_BINS];
     int k_freq; for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++) {mass_stellarlum[k_freq]=0;}
@@ -1826,7 +1843,9 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                 GRAVITY_NEAREST_XYZ(dx,dy,dz,-1);
                 r2 = dx * dx + dy * dy + dz * dz;
                 mass = P[no].Mass;
-
+#ifdef RT_USE_TREECOL_FOR_NH
+                if(P[no].Type == 0) gasmass = P[no].Mass;
+#endif                
                 /* only proceed if the mass is positive and there is separation! */
                 if((r2 > 0) && (mass > 0))
                 {
@@ -2005,7 +2024,9 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                 }
                 
                 mass = nop->u.d.mass;
-                
+#ifdef RT_USE_TREECOL_FOR_NH                
+                gasmass = nop->gasmass;
+#endif                
                 if(!(nop->u.d.bitflags & (1 << BITFLAG_MULTIPLEPARTICLES)))
                 {
                     /* open cell */
@@ -2442,7 +2463,15 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
             
             ninteractions++;
             
-            
+#ifdef RT_USE_TREECOL_FOR_NH
+            if(gasmass>0){
+                int bin; // Here we do a simple six-bin angular binning scheme
+                if ((fabs(dx) > fabs(dy)) && (fabs(dx)>fabs(dz))){if (dx > 0) {bin = 0;} else {bin=1;}
+                } else if (fabs(dy)>fabs(dz)){if (dy > 0) {bin = 2;} else {bin=3;}
+                } else {if (dz > 0) {bin = 4;} else {bin = 5;}}
+                treecol_angular_bins[bin] += fac*gasmass*r / (angular_bin_size*mass); // in our binning scheme, we stretch the gas mass over a patch */ of the sphere located at radius r subtending solid angle equal to the bin size - thus the area is r^2 * angular_bin_size, so sigma = m/(r^2 * angular bin size) = fac/r / angular bin size. Factor of gasmass / mass corrects the gravitational mass to the gas mass
+            }
+#endif 	    
 #ifdef RT_USE_GRAVTREE
             if(valid_gas_particle_for_rt)	/* we have a (valid) gas particle as target */
             {
@@ -2542,6 +2571,9 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
         P[target].GravAccel[0] = acc_x;
         P[target].GravAccel[1] = acc_y;
         P[target].GravAccel[2] = acc_z;
+#ifdef RT_USE_TREECOL_FOR_NH
+        for(int k=0; k < RT_USE_TREECOL_FOR_NH; k++) P[target].ColumnDensityBins[k] = treecol_angular_bins[k];
+#endif	
 #ifdef RT_OTVET
         if(valid_gas_particle_for_rt) {int k,k_et; for(k=0;k<N_RT_FREQ_BINS;k++) for(k_et=0;k_et<6;k_et++) {SphP[target].ET[k][k_et] = RT_ET[k][k_et];}} else {if(P[target].Type==0) {int k,k_et; for(k=0;k<N_RT_FREQ_BINS;k++) for(k_et=0;k_et<6;k_et++) {SphP[target].ET[k][k_et]=0;}}}
 #endif
@@ -2579,6 +2611,9 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
         GravDataResult[target].Acc[0] = acc_x;
         GravDataResult[target].Acc[1] = acc_y;
         GravDataResult[target].Acc[2] = acc_z;
+#ifdef RT_USE_TREECOL_FOR_NH
+        for(int k=0; k < RT_USE_TREECOL_FOR_NH; k++) GravDataResult[target].ColumnDensityBins[k] = treecol_angular_bins[k];
+#endif	
 #ifdef RT_OTVET
         int k,k_et; for(k=0;k<N_RT_FREQ_BINS;k++) for(k_et=0;k_et<6;k_et++) {GravDataResult[target].ET[k][k_et] = RT_ET[k][k_et];}
 #endif

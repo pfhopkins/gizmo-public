@@ -49,8 +49,7 @@ double ref_mass_factor(int i);
 void merge_particles_ij(int i, int j);
 //void split_particle_i(int i, int n_particles_split, int i_nearest, double r2_nearest);
 void split_particle_i(int i, int n_particles_split, int i_nearest); 
-static inline double gamma_eos(int i);
-
+double gamma_eos(int i);
 void do_first_halfstep_kick(void);
 void do_second_halfstep_kick(void);
 void find_timesteps(void);
@@ -110,6 +109,7 @@ static inline integertime TIMIN(integertime a, integertime b) { return (a < b) ?
 static inline double MINMOD(double a, double b) {return (a>0) ? ((b<0) ? 0 : DMIN(a,b)) : ((b>=0) ? 0 : DMAX(a,b));}
 /* special version of MINMOD below: a is always the "preferred" choice, b the stability-required one. here we allow overshoot, just not opposite signage */
 static inline double MINMOD_G(double a, double b) {return a;}
+static inline double sigmoid_sqrt(double x) {return 0.5*(1 + x/sqrt(1+x*x));} /* Sigmoid ("turn-on") function (1 + x/(1+x^2))/2, interpolates between 0 as x->-infty and 1 as x->infty. Useful for cheaply doing smooth fits of e.g. EOS where different thermo processes turn on at certain temps */
 
 
 #ifdef BOX_SHEARING
@@ -455,7 +455,7 @@ void do_turb_driving_step_first_half(void);
 void do_turb_driving_step_second_half(void);
 #endif
 
-double evaluate_NH_from_GradRho(MyFloat gradrho[3], double hsml, double rho, double numngb_ndim, double include_h);
+double evaluate_NH_from_GradRho(MyFloat gradrho[3], double hsml, double rho, double numngb_ndim, double include_h, int target);
 
 
 #ifdef GALSF
@@ -487,6 +487,11 @@ double mechanical_fb_calculate_eventrates(int i, double dt);
 
 #ifdef GRAIN_FLUID
 void apply_grain_dragforce(void);
+#endif
+
+#ifdef RT_INFRARED
+double get_min_allowed_dustIRrad_temperature(void);
+double get_rt_ir_lambdadust_effective(double T, double rho, double *ne_guess, int target);
 #endif
 
 #if defined(FLAG_NOT_IN_PUBLIC_CODE) || (defined(RT_CHEM_PHOTOION) && defined(GALSF))
@@ -660,6 +665,7 @@ int rt_get_source_luminosity(int i, double sigma_0, double *lum, double *chimes_
 int rt_get_source_luminosity(int i, double sigma_0, double *lum);
 #endif 
 double rt_kappa(int j, int k_freq);
+double rt_absorb_frac_albedo(int j, int k_freq);
 double rt_absorption_rate(int i, int k_freq);
 double rt_diffusion_coefficient(int i, int k_freq);
 void rt_eddington_update_calculation(int j);

@@ -150,14 +150,14 @@ void read_ic(char *fname)
         All.MassTable[4] = 0;
     }
 #endif
-    
-    
+
     u_init = All.InitGasTemp / ((GAMMA_DEFAULT-1) * U_TO_TEMP_UNITS);
 
-    if(All.InitGasTemp > 1.0e4)	/* assuming FULL ionization */
-        molecular_weight = 4 / (8 - 5 * (1 - HYDROGEN_MASSFRAC));
-    else				/* assuming NEUTRAL GAS */
-        molecular_weight = 4 / (1 + 3 * HYDROGEN_MASSFRAC);
+    molecular_weight = 4 / (8 - 5 * (1 - HYDROGEN_MASSFRAC)); /* assume full ionization */
+    if(All.InitGasTemp < 1.0e4) {molecular_weight = 4 / (1 + 3 * HYDROGEN_MASSFRAC);} /* assume neutral gas */
+#if defined(COOL_LOW_TEMPERATURES) || defined(COOL_GRACKLE)
+    if(All.InitGasTemp < 1.0e3 && All.ComovingIntegrationOn==0) {molecular_weight =  1. / ( HYDROGEN_MASSFRAC*0.5 + (1-HYDROGEN_MASSFRAC)/4. + 1./(16.+12.));} /* assume fully molecular [self-consistency requires cooling can handle this, and that this is intended to represent dense gas, not e.g. neutral early-universe gas] */
+#endif
     
     u_init /= molecular_weight;
     

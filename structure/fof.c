@@ -1689,9 +1689,7 @@ int fof_find_nearest_dmparticle_evaluate(int target, int mode, int *nexport, int
             dx = pos[0] - P[j].Pos[0];
             dy = pos[1] - P[j].Pos[1];
             dz = pos[2] - P[j].Pos[2];
-#ifdef BOX_PERIODIC
             NEAREST_XYZ(dx,dy,dz,1);
-#endif
             r2 = dx * dx + dy * dy + dz * dz;
             if(r2 < r2max && r2 < h * h)
 		{

@@ -10,8 +10,20 @@
  * This file was written by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
  */
 /* --------------------------------------------------------------------------------- */
-double c_light = C_LIGHT_CODE_REDUCED;
 {
+    // first define some variables needed regardless //
+    double c_light = C_LIGHT_CODE_REDUCED;
+#if defined(HYDRO_MESHLESS_FINITE_VOLUME)
+    double v_frame[3]={0}; for(k=0;k<3;k++) {v_frame[k]=0.5*(ParticleVel_j[k] + local.ParticleVel[k])/All.cf_atime;} // frame velocity, not fluid velocity, is what appears here
+#else
+    double v_frame[3]={0}; for(k=0;k<3;k++) {v_frame[k]=0.5*(local.Vel[k]+SphP[j].VelPred[k])/All.cf_atime;} // variable to use below //
+#endif
+#if defined(RT_INFRARED)
+    double Fluxes_E_gamma_T_weighted_IR = 0;
+#endif
+    double Fluxes_E_gamma[N_RT_FREQ_BINS];
+    
+    
 #if !defined(RT_EVOLVE_FLUX) /* this means we just solve the diffusion equation for the eddington tensor, done in the loop below */
     int k_freq;
     for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++)
@@ -74,6 +86,14 @@ double c_light = C_LIGHT_CODE_REDUCED;
 #ifndef FREEZE_HYDRO
             cmag *= R_flux;
 #endif
+            
+            // now we need to add the advective flux. note we do this after the limiters above, since those are designed for the diffusive terms, and this is simpler and more stable. we do this zeroth order (super-diffusive, but that's fine for our purposes)
+            double v_Area_dot_rt=0, scalar_ij_phys=0.5*(scalar_i+scalar_j)*All.cf_a3inv; for(k=0;k<3;k++) {v_Area_dot_rt += v_frame[k] * Face_Area_Vec[k];}
+            cmag += -v_Area_dot_rt * scalar_ij_phys / 3.; // need to be careful with the sign here. since this is an oriented area and A points from j to i, need to flip the sign here. the 1/3 owes to the fact that this is really the --pressure-- term for FLD-like methods, the energy term is implicitly part of the flux already if we're actually doing this correctly //
+#if defined(HYDRO_MESHLESS_FINITE_VOLUME)
+            for(k=0;k<3;k++) {cmag -= (v_frame[k]-0.5*(local.Vel[k]+SphP[j].VelPred[k])/All.cf_atime) * scalar_ij_phys * Face_Area_Vec[k];}
+#endif
+
             cmag *= dt_hydrostep; // all in physical units //
             if(fabs(cmag) > 0)
             {
@@ -83,8 +103,7 @@ double c_light = C_LIGHT_CODE_REDUCED;
                 if(fabs(cmag)>thold_hll) {cmag *= thold_hll/fabs(cmag);}
                 cmag /= dt_hydrostep;
                 Fluxes_E_gamma[k_freq] += cmag;
-#ifdef RT_INFRARED
-                // define advected radiation temperature based on direction of net radiation flow //
+#ifdef RT_INFRARED // define advected radiation temperature based on direction of net radiation flow //
                 if(k_freq==RT_FREQ_BIN_INFRARED) {if(cmag > 0) {Fluxes_E_gamma_T_weighted_IR = cmag/(MIN_REAL_NUMBER+SphP[j].Radiation_Temperature);} else {Fluxes_E_gamma_T_weighted_IR = cmag/(MIN_REAL_NUMBER+local.Radiation_Temperature);}}
 #endif
             } // if(conduction_wt > 0)
@@ -97,6 +116,7 @@ double c_light = C_LIGHT_CODE_REDUCED;
 
 
     int k_freq;
+    double Fluxes_Flux[N_RT_FREQ_BINS][3];
     double c_hll = 0.5*fabs(face_vel_i-face_vel_j) + c_light; // physical units
     double V_i_phys = V_i / All.cf_a3inv;
     double V_j_phys = V_j / All.cf_a3inv;
@@ -160,7 +180,10 @@ double c_light = C_LIGHT_CODE_REDUCED;
             double q = 0.5 * c_hll * (kernel.r*All.cf_atime) / fabs(MIN_REAL_NUMBER + kappa_ij); q = (0.2 + q) / (0.2 + q + q*q); // physical
             double renormerFAC = DMIN(1.,fabs(cos_theta_face_flux*cos_theta_face_flux * q * hll_corr));            
             
-            
+            // now we need to add the advective flux. note we do this after the limiters above, since those are designed for the diffusive terms, and this is simpler and more stable. we do this zeroth order (super-diffusive, but that's fine for our purposes)
+            double v_Area_dot_rt=0; for(k=0;k<3;k++) {v_Area_dot_rt += v_frame[k] * Face_Area_Vec[k];}
+            cmag += -v_Area_dot_rt * 0.5*(scalar_i+scalar_j); // need to be careful with the sign here. since this is an oriented area and A points from j to i, need to flip the sign here //
+
             /* flux-limiter to ensure flow is always down the local gradient [no 'uphill' flow] */
             double f_direct = -Face_Area_Norm * c_hll * d_scalar * renormerFAC; // simple HLL term for frame moving at 1/2 inter-particle velocity: here not limited [physical units] //
             double sign_c0 = f_direct*cmag;
@@ -181,8 +204,7 @@ double c_light = C_LIGHT_CODE_REDUCED;
                 if(fabs(cmag)>thold_hll) {cmag *= thold_hll/fabs(cmag);}
                 cmag /= dt_hydrostep;
                 Fluxes_E_gamma[k_freq] += cmag; // returned in physical units //
-#ifdef RT_INFRARED
-                // define advected radiation temperature based on direction of net radiation flow //
+#ifdef RT_INFRARED // define advected radiation temperature based on direction of net radiation flow //
                 if(k_freq==RT_FREQ_BIN_INFRARED) {if(cmag > 0) {Fluxes_E_gamma_T_weighted_IR = cmag/(MIN_REAL_NUMBER+SphP[j].Radiation_Temperature);} else {Fluxes_E_gamma_T_weighted_IR = cmag/(MIN_REAL_NUMBER+local.Radiation_Temperature);}}
 #endif
             } // cmag != 0
@@ -200,6 +222,11 @@ double c_light = C_LIGHT_CODE_REDUCED;
                     if(thold_hll < hll_mult_dmin) {hll_mult_dmin = thold_hll;}
                 }
             }
+                        
+            // now we need to add the advective flux. note we do this after the limiters above, since those are designed for the diffusive terms, and this is simpler and more stable. we do this zeroth order (super-diffusive, but that's fine for our purposes)
+            double flux_dot_face=0; for(k=0;k<3;k++) {flux_dot_face += 0.5*(flux_i[k]+flux_j[k]) * Face_Area_Vec[k];} // order of operations needs care here. following through on the divergence theorem carefully, the transport follows v, with A dotted into flux here, rather than A.v or some other law
+            for(k=0;k<3;k++) {cmag_flux[k] += -v_frame[k] * flux_dot_face;} // need to be careful with the sign here. since this is an oriented area and A points from j to i, need to flip the sign here //
+            
             for(k=0;k<3;k++)
             {
                 double f_direct = -Face_Area_Norm * c_hll * (flux_i[k] - flux_j[k]); // [physical units]

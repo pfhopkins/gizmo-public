@@ -579,7 +579,7 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_sph_i_to_clone, int nu
         for(k=0;k<N_RT_FREQ_BINS;k++)
         {
             SphP[j].E_gamma[k] = 0;
-#if defined(RT_EVOLVE_NGAMMA)
+#if defined(RT_EVOLVE_ENERGY)
             SphP[j].E_gamma_Pred[k] = 0; SphP[j].Dt_E_gamma[k] = 0;
 #endif
         }
