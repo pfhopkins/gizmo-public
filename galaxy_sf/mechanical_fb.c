@@ -229,7 +229,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 wk = 0.5 * (1 - 1/sqrt(1 + sph_area / (M_PI*kernel.r*kernel.r))); // corresponding geometric weight //
 #ifdef FIRE1_SNE_COUPLING
                 if(u<1) {kernel_main(u, kernel.hinv3, kernel.hinv4, &kernel.wk, &kernel.dwk, 0);} else {kernel.wk=kernel.dwk=0;}
-                wk = P[j].Mass * kernel.wk;
+                wk = (P[j].Mass/SphP[j].Density) * kernel.wk;
 #endif
                 if((wk <= 0)||(isnan(wk))) continue; // no point in going further, there's no physical weight here
                 double wk_vec[AREA_WEIGHTED_SUM_ELEMENTS] = {0};

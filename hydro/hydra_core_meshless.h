@@ -50,15 +50,12 @@
     /* ------------------------------------------------------------------------------------------------------------------- */
     /* now we're ready to compute the volume integral of the fluxes (or equivalently an 'effective area'/face orientation) */
     /* ------------------------------------------------------------------------------------------------------------------- */
-    double wt_i,wt_j;
-    wt_i=V_i; wt_j=V_j;
-#if (!defined(FIRE_UNPROTECT_FROZEN) || (SLOPE_LIMITER_TOLERANCE == 0)) && (SLOPE_LIMITER_TOLERANCE != 2)
+    double wt_i,wt_j; wt_i=V_i; wt_j=V_j;
+#if (SLOPE_LIMITER_TOLERANCE != 2) // unless using the most aggressive reconstruction, we will limit face-area disparity here //
 #if defined(COOLING) || (SLOPE_LIMITER_TOLERANCE==0)
-    //wt_i=wt_j = 2.*V_i*V_j / (V_i + V_j); // more conservatively, could use DMIN(V_i,V_j), but that is less accurate
-    if((fabs(V_i-V_j)/DMIN(V_i,V_j))/NUMDIMS > 1.25) {wt_i=wt_j=2.*V_i*V_j/(V_i+V_j);} else {wt_i=V_i; wt_j=V_j;}
+    if((fabs(V_i-V_j)/DMIN(V_i,V_j))/NUMDIMS > 1.25) {wt_i=wt_j=2.*V_i*V_j/(V_i+V_j);} else {wt_i=V_i; wt_j=V_j;} //wt_i=wt_j = 2.*V_i*V_j / (V_i + V_j); // more conservatively, could use DMIN(V_i,V_j), but that is less accurate
 #else
-    //wt_i=wt_j = (V_i*PPP[j].Hsml + V_j*local.Hsml) / (local.Hsml+PPP[j].Hsml); // should these be H, or be -effective sizes- //
-    if((fabs(V_i-V_j)/DMIN(V_i,V_j))/NUMDIMS > 1.50) {wt_i=wt_j=(V_i*PPP[j].Hsml+V_j*local.Hsml)/(local.Hsml+PPP[j].Hsml);} else {wt_i=V_i; wt_j=V_j;}
+    if((fabs(V_i-V_j)/DMIN(V_i,V_j))/NUMDIMS > 1.50) {wt_i=wt_j=(V_i*PPP[j].Hsml+V_j*local.Hsml)/(local.Hsml+PPP[j].Hsml);} else {wt_i=V_i; wt_j=V_j;} //wt_i=wt_j = (V_i*PPP[j].Hsml + V_j*local.Hsml) / (local.Hsml+PPP[j].Hsml); // should these be H, or be -effective sizes- //
 #endif
 #endif
     /* the effective gradient matrix is well-conditioned: we can safely use the consistent EOM */
@@ -140,7 +137,7 @@
         for(k=0;k<3;k++) {n_unit[k] = Face_Area_Vec[k] / Face_Area_Norm;} /* define useful unit vector for below */
 #if (defined(HYDRO_FACE_AREA_LIMITER) || !defined(PROTECT_FROZEN_FIRE)) && (HYDRO_FIX_MESH_MOTION >= 5)
         /* check if face area exceeds maximum geometric allowed limit (can occur when particles with -very- different
-            Hsml interact at the edge of the kernel, must be limited to geometric max to prevent numerical instability */
+            Hsml interact at the edge of the kernel, limited to geometric max to prevent numerical instability */
         double Amax = Amax_i; // minimum of area "i" or area "j": this is "i"
         if(V_j < V_i) // if Vj<Vi, Aj<Ai, so we need to use A_j
         {

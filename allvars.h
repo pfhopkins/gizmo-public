@@ -206,9 +206,6 @@
 
 
 
-#if (defined(COOLING) && defined(GALSF) && defined(GALSF_FB_MECHANICAL)) && !defined(FIRE_UNPROTECT_FROZEN)
-#define PROTECT_FROZEN_FIRE
-#endif
 
 #ifdef PROTECT_FROZEN_FIRE
 #define GALSF_USE_SNE_ONELOOP_SCHEME // set to use the 'base' FIRE-2 SNe coupling. if commented out, will user newer version that more accurately manages the injected energy with neighbors moving to inject a specific target

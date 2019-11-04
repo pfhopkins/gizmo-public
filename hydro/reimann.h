@@ -349,7 +349,7 @@ void Riemann_solver(struct Input_vec_Riemann Riemann_vec, struct Riemann_outputs
     double v_line_R = Riemann_vec.R.v[0]*n_unit[0] + Riemann_vec.R.v[1]*n_unit[1] + Riemann_vec.R.v[2]*n_unit[2];
 
 #ifdef HYDRO_REPLACE_RIEMANN_KT
-    Riemann_solver_KurganovTadmor_PWK(Riemann_vec, Riemann_out, n_unit, v_line_L, v_line_R, cs_L, cs_R, h_L, h_R)
+    Riemann_solver_KurganovTadmor_PWK(Riemann_vec, Riemann_out, n_unit, v_line_L, v_line_R, cs_L, cs_R, h_L, h_R);
     if((Riemann_out->P_M<=0)||(isnan(Riemann_out->P_M))) /* check if it failed, if so compute HLLC instead */
 #endif
     HLLC_Riemann_solver(Riemann_vec, Riemann_out, n_unit, v_line_L, v_line_R, cs_L, cs_R, h_L, h_R, press_tot_limiter);
@@ -467,26 +467,32 @@ void Riemann_solver_KurganovTadmor_PWK(struct Input_vec_Riemann Riemann_vec, str
                             double v_line_L, double v_line_R, double cs_L, double cs_R, double h_L, double h_R)
 {
     /* estimate wave speed using the PWK 'switch' alpha */
-    double S_L, S_R, S_M, dv[3], dv2, dvL, delta_threshold, nu=0, alpha=0; int k;
-    delta_threshold = 0.001 * 0.5*(Riemann_vec.L.rho+Riemann_vec.R.rho) * 0.5*(cs_L+cs_R); /* alpha is non-zero only if relative momentum is appreciable fraction of this value */
-    for(k=0;k<3;k++) {dv[k]=Riemann_vec.R.rho*Riemann_vec.R.v[k] - Riemann_vec.L.rho*Riemann_vec.L.v[k]; dv2=dv[k]*dv[k];} /* calculate relative momentum */
-    if(dv2 > delta_threshold*delta_threshold) {dvL=fabs(Riemann_vec.R.rho*v_line_R-Riemann_vec.L.rho*v_line_L); alpha=dvL/sqrt(dv2);} /* calculate non-zero alpha if needed */
+    double S_L, S_R, S_M, nu=0, alpha; int k;
+#if (SLOPE_LIMITER_TOLERANCE==0) || defined(HYDRO_FACE_AREA_LIMITER) || defined(HYDRO_RIEMANN_KT_UNLIMITED)
+    alpha = 1; /* default to the more dissipative but smoother limiter function */
+#else
+    double delta_threshold = 0.001 * 0.5*(Riemann_vec.L.rho+Riemann_vec.R.rho) * 0.5*(cs_L+cs_R); /* alpha is non-zero only if relative momentum is appreciable fraction of this value */
+    double dv2=0,dv[3]; for(k=0;k<3;k++) {dv[k]=Riemann_vec.R.rho*Riemann_vec.R.v[k] - Riemann_vec.L.rho*Riemann_vec.L.v[k]; dv2+=dv[k]*dv[k];} /* calculate relative momentum */
+    double dvL=fabs(Riemann_vec.R.rho*v_line_R-Riemann_vec.L.rho*v_line_L); /* difference along normal [switch here is designed to reduce diffusion in shear flows] */
+    alpha = dvL / sqrt(delta_threshold*delta_threshold + dv2); /* for either very weak velocity differences, or for almost entirely shear-flows, this cuts off the diffusivity */
+#endif
     S_L=alpha*cs_L; if(v_line_L>0) {S_L+=v_line_L;} else {S_L-=v_line_L;} /* fastest left-side wavespeed */
     S_R=alpha*cs_R; if(v_line_R>0) {S_R+=v_line_R;} else {S_R-=v_line_R;} /* fastest right-side wavespeed */
-    S_M=DMAX(S_L,S_R); Riemann_out->S_M = S_M;
+    S_M=DMAX(S_L,S_R);
+    Riemann_out->S_M = DMAX(cs_L+fabs(v_line_L) , cs_R+fabs(v_line_R)); /* note this does not have the limiter, otherwise corrections in hydra_core_meshless will be incorrect and unstable */
     double f_rho_left = Riemann_vec.L.rho * (v_line_L + S_M);
     double f_rho_right = Riemann_vec.R.rho * (v_line_R - S_M);
 #if defined(HYDRO_MESHLESS_FINITE_VOLUME) /* MFV face vel is null, as we are in frame co-moving with face already */
-    Riemann_out->P_M = 0.5 * (Riemann_vec.R.p - Riemann_vec.L.p);
+    Riemann_out->P_M = 0.5 * (Riemann_vec.R.p + Riemann_vec.L.p);
     Riemann_out->Fluxes.rho = 0.5 * (f_rho_left + f_rho_right);
     for(k=0;k<3;k++) {Riemann_out->Fluxes.v[k] = 0.5*(f_rho_left*Riemann_vec.L.v[k] + f_rho_right*Riemann_vec.R.v[k]) + (Riemann_out->P_M)*n_unit[k];}
     Riemann_out->Fluxes.p = 0.5 * (f_rho_left*h_L + f_rho_right*h_R + S_M*(Riemann_vec.R.p - Riemann_vec.L.p));
 #else
     double denom = 1/(Riemann_vec.L.rho*v_line_L - Riemann_vec.R.rho*v_line_R + S_M*(Riemann_vec.L.rho+Riemann_vec.R.rho));
-    Riemann_out->P_M = (f_rho_left*Riemann_vec.L.p + f_rho_right*Riemann_vec.R.p) * denom;
+    Riemann_out->P_M = (f_rho_left*Riemann_vec.R.p - f_rho_right*Riemann_vec.L.p) * denom;
     Riemann_out->Fluxes.rho = 0; /* vanishes by definition in this frame */
-    for(k=0;k<3;k++) {Riemann_out->Fluxes.v[k] = (Riemann_vec.L.v[k]-Riemann_vec.R.v[k])*f_rho_left*f_rho_right*denom + (Riemann_out->P_M)*n_unit[k];}
-    Riemann_out->Fluxes.p = S_M*(Riemann_out->P_M) + (h_R-h_L)*f_rho_left*f_rho_right*denom;
+    for(k=0;k<3;k++) {Riemann_out->Fluxes.v[k] = (Riemann_vec.R.v[k]-Riemann_vec.L.v[k])*f_rho_left*f_rho_right*denom + (Riemann_out->P_M)*n_unit[k];}
+    Riemann_out->Fluxes.p = (S_M*(f_rho_left*Riemann_vec.R.p + f_rho_right*Riemann_vec.L.p) + (h_R-h_L)*f_rho_left*f_rho_right) * denom;
 #endif
 #ifdef SAVE_FACE_DENSITY
     Riemann_out->Face_Density = 0.5*(Riemann_vec.L.rho+Riemann_vec.R.rho);
