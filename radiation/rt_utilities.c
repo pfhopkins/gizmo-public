@@ -768,6 +768,7 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
             for(k=0;k<3;k++) {if(mode==0) {P[i].Vel[k] += dv_gas[k]*All.cf_atime;} else {SphP[i].VelPred[k] += dv_gas[k]*All.cf_atime;}} // update gas velocities (radiation pressure forces here)
             if(mode==0) {SphP[i].InternalEnergy += de_gas_internal;} else {SphP[i].InternalEnergyPred += de_gas_internal;} // update gas internal energy (work terms, after subtracting kinetic energy changes)
             for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {if(mode==0) {SphP[i].Intensity[kf][k_om] = i0[k_om]/RT_INTENSITY_BINS_DOMEGA;} else {SphP[i].Intensity_Pred[kf][k_om] = i0[k_om]/RT_INTENSITY_BINS_DOMEGA;}} // update intensities (all of the above)
+            SphP[i].E_gamma[kf]=egy_f; // set this every time this subroutine is called, so it is accessible everywhere else //
         } // loop over iterations
     } // loop over frequencies
 #else

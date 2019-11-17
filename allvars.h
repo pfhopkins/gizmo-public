@@ -628,6 +628,7 @@
 
 // compiler specific data alignment hints
 // XLC compiler
+/*
 #if defined(__xlC__)
 #define ALIGN(n) __attribute__((__aligned__(n)))
 // GNU compiler 
@@ -641,6 +642,8 @@
 #else
 #define ALIGN(n) 
 #endif
+ */
+#define ALIGN(n) // experimenting right now with removing this, as many compilers internal AVX optimizations appear to be doing marginally better, and can resolve crashes on some compilers
 
 
 #define ASSIGN_ADD(x,y,mode) (mode == 0 ? (x=y) : (x+=y))

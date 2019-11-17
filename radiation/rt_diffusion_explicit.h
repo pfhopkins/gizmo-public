@@ -88,8 +88,11 @@
 #endif
             
             // now we need to add the advective flux. note we do this after the limiters above, since those are designed for the diffusive terms, and this is simpler and more stable. we do this zeroth order (super-diffusive, but that's fine for our purposes)
-            double v_Area_dot_rt=0, scalar_ij_phys=0.5*(scalar_i+scalar_j)*All.cf_a3inv; for(k=0;k<3;k++) {v_Area_dot_rt += v_frame[k] * Face_Area_Vec[k];}
-            cmag += -v_Area_dot_rt * scalar_ij_phys / 3.; // need to be careful with the sign here. since this is an oriented area and A points from j to i, need to flip the sign here. the 1/3 owes to the fact that this is really the --pressure-- term for FLD-like methods, the energy term is implicitly part of the flux already if we're actually doing this correctly //
+            double fluxlim_i=1, fluxlim_j=1, v_Area_dot_rt=0, scalar_ij_phys=0.5*(scalar_i+scalar_j)*All.cf_a3inv; for(k=0;k<3;k++) {v_Area_dot_rt += v_frame[k] * Face_Area_Vec[k];}
+#ifdef RT_FLUXLIMITER
+            fluxlim_i = local.RT_DiffusionCoeff[k_freq] * local.Density * local.Kappa_RT[k_freq] / C_LIGHT_CODE_REDUCED; fluxlim_j = SphP[j].Lambda_FluxLim[k_freq];
+#endif
+            cmag += -v_Area_dot_rt * scalar_ij_phys * ((4./3.)*(0.5*(fluxlim_i+fluxlim_j)) - 1.); // need to be careful with the sign here. since this is an oriented area and A points from j to i, need to flip the sign here. the 1/3 owes to the fact that this is really the --pressure-- term for FLD-like methods, the energy term is implicitly part of the flux already if we're actually doing this correctly //
 #if defined(HYDRO_MESHLESS_FINITE_VOLUME)
             for(k=0;k<3;k++) {cmag -= (v_frame[k]-0.5*(local.Vel[k]+SphP[j].VelPred[k])/All.cf_atime) * scalar_ij_phys * Face_Area_Vec[k];}
 #endif

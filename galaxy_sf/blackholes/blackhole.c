@@ -406,14 +406,14 @@ void set_blackhole_mdot(int i, int n, double dt)
 #else
         j *= 1. + 1./BH_ALPHADISK_ACCRETION; // correction assuming a ratio of accretion disk to sink mass ~BH_ALPHADISK_ACCRETION [max allowed], with the material in the sink having given its angular momentum to the sink [which is what should happen]
 #endif
-        t_acc_disk = j*j*j*Gm_i*Gm_i; // dynamical time at circularization radius of the alpha-disk
+        //t_acc_disk = j*j*j*Gm_i*Gm_i; // dynamical time at circularization radius of the alpha-disk
 #ifdef SLOPE2_SINKS
         //t_acc_disk = DMAX(sqrt(pow(0.033*All.SofteningTable[5],3)/(All.G*P[n].BH_Mass)) , t_acc_disk); // catch against un-resolvably small j [since accreted particles are extended, there is always material at non-zero "j" even if accreted at zero impact parameter; 1/30th is conservative estimate for perfect impact parameter]
         //t_acc_disk = t_dyn_eff; //use the dynamical time as the orbital time (equivalent to circular orbit at sink radius)
         t_acc_disk = DMAX(10. * 2.*M_PI*t_acc_disk, t_dyn_eff); // 10 orbits at circularization radius to spiral all the way in (very fast), but should be no less than the resolution-scale dynamical time	
 #else
-        if(j*j*Gm_i < 6.957e11 / All.UnitLength_in_cm) {t_acc_disk = 0;} // when angular momentum is low enough, we're falling straight onto the protostellar surface, here taking 10R_solar as a rough number
-        t_acc_disk = DMAX(100. * t_acc_disk * (1 / (Gm_i * DMIN(reff, j*j*Gm_i))) / soundspeed2, t_dyn_eff); // Shakura-Sunyaev prescription with alpha=0.01, using minimum of sink and circularization radius
+        //if(j*j*Gm_i < 6.957e11 / All.UnitLength_in_cm) {t_acc_disk = 0;} // when angular momentum is low enough, we're falling straight onto the protostellar surface, here taking 10R_solar as a rough number
+        //t_acc_disk = DMAX(100. * t_acc_disk * (1 / (Gm_i * DMIN(reff, j*j*Gm_i))) / soundspeed2, t_dyn_eff); // Shakura-Sunyaev prescription with alpha=0.01, using minimum of sink and circularization radius
 #endif // SLOPE2_SINKS
 #endif // BH_FOLLOW_ACCRETED_ANGMOM
 #endif // SINGLE_STAR_SINK_DYNAMICS
@@ -762,7 +762,7 @@ void blackhole_final_operations(void)
         
 #ifdef BH_WIND_SPAWN
         /* DAA: for wind spawning, we only need to subtract the BAL wind mass from BH_Mass (or BH_Mass_AlphaDisk)
-            --> wind mass subtracted from P.Mass in blackhole_spawn_particle_wind_shell()  */
+            --> wind mass subtracted from P.Mass in blackhole_spawn_particle_wind_shell()  */        
         double dm_wind = (1.-All.BAL_f_accretion) / All.BAL_f_accretion * dm;
         if(dm_wind > P[n].Mass) {dm_wind = P[n].Mass;}
 #if defined(BH_ALPHADISK_ACCRETION)
