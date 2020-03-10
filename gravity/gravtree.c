@@ -51,7 +51,7 @@ void sum_top_level_node_costfactors(void);
 void gravity_tree(void)
 {
     /* initialize variables */
-    long long n_exported = 0; int i, j, maxnumnodes, iter; iter = 0;
+    long long n_exported = 0; int i, j, maxnumnodes, iter; j = 0; iter = 0;
     double t0, t1, timeall = 0, timetree1 = 0, timetree2 = 0, timetree, timewait, timecomm;
     double timecommsumm1 = 0, timecommsumm2 = 0, timewait1 = 0, timewait2 = 0, sum_costtotal, ewaldtot;
     double maxt, sumt, maxt1, sumt1, maxt2, sumt2, sumcommall, sumwaitall, plb, plb_max;
@@ -66,6 +66,7 @@ void gravity_tree(void)
         PRINT_STATUS("Tree construction initiated (presently allocated=%g MB)", AllocatedBytes / (1024.0 * 1024.0));
         CPU_Step[CPU_MISC] += measure_time();
         move_particles(All.Ti_Current);
+        rearrange_particle_sequence();
         force_treebuild(NumPart, NULL);
         CPU_Step[CPU_TREEBUILD] += measure_time();
         TreeReconstructFlag = 0;
@@ -262,7 +263,7 @@ void gravity_tree(void)
                     if(flagall) {N_chunks_for_import /= 2;} else {break;}
                 } while(N_chunks_for_import > 0);
                 if(N_chunks_for_import == 0) {printf("Memory is insufficient for even one import-chunk: N_chunks_for_import=%d  ngrp_initial=%d  Nimport=%ld  FreeBytes=%lld , but we need to allocate=%lld \n",N_chunks_for_import, ngrp_initial, Nimport, (long long)FreeBytes,(long long)(Nimport * sizeof(struct gravdata_in) + Nimport * sizeof(struct gravdata_out) + 16384)); endrun(9966);}
-                if(ngrp_initial == 1 && N_chunks_for_import != ((1 << PTask) - ngrp_initial) && ThisTask == 0) PRINT_WARNING("Splitting import operation into sub-chunks as we are hitting memory limits (check this isn't imposing large communication cost)");
+                if(ngrp_initial == 1 && N_chunks_for_import != ((1 << PTask) - ngrp_initial)) PRINT_WARNING("Splitting import operation into sub-chunks as we are hitting memory limits (check this isn't imposing large communication cost)");
 
                 /* now allocated the import and results buffers */
                 GravDataGet = (struct gravdata_in *) mymalloc("GravDataGet", Nimport * sizeof(struct gravdata_in));
@@ -306,8 +307,10 @@ void gravity_tree(void)
                 for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++) {pthread_join(mythreads[j], NULL);}
                 pthread_mutex_destroy(&mutex_partnodedrift); pthread_mutex_destroy(&mutex_nexport); pthread_attr_destroy(&attr);
 #endif
-                tend = my_second(); timetree2 += timediff(tstart, tend);
-            
+                tend = my_second(); timetree2 += timediff(tstart, tend); tstart = my_second();
+                MPI_Barrier(MPI_COMM_WORLD); /* insert MPI Barrier here - will be forced by comms below anyways but this allows for clean timing measurements */
+                tend = my_second(); timewait2 += timediff(tstart, tend);
+
                 tstart = my_second(); Nimport = 0;
                 for(ngrp = ngrp_initial; ngrp < ngrp_initial + N_chunks_for_import; ngrp++) /* send the results for imported elements back to their host tasks */
                 {
@@ -365,9 +368,11 @@ void gravity_tree(void)
 #endif // BH_CALC_DISTANCES
 
 #ifdef RT_USE_TREECOL_FOR_NH
-                for(int kbin=0; kbin < RT_USE_TREECOL_FOR_NH; kbin++) P[place].ColumnDensityBins[kbin] += GravDataOut[j].ColumnDensityBins[kbin];
+                int kbin=0; for(kbin=0; kbin < RT_USE_TREECOL_FOR_NH; kbin++) {P[place].ColumnDensityBins[kbin] += GravDataOut[j].ColumnDensityBins[kbin];}
 #endif                
-                
+#ifdef BH_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
+                P[place].MencInRcrit += GravDataOut[j].MencInRcrit;
+#endif
 #ifdef RT_OTVET
                 if(P[place].Type==0) {int k_freq; for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++) for(k=0;k<6;k++) SphP[place].ET[k_freq][k] += GravDataOut[j].ET[k_freq][k];}
 #endif
@@ -502,7 +507,7 @@ void gravity_tree(void)
     
 
     /* Now the force computation is finished: gather timing and diagnostic information */
-    t1 = WallclockTime = my_second(); timeall += timediff(t0, t1);
+    t1 = WallclockTime = my_second(); timeall = timediff(t0, t1);
     timetree = timetree1 + timetree2; timewait = timewait1 + timewait2; timecomm = timecommsumm1 + timecommsumm2;
     MPI_Reduce(&timetree, &sumt, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(&timetree, &maxt, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
@@ -540,7 +545,7 @@ void gravity_tree(void)
     {
         for(i = 0; i < NumPart; i++) {costtotal_new += P[i].GravCost[TakeLevel];}
         MPI_Reduce(&costtotal_new, &sum_costtotal_new, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-        PRINT_STATUS(" ..relative error in the total number of tree-gravity interactions = %g", (sum_costtotal - sum_costtotal_new) / sum_costtotal); /* can be non-zero if THREAD_SAFE_COSTS is not used (and due to round-off errors). */
+        if(sum_costtotal>0) {PRINT_STATUS(" ..relative error in the total number of tree-gravity interactions = %g", (sum_costtotal - sum_costtotal_new) / sum_costtotal);} /* can be non-zero if THREAD_SAFE_COSTS is not used (and due to round-off errors). */
     }
 #endif
     CPU_Step[CPU_TREEMISC] += measure_time();

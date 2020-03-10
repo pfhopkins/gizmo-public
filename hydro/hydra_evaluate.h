@@ -27,14 +27,17 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
 #ifndef HYDRO_SPH
     struct Input_vec_Riemann Riemann_vec;
     struct Riemann_outputs Riemann_out;
+    memset(&Riemann_vec, 0, sizeof(struct Input_vec_Riemann));
+    memset(&Riemann_out, 0, sizeof(struct Riemann_outputs));
     double face_area_dot_vel;
     face_area_dot_vel = 0;
 #endif
     double face_vel_i=0, face_vel_j=0, Face_Area_Norm=0, Face_Area_Vec[3];
 
 #ifdef HYDRO_MESHLESS_FINITE_MASS
-    double epsilon_entropic_eos_big = 0.5; // can be anything from (small number=more diffusive, less accurate entropy conservation) to ~1.1-1.3 (least diffusive, most noisy)
-    double epsilon_entropic_eos_small = 1.e-3; // should be << epsilon_entropic_eos_big
+    double epsilon_entropic_eos_big, epsilon_entropic_eos_small;
+    epsilon_entropic_eos_big = 0.5; // can be anything from (small number=more diffusive, less accurate entropy conservation) to ~1.1-1.3 (least diffusive, most noisy)
+    epsilon_entropic_eos_small = 1.e-3; // should be << epsilon_entropic_eos_big
 #if defined(FORCE_ENTROPIC_EOS_BELOW)
     epsilon_entropic_eos_small = FORCE_ENTROPIC_EOS_BELOW; // if set manually
 #elif !defined(SELFGRAVITY_OFF)
@@ -53,6 +56,7 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
     
     /* certain particles should never enter the loop: check for these */
     if(local.Mass <= 0) return 0;
+    if(local.Density <= 0) return 0;
 #ifdef GALSF_SUBGRID_WINDS
     if(local.DelayTime > 0) {return 0;}
 #endif
@@ -67,13 +71,6 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
     hinv_j=hinv3_j=hinv4_j=0;
     V_i = local.Mass / local.Density;
     Particle_Size_i = pow(V_i,1./NUMDIMS) * All.cf_atime; // in physical, used below in some routines //
-    double Amax_i = MAX_REAL_NUMBER;
-#if (NUMDIMS==2)
-    Amax_i = 2. * sqrt(V_i/M_PI);
-#endif
-#if (NUMDIMS==3)
-    Amax_i = M_PI * pow((3.*V_i)/(4.*M_PI), 2./3.);
-#endif    
     dt_hydrostep = local.Timestep * All.Timebase_interval / All.cf_hubble_a; /* (physical) timestep */
     out.MaxSignalVel = kernel.sound_i;
     kernel_mode = 0; /* need dwk and wk */
@@ -135,19 +132,22 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
             /* --------------------------------------------------------------------------------- */
             /* get the neighbor list */
             /* --------------------------------------------------------------------------------- */
-            numngb = ngb_treefind_pairs_threads(local.Pos, kernel.h_i, target, &startnode, mode, exportflag,
-                                       exportnodecount, exportindex, ngblist);
+            numngb = ngb_treefind_pairs_threads(local.Pos, kernel.h_i, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist);
             if(numngb < 0) return -1;
             
             for(n = 0; n < numngb; n++)
             {
                 j = ngblist[n];
-                
-                /* check if I need to compute this pair-wise interaction from "i" to "j", or skip it and 
-                    let it be computed from "j" to "i" */
+                if(P[j].Mass <= 0) continue;
+                if(SphP[j].Density <= 0) continue;
+#ifdef GALSF_SUBGRID_WINDS
+                if(SphP[j].DelayTime > 0) continue; /* no hydro forces for decoupled wind particles */
+#endif
+
+                /* check if I need to compute this pair-wise interaction from "i" to "j", or skip it and let it be computed from "j" to "i" */
                 integertime TimeStep_J = (P[j].TimeBin ? (((integertime) 1) << P[j].TimeBin) : 0);
                 int j_is_active_for_fluxes = 0;
-#ifndef BOX_SHEARING // (shearing box means the fluxes at the boundaries are not actually symmetric, so can't do this) //
+#if 0 //!defined(BOX_SHEARING) && !defined(_OPENMP) // (shearing box means the fluxes at the boundaries are not actually symmetric, so can't do this; OpenMP on some new compilers goes bad here because pointers [e.g. P...] are not thread-safe shared with predictive operations, and vectorization means no gain here with OMP anyways) //
                 if(local.Timestep > TimeStep_J) continue; /* compute from particle with smaller timestep */
                 /* use relative positions to break degeneracy */
                 if(local.Timestep == TimeStep_J)
@@ -156,11 +156,6 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
                     if(local.Pos[n0] < P[j].Pos[n0]) continue;
                 }
                 if(TimeBinActive[P[j].TimeBin]) {j_is_active_for_fluxes = 1;}
-#endif
-                if(P[j].Mass <= 0) continue;
-                if(SphP[j].Density <= 0) continue;
-#ifdef GALSF_SUBGRID_WINDS
-                if(SphP[j].DelayTime > 0) continue; /* no hydro forces for decoupled wind particles */
 #endif
                 kernel.dp[0] = local.Pos[0] - P[j].Pos[0];
                 kernel.dp[1] = local.Pos[1] - P[j].Pos[1];
@@ -207,7 +202,8 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
                 kernel.dv[1] = local.Vel[1] - VelPred_j[1];
                 kernel.dv[2] = local.Vel[2] - VelPred_j[2];
                 kernel.rho_ij_inv = 2.0 / (local.Density + SphP[j].Density);
-                
+                double Particle_Size_j = Get_Particle_Size(j) * All.cf_atime; /* physical units */
+
                 /* --------------------------------------------------------------------------------- */
                 /* sound speed, relative velocity, and signal velocity computation */
                 kernel.sound_j = Particle_effective_soundspeed_i(j);
@@ -301,15 +297,15 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
                     with the HLL reimann problem solution. This adds numerical diffusion (albeit limited to the magnitude of the 
                     physical diffusion coefficients), but stabilizes the relevant equations */
 #ifdef HYDRO_SPH
-        face_vel_i = face_vel_j = 0;
-        for(k=0;k<3;k++) 
-        {
-            face_vel_i += local.Vel[k] * kernel.dp[k] / (kernel.r * All.cf_atime);
-            face_vel_j += SphP[j].VelPred[k] * kernel.dp[k] / (kernel.r * All.cf_atime);
-        }
-        // SPH: use the sph 'effective areas' oriented along the lines between particles and direct-difference gradients
-        Face_Area_Norm = local.Mass * P[j].Mass * fabs(kernel.dwk_i+kernel.dwk_j) / (local.Density * SphP[j].Density) * All.cf_atime*All.cf_atime;
-        for(k=0;k<3;k++) {Face_Area_Vec[k] = Face_Area_Norm * kernel.dp[k]/kernel.r;}
+                face_vel_i = face_vel_j = 0;
+                for(k=0;k<3;k++)
+                {
+                    face_vel_i += local.Vel[k] * kernel.dp[k] / (kernel.r * All.cf_atime);
+                    face_vel_j += SphP[j].VelPred[k] * kernel.dp[k] / (kernel.r * All.cf_atime);
+                }
+                // SPH: use the sph 'effective areas' oriented along the lines between particles and direct-difference gradients
+                Face_Area_Norm = local.Mass * P[j].Mass * fabs(kernel.dwk_i+kernel.dwk_j) / (local.Density * SphP[j].Density) * All.cf_atime*All.cf_atime;
+                for(k=0;k<3;k++) {Face_Area_Vec[k] = Face_Area_Norm * kernel.dp[k]/kernel.r;}
 #endif
 
 #ifdef MAGNETIC
@@ -377,13 +373,15 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
                 if(dmass_holder > 0) {dmass_limiter=P[j].Mass;} else {dmass_limiter=local.Mass;}
                 dmass_limiter *= 0.1;
                 if(fabs(dmass_holder) > dmass_limiter) {dmass_holder *= dmass_limiter / fabs(dmass_holder);}
-                out.dMass += dmass_holder;
+                if((local.Timestep < TimeStep_J) || (local.Timestep==TimeStep_J && j_is_active_for_fluxes==1)) {out.dMass += dmass_holder; SphP[j].dMass -= dmass_holder;}
+                if(local.Timestep==TimeStep_J && j_is_active_for_fluxes==0) {out.dMass += 0.5*dmass_holder; SphP[j].dMass -= 0.5*dmass_holder;}
+                 /* this gets subtracted here to ensure the exchange is exact */
                 out.DtMass += Fluxes.rho;
-#ifndef BOX_SHEARING
-                SphP[j].dMass -= dmass_holder;
-#endif
                 double gravwork[3]; gravwork[0]=Fluxes.rho*kernel.dp[0]; gravwork[1]=Fluxes.rho*kernel.dp[1]; gravwork[2]=Fluxes.rho*kernel.dp[2];
                 for(k=0;k<3;k++) {out.GravWorkTerm[k] += gravwork[k];}
+#ifdef METALS   /* if we have mass fluxes, we need to have metal fluxes if we're using them (or any other passive scalars) */
+                if(Fluxes.rho > 0) {out.Dyield[k] += (P[j].Metallicity[k] - local.Metallicity[k]) * dmass_holder;}
+#endif
 #endif
                 for(k=0;k<3;k++) {out.Acc[k] += Fluxes.v[k];}
                 out.DtInternalEnergy += Fluxes.p;                
@@ -424,6 +422,9 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
                     SphP[j].DtMass -= Fluxes.rho;
                     for(k=0;k<3;k++) {SphP[j].GravWorkTerm[k] -= gravwork[k];}
+#ifdef METALS       /* if we have mass fluxes, we need to have metal fluxes if we're using them (or any other passive scalars) */
+                    if(Fluxes.rho < 0) {SphP[j].Dyield[k] = (P[j].Metallicity[k] - local.Metallicity[k]) * dmass_holder;}
+#endif
 #endif
                     for(k=0;k<3;k++) {SphP[j].HydroAccel[k] -= Fluxes.v[k];}
                     SphP[j].DtInternalEnergy -= Fluxes.p;
@@ -457,33 +458,13 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
 #endif
 #endif
 #endif // magnetic //
+                } // j_is_active_for_fluxes
 
-                }
-
-                /* if we have mass fluxes, we need to have metal fluxes if we're using them (or any other passive scalars) */
-#ifdef HYDRO_MESHLESS_FINITE_VOLUME
-                if(dmass_holder != 0)
-                {
-#ifdef METALS
-                    if(Fluxes.rho > 0)
-                    {
-                        /* particle i gains mass from particle j */
-                        for(k=0;k<NUM_METAL_SPECIES;k++)
-                            out.Dyield[k] += (P[j].Metallicity[k] - local.Metallicity[k]) * dmass_holder;
-                    } else {
-                        /* particle j gains mass from particle i */
-                        dmass_holder /= -P[j].Mass;
-                        for(k=0;k<NUM_METAL_SPECIES;k++)
-                            P[j].Metallicity[k] += (local.Metallicity[k] - P[j].Metallicity[k]) * dmass_holder;
-                    }
-#endif
-                }
-#endif
-
+                
                 /* --------------------------------------------------------------------------------- */
                 /* don't forget to save the signal velocity for time-stepping! */
                 /* --------------------------------------------------------------------------------- */
-                if(kernel.vsig > out.MaxSignalVel) out.MaxSignalVel = kernel.vsig;
+                if(kernel.vsig > out.MaxSignalVel) {out.MaxSignalVel = kernel.vsig;}
                 if(j_is_active_for_fluxes) {if(kernel.vsig > SphP[j].MaxSignalVel) SphP[j].MaxSignalVel = kernel.vsig;}
 #ifdef WAKEUP
                 if(!(TimeBinActive[P[j].TimeBin]))
@@ -505,19 +486,14 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
             if(listindex < NODELISTLENGTH)
             {
                 startnode = DATAGET_NAME[target].NodeList[listindex];
-                if(startnode >= 0)
-                    startnode = Nodes[startnode].u.d.nextnode;	/* open it */
+                if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;}	/* open it */
             }
         } // if(mode == 1) //
 #endif
     } // while(startnode >= 0) //
     
     /* Now collect the result at the right place */
-    if(mode == 0)
-        out2particle_hydra(&out, target, 0, loop_iteration);
-    else
-        DATARESULT_NAME[target] = out;
-    
+    if(mode == 0) {out2particle_hydra(&out, target, 0, loop_iteration);} else {DATARESULT_NAME[target] = out;}
     return 0;
 }
 

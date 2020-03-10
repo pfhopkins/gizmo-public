@@ -792,9 +792,11 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
 /***********************************************************************************************************/
 /* this function initializes some of the variables we need */
 /***********************************************************************************************************/
-void rt_set_simple_inits(void)
+void rt_set_simple_inits(int RestartFlag)
 {
-    int i; for(i = 0; i < N_gas; i++)
+    if(RestartFlag==1) return;
+    
+    int i; for(i = 0; i < NumPart; i++)
     {
         if(P[i].Type == 0)
         {
@@ -821,7 +823,7 @@ void rt_set_simple_inits(void)
 #endif
             for(k = 0; k < N_RT_FREQ_BINS; k++)
             {
-                SphP[i].E_gamma[k] = MIN_REAL_NUMBER;
+                if(RestartFlag==0) {SphP[i].E_gamma[k] = MIN_REAL_NUMBER;}
                 SphP[i].ET[k][0]=SphP[i].ET[k][1]=SphP[i].ET[k][2]=1./3.; SphP[i].ET[k][3]=SphP[i].ET[k][4]=SphP[i].ET[k][5]=0;
                 SphP[i].Je[k] = 0;
                 SphP[i].Kappa_RT[k] = rt_kappa(i,k);

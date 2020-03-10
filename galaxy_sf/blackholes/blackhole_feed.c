@@ -212,7 +212,7 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
                             {
                                 if((vrel < BH_CSND_FRAC_BH_MERGE * vesc) && (bh_check_boundedness(j,vrel,vesc,r,sink_radius)==1))
                                 {
-                                    PRINT_STATUS(" ..BH-BH Merger: P[j.]ID=%llu to be swallowed by id=%llu \n", (unsigned long long) P[j].ID, (unsigned long long) local.ID);
+                                    printf(" ..BH-BH Merger: P[j.]ID=%llu to be swallowed by id=%llu \n", (unsigned long long) P[j].ID, (unsigned long long) local.ID);
                                     if((P[j].SwallowID == 0) && (BPP(j).BH_Mass < local.BH_Mass)) {P[j].SwallowID = local.ID;} // most massive BH swallows the other - simplifies analysis
                                 }
                                 else
@@ -266,7 +266,9 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
                                         w = get_random_number(P[j].ID);
                                         if(w < p)
                                         {
-                                            PRINT_STATUS(" ..BH-Food Marked: P[j.]ID=%llu to be swallowed by id=%llu \n", (unsigned long long) P[j].ID, (unsigned long long) local.ID);
+#ifdef BH_OUTPUT_MOREINFO
+                                            printf(" ..BH-Food Marked: P[j.]ID=%llu to be swallowed by id=%llu \n", (unsigned long long) P[j].ID, (unsigned long long) local.ID);
+#endif
                                             if(P[j].SwallowID < local.ID) P[j].SwallowID = local.ID;
                                         }
 #else //if defined(BH_ENFORCE_EDDINGTON_LIMIT) && !defined(BH_ALPHADISK_ACCRETION)
@@ -295,7 +297,9 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
                             w = get_random_number(P[j].ID);
                             if(w < p)
                             {
-                                PRINT_STATUS(" ..BH-Food Marked: j %d w %g p %g TO_BE_SWALLOWED \n",j,w,p);
+#ifdef BH_OUTPUT_MOREINFO
+                                printf(" ..BH-Food Marked: j %d w %g p %g TO_BE_SWALLOWED \n",j,w,p);
+#endif
                                 if(P[j].SwallowID < local.ID) {P[j].SwallowID = local.ID; mass_markedswallow += P[j].Mass*f_accreted;}
                             } // if(w < p)
 #endif // BH_SWALLOWGAS
@@ -329,5 +333,6 @@ void blackhole_feed_loop(void)
 #include "../../system/code_block_xchange_perform_ops_malloc.h" /* this calls the large block of code which contains the memory allocations for the MPI/OPENMP/Pthreads parallelization block which must appear below */
 #include "../../system/code_block_xchange_perform_ops.h" /* this calls the large block of code which actually contains all the loops, MPI/OPENMP/Pthreads parallelization */
 #include "../../system/code_block_xchange_perform_ops_demalloc.h" /* this de-allocates the memory for the MPI/OPENMP/Pthreads parallelization block which must appear above */
+CPU_Step[CPU_BLACKHOLES] += measure_time(); /* collect timings and reset clock for next timing */
 }
 #include "../../system/code_block_xchange_finalize.h" /* de-define the relevant variables and macros to avoid compilation errors and memory leaks */

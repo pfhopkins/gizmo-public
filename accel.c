@@ -121,23 +121,24 @@ void compute_stellar_feedback(void)
     CPU_Step[CPU_MISC] += measure_time();
 
 #ifdef GALSF_FB_MECHANICAL /* check the mechanical sources of feedback */
+    PRINT_STATUS("Start mechanical feedback computation...");
 #ifndef GALSF_USE_SNE_ONELOOP_SCHEME
     mechanical_fb_calc(-2); /* compute weights for coupling [first weight-calculation pass] */
 #endif
     mechanical_fb_calc(-1); /* compute weights for coupling [second weight-calculation pass] */
-    CPU_Step[CPU_SNIIHEATING] += measure_time();
     mechanical_fb_calc(0); /* actually do the mechanical feedback coupling */
-    CPU_Step[CPU_SNIIHEATING] += measure_time();
+    CPU_Step[CPU_SNIIHEATING] += measure_time(); /* collect timings and reset clock for next timing */
 #endif
 #ifdef GALSF_FB_THERMAL
     thermal_fb_calc(); /* thermal feedback */
-    CPU_Step[CPU_SNIIHEATING] += measure_time();
+    CPU_Step[CPU_SNIIHEATING] += measure_time(); /* collect timings and reset clock for next timing */
 #endif
     
 
 #ifdef CHIMES_HII_REGIONS 
     chimes_HII_regions_singledomain(); 
-#endif 
+    CPU_Step[CPU_HIIHEATING] += measure_time(); /* collect timings and reset clock for next timing */
+#endif
     
     
     CPU_Step[CPU_MISC] += measure_time();

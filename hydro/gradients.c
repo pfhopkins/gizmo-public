@@ -27,8 +27,11 @@
 
 #define ASSIGN_ADD_PRESET(x,y,mode) (x+=y)
 #define MINMAX_CHECK(x,xmin,xmax) ((x<xmin)?(xmin=x):((x>xmax)?(xmax=x):(1)))
+#if defined(COOLING)
 #define SHOULD_I_USE_SPH_GRADIENTS(condition_number) ((condition_number > CONDITION_NUMBER_DANGER) ? (1):(0))
-
+#else
+#define SHOULD_I_USE_SPH_GRADIENTS(condition_number) ((condition_number > CONDITION_NUMBER_DANGER) ? (0):(0))
+#endif
 
 
 #if defined(MHD_CONSTRAINED_GRADIENT)
@@ -60,6 +63,19 @@ extern pthread_mutex_t mutex_partnodedrift;
 
 void *GasGrad_evaluate_primary(void *p, int gradient_iteration);
 void *GasGrad_evaluate_secondary(void *p, int gradient_iteration);
+
+
+/* function that tells us whether a given element should be active for gradient calculation*/
+int GasGrad_isactive(int i)
+{
+    if(P[i].Type != 0) return 0;
+    if(P[i].Mass <= 0) return 0;
+    if(SphP[i].Density <= 0 || PPP[i].Hsml <= 0) return 0;
+#if defined(GALSF_SUBGRID_WINDS) && !defined(TURB_DIFF_DYNAMIC)
+    if(SphP[j].DelayTime > 0) return 0;
+#endif
+    return 1;
+}
 
 /* define a common 'gradients' structure to hold
  everything we're going to take derivatives of */
@@ -506,29 +522,27 @@ static inline void out2particle_GasGrad(struct GasGraddata_out *out, int i, int 
 
 
 
-void local_slopelimiter(double *grad, double valmax, double valmin, double alim, double h, double shoot_tol)
+void local_slopelimiter(double *grad, double valmax, double valmin, double alim, double h, double shoot_tol, int pos_preserve, double d_max, double val_cen)
 {
     int k;
     double d_abs = 0.0;
     for(k=0;k<3;k++) {d_abs += grad[k]*grad[k];}
     if(d_abs > 0)
     {
-        double cfac = 1 / (alim * h * sqrt(d_abs));
-        double fabs_max = fabs(valmax);
-        double fabs_min = fabs(valmin);
-        double abs_min = DMIN(fabs_max,fabs_min);
-        if(shoot_tol > 0)
+        d_abs=sqrt(d_abs); double cfac = 1 / (alim * h * d_abs); /* inverse change over distance for limiter */
+        double fabs_max = fabs(valmax), fabs_min = fabs(valmin), abs_max=fabs_max, abs_min=fabs_min, f_corr_overshoot;
+        if(abs_max<abs_min) {abs_max=fabs_min; abs_min=fabs_max;} /* get largest positive/negative deviations, determine smaller in absolute value */
+        f_corr_overshoot = DMIN(abs_min + shoot_tol*abs_max, abs_max); /* = abs_min for shoot_tol = 0; don't let gradient deviate by more than this in size, slightly larger if 'shoot_tol' allows some overshoot tolerance */
+        cfac *= f_corr_overshoot; /* multiply by the correction factor of interest */
+        if(pos_preserve == 1) /* demand that the limited slope be strictly positivity-preserving over the maximal range to any neighbors */
         {
-            double abs_max = DMAX(fabs_max,fabs_min);
-            cfac *= DMIN(abs_min + shoot_tol*abs_max, abs_max);
-        } else {
-            cfac *= abs_min;
+            double fmin = DMIN(val_cen, DMAX(0, DMAX(MIN_REAL_NUMBER*val_cen, DMIN(0.5*(val_cen+valmin), val_cen-f_corr_overshoot)))); /* minimum value: smaller of overshoot target or half positive-definite value, but cannot go negative in larger range */
+            cfac = DMIN( (((val_cen-fmin) / d_max) / d_abs) , cfac ); /* use more conservative limiter, of cfac above or this, over longer range d_max, to restrict here */
         }
-        if(cfac < 1) {for(k=0;k<3;k++) {grad[k] *= cfac;}}
+        if(cfac < 1) {for(k=0;k<3;k++) {grad[k] *= cfac;}} /* scalar gradient correction */
     }
 }
 
-void construct_gradient(double *grad, int i);
 
 void construct_gradient(double *grad, int i)
 {
@@ -550,11 +564,10 @@ void construct_gradient(double *grad, int i)
 
 void hydro_gradient_calc(void)
 {
-    int i, j, k, k1, ndone, ndone_flag;
-    int recvTask, place;
+    CPU_Step[CPU_DENSMISC] += measure_time(); double t0 = my_second();
+    int i, j, k, k1, ndone, ndone_flag, recvTask, place, save_NextParticle;
     double timeall = 0, timecomp1 = 0, timecomp2 = 0, timecommsumm1 = 0, timecommsumm2 = 0, timewait1 = 0, timewait2 = 0;
-    double timecomp, timecomm, timewait, tstart, tend, t0, t1;
-    int save_NextParticle;
+    double timecomp, timecomm, timewait, tstart, tend, t1;
     long long n_exported = 0;
 #ifdef SPHAV_CD10_VISCOSITY_SWITCH
     double NV_dt,NV_dummy,NV_limiter,NV_A,divVel_physical,h_eff,alphaloc,cs_nv;
@@ -566,14 +579,10 @@ void hydro_gradient_calc(void)
     /* allocate buffers to arrange communication */
     long long NTaskTimesNumPart;
     GasGradDataPasser = (struct temporary_data_topass *) mymalloc("GasGradDataPasser",N_gas * sizeof(struct temporary_data_topass));
-    NTaskTimesNumPart = maxThreads * NumPart;
-    size_t MyBufferSize = All.BufferSize;
+    NTaskTimesNumPart = maxThreads * NumPart; size_t MyBufferSize = All.BufferSize;
     All.BunchSize = (int) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
-                                                             sizeof(struct GasGraddata_in) +
-                                                             sizeof(struct GasGraddata_out) +
+                                                             sizeof(struct GasGraddata_in) + sizeof(struct GasGraddata_out) +
                                                              sizemax(sizeof(struct GasGraddata_in),sizeof(struct GasGraddata_out))));
-    CPU_Step[CPU_DENSMISC] += measure_time();
-    t0 = my_second();
     Ngblist = (int *) mymalloc("Ngblist", NTaskTimesNumPart * sizeof(int));
     DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
     DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
@@ -752,7 +761,7 @@ void hydro_gradient_calc(void)
                     if(flagall) {N_chunks_for_import /= 2;} else {break;}
                 } while(N_chunks_for_import > 0);
                 if(N_chunks_for_import == 0) {printf("Memory is insufficient for even one import-chunk: N_chunks_for_import=%d  ngrp_initial=%d  Nimport=%ld  FreeBytes=%lld , but we need to allocate=%lld \n",N_chunks_for_import, ngrp_initial, Nimport, (long long)FreeBytes,(long long)(Nimport * sizeof(struct GasGraddata_in) + Nimport * sizeof(struct GasGraddata_out) + 16384)); endrun(9999);}
-                if(ngrp_initial == 1 && N_chunks_for_import != ((1 << PTask) - ngrp_initial) && ThisTask == 0) PRINT_WARNING("Splitting import operation into sub-chunks as we are hitting memory limits (check this isn't imposing large communication cost)");
+                if(ngrp_initial == 1 && N_chunks_for_import != ((1 << PTask) - ngrp_initial)) PRINT_WARNING("Splitting import operation into sub-chunks as we are hitting memory limits (check this isn't imposing large communication cost)");
                 
                 /* now allocated the import and results buffers */
                 GasGradDataGet = (struct GasGraddata_in *) mymalloc("GasGradDataGet", Nimport * sizeof(struct GasGraddata_in));
@@ -805,8 +814,9 @@ void hydro_gradient_calc(void)
                 pthread_mutex_destroy(&mutex_nexport);
                 pthread_attr_destroy(&attr);
 #endif
-                tend = my_second(); timecomp2 += timediff(tstart, tend);
-
+                tend = my_second(); timecomp2 += timediff(tstart, tend); tstart = my_second();
+                MPI_Barrier(MPI_COMM_WORLD); /* insert MPI Barrier here - will be forced by comms below anyways but this allows for clean timing measurements */
+                tend = my_second(); timewait2 += timediff(tstart, tend);
                 
                 tstart = my_second(); Nimport = 0;
                 for(ngrp = ngrp_initial; ngrp < ngrp_initial + N_chunks_for_import; ngrp++) /* send the results for imported elements back to their host tasks */
@@ -976,9 +986,7 @@ void hydro_gradient_calc(void)
                                 }
                                 /* slope-limit the corrected gradients again, but with a more tolerant slope-limiter */
 #if (MHD_CONSTRAINED_GRADIENT <= 1)
-                                local_slopelimiter(SphP[i].Gradients.B[k],
-                                                   GasGradDataPasser[i].Maxima.B[k],GasGradDataPasser[i].Minima.B[k],
-                                                   0.25, PPP[i].Hsml, 0.25);
+                                local_slopelimiter(SphP[i].Gradients.B[k],GasGradDataPasser[i].Maxima.B[k],GasGradDataPasser[i].Minima.B[k],0.25, PPP[i].Hsml, 0.25, 0, 0, 0);
 #endif
                             }
                         } // closes j_gloop loop
@@ -990,7 +998,7 @@ void hydro_gradient_calc(void)
                 for(k=0;k<3;k++) {SphP[i].Gradients.Phi[k] = GasGradDataPasser[i].PhiGrad[k];}
                 /* build and limit the gradient */
                 construct_gradient(SphP[i].Gradients.Phi,i);
-                local_slopelimiter(SphP[i].Gradients.Phi,GasGradDataPasser[i].Maxima.Phi,GasGradDataPasser[i].Minima.Phi,a_limiter,PPP[i].Hsml,0.0);
+                local_slopelimiter(SphP[i].Gradients.Phi,GasGradDataPasser[i].Maxima.Phi,GasGradDataPasser[i].Minima.Phi,a_limiter,PPP[i].Hsml,0.0, 0, 0, 0);
 #endif
             } // closes Ptype == 0 check
 #endif
@@ -1389,21 +1397,13 @@ void hydro_gradient_calc(void)
             }
 #endif // ifdef radtransfer
             
-#if defined(EOS_ELASTIC)
-            // update time-derivative of stress tensor (needs to be done before slope-limiting to use full velocity gradient information) //
+#if defined(EOS_ELASTIC) // update time-derivative of stress tensor (needs to be done before slope-limiting to use full velocity gradient information) //
             elastic_body_update_driftkick(i,1.,2);
 #endif
             
             /* finally, we need to apply a sensible slope limiter to the gradients, to prevent overshooting */
-            double stol = 0.0;
-            double stol_tmp, stol_diffusion;
-            stol_diffusion = 0.1; stol_tmp = stol;
-            double h_lim = PPP[i].Hsml;
-//#if (defined(MAGNETIC) && defined(COOLING)) ||
-            h_lim = DMAX(PPP[i].Hsml,GasGradDataPasser[i].MaxDistance);
-//#else
-//            h_lim = DMIN(GasGradDataPasser[i].MaxDistance , 4.0*PPP[i].Hsml);
-//#endif
+            double stol = 0.0, stol_tmp, stol_diffusion; stol_diffusion = 0.1; stol_tmp = stol;
+            double h_lim = PPP[i].Hsml, d_max = DMAX(PPP[i].Hsml,GasGradDataPasser[i].MaxDistance); h_lim = d_max;
             /* fraction of H at which maximum reconstruction is allowed (=0.5 for 'standard'); for pure hydro we can
              be a little more aggresive and the equations are still stable (but this is as far as you want to push it) */
             double a_limiter = 0.25; if(SphP[i].ConditionNumber>100) a_limiter=DMIN(0.5, 0.25 + 0.25 * (SphP[i].ConditionNumber-100)/100);
@@ -1416,45 +1416,42 @@ void hydro_gradient_calc(void)
 #if (SLOPE_LIMITER_TOLERANCE == 0)
             a_limiter *= 2.0; stol = 0.0;
 #endif
-#if defined(KERNEL_CRK_FACES)
-            //a_limiter = 0.5; h_lim = DMAX(PPP[i].Hsml,GasGradDataPasser[i].MaxDistance); stol = 0.0;
-            //a_limiter = 0.25; h_lim = GasGradDataPasser[i].MaxDistance; stol = 0.125;
-#endif
 
 #ifdef SINGLE_STAR_SINK_DYNAMICS
             SphP[i].Density_Relative_Maximum_in_Kernel = GasGradDataPasser[i].Maxima.Density;
 #endif
-            local_slopelimiter(SphP[i].Gradients.Density,GasGradDataPasser[i].Maxima.Density,GasGradDataPasser[i].Minima.Density,a_limiter,h_lim,0);
-            local_slopelimiter(SphP[i].Gradients.Pressure,GasGradDataPasser[i].Maxima.Pressure,GasGradDataPasser[i].Minima.Pressure,a_limiter,h_lim,stol);
+            local_slopelimiter(SphP[i].Gradients.Density,GasGradDataPasser[i].Maxima.Density,GasGradDataPasser[i].Minima.Density,a_limiter,h_lim,0, 1,d_max,SphP[i].Density);
+            int pressure_is_positive_definite = 1;
+#if defined(EOS_TILLOTSON) || defined(EOS_ELASTIC)
+            pressure_is_positive_definite = 0; /* some physics allow negative pressures - account for that here */
+#endif
+            local_slopelimiter(SphP[i].Gradients.Pressure,GasGradDataPasser[i].Maxima.Pressure,GasGradDataPasser[i].Minima.Pressure,a_limiter,h_lim,stol, pressure_is_positive_definite,d_max,SphP[i].Pressure);
             stol_tmp = stol;
 #if defined(VISCOSITY)
             stol_tmp = DMAX(stol,stol_diffusion);
 #endif
 #ifdef TURB_DIFF_DYNAMIC
-            for (k1 = 0; k1 < 3; k1++) {
-                local_slopelimiter(GasGradDataPasser[i].GradVelocity_bar[k1], GasGradDataPasser[i].Maxima.Velocity_bar[k1], GasGradDataPasser[i].Minima.Velocity_bar[k1], a_limiter, h_lim, stol);
-            }
+            for (k1=0;k1<3;k1++) {local_slopelimiter(GasGradDataPasser[i].GradVelocity_bar[k1], GasGradDataPasser[i].Maxima.Velocity_bar[k1], GasGradDataPasser[i].Minima.Velocity_bar[k1], a_limiter, h_lim, stol, 0,0,0);}
 #endif
-            for(k1=0;k1<3;k1++) {local_slopelimiter(SphP[i].Gradients.Velocity[k1],GasGradDataPasser[i].Maxima.Velocity[k1],GasGradDataPasser[i].Minima.Velocity[k1],a_limiter,h_lim,stol_tmp);}
+            for(k1=0;k1<3;k1++) {local_slopelimiter(SphP[i].Gradients.Velocity[k1],GasGradDataPasser[i].Maxima.Velocity[k1],GasGradDataPasser[i].Minima.Velocity[k1],a_limiter,h_lim,stol_tmp, 0,0,0);}
 #ifdef DOGRAD_INTERNAL_ENERGY
             stol_tmp = stol;
 #if defined(CONDUCTION)
             stol_tmp = DMAX(stol,stol_diffusion);
 #endif
-            local_slopelimiter(SphP[i].Gradients.InternalEnergy,GasGradDataPasser[i].Maxima.InternalEnergy,GasGradDataPasser[i].Minima.InternalEnergy,a_limiter,h_lim,stol_tmp);
+            local_slopelimiter(SphP[i].Gradients.InternalEnergy,GasGradDataPasser[i].Maxima.InternalEnergy,GasGradDataPasser[i].Minima.InternalEnergy,a_limiter,h_lim,stol_tmp, 1,d_max,SphP[i].InternalEnergyPred);
 #endif
 #ifdef DOGRAD_SOUNDSPEED
-            local_slopelimiter(SphP[i].Gradients.SoundSpeed,GasGradDataPasser[i].Maxima.SoundSpeed,GasGradDataPasser[i].Minima.SoundSpeed,a_limiter,h_lim,stol);
+            local_slopelimiter(SphP[i].Gradients.SoundSpeed,GasGradDataPasser[i].Maxima.SoundSpeed,GasGradDataPasser[i].Minima.SoundSpeed,a_limiter,h_lim,stol, 1,d_max,Particle_effective_soundspeed_i(i));
 #endif
 #if defined(TURB_DIFF_METALS) && !defined(TURB_DIFF_METALS_LOWORDER)
-            for(k1=0;k1<NUM_METAL_SPECIES;k1++)
-                local_slopelimiter(SphP[i].Gradients.Metallicity[k1],GasGradDataPasser[i].Maxima.Metallicity[k1],GasGradDataPasser[i].Minima.Metallicity[k1],a_limiter,h_lim,DMAX(stol,stol_diffusion));
+            for(k1=0;k1<NUM_METAL_SPECIES;k1++) {local_slopelimiter(SphP[i].Gradients.Metallicity[k1],GasGradDataPasser[i].Maxima.Metallicity[k1],GasGradDataPasser[i].Minima.Metallicity[k1],a_limiter,h_lim,DMAX(stol,stol_diffusion), 1,d_max,P[i].Metallicity[k1]);}
 #endif
 #ifdef RT_COMPGRAD_EDDINGTON_TENSOR
             for(k1=0;k1<N_RT_FREQ_BINS;k1++)
             {
-                local_slopelimiter(SphP[i].Gradients.E_gamma_ET[k1],GasGradDataPasser[i].Maxima.E_gamma[k1],GasGradDataPasser[i].Minima.E_gamma[k1],a_limiter,h_lim,stol);
-                local_slopelimiter(GasGradDataPasser[i].Gradients_E_gamma[k1],GasGradDataPasser[i].Maxima.E_gamma[k1],GasGradDataPasser[i].Minima.E_gamma[k1],a_limiter,h_lim,DMAX(stol,stol_diffusion));
+                local_slopelimiter(SphP[i].Gradients.E_gamma_ET[k1],GasGradDataPasser[i].Maxima.E_gamma[k1],GasGradDataPasser[i].Minima.E_gamma[k1],a_limiter,h_lim,stol, 0,0,0);
+                local_slopelimiter(GasGradDataPasser[i].Gradients_E_gamma[k1],GasGradDataPasser[i].Maxima.E_gamma[k1],GasGradDataPasser[i].Minima.E_gamma[k1],a_limiter,h_lim,DMAX(stol,stol_diffusion), 1,d_max,SphP[i].E_gamma_Pred[k1]*SphP[i].Density/P[i].Mass);
             }
 #endif
 #ifdef MAGNETIC
@@ -1462,19 +1459,15 @@ void hydro_gradient_calc(void)
             double v_tmp = P[i].Mass / SphP[i].Density;
             double tmp_d = sqrt(1.0e-37 + (2. * All.cf_atime/All.cf_afac1 * SphP[i].Pressure*v_tmp*v_tmp) +
                                 SphP[i].BPred[0]*SphP[i].BPred[0]+SphP[i].BPred[1]*SphP[i].BPred[1]+SphP[i].BPred[2]*SphP[i].BPred[2]);
-            double q = fabs(SphP[i].divB) * PPP[i].Hsml / tmp_d;
-            //double q = 80.0 * fabs(SphP[i].divB) * PPP[i].Hsml / tmp_d; // 300,100 work; 30-50 not great; increased coefficient owing to new formulation with wt_i,wt_j in hydro
-            double alim2 = a_limiter * (1. + q*q);
-            if(alim2 > 0.5) alim2=0.5;
+            double q = fabs(SphP[i].divB) * PPP[i].Hsml / tmp_d, alim2 = a_limiter * (1. + q*q); if(alim2 > 0.5) alim2=0.5;
             stol_tmp = stol;
 #ifdef MHD_NON_IDEAL
             stol_tmp = DMAX(stol,stol_diffusion);
 #endif
-            for(k1=0;k1<3;k1++)
-                local_slopelimiter(SphP[i].Gradients.B[k1],GasGradDataPasser[i].Maxima.B[k1],GasGradDataPasser[i].Minima.B[k1],alim2,h_lim,stol_tmp);
+            for(k1=0;k1<3;k1++) {local_slopelimiter(SphP[i].Gradients.B[k1],GasGradDataPasser[i].Maxima.B[k1],GasGradDataPasser[i].Minima.B[k1],alim2,h_lim,stol_tmp, 0,0,0);}
 #endif
 #if defined(DIVBCLEANING_DEDNER) && !defined(MHD_CONSTRAINED_GRADIENT_MIDPOINT)
-            local_slopelimiter(SphP[i].Gradients.Phi,GasGradDataPasser[i].Maxima.Phi,GasGradDataPasser[i].Minima.Phi,a_limiter,h_lim,stol);
+            local_slopelimiter(SphP[i].Gradients.Phi,GasGradDataPasser[i].Maxima.Phi,GasGradDataPasser[i].Minima.Phi,a_limiter,h_lim,stol, 0,0,0);
 #endif
 #endif
 
@@ -1675,7 +1668,7 @@ void hydro_gradient_calc(void)
     
     /* collect some timing information */
     t1 = WallclockTime = my_second();
-    timeall += timediff(t0, t1);
+    timeall = timediff(t0, t1);
     timecomp = timecomp1 + timecomp2;
     timewait = timewait1 + timewait2;
     timecomm = timecommsumm1 + timecommsumm2;
@@ -1715,8 +1708,6 @@ int GasGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount
         local = GasGradDataGet[target];
     
     /* check if we should bother doing a neighbor loop */
-    if(local.Hsml <= 0) return 0;
-    if(local.Mass == 0) return 0;
     if(gradient_iteration == 0)
         if(local.GQuant.Density <= 0) return 0;
     
@@ -1757,24 +1748,21 @@ int GasGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount
             if (gradient_iteration == 0) {
                 numngb = ngb_treefind_pairs_threads(local.Pos, All.TurbDynamicDiffFac * kernel.h_i, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist);
             }
-            else {
+            else
 #endif
-            numngb = ngb_treefind_pairs_threads(local.Pos, kernel.h_i, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist);
-#ifdef TURB_DIFF_DYNAMIC
+            {
+                numngb = ngb_treefind_pairs_threads(local.Pos, kernel.h_i, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist);
             }
-#endif
             
-            if(numngb < 0)
-                return -1;
+            if(numngb < 0) {return -1;}
             
             for(n = 0; n < numngb; n++)
             {
                 j = ngblist[n];
-                if(P[j].Type != 0) continue;
-                if(j >= N_gas) continue;
+                if(GasGrad_isactive(j)==0) continue;
 
                 integertime TimeStep_J = (P[j].TimeBin ? (((integertime) 1) << P[j].TimeBin) : 0);
-#ifndef BOX_SHEARING // (shearing box means the fluxes at the boundaries are not actually symmetric, so can't do this) //
+#if 0 //!defined(BOX_SHEARING) && !defined(_OPENMP) // (shearing box means the fluxes at the boundaries are not actually symmetric, so can't do this; OpenMP on some new compilers goes bad here because pointers [e.g. P...] are not thread-safe shared with predictive operations, and vectorization means no gain here with OMP anyways) //
                 if(local.Timestep > TimeStep_J) continue; /* compute from particle with smaller timestep */
                 /* use relative positions to break degeneracy */
                 if(local.Timestep == TimeStep_J)
@@ -1786,8 +1774,6 @@ int GasGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount
 #else
                 swap_to_j = 0;
 #endif
-                if(P[j].Mass <= 0) continue;
-                if(SphP[j].Density <= 0) continue;
                 
                 kernel.dp[0] = local.Pos[0] - P[j].Pos[0];
                 kernel.dp[1] = local.Pos[1] - P[j].Pos[1];
@@ -2284,7 +2270,7 @@ int GasGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount
 
 void *GasGrad_evaluate_primary(void *p, int gradient_iteration)
 {
-#define CONDITION_FOR_EVALUATION if(P[i].Type==0)
+#define CONDITION_FOR_EVALUATION if(GasGrad_isactive(i))
 #define EVALUATION_CALL GasGrad_evaluate(i,0,exportflag,exportnodecount,exportindex,ngblist,gradient_iteration)
 #include "../system/code_block_primary_loop_evaluation.h"
 #undef CONDITION_FOR_EVALUATION

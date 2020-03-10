@@ -440,7 +440,7 @@ double find_abundances_and_rates(double logT, double rho, int target, double shi
     j = (int) t;
     if(j<0){j=0;}
     if(j>NCOOLTAB){
-        PRINT_WARNING("warning: j>NCOOLTAB : j=%d t %g Tlow %g Thi %g logT %g Tmin %g deltaT %g \n",j,t,Tmin+deltaT*j,Tmin+deltaT*(j+1),logT,Tmin,deltaT);fflush(stdout);
+        PRINT_WARNING("j>NCOOLTAB : j=%d t %g Tlow %g Thi %g logT %g Tmin %g deltaT %g \n",j,t,Tmin+deltaT*j,Tmin+deltaT*(j+1),logT,Tmin,deltaT);fflush(stdout);
         j=NCOOLTAB;
     }
     Tlow = Tmin + deltaT * j;
@@ -462,13 +462,17 @@ double find_abundances_and_rates(double logT, double rho, int target, double shi
     {
         double NH_SS_z;
         if(gJH0>0)
-            NH_SS_z = NH_SS*pow(local_gammamultiplier*gJH0/1.0e-12,0.66)*pow(10.,0.173*(logT-4.));
+            {NH_SS_z = NH_SS*pow(local_gammamultiplier*gJH0/1.0e-12,0.66)*pow(10.,0.173*(logT-4.));}
         else
-            NH_SS_z = NH_SS*pow(10.,0.173*(logT-4.));
+            {NH_SS_z = NH_SS*pow(10.,0.173*(logT-4.));}
         double q_SS = nHcgs/NH_SS_z;
-        shieldfac = 1./(1.+q_SS*(1.+q_SS/2.*(1.+q_SS/3.*(1.+q_SS/4.*(1.+q_SS/5.*(1.+q_SS/6.*q_SS))))));
+#ifdef COOLING_SELFSHIELD_TESTUPDATE_RAHMATI
+        shieldfac = 0.98 / pow(1 + pow(q_SS,1.64), 2.28) + 0.02 / pow(1 + q_SS, 0.84); // from Rahmati et al. 2012: gives gentler cutoff at high densities
+#else
+        shieldfac = 1./(1.+q_SS*(1.+q_SS/2.*(1.+q_SS/3.*(1.+q_SS/4.*(1.+q_SS/5.*(1.+q_SS/6.*q_SS)))))); // this is exp(-q) down to ~1e-5, then a bit shallower, but more than sufficient approximation here //
+#endif
 #ifdef COOL_LOW_TEMPERATURES
-        if(logT < Tmin+1) shieldfac *= (logT-Tmin); // make cutoff towards Tmin more continuous //
+        if(logT < Tmin+1) shieldfac *= (logT-Tmin); // make cutoff towards Tmin more continuous: PFH ??? //
 #endif
 #ifdef GALSF_EFFECTIVE_EQS
         shieldfac = 1; // self-shielding is implicit in the sub-grid model already //
@@ -506,15 +510,9 @@ double find_abundances_and_rates(double logT, double rho, int target, double shi
         geH0 = flow * GammaeH0[j] + fhi * GammaeH0[j + 1];
         geHe0 = flow * GammaeHe0[j] + fhi * GammaeHe0[j + 1];
         geHep = flow * GammaeHep[j] + fhi * GammaeHep[j + 1];
-#ifdef COOL_LOW_TEMPERATURES
-        // make cutoff towards Tmin more continuous //
-        if(logT < Tmin+1) {
-            geH0 *= (logT-Tmin);
-            geHe0 *= (logT-Tmin);
-            geHep *= (logT-Tmin);
-        }
+#ifdef COOL_LOW_TEMPERATURES // make cutoff towards Tmin more continuous: PFH ??? //
+        if(logT < Tmin+1) {geH0 *= (logT-Tmin); geHe0 *= (logT-Tmin); geHep *= (logT-Tmin);}
 #endif
-        
         fac_noneq_cgs = (dt * All.UnitTime_in_s / All.HubbleParam) * necgs; // factor needed below to asses whether timestep is larger/smaller than recombination time
         if(necgs <= 1.e-25 || J_UV == 0)
         {
@@ -729,7 +727,11 @@ double CoolingRate(double logT, double rho, double n_elec_guess, int target)
     else
         NH_SS_z=NH_SS*pow(10.,0.173*(logT-4.));
     double q_SS = nHcgs/NH_SS_z;
-    shieldfac = 1./(1.+q_SS*(1.+q_SS/2.*(1.+q_SS/3.*(1.+q_SS/4.*(1.+q_SS/5.*(1.+q_SS/6.*q_SS))))));
+#ifdef COOLING_SELFSHIELD_TESTUPDATE_RAHMATI
+    shieldfac = 0.98 / pow(1 + pow(q_SS,1.64), 2.28) + 0.02 / pow(1 + q_SS, 0.84); // from Rahmati et al. 2012: gives gentler cutoff at high densities
+#else
+    shieldfac = 1./(1.+q_SS*(1.+q_SS/2.*(1.+q_SS/3.*(1.+q_SS/4.*(1.+q_SS/5.*(1.+q_SS/6.*q_SS)))))); // this is exp(-q) down to ~1e-5, then a bit shallower, but more than sufficient approximation here //
+#endif
 #ifdef GALSF_EFFECTIVE_EQS
     shieldfac = 1; // self-shielding is implicit in the sub-grid model already //
 #endif

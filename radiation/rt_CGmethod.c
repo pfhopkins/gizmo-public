@@ -122,10 +122,8 @@ for(k=0;k<N_RT_FREQ_BINS;k++) memset(x[k], 0, N_gas * sizeof(double));}
  to do the weights/matrix calculation on all particles */
 void rt_diffusion_cg_solve(void)
 {
-    int k, j;
-    double alpha_cg, beta, sum;
-    double rel, res, maxrel, glob_maxrel, DQ;
-    double dt = (All.Radiation_Ti_endstep - All.Radiation_Ti_begstep) * All.Timebase_interval / All.cf_hubble_a;
+    PRINT_STATUS("start CG iteration for radiative transfer (diffusion equation)...");
+    int k, j; double alpha_cg, beta, sum, rel, res, maxrel, glob_maxrel, DQ, dt = (All.Radiation_Ti_endstep - All.Radiation_Ti_begstep) * All.Timebase_interval / All.cf_hubble_a;
     
     /* initialization for the CG method */
     MALLOC_CG(ZVec); MALLOC_CG(XVec); MALLOC_CG(QVec); MALLOC_CG(DVec); MALLOC_CG(Residue); MALLOC_CG(Diag); MALLOC_CG(Diag2); // allocate and zero all the arrays
@@ -191,7 +189,7 @@ void rt_diffusion_cg_solve(void)
             if(iter >= 1 && (res <= ACCURACY * sum || iter >= MAX_ITER)) {done_key[k]=1; ndone++;}
         }
         iter++;
-        if(iter > MAX_ITER) {terminate("failed to converge in CG iteration \n");}
+        if(iter > MAX_ITER) {terminate("failed to converge in CG iteration");}
     }
     while(ndone < N_RT_FREQ_BINS);
     

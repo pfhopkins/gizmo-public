@@ -258,7 +258,7 @@ int ags_density_evaluate(int target, int mode, int *exportflag, int *exportnodec
 void ags_density(void)
 {
     /* initialize variables used below, in particlar the structures we need to call throughout the iteration */
-    MyFloat *Left, *Right, *AGS_Prev; double fac, fac_lim, desnumngb, desnumngbdev; long long ntot;
+    CPU_Step[CPU_MISC] += measure_time(); double t00_truestart = my_second(); MyFloat *Left, *Right, *AGS_Prev; double fac, fac_lim, desnumngb, desnumngbdev; long long ntot;
     int i, npleft, iter=0, redo_particle, particle_set_to_minhsml_flag = 0, particle_set_to_maxhsml_flag = 0;
     AGS_Prev = (MyFloat *) mymalloc("AGS_Prev", NumPart * sizeof(MyFloat));
     Left = (MyFloat *) mymalloc("Left", NumPart * sizeof(MyFloat));
@@ -320,7 +320,7 @@ void ags_density(void)
                 /* allow the neighbor tolerance to gradually grow as we iterate, so that we don't spend forever trapped in a narrow iteration */
 #if defined(AGS_FACE_CALCULATION_IS_ACTIVE)
                 double ConditionNumber = do_cbe_nvt_inversion_for_faces(i); // right now we don't do anything with this, but could use to force expansion of search, as in hydro
-                if(ConditionNumber > MAX_REAL_NUMBER) {PRINT_WARNING("CNUM warning for CBE: ThisTask=%d i=%d ConditionNumber=%g desnumngb=%g NumNgb=%g iter=%d NVT=%g/%g/%g/%g/%g/%g AGS_Hsml=%g \n",ThisTask,i,ConditionNumber,desnumngb,PPP[i].NumNgb,iter,P[i].NV_T[0][0],P[i].NV_T[1][1],P[i].NV_T[2][2],P[i].NV_T[0][1],P[i].NV_T[0][2],P[i].NV_T[1][2],PPP[i].AGS_Hsml);}
+                if(ConditionNumber > MAX_REAL_NUMBER) {PRINT_WARNING("CNUM for CBE: ThisTask=%d i=%d ConditionNumber=%g desnumngb=%g NumNgb=%g iter=%d NVT=%g/%g/%g/%g/%g/%g AGS_Hsml=%g \n",ThisTask,i,ConditionNumber,desnumngb,PPP[i].NumNgb,iter,P[i].NV_T[0][0],P[i].NV_T[1][1],P[i].NV_T[2][2],P[i].NV_T[0][1],P[i].NV_T[0][2],P[i].NV_T[1][2],PPP[i].AGS_Hsml);}
                 if(iter > 10) {desnumngbdev = DMIN( 0.25*desnumngb , desnumngbdev * exp(0.1*log(desnumngb/(16.*desnumngbdev))*((double)iter - 9.)) );}
 #else
                 if(iter > 4) {desnumngbdev = DMIN( 0.25*desnumngb , desnumngbdev * exp(0.1*log(desnumngb/(16.*desnumngbdev))*((double)iter - 3.)) );}
@@ -568,7 +568,7 @@ void ags_density(void)
     myfree(AGS_Prev);
     
     /* collect some timing information */
-    double t1; t1 = WallclockTime = my_second(); timeall += timediff(t0, t1);
+    double t1; t1 = WallclockTime = my_second(); timeall = timediff(t00_truestart, t1);
     CPU_Step[CPU_AGSDENSCOMPUTE] += timecomp; CPU_Step[CPU_AGSDENSWAIT] += timewait;
     CPU_Step[CPU_AGSDENSCOMM] += timecomm; CPU_Step[CPU_AGSDENSMISC] += timeall - (timecomp + timewait + timecomm);
 }
@@ -646,10 +646,10 @@ double INLINE_FUNC Get_Particle_Size_AGS(int i)
      don't have to re-compute it each time. That makes this function fast enough to
      call -inside- of loops (e.g. hydro computations) */
 #if (NUMDIMS == 1)
-    return 2.00000 * PPP[i].AGS_Hsml / PPP[i].NumNgb;
+    return 2.00000 * PPP[i].AGS_Hsml / PPP[i].NumNgb; // (2)^(1/1)
 #endif
 #if (NUMDIMS == 2)
-    return 1.25331 * PPP[i].AGS_Hsml / PPP[i].NumNgb; // sqrt(Pi/2)
+    return 1.77245 * PPP[i].AGS_Hsml / PPP[i].NumNgb; // (pi)^(1/2)
 #endif
 #if (NUMDIMS == 3)
     return 1.61199 * PPP[i].AGS_Hsml / PPP[i].NumNgb; // (4pi/3)^(1/3)
@@ -946,6 +946,7 @@ int AGSForce_evaluate(int target, int mode, int *exportflag, int *exportnodecoun
 
 void AGSForce_calc(void)
 {
+    CPU_Step[CPU_MISC] += measure_time(); double t00_truestart = my_second();
     PRINT_STATUS(" ..entering AGS-Force calculation [as hydro loop for non-gas elements]\n");
     /* before doing any operations, need to zero the appropriate memory so we can correctly do pair-wise operations */
 #if defined(DM_SIDM)
@@ -956,7 +957,9 @@ void AGSForce_calc(void)
     #include "../system/code_block_xchange_perform_ops_demalloc.h" /* this de-allocates the memory for the MPI/OPENMP/Pthreads parallelization block which must appear above */
     /* do final operations on results: these are operations that can be done after the complete set of iterations */
     /* collect timing information */
-    CPU_Step[CPU_AGSDENSCOMPUTE] += timecomp; CPU_Step[CPU_AGSDENSWAIT] += timewait; CPU_Step[CPU_AGSDENSCOMM] += timecomm; CPU_Step[CPU_AGSDENSMISC] += timeall - (timecomp + timewait + timecomm);
+    double t1; t1 = WallclockTime = my_second(); timeall = timediff(t00_truestart, t1);
+    CPU_Step[CPU_AGSDENSCOMPUTE] += timecomp; CPU_Step[CPU_AGSDENSWAIT] += timewait;
+    CPU_Step[CPU_AGSDENSCOMM] += timecomm; CPU_Step[CPU_AGSDENSMISC] += timeall - (timecomp + timewait + timecomm);
 }
 #include "../system/code_block_xchange_finalize.h" /* de-define the relevant variables and macros to avoid compilation errors and memory leaks */
 

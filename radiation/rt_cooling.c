@@ -100,8 +100,7 @@ double rt_DoCooling(int i, double dt_internal)
             u_lower /= 1.1;
             
             
-            if(iter++ >= 1000) //MAXITER)
-                terminate("bracketing failure");
+            if(iter++ >= 1000) {terminate("bracketing failure");}
         }
         
         /* bisection */
@@ -119,11 +118,8 @@ double rt_DoCooling(int i, double dt_internal)
             
             iter++;
             
-            if(iter >= (MAXITER - 10))
-                printf("u= %g\n", u);
-            
-            if(iter >= MAXITER)
-                terminate("convergence failure");
+            if(iter >= (MAXITER - 10)) {printf("u= %g\n", u);}
+            if(iter >= MAXITER) {terminate("convergence failure");}
         }
         while(fabs(du / u) > 1.0e-6);
         du = u - u_old;

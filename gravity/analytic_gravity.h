@@ -133,7 +133,7 @@ void GravAccel_StaticPlummerSphere()
 #ifdef GRAVITY_ANALYTIC_ANCHOR_TO_PARTICLE
         for(k=0;k<3;k++) {dp[k] = -P[i].min_xyz_to_bh[k];}
 #endif
-        double r2 = dp[0]*dp[0]+dp[1]*dp[1]+dp[2]*dp[2], r = sqrt(r2);
+        double r2, r; r2 = dp[0]*dp[0]+dp[1]*dp[1]+dp[2]*dp[2]; r = sqrt(r2);
         for(k=0;k<3;k++) {P[i].GravAccel[k] += -dp[k] / pow(r2 + 1, 1.5);}
 #ifdef COMPUTE_TIDAL_TENSOR_IN_GRAVTREE
         double f=pow(1+r2, 1.5), f2=pow(1+r2, 2.5);

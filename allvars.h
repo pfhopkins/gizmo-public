@@ -48,10 +48,15 @@
 #define IO_REDUCED_MODE
 #endif
 #ifndef IO_DISABLE_HDF5
-#define HAVE_HDF5
+#define HAVE_HDF5               /* default to using HDF5 */
 #include <hdf5.h>
 #endif
-
+#if !defined(OUTPUT_POSITIONS_IN_DOUBLE) && defined(HAVE_HDF5)
+#define OUTPUT_POSITIONS_IN_DOUBLE /* recommended to always default to recording positions in double-precision: there's not really a good reason not to do this unless we need to match unformatted binary */
+#endif
+#if !defined(LONG_INTEGER_TIME)
+#define LONG_INTEGER_TIME   /* always recommended: on modern machines the memory overhead cost of this is negligible */
+#endif
 
 
 #define DO_PREPROCESSOR_EXPAND_(VAL)  VAL ## 1
@@ -232,15 +237,15 @@
 #define SINGLE_STAR_TIMESTEPPING 0
 #define SINGLE_STAR_ACCRETION 12
 #define SINGLE_STAR_SINK_FORMATION (0+1+2+4+8+16+32) // 0=density threshold, 1=virial criterion, 2=convergent flow, 4=local extremum, 8=no sink in kernel, 16=not falling into sink, 32=hill (tidal) criterion
-#define BH_ACCRETE_NEARESTFIRST
+//#define BH_ACCRETE_NEARESTFIRST
 #define DEVELOPER_MODE
-#define IO_SUPPRESS_TIMEBIN_STDOUT 14 //only prints outputs to log file if the highest active timebin index is within n of the highest timebin (dt_bin=2^(-N)*dt_bin,max)
+#define IO_SUPPRESS_TIMEBIN_STDOUT 16 //only prints outputs to log file if the highest active timebin index is within n of the highest timebin (dt_bin=2^(-N)*dt_bin,max)
 #define BH_OUTPUT_GASSWALLOW //save accretion histories
-#ifdef SLOPE2_SINKS //Slope2 sinks, this should give dN/dM~M^-2 in isoT sims
-#define BH_DEBUG_DISABLE_MERGERS
-#define BH_ALPHADISK_ACCRETION (1.2)
-#else
+#define BH_OUTPUT_FORMATION_PROPERTIES //save at-formation properties of sink particles
+//#define GALSF_SFR_IMF_VARIATION // save gas properties at sink formation time
 #define BH_ALPHADISK_ACCRETION (1.0e6)
+#ifdef GRAIN_FLUID
+#define BH_GRAVCAPTURE_NONGAS
 #endif
 #ifdef MAGNETIC
 #define MHD_CONSTRAINED_GRADIENT 1
@@ -264,7 +269,7 @@
 #define BH_CALC_DISTANCES // calculate distance to nearest sink in gravity tree
 
 #if (SINGLE_STAR_SINK_FORMATION & 1) // figure out flags needed for the chosen sink formation model
-#define GALSF_SFR_VIRIAL_SF_CRITERION 2
+#define GALSF_SFR_VIRIAL_SF_CRITERION 4
 #endif
 #if (SINGLE_STAR_SINK_FORMATION & 16)
 #ifndef SINGLE_STAR_FIND_BINARIES
@@ -626,25 +631,19 @@
 #define MYSORT_DATAINDEX qsort
 #endif
 
-// compiler specific data alignment hints
-// XLC compiler
-/*
-#if defined(__xlC__)
+#ifndef DISABLE_MEMORY_MANAGER // compiler specific data alignment hints: use only with memory manager as malloc'd memory is not sufficiently aligned
+// (experimenting right now with removing this, as many compilers internal AVX optimizations appear to be doing marginally better, and can resolve crashes on some compilers)
+#if defined(__xlC__) // XLC compiler
 #define ALIGN(n) __attribute__((__aligned__(n)))
-// GNU compiler 
-#elif defined(__GNUC__)
+#elif defined(__GNUC__) // GNU compiler
 #define ALIGN(n) __attribute__((__aligned__(n)))
-// Intel Compiler
-#elif defined(__INTEL_COMPILER)
-// GNU Intel Compiler
+#elif defined(__INTEL_COMPILER) // Intel Compiler
 #define ALIGN(n) __declspec(align(n))
-// Unknown Compiler
-#else
-#define ALIGN(n) 
 #endif
- */
-#define ALIGN(n) // experimenting right now with removing this, as many compilers internal AVX optimizations appear to be doing marginally better, and can resolve crashes on some compilers
-
+#endif
+#ifndef ALIGN // Unknown Compiler or using default malloc
+#define ALIGN(n)
+#endif
 
 #define ASSIGN_ADD(x,y,mode) (mode == 0 ? (x=y) : (x+=y))
 
@@ -852,6 +851,7 @@ typedef unsigned long long peanokey;
 #define  GRAVITY_G      (6.672e-8)
 #define  SOLAR_MASS     (1.989e33)
 #define  SOLAR_LUM      (3.826e33)
+#define  SOLAR_RADIUS   (6.957e10)
 #define  BOLTZMANN      (1.38066e-16)
 #define  C_LIGHT        (2.9979e10)
 #define  PROTONMASS     (1.6726e-24)
@@ -1012,47 +1012,57 @@ typedef MyDouble MyBigFloat;
 #define CPU_TREERECV       6
 #define CPU_TREEMISC       7
 #define CPU_TREEBUILD      8
-#define CPU_TREEUPDATE     9
-#define CPU_TREEHMAXUPDATE 10
-#define CPU_DOMAIN         11
-#define CPU_DENSCOMPUTE    12
-#define CPU_DENSWAIT       13
-#define CPU_DENSCOMM       14
-#define CPU_DENSMISC       15
-#define CPU_HYDCOMPUTE     16
-#define CPU_HYDWAIT        17
-#define CPU_HYDCOMM        18
-#define CPU_HYDMISC        19
-#define CPU_DRIFT          20
-#define CPU_TIMELINE       21
-#define CPU_POTENTIAL      22
-#define CPU_MESH           23
-#define CPU_PEANO          24
-#define CPU_COOLINGSFR     25
-#define CPU_SNAPSHOT       26
-#define CPU_FOF            27
-#define CPU_BLACKHOLES     28
-#define CPU_MISC           29
-#define CPU_DRAGFORCE      30
-#define CPU_SNIIHEATING    31
-#define CPU_HIIHEATING     32
-#define CPU_LOCALWIND      33
-#define CPU_HYDNETWORK     34
-#define CPU_AGSDENSCOMPUTE 35
-#define CPU_AGSDENSWAIT    36
-#define CPU_AGSDENSCOMM    37
-#define CPU_AGSDENSMISC    38
-#define CPU_SIDMSCATTER    39
-#define CPU_DYNDIFFMISC       40
-#define CPU_DYNDIFFCOMPUTE    41
-#define CPU_DYNDIFFWAIT       42
-#define CPU_DYNDIFFCOMM       43
-#define CPU_IMPROVDIFFMISC    44
-#define CPU_IMPROVDIFFCOMPUTE 45
-#define CPU_IMPROVDIFFWAIT    46
-#define CPU_IMPROVDIFFCOMM    47
+#define CPU_TREEHMAXUPDATE 9
+#define CPU_DOMAIN         10
+#define CPU_DENSCOMPUTE    11
+#define CPU_DENSWAIT       12
+#define CPU_DENSCOMM       13
+#define CPU_DENSMISC       14
+#define CPU_HYDCOMPUTE     15
+#define CPU_HYDWAIT        16
+#define CPU_HYDCOMM        17
+#define CPU_HYDMISC        18
+#define CPU_DRIFT          19
+#define CPU_TIMELINE       20
+#define CPU_POTENTIAL      21
+#define CPU_MESH           22
+#define CPU_PEANO          23
+#define CPU_COOLINGSFR     24
+#define CPU_SNAPSHOT       25
+#define CPU_FOF            26
+#define CPU_BLACKHOLES     27
+#define CPU_MISC           28
+#define CPU_DRAGFORCE      29
+#define CPU_SNIIHEATING    30
+#define CPU_HIIHEATING     31
+#define CPU_LOCALWIND      32
+#define CPU_COOLSFRIMBAL   33
+#define CPU_AGSDENSCOMPUTE 34
+#define CPU_AGSDENSWAIT    35
+#define CPU_AGSDENSCOMM    36
+#define CPU_AGSDENSMISC    37
+#define CPU_DYNDIFFMISC       38
+#define CPU_DYNDIFFCOMPUTE    39
+#define CPU_DYNDIFFWAIT       40
+#define CPU_DYNDIFFCOMM       41
+#define CPU_IMPROVDIFFMISC    42
+#define CPU_IMPROVDIFFCOMPUTE 43
+#define CPU_IMPROVDIFFWAIT    44
+#define CPU_IMPROVDIFFCOMM    45
+#define CPU_RTNONFLUXOPS  46
+#define CPU_DUMMY00       47
+#define CPU_DUMMY01       48
+#define CPU_DUMMY02       49
+#define CPU_DUMMY03       50
+#define CPU_DUMMY04       51
+#define CPU_DUMMY05       52
+#define CPU_DUMMY06       53
+#define CPU_DUMMY07       54
+#define CPU_DUMMY08       55
+#define CPU_DUMMY09       56
+#define CPU_DUMMY10       57
 
-#define CPU_PARTS          48  /* this gives the number of parts above (must be last) */
+#define CPU_PARTS          58  /* this gives the number of parts above (must be last) */
 
 #define CPU_STRING_LEN 120
 
@@ -1257,14 +1267,11 @@ extern int *Send_offset, *Send_count, *Recv_count, *Recv_offset;
 extern size_t AllocatedBytes;
 extern size_t HighMarkBytes;
 extern size_t FreeBytes;
-
 extern double CPU_Step[CPU_PARTS];
 extern char CPU_Symbol[CPU_PARTS];
 extern char CPU_SymbolImbalance[CPU_PARTS];
 extern char CPU_String[CPU_STRING_LEN + 1];
-
 extern double WallclockTime;    /*!< This holds the last wallclock time measurement for timings measurements */
-
 extern int Flag_FullStep;	/*!< Flag used to signal that the current step involves all particles */
 
 extern size_t HighMark_run,  HighMark_domain, HighMark_gravtree, HighMark_pmperiodic,
@@ -1410,6 +1417,9 @@ extern FILE *FdBlackHoles;	/*!< file handle for blackholes.txt log-file. */
 #ifdef BH_OUTPUT_GASSWALLOW
 extern FILE *FdBhSwallowDetails;
 #endif
+#ifdef BH_OUTPUT_FORMATION_PROPERTIES
+extern FILE *FdBhFormationDetails;
+#endif
 #if !defined(IO_REDUCED_MODE) || defined(BH_OUTPUT_MOREINFO)
 extern FILE *FdBlackHolesDetails;
 #ifdef BH_OUTPUT_MOREINFO
@@ -1534,7 +1544,7 @@ extern struct global_data_all_processes
     UnitVelocity_in_cm_per_s,	/*!< factor to convert intqernal velocity unit to cm/sec */
     UnitLength_in_cm,		/*!< factor to convert internal length unit to cm/h */
     UnitPressure_in_cgs,	/*!< factor to convert internal pressure unit to cgs units (little 'h' still around!) */
-    UnitDensity_in_cgs,		/*!< factor to convert internal length unit to g/cm^3*h^2 */
+    UnitDensity_in_cgs,		/*!< factor to convert internal density unit to g/cm^3*h^2 */
     UnitEnergy_in_cgs,		/*!< factor to convert internal energy to cgs units */
     UnitTime_in_Megayears,	/*!< factor to convert internal time to megayears/h */
     GravityConstantInternal,	/*!< If set to zero in the parameterfile, the internal value of the
@@ -2099,13 +2109,17 @@ extern ALIGN(32) struct particle_data
 #ifdef BH_COUNTPROGS
     int BH_CountProgs;
 #endif
-    MyFloat BH_Mass;
+    MyFloat BH_Mass;    
 #if defined(BH_GRAVCAPTURE_FIXEDSINKRADIUS)
     MyFloat SinkRadius;
 #endif
+#ifdef GRAIN_FLUID
+    MyFloat BH_Dust_Mass;
+#endif    
 #ifdef SINGLE_STAR_SINK_DYNAMICS  
     MyFloat SwallowTime; /* freefall time of a particle onto a sink particle  */
     int BH_Ngb_Flag; /* Whether or not the gas live's in a sink's hydro stencil */
+    MyFloat BH_SurroundingGasVel; /* Relative speed of sink to surrounding gas  */
 #endif 
 #ifdef BH_ALPHADISK_ACCRETION
     MyFloat BH_Mass_AlphaDisk;
@@ -2133,6 +2147,9 @@ extern ALIGN(32) struct particle_data
     MyFloat BH_MinPot;
 #endif
 #endif  /* if defined(BLACK_HOLES) */
+#ifdef BH_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
+    MyFloat MencInRcrit;
+#endif
     
 #ifdef BH_CALC_DISTANCES
     MyFloat min_dist_to_bh;
@@ -2156,6 +2173,9 @@ extern ALIGN(32) struct particle_data
 #endif  
 #endif
 
+#if ( (!defined(FLAG_NOT_IN_PUBLIC_CODE)) && (defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(FLAG_NOT_IN_PUBLIC_CODE)) )
+#define SINGLE_STAR_PROTOSTELLAR_EVOLUTION 1 //default PS evolution based on ORION module
+#endif
     
 #if defined(DM_SIDM)
     integertime dt_step_sidm; /*!< timestep used if self-interaction probabilities greater than 0.2 are found */
@@ -2337,7 +2357,10 @@ extern struct sph_particle_data
     MyDouble MaxKineticEnergyNgb;   /*!< maximum kinetic energy (with respect to neighbors): use for entropy 'switch' */
 #endif
 
-    
+#if defined(TURB_DIFF_METALS) || (defined(METALS) && defined(HYDRO_MESHLESS_FINITE_VOLUME))
+    MyFloat Dyield[NUM_METAL_SPECIES];
+#endif
+
 #ifdef HYDRO_SPH
     MyDouble DhsmlHydroSumFactor;   /* for 'traditional' SPH, we need the SPH hydro-element volume estimator */
 #endif
@@ -2662,6 +2685,9 @@ extern struct gravdata_out
     double Chimes_G0[CHIMES_LOCAL_UV_NBINS]; 
     double Chimes_fluxPhotIon[CHIMES_LOCAL_UV_NBINS]; 
 #endif 
+#ifdef BH_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
+    MyLongDouble MencInRcrit;
+#endif
 #ifdef EVALPOTENTIAL
     MyLongDouble Potential;
 #endif
@@ -2791,6 +2817,11 @@ enum iofields
   IO_BHMASSALPHA,
   IO_BH_ANGMOM,
   IO_BHMDOT,
+  IO_BHDUSTMASS,
+  IO_R_PROTOSTAR,
+  IO_MASS_D_PROTOSTAR,
+  IO_STAGE_PROTOSTAR,
+  IO_LUM_SINGLESTAR,
   IO_BHPROGS,
   IO_BH_DIST,
   IO_ACRB,

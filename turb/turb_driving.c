@@ -271,18 +271,21 @@ void set_turb_ampl(void)
         if(delta > 0)
         {
             PRINT_STATUS(" ..updating dudt_*\n");
-            for(i=0; i < N_gas; i++)
+            for(i=0; i < NumPart; i++)
             {
-                if(P[i].Mass > 0)
+                if(P[i].Type == 0)
                 {
-                    e_diss_sum += SphP[i].EgyDiss;
-                    SphP[i].DuDt_diss = (SphP[i].EgyDiss / P[i].Mass) / delta;
-                    SphP[i].EgyDiss = 0;
-                    e_drive_sum += SphP[i].EgyDrive;
-                    SphP[i].DuDt_drive = (SphP[i].EgyDrive / P[i].Mass) / delta;
-                    SphP[i].EgyDrive = 0;
-                } else {
-                    SphP[i].DuDt_diss = SphP[i].EgyDiss = SphP[i].DuDt_drive = SphP[i].EgyDrive = 0;
+                    if(P[i].Mass > 0)
+                    {
+                        e_diss_sum += SphP[i].EgyDiss;
+                        SphP[i].DuDt_diss = (SphP[i].EgyDiss / P[i].Mass) / delta;
+                        SphP[i].EgyDiss = 0;
+                        e_drive_sum += SphP[i].EgyDrive;
+                        SphP[i].DuDt_drive = (SphP[i].EgyDrive / P[i].Mass) / delta;
+                        SphP[i].EgyDrive = 0;
+                    } else {
+                        SphP[i].DuDt_diss = SphP[i].EgyDiss = SphP[i].DuDt_drive = SphP[i].EgyDrive = 0;
+                    }
                 }
             }
             MPI_Allreduce(&e_diss_sum, &glob_diss_sum, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
@@ -404,13 +407,16 @@ void log_turb_temp(void)
 {
 #ifndef IO_REDUCED_MODE
     int i; double dudt_drive = 0, dudt_diss = 0, mass = 0, ekin = 0, ethermal = 0;
-    for(i = 0; i < N_gas; i++)
+    for(i = 0; i < NumPart; i++)
     {
-        dudt_drive += P[i].Mass * SphP[i].DuDt_drive;
-        dudt_diss += P[i].Mass * SphP[i].DuDt_diss;
-        ekin += 0.5 * P[i].Mass * (P[i].Vel[0] * P[i].Vel[0] + P[i].Vel[1] * P[i].Vel[1] + P[i].Vel[2] * P[i].Vel[2]);
-        ethermal += P[i].Mass * SphP[i].InternalEnergy;
-        mass += P[i].Mass;
+        if(P[i].Type == 0)
+        {
+            dudt_drive += P[i].Mass * SphP[i].DuDt_drive;
+            dudt_diss += P[i].Mass * SphP[i].DuDt_diss;
+            ekin += 0.5 * P[i].Mass * (P[i].Vel[0] * P[i].Vel[0] + P[i].Vel[1] * P[i].Vel[1] + P[i].Vel[2] * P[i].Vel[2]);
+            ethermal += P[i].Mass * SphP[i].InternalEnergy;
+            mass += P[i].Mass;
+        }
     }
     double glob_mass, glob_dudt_drive, glob_dudt_diss, glob_ekin, glob_ethermal;
     MPI_Allreduce(&mass, &glob_mass, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);

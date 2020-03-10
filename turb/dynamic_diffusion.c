@@ -190,58 +190,6 @@ static inline void out2particle_DynamicDiff(struct DynamicDiffdata_out *out, int
 }
 
 
-void local_slopelimiter_dyndiff(double *grad, double valmax, double valmin, double alim, double h, double shoot_tol);
-void local_slopelimiter_dyndiff(double *grad, double valmax, double valmin, double alim, double h, double shoot_tol) {
-    int k;
-    double d_abs = 0.0;
-    for (k = 0; k < 3; k++) {
-        d_abs += grad[k] * grad[k];
-    }
-
-    if (d_abs > 0) {
-        double cfac = 1 / (alim * h * sqrt(d_abs));
-        double fabs_max = fabs(valmax);
-        double fabs_min = fabs(valmin);
-        double abs_min = DMIN(fabs_max,fabs_min);
-        
-        if (shoot_tol > 0) {
-            double abs_max = DMAX(fabs_max,fabs_min);
-            cfac *= DMIN(abs_min + shoot_tol*abs_max, abs_max);
-        } 
-        else {
-            cfac *= abs_min;
-        }
-    
-        if (cfac < 1) {
-            for (k = 0; k < 3; k++) {
-                grad[k] *= cfac;
-            }
-        }
-    }
-}
-
-void construct_gradient_dyndiff(double *grad, int i);
-
-void construct_gradient_dyndiff(double *grad, int i) {
-    int k;
-    /* check if the matrix is well-conditioned: otherwise we will use the 'standard SPH-like' derivative estimation */
-    if (SHOULD_I_USE_SPH_GRADIENTS(SphP[i].ConditionNumber)) {
-        for (k = 0; k < 3; k++) {
-            grad[k] *= PPP[i].DhsmlNgbFactor / SphP[i].Density;// Use DhsmlNgbFactor as an approximation
-        }
-    } 
-    else {
-        /* ok, the condition number was good so we used the matrix-like gradient estimator */
-        double v_tmp[3];
-        for (k = 0; k < 3; k++) {
-            v_tmp[k] = grad[k];
-        }
-
-        for (k = 0; k < 3; k++) {
-            grad[k] = SphP[i].NV_T[k][0] * v_tmp[0] + SphP[i].NV_T[k][1] * v_tmp[1] + SphP[i].NV_T[k][2] * v_tmp[2];
-        }
-    }
-}
 
 /**
  *  Iterates over particles and calculates the large filtered quantities. Will do this
@@ -255,6 +203,7 @@ void construct_gradient_dyndiff(double *grad, int i) {
  */
 void dynamic_diff_calc(void) {
     PRINT_STATUS("Start dynamic diffusion calculations...");
+    CPU_Step[CPU_MISC] += measure_time();
     int i, j, k, v, k1, u, ngrp, ndone, ndone_flag, dynamic_iteration;
     double shear_factor, dynamic_denominator, trace = 0, trace_dynamic_fac = 0, hhat2 = 0, leonardTensor[3][3], prefactor = 0;
 #ifdef IO_TURB_DIFF_DYNAMIC_ERROR
@@ -618,8 +567,8 @@ void dynamic_diff_calc(void) {
 #endif
          
                         for (k = 0; k < 3; k++) {
-                            construct_gradient_dyndiff(DynamicDiffDataPasser[i].GradVelocity_hat[k], i);
-                            local_slopelimiter_dyndiff(DynamicDiffDataPasser[i].GradVelocity_hat[k], DynamicDiffDataPasser[i].Maxima.Velocity_hat[k], DynamicDiffDataPasser[i].Minima.Velocity_hat[k], a_limiter, h_lim, stol);
+                            construct_gradient(DynamicDiffDataPasser[i].GradVelocity_hat[k], i);
+                            local_slopelimiter(DynamicDiffDataPasser[i].GradVelocity_hat[k], DynamicDiffDataPasser[i].Maxima.Velocity_hat[k], DynamicDiffDataPasser[i].Minima.Velocity_hat[k], a_limiter, h_lim, stol, 0,0,0);
                         }
 
                         /* Slope-limit the VelShear_hat tensor */
@@ -787,7 +736,7 @@ void dynamic_diff_calc(void) {
  
     /* collect some timing information */
     t1 = WallclockTime = my_second();
-    timeall += timediff(t0, t1);
+    timeall = timediff(t0, t1);
     timecomp = timecomp1 + timecomp2;
     timewait = timewait1 + timewait2 + timewait3;
     timecomm = timecommsumm1 + timecommsumm2;

@@ -12,20 +12,13 @@
 %        MULTIPLEDOMAINS=16
 %        ADAPTIVE_GRAVSOFT_FORGAS
 %
-InitCondFile                       /panfs/ds06/sxs/phopkins/GIZMO_tests/zeldovich/zeldovich_ics
-OutputDir                          /panfs/ds06/sxs/phopkins/GIZMO_tests/zeldovich
-RestartFile                        restart
-SnapshotFileBase                   snapshot
-OutputListFilename                 output_times.txt
+InitCondFile                       zeldovich_ics
 ICFormat                           3
-SnapFormat                         3
-TimeLimitCPU                       100000
-CpuTimeBetRestartFile              7200
-ResubmitOn                         0
-ResubmitCommand                    my-scriptfile
+OutputDir                          output
+TimeLimitCPU                       50000
 MaxMemSize                         1600
-PartAllocFactor                    3
-BufferSize                         100
+PartAllocFactor                    5
+BufferSize                         150
 TimeBegin                          0.00990099
 TimeMax                            1
 ComovingIntegrationOn              1
@@ -35,43 +28,31 @@ OmegaBaryon                        1
 HubbleParam                        1
 BoxSize                            64000
 OutputListOn                       0
-TimeBetSnapshot                    1.05
 TimeOfFirstSnapshot                0.00990099
-TimeBetStatistics                  1.5
-NumFilesPerSnapshot                1
-NumFilesWrittenInParallel          1
-ErrTolIntAccuracy                  0.02
+TimeBetSnapshot                    1.05
 CourantFac                         0.2
-MaxRMSDisplacementFac              0.25
 MaxSizeTimestep                    0.01
-MinSizeTimestep                    1e-08
-ErrTolTheta                        0.7
-ErrTolForceAcc                     0.0025
 TreeDomainUpdateFrequency          0.05
 DesNumNgb                          32
-MaxNumNgbDeviation                 0.05
-ArtBulkViscConst                   1
-ArtCondConstant                    0.25
-ViscosityAMin                      0.025
-ViscosityAMax                      2
 UnitLength_in_cm                   3.08568e+21
 UnitMass_in_g                      1.989e+43
 UnitVelocity_in_cm_per_s           100000
-GravityConstantInternal            0
-MaxHsml                            1e+09
 MinGasHsmlFractional               1
 SofteningGas                       100 % adjust me depending on adaptive softenings!
-SofteningHalo                      100
-SofteningDisk                      0.003
-SofteningBulge                     0.003
-SofteningStars                     0.003
-SofteningBndry                     0.003
+Softening_Type1                    0 % no DM (OmegaBaryon=1); otherwise set this!
+Softening_Type2                    0 % no type-2 particles
+Softening_Type3                    0 % no type-3 particles
+Softening_Type4                    0 % no type-4 (newly-formed star) particles
+Softening_Type5                    0 % no type-5 (blackhole) particles
 SofteningGasMaxPhys                100 % adjust me depending on adaptive softenings!
-SofteningHaloMaxPhys               100
-SofteningDiskMaxPhys               0.003
-SofteningBulgeMaxPhys              0.003
-SofteningStarsMaxPhys              0.003
-SofteningBndryMaxPhys              0.003
-InitGasTemp                        0
+Softening_Type1_MaxPhysLimit       0
+Softening_Type2_MaxPhysLimit       0
+Softening_Type3_MaxPhysLimit       0
+Softening_Type4_MaxPhysLimit       0
+Softening_Type5_MaxPhysLimit       0
 MinGasTemp                         0.001
+% -- optional numerical parameters (requires additional Config flags)
+ArtCondConstant                    0.25
+ViscosityAMin                      0.025
+ViscosityAMax                      2
 

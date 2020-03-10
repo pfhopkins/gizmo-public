@@ -66,9 +66,7 @@ void run(void)
         }
 	
         find_timesteps();		/* find-timesteps */
-#if defined(SINGLE_STAR_SINK_DYNAMICS) || defined(BH_WIND_SPAWN)
         int TreeReconstructFlag_local = TreeReconstructFlag;
-#endif	 
         do_first_halfstep_kick();	/* half-step kick at beginning of timestep for synchronous particles */
         
         find_next_sync_point_and_drift();	/* find next synchronization point and drift particles to this time.
@@ -80,18 +78,15 @@ void run(void)
         
         set_non_standard_physics_for_current_time();	/* update auxiliary physics for current time */
 
-#if defined(SINGLE_STAR_SINK_DYNAMICS) || defined(BH_WIND_SPAWN)
-        MPI_Allreduce(&TreeReconstructFlag_local, &TreeReconstructFlag, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD); // if one process reconstructs the tree then everbody has to
+#if defined(SINGLE_STAR_SINK_DYNAMICS)
+        if(All.NumForcesSinceLastDomainDecomp > All.TreeDomainUpdateFrequency * All.TotNumPart) {TreeReconstructFlag_local = 1;}
 #endif
+        MPI_Allreduce(&TreeReconstructFlag_local, &TreeReconstructFlag, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD); // if one process reconstructs the tree then everbody has to
         if(GlobNumForceUpdate > All.TreeDomainUpdateFrequency * All.TotNumPart)	/* check whether we have a big step */
         {
             domain_Decomposition(0, 0, 1);      /* do domain decomposition if step is big enough, and set new list of active particles  */
         }
-#if defined(SINGLE_STAR_SINK_DYNAMICS)
-        else if(All.NumForcesSinceLastDomainDecomp > All.TreeDomainUpdateFrequency * All.TotNumPart || TreeReconstructFlag) {domain_Decomposition(0, 0, 1);}
-#elif defined(BH_WIND_SPAWN)
         else if(TreeReconstructFlag) {domain_Decomposition(0, 0, 1);}
-#endif
         else
         {
             force_update_tree();	/* update tree dynamically with kicks of last step so that it can be reused */
@@ -125,11 +120,9 @@ void run(void)
         compute_hydro_densities_and_forces();	/* densities, gradients, & hydro-accels for synchronous particles */
         
         do_second_halfstep_kick();	/* this does the half-step kick at the end of the timestep */
-
+        
         calculate_non_standard_physics();	/* source terms are here treated in a strang-split fashion */
-
-
-	
+        
         /* Check whether we need to interrupt the run */
         int stopflag = 0;
         if(ThisTask == 0)
@@ -241,41 +234,30 @@ void calculate_non_standard_physics(void)
     
     
 #ifdef RADTRANSFER
-    
+    CPU_Step[CPU_MISC] += measure_time();
+
 #if defined(RT_SOURCE_INJECTION)
-#if !defined(GALSF)
-    if(Flag_FullStep) 
+#if !defined(RT_INJECT_PHOTONS_DISCRETELY)
+    if(Flag_FullStep) /* for continous injection, requires all sources and gas be active synchronously or else 2x-counts */
 #endif
-    {
-        rt_source_injection(); /* source injection into neighbor gas particles (only on full timesteps) */
-    }
+        {rt_source_injection();} /* source injection into neighbor gas particles (only on full timesteps) */
 #endif
     
 #if defined(RT_DIFFUSION_CG)
     /* use the CG method to solve the RT diffusion equation implicitly for all particles */
-    if(Flag_FullStep) /* only do it for full timesteps */
-    {
-        PRINT_STATUS("start CG iteration for radiative transfer (diffusion equation)...");
-        All.Radiation_Ti_endstep = All.Ti_Current;
-        double timeeach = 0, timeall = 0, tstart = 0, tend = 0;
-        tstart = my_second();
-        rt_diffusion_cg_solve();
-        tend = my_second();
-        timeeach = timediff(tstart, tend);
-        MPI_Allreduce(&timeeach, &timeall, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        All.Radiation_Ti_begstep = All.Radiation_Ti_endstep;
-    }
+    if(Flag_FullStep) /* only on full timesteps, requires synchronous timestepping right now */
+        {All.Radiation_Ti_endstep = All.Ti_Current; rt_diffusion_cg_solve(); All.Radiation_Ti_begstep = All.Radiation_Ti_endstep;}
 #endif
 
 #if defined(RT_CHEM_PHOTOION) && (!defined(COOLING) || defined(RT_COOLING_PHOTOHEATING_OLDFORMAT))
-    /* chemistry updated at sub-stepping as well */
-    rt_update_chemistry();
+    rt_update_chemistry(); /* chemistry updated at sub-stepping as well */
 #ifndef IO_REDUCED_MODE
     if(Flag_FullStep) {rt_write_chemistry_stats();}
 #endif
 #endif
     
-#endif
+    CPU_Step[CPU_RTNONFLUXOPS] += measure_time();
+#endif // RADTRANSFER block
     
     
 #ifdef BLACK_HOLES
@@ -305,7 +287,10 @@ void calculate_non_standard_physics(void)
     {
         spawn_bh_wind_feedback();
         rearrange_particle_sequence();
-        force_treebuild(NumPart, NULL);
+//#ifndef SINGLE_STAR_SINK_DYNAMICS
+//        force_treebuild(NumPart, NULL); // not needed [we think] if we use TreeReconstructFlag to force a new domain decomp+build before next timestep
+//#endif
+        
         MaxUnSpanMassBH=MaxUnSpanMassBH_global=0.;
     }
 #endif
@@ -317,7 +302,7 @@ void calculate_non_standard_physics(void)
     CPU_Step[CPU_COOLINGSFR] += measure_time(); // finish time calc for SFR+cooling
 #endif
 #ifdef GALSF
-    star_formation_parent_routine(); // master star formation routine //
+    star_formation_parent_routine(); // master star formation routine (because this involves common particle conversions, want to keep this at end of this subroutine) //
     CPU_Step[CPU_COOLINGSFR] += measure_time(); // finish time calc for SFR+cooling
 #endif
         
@@ -807,50 +792,39 @@ void write_cpu_log(void)
   MPI_Reduce(CPU_Step, max_CPU_Step, CPU_PARTS, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
   MPI_Reduce(CPU_Step, avg_CPU_Step, CPU_PARTS, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
 
-
   if(ThisTask == 0)
     {
       for(i = 0; i < CPU_PARTS; i++) {avg_CPU_Step[i] /= NTask;}
 
-      put_symbol(0.0, 1.0, '#');
-
-      for(i = 1, tsum = 0.0; i < CPU_PARTS; i++)
-	{
-	  if(max_CPU_Step[i] > 0)
-	    {
-	      t0 = tsum;
-	      t1 = tsum + avg_CPU_Step[i] * (avg_CPU_Step[i] / max_CPU_Step[i]);
-	      put_symbol(t0 / avg_CPU_Step[0], t1 / avg_CPU_Step[0], CPU_Symbol[i]);
-	      tsum += t1 - t0;
-
-	      t0 = tsum;
-	      t1 = tsum + avg_CPU_Step[i] * ((max_CPU_Step[i] - avg_CPU_Step[i]) / max_CPU_Step[i]);
-	      put_symbol(t0 / avg_CPU_Step[0], t1 / avg_CPU_Step[0], CPU_SymbolImbalance[i]);
-	      tsum += t1 - t0;
-	    }
-	}
-
-      put_symbol(tsum / max_CPU_Step[0], 1.0, '-');
-
 #ifndef IO_REDUCED_MODE
-      fprintf(FdBalance, "Step=%7lld  sec=%10.3f  Nf=%2d%09d  %s\n", (long long) All.NumCurrentTiStep, max_CPU_Step[0],
-	      (int) (GlobNumForceUpdate / 1000000000), (int) (GlobNumForceUpdate % 1000000000), CPU_String);
-      fflush(FdBalance);
+      put_symbol(0.0, 1.0, '#');
+      for(i = 1, tsum = 0.0; i < CPU_PARTS; i++)
+      {
+            if(max_CPU_Step[i] > 0)
+            {
+              t0 = tsum; t1 = t0 + avg_CPU_Step[i] * (avg_CPU_Step[i] / max_CPU_Step[i]);
+              put_symbol(t0 / avg_CPU_Step[0], t1 / avg_CPU_Step[0], CPU_Symbol[i]);
+              tsum += t1 - t0;
+
+              t0 = tsum; t1 = t0 + avg_CPU_Step[i] * ((max_CPU_Step[i] - avg_CPU_Step[i]) / max_CPU_Step[i]);
+              put_symbol(t0 / avg_CPU_Step[0], t1 / avg_CPU_Step[0], CPU_SymbolImbalance[i]);
+              tsum += t1 - t0;
+            }
+      }
+      put_symbol(tsum / max_CPU_Step[0], 1.0, '-');
+      fprintf(FdBalance, "Step=%7lld  sec=%10.3f  Nf=%2d%09d  %s\n", (long long) All.NumCurrentTiStep, max_CPU_Step[0], (int) (GlobNumForceUpdate / 1000000000), (int) (GlobNumForceUpdate % 1000000000), CPU_String); fflush(FdBalance);
 #endif
-        
+
       if(All.CPU_TimeBinCountMeasurements[All.HighestActiveTimeBin] == NUMBER_OF_MEASUREMENTS_TO_RECORD)
 	{
 	  All.CPU_TimeBinCountMeasurements[All.HighestActiveTimeBin]--;
-	  memmove(&All.CPU_TimeBinMeasurements[All.HighestActiveTimeBin][0],
-		  &All.CPU_TimeBinMeasurements[All.HighestActiveTimeBin][1],
-		  (NUMBER_OF_MEASUREMENTS_TO_RECORD - 1) * sizeof(double));
+	  memmove(&All.CPU_TimeBinMeasurements[All.HighestActiveTimeBin][0], &All.CPU_TimeBinMeasurements[All.HighestActiveTimeBin][1], (NUMBER_OF_MEASUREMENTS_TO_RECORD - 1) * sizeof(double));
 	}
 
-      All.CPU_TimeBinMeasurements[All.HighestActiveTimeBin][All.CPU_TimeBinCountMeasurements
-							    [All.HighestActiveTimeBin]++] = max_CPU_Step[0];
+      All.CPU_TimeBinMeasurements[All.HighestActiveTimeBin][All.CPU_TimeBinCountMeasurements[All.HighestActiveTimeBin]++] = max_CPU_Step[0];
     }
 
-  CPUThisRun += CPU_Step[0];
+    CPUThisRun += CPU_Step[0];
 
     for(i = 0; i < CPU_PARTS; i++) {CPU_Step[i] = 0;}
     if(ThisTask == 0)
@@ -864,72 +838,88 @@ void write_cpu_log(void)
   if(ThisTask == 0)
     {
       fprintf(FdCPU, "Step %lld, Time: %g, CPUs: %d\n",(long long) All.NumCurrentTiStep, All.Time, NTask);
+      fprintf(FdCPU, "Nactive=%lld, Imbal(Max/Mean)=%g \n", (long long) GlobNumForceUpdate, (max_CPU_Step[0]/(MIN_REAL_NUMBER + avg_CPU_Step[0])-1.)*NTask+1.);
       fprintf(FdCPU,
 	      "total         %10.2f  %5.1f%%\n"
-	      "treegrav      %10.2f  %5.1f%%\n"
+	      "tree+gravity  %10.2f  %5.1f%%\n"
 	      "   treebuild  %10.2f  %5.1f%%\n"
-	      "   treeupdate %10.2f  %5.1f%%\n"
 	      "   treewalk   %10.2f  %5.1f%%\n"
 	      "   treecomm   %10.2f  %5.1f%%\n"
 	      "   treeimbal  %10.2f  %5.1f%%\n"
+#ifdef PMGRID
+          "pm-gravity    %10.2f  %5.1f%%\n"
+#endif
+#if !defined(EVALPOTENTIAL) && (defined(COMPUTE_POTENTIAL_ENERGY) || defined(OUTPUT_POTENTIAL))
+          "potentialeval %10.2f  %5.1f%%\n"
+#endif
 #ifdef AGS_HSML_CALCULATION_IS_ACTIVE
-	      "adaptgrav     %10.2f  %5.1f%%\n"
+	      "ags-nongas    %10.2f  %5.1f%%\n"
 	      "   agsdensity %10.2f  %5.1f%%\n"
 	      "   agscomm    %10.2f  %5.1f%%\n"
 	      "   agsimbal   %10.2f  %5.1f%%\n"
           "   agsmisc    %10.2f  %5.1f%%\n"
 #endif
 #ifdef TURB_DIFF_DYNAMIC
-        "dyndiff       %10.2f  %5.1f%%\n"
-        "   compute    %10.2f  %5.1f%%\n"
-        "   comm       %10.2f  %5.1f%%\n"
-        "   wait       %10.2f  %5.1f%%\n"
-        "   misc       %10.2f  %5.1f%%\n"
-        "velsmooth     %10.2f  %5.1f%%\n"
-        "   compute    %10.2f  %5.1f%%\n"
-        "   comm       %10.2f  %5.1f%%\n"
-        "   wait       %10.2f  %5.1f%%\n"
-        "   misc       %10.2f  %5.1f%%\n"
+          "dyndiff       %10.2f  %5.1f%%\n"
+          "   compute    %10.2f  %5.1f%%\n"
+          "   comm       %10.2f  %5.1f%%\n"
+          "   wait       %10.2f  %5.1f%%\n"
+          "   misc       %10.2f  %5.1f%%\n"
+          "velsmooth     %10.2f  %5.1f%%\n"
+          "   compute    %10.2f  %5.1f%%\n"
+          "   comm       %10.2f  %5.1f%%\n"
+          "   wait       %10.2f  %5.1f%%\n"
+          "   misc       %10.2f  %5.1f%%\n"
 #endif
-	      "pmgrav        %10.2f  %5.1f%%\n"
-	      "hydro         %10.2f  %5.1f%%\n"
-	      "   density    %10.2f  %5.1f%%\n"
+	      "hydro/fluids  %10.2f  %5.1f%%\n"
+	      "   dens+grad  %10.2f  %5.1f%%\n"
 	      "   denscomm   %10.2f  %5.1f%%\n"
 	      "   densimbal  %10.2f  %5.1f%%\n"
 	      "   hydrofrc   %10.2f  %5.1f%%\n"
 	      "   hydcomm    %10.2f  %5.1f%%\n"
-	      "   hydmisc    %10.2f  %5.1f%%\n"
-	      "   hydnetwork %10.2f  %5.1f%%\n"
 	      "   hydimbal   %10.2f  %5.1f%%\n"
 	      "   hmaxupdate %10.2f  %5.1f%%\n"
+          "   hydmisc    %10.2f  %5.1f%%\n"
 	      "domain        %10.2f  %5.1f%%\n"
-	      "potential     %10.2f  %5.1f%%\n"
-	      "predict       %10.2f  %5.1f%%\n"
+          "peano         %10.2f  %5.1f%%\n"
+#ifdef FOF
+          "fof/subfind   %10.2f  %5.1f%%\n"
+#endif
+          "predict       %10.2f  %5.1f%%\n"
 	      "kicks         %10.2f  %5.1f%%\n"
 	      "i/o           %10.2f  %5.1f%%\n"
-	      "peano         %10.2f  %5.1f%%\n"
-	      "sfrcool       %10.2f  %5.1f%%\n"
+#ifdef COOLING
+	      "cooling+sfr   %10.2f  %5.1f%%\n"
+#endif
+#ifdef BLACK_HOLES
 	      "blackholes    %10.2f  %5.1f%%\n"
-	      "fof/subfind   %10.2f  %5.1f%%\n"
+#endif
 #ifdef GRAIN_FLUID
           "grains        %10.2f  %5.1f%%\n"
 #endif
+#if defined(GALSF_FB_MECHANICAL) || defined(GALSF_FB_THERMAL)
           "mech_fb_loop  %10.2f  %5.1f%%\n"
-          "hII_fb_loop   %10.2f  %5.1f%%\n"
-          "localwindkik  %10.2f  %5.1f%%\n"
+#endif
+#if defined(RADTRANSFER)
+          "rt_nonfluxops %10.2f  %5.1f%%\n"
+#endif
           "misc          %10.2f  %5.1f%%\n",
               
     All.CPU_Sum[CPU_ALL], 100.0,
     All.CPU_Sum[CPU_TREEWALK1] + All.CPU_Sum[CPU_TREEWALK2] + All.CPU_Sum[CPU_TREESEND] + All.CPU_Sum[CPU_TREERECV]
-              + All.CPU_Sum[CPU_TREEWAIT1] + All.CPU_Sum[CPU_TREEWAIT2] + All.CPU_Sum[CPU_TREEBUILD] + All.CPU_Sum[CPU_TREEUPDATE]
-              + All.CPU_Sum[CPU_TREEMISC],
+              + All.CPU_Sum[CPU_TREEWAIT1] + All.CPU_Sum[CPU_TREEWAIT2] + All.CPU_Sum[CPU_TREEBUILD] + All.CPU_Sum[CPU_TREEMISC],
     (All.CPU_Sum[CPU_TREEWALK1] + All.CPU_Sum[CPU_TREEWALK2] + All.CPU_Sum[CPU_TREESEND] + All.CPU_Sum[CPU_TREERECV]
-              + All.CPU_Sum[CPU_TREEWAIT1] + All.CPU_Sum[CPU_TREEWAIT2] + All.CPU_Sum[CPU_TREEBUILD] + All.CPU_Sum[CPU_TREEUPDATE] + All.CPU_Sum[CPU_TREEMISC]) / All.CPU_Sum[CPU_ALL] * 100,
+              + All.CPU_Sum[CPU_TREEWAIT1] + All.CPU_Sum[CPU_TREEWAIT2] + All.CPU_Sum[CPU_TREEBUILD] + All.CPU_Sum[CPU_TREEMISC]) / All.CPU_Sum[CPU_ALL] * 100,
     All.CPU_Sum[CPU_TREEBUILD], (All.CPU_Sum[CPU_TREEBUILD]) / All.CPU_Sum[CPU_ALL] * 100,
-    All.CPU_Sum[CPU_TREEUPDATE], (All.CPU_Sum[CPU_TREEUPDATE]) / All.CPU_Sum[CPU_ALL] * 100,
     All.CPU_Sum[CPU_TREEWALK1] + All.CPU_Sum[CPU_TREEWALK2], (All.CPU_Sum[CPU_TREEWALK1] + All.CPU_Sum[CPU_TREEWALK2]) / All.CPU_Sum[CPU_ALL] * 100,
     All.CPU_Sum[CPU_TREESEND] + All.CPU_Sum[CPU_TREERECV], (All.CPU_Sum[CPU_TREESEND] + All.CPU_Sum[CPU_TREERECV]) / All.CPU_Sum[CPU_ALL] * 100,
     All.CPU_Sum[CPU_TREEWAIT1] + All.CPU_Sum[CPU_TREEWAIT2], (All.CPU_Sum[CPU_TREEWAIT1] + All.CPU_Sum[CPU_TREEWAIT2]) / All.CPU_Sum[CPU_ALL] * 100,
+#ifdef PMGRID
+    All.CPU_Sum[CPU_MESH], (All.CPU_Sum[CPU_MESH]) / All.CPU_Sum[CPU_ALL] * 100,
+#endif
+#if !defined(EVALPOTENTIAL) && (defined(COMPUTE_POTENTIAL_ENERGY) || defined(OUTPUT_POTENTIAL))
+    All.CPU_Sum[CPU_POTENTIAL], (All.CPU_Sum[CPU_POTENTIAL]) / All.CPU_Sum[CPU_ALL] * 100,
+#endif
 #ifdef AGS_HSML_CALCULATION_IS_ACTIVE
     All.CPU_Sum[CPU_AGSDENSCOMPUTE] + All.CPU_Sum[CPU_AGSDENSWAIT] + All.CPU_Sum[CPU_AGSDENSCOMM] + All.CPU_Sum[CPU_AGSDENSMISC],
               (All.CPU_Sum[CPU_AGSDENSCOMPUTE] + All.CPU_Sum[CPU_AGSDENSWAIT] + All.CPU_Sum[CPU_AGSDENSCOMM] + All.CPU_Sum[CPU_AGSDENSMISC]) / All.CPU_Sum[CPU_ALL] * 100,
@@ -950,50 +940,43 @@ void write_cpu_log(void)
     All.CPU_Sum[CPU_IMPROVDIFFCOMM], (All.CPU_Sum[CPU_IMPROVDIFFCOMM]) / All.CPU_Sum[CPU_ALL] * 100,
     All.CPU_Sum[CPU_IMPROVDIFFMISC], (All.CPU_Sum[CPU_IMPROVDIFFMISC]) / All.CPU_Sum[CPU_ALL] * 100,
 #endif
-    All.CPU_Sum[CPU_MESH], (All.CPU_Sum[CPU_MESH]) / All.CPU_Sum[CPU_ALL] * 100,
-    All.CPU_Sum[CPU_DENSCOMPUTE] + All.CPU_Sum[CPU_DENSWAIT] + All.CPU_Sum[CPU_DENSCOMM] + All.CPU_Sum[CPU_DENSMISC]
-              + All.CPU_Sum[CPU_HYDCOMPUTE] + All.CPU_Sum[CPU_HYDWAIT] + All.CPU_Sum[CPU_TREEHMAXUPDATE]
-              + All.CPU_Sum[CPU_HYDCOMM] + All.CPU_Sum[CPU_HYDMISC] + All.CPU_Sum[CPU_HYDNETWORK],
-    (All.CPU_Sum[CPU_DENSCOMPUTE] + All.CPU_Sum[CPU_DENSWAIT] + All.CPU_Sum[CPU_DENSCOMM] + All.CPU_Sum[CPU_DENSMISC]
-              + All.CPU_Sum[CPU_HYDCOMPUTE] + All.CPU_Sum[CPU_HYDWAIT] + All.CPU_Sum[CPU_TREEHMAXUPDATE]
-              + All.CPU_Sum[CPU_HYDCOMM] + All.CPU_Sum[CPU_HYDMISC] + All.CPU_Sum[CPU_HYDNETWORK]) / All.CPU_Sum[CPU_ALL] * 100,
+    All.CPU_Sum[CPU_DENSCOMPUTE] + All.CPU_Sum[CPU_DENSCOMM] + All.CPU_Sum[CPU_DENSWAIT] + All.CPU_Sum[CPU_DENSMISC]
+              + All.CPU_Sum[CPU_HYDCOMPUTE] + All.CPU_Sum[CPU_HYDCOMM] + All.CPU_Sum[CPU_HYDMISC]
+              + All.CPU_Sum[CPU_HYDWAIT] + All.CPU_Sum[CPU_TREEHMAXUPDATE],
+    (All.CPU_Sum[CPU_DENSCOMPUTE] + All.CPU_Sum[CPU_DENSCOMM] + All.CPU_Sum[CPU_DENSWAIT] + All.CPU_Sum[CPU_DENSMISC]
+              + All.CPU_Sum[CPU_HYDCOMPUTE] + All.CPU_Sum[CPU_HYDCOMM] + All.CPU_Sum[CPU_HYDMISC]
+              + All.CPU_Sum[CPU_HYDWAIT] + All.CPU_Sum[CPU_TREEHMAXUPDATE]) / All.CPU_Sum[CPU_ALL] * 100,
     All.CPU_Sum[CPU_DENSCOMPUTE], (All.CPU_Sum[CPU_DENSCOMPUTE]) / All.CPU_Sum[CPU_ALL] * 100,
     All.CPU_Sum[CPU_DENSCOMM], (All.CPU_Sum[CPU_DENSCOMM]) / All.CPU_Sum[CPU_ALL] * 100,
     All.CPU_Sum[CPU_DENSWAIT], (All.CPU_Sum[CPU_DENSWAIT]) / All.CPU_Sum[CPU_ALL] * 100,
     All.CPU_Sum[CPU_HYDCOMPUTE], (All.CPU_Sum[CPU_HYDCOMPUTE]) / All.CPU_Sum[CPU_ALL] * 100,
     All.CPU_Sum[CPU_HYDCOMM], (All.CPU_Sum[CPU_HYDCOMM]) / All.CPU_Sum[CPU_ALL] * 100,
-    All.CPU_Sum[CPU_HYDMISC], (All.CPU_Sum[CPU_HYDMISC]) / All.CPU_Sum[CPU_ALL] * 100,
-    All.CPU_Sum[CPU_HYDNETWORK], (All.CPU_Sum[CPU_HYDNETWORK]) / All.CPU_Sum[CPU_ALL] * 100,
     All.CPU_Sum[CPU_HYDWAIT], (All.CPU_Sum[CPU_HYDWAIT]) / All.CPU_Sum[CPU_ALL] * 100,
     All.CPU_Sum[CPU_TREEHMAXUPDATE], (All.CPU_Sum[CPU_TREEHMAXUPDATE]) / All.CPU_Sum[CPU_ALL] * 100,
+    All.CPU_Sum[CPU_HYDMISC] + All.CPU_Sum[CPU_DENSMISC], (All.CPU_Sum[CPU_HYDMISC] + All.CPU_Sum[CPU_DENSMISC]) / All.CPU_Sum[CPU_ALL] * 100,
     All.CPU_Sum[CPU_DOMAIN], (All.CPU_Sum[CPU_DOMAIN]) / All.CPU_Sum[CPU_ALL] * 100,
-    All.CPU_Sum[CPU_POTENTIAL], (All.CPU_Sum[CPU_POTENTIAL]) / All.CPU_Sum[CPU_ALL] * 100,
+    All.CPU_Sum[CPU_PEANO], (All.CPU_Sum[CPU_PEANO]) / All.CPU_Sum[CPU_ALL] * 100,
+#ifdef FOF
+    All.CPU_Sum[CPU_FOF], (All.CPU_Sum[CPU_FOF]) / All.CPU_Sum[CPU_ALL] * 100,
+#endif
     All.CPU_Sum[CPU_DRIFT], (All.CPU_Sum[CPU_DRIFT]) / All.CPU_Sum[CPU_ALL] * 100,
     All.CPU_Sum[CPU_TIMELINE], (All.CPU_Sum[CPU_TIMELINE]) / All.CPU_Sum[CPU_ALL] * 100,
     All.CPU_Sum[CPU_SNAPSHOT], (All.CPU_Sum[CPU_SNAPSHOT]) / All.CPU_Sum[CPU_ALL] * 100,
-    All.CPU_Sum[CPU_PEANO], (All.CPU_Sum[CPU_PEANO]) / All.CPU_Sum[CPU_ALL] * 100,
 #ifdef COOLING
     All.CPU_Sum[CPU_COOLINGSFR], (All.CPU_Sum[CPU_COOLINGSFR]) / All.CPU_Sum[CPU_ALL] * 100,
-#else
-    0.,0.,
 #endif
 #ifdef BLACK_HOLES
     All.CPU_Sum[CPU_BLACKHOLES], (All.CPU_Sum[CPU_BLACKHOLES]) / All.CPU_Sum[CPU_ALL] * 100,
-#else
-    0.,0.,
-#endif
-#ifdef FOF
-    All.CPU_Sum[CPU_FOF], (All.CPU_Sum[CPU_FOF]) / All.CPU_Sum[CPU_ALL] * 100,
-#else
-    0.,0.,
 #endif
 #ifdef GRAIN_FLUID
     All.CPU_Sum[CPU_DRAGFORCE], (All.CPU_Sum[CPU_DRAGFORCE]) / All.CPU_Sum[CPU_ALL] * 100,
 #endif
+#if defined(GALSF_FB_MECHANICAL) || defined(GALSF_FB_THERMAL)
     All.CPU_Sum[CPU_SNIIHEATING], (All.CPU_Sum[CPU_SNIIHEATING]) / All.CPU_Sum[CPU_ALL] * 100,
-    All.CPU_Sum[CPU_HIIHEATING], (All.CPU_Sum[CPU_HIIHEATING]) / All.CPU_Sum[CPU_ALL] * 100,
-    All.CPU_Sum[CPU_LOCALWIND], (All.CPU_Sum[CPU_LOCALWIND]) / All.CPU_Sum[CPU_ALL] * 100,
-
+#endif
+#if defined(RADTRANSFER)
+    All.CPU_Sum[CPU_RTNONFLUXOPS], (All.CPU_Sum[CPU_RTNONFLUXOPS]) / All.CPU_Sum[CPU_ALL] * 100,
+#endif
     All.CPU_Sum[CPU_MISC], (All.CPU_Sum[CPU_MISC]) / All.CPU_Sum[CPU_ALL] * 100);
         
     fprintf(FdCPU, "\n");
@@ -1002,28 +985,19 @@ void write_cpu_log(void)
 }
 
 
-
 void put_symbol(double t0, double t1, char c)
 {
-  int i, j;
-
-  i = (int) (t0 * CPU_STRING_LEN + 0.5);
-  j = (int) (t1 * CPU_STRING_LEN);
-
-  if(i < 0)
-    i = 0;
-  if(j < 0)
-    j = 0;
-  if(i >= CPU_STRING_LEN)
-    i = CPU_STRING_LEN;
-  if(j >= CPU_STRING_LEN)
-    j = CPU_STRING_LEN;
-
-  while(i <= j)
-    CPU_String[i++] = c;
-
-  CPU_String[CPU_STRING_LEN] = 0;
+    int i, j;
+    i = (int) (t0 * CPU_STRING_LEN + 0.5);
+    j = (int) (t1 * CPU_STRING_LEN);
+    if(i < 0) {i = 0;}
+    if(j < 0) {j = 0;}
+    if(i >= CPU_STRING_LEN) {i = CPU_STRING_LEN;}
+    if(j >= CPU_STRING_LEN) {j = CPU_STRING_LEN;}
+    while(i <= j) {CPU_String[i++] = c;}
+    CPU_String[CPU_STRING_LEN] = 0;
 }
+
 
 
 

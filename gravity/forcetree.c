@@ -808,7 +808,7 @@ void force_update_node_recursive(int no, int sib, int father)
 #endif
 #endif
 #ifdef SINGLE_STAR_SINK_DYNAMICS
-                    if(pa->Type == 5) if (PPP[p].Hsml > maxsoft) maxsoft = PPP[p].Hsml;
+                    if(pa->Type == 5) if(PPP[p].Hsml > maxsoft) {maxsoft = PPP[p].Hsml;}
 #endif
                 }
             }
@@ -1585,7 +1585,7 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 {
     struct NODE *nop = 0;
     int no, nodesinlist, ptype, ninteractions, nexp, task, listindex = 0;
-    double r2, dx, dy, dz, mass, r, fac, u, h, h_inv, h3_inv, xtmp;
+    double r2, dx, dy, dz, mass, r, fac, u, h=0, h_inv, h3_inv, xtmp; xtmp=0;
 #ifdef RT_USE_TREECOL_FOR_NH
     double gasmass, angular_bin_size = 4*M_PI / RT_USE_TREECOL_FOR_NH, treecol_angular_bins[RT_USE_TREECOL_FOR_NH] = {0};
 
@@ -1805,6 +1805,12 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #endif
     
     
+#ifdef BH_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
+    double m_enc_in_rcrit = 0, r_for_total_menclosed = h;
+    if(r_for_total_menclosed <= 0) {r_for_total_menclosed=All.ForceSoftening[ptype];}
+#endif
+
+    
     if(mode == 0)
     {
         no = maxPart;		/* root node */
@@ -1899,9 +1905,9 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                     dx_stellarlum=dx; dy_stellarlum=dy; dz_stellarlum=dz;
                     double lum[N_RT_FREQ_BINS];
 #ifdef CHIMES_STELLAR_FLUXES 
-		    double chimes_lum_G0[CHIMES_LOCAL_UV_NBINS]; 
-		    double chimes_lum_ion[CHIMES_LOCAL_UV_NBINS]; 
-		    int active_check = rt_get_source_luminosity(no,sigma_eff,lum, chimes_lum_G0, chimes_lum_ion);
+                    double chimes_lum_G0[CHIMES_LOCAL_UV_NBINS];
+                    double chimes_lum_ion[CHIMES_LOCAL_UV_NBINS];
+                    int active_check = rt_get_source_luminosity(no,sigma_eff,lum, chimes_lum_G0, chimes_lum_ion);
 #else 
                     int active_check = rt_get_source_luminosity(no,sigma_eff,lum);
 #endif 
@@ -2063,11 +2069,11 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                 {
                     int kf; for(kf=0;kf<N_RT_FREQ_BINS;kf++) {mass_stellarlum[kf] = nop->stellar_lum[kf];}
 #ifdef CHIMES_STELLAR_FLUXES 
-		    for (kf = 0; kf < CHIMES_LOCAL_UV_NBINS; kf++) 
-		      { 
-			chimes_mass_stellarlum_G0[kf] = nop->chimes_stellar_lum_G0[kf]; 
-			chimes_mass_stellarlum_ion[kf] = nop->chimes_stellar_lum_ion[kf]; 
-		      }
+                    for (kf = 0; kf < CHIMES_LOCAL_UV_NBINS; kf++)
+                    {
+                        chimes_mass_stellarlum_G0[kf] = nop->chimes_stellar_lum_G0[kf];
+                        chimes_mass_stellarlum_ion[kf] = nop->chimes_stellar_lum_ion[kf];
+                    }
 #endif 
 #ifdef RT_SEPARATELY_TRACK_LUMPOS
                     dx_stellarlum = nop->rt_source_lum_s[0] - pos_x; dy_stellarlum = nop->rt_source_lum_s[1] - pos_y; dz_stellarlum = nop->rt_source_lum_s[2] - pos_z;
@@ -2323,7 +2329,16 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                 // first, appropriately symmetrize the forces between particles //
                 if((h_p_inv > 0) && (ptype_sec > -1))
                 {
+                    int symmetrize_by_averaging = 0;
 #ifdef ADAPTIVE_GRAVSOFT_SYMMETRIZE_FORCE_BY_AVERAGING // the 'zeta' terms for conservation with adaptive softening assume kernel-scale forces are averaged to symmetrize, to make them continuous
+                    //symmetrize_by_averaging = 1; // always symmetrize by averaging //
+                    if((1 << ptype_sec) & (AGS_kernel_shared_BITFLAG)) {symmetrize_by_averaging=1;} // symmetrize by averaging only for particles which have a shared AGS structure since this is how our correction terms are derived //
+#ifdef SINGLE_STAR_SINK_DYNAMICS
+                    if((ptype!=0) || (ptype_sec!=0)) {symmetrize_by_averaging=0;} // we don't want to do the symmetrization below for sink interactions because it can create very noisy interactions between tiny sink particles and diffuse gas. However we do want it for gas-gas interactions so we keep the below
+#endif
+#endif
+                    if(symmetrize_by_averaging==1)
+                    {
                     h_p3_inv = h_p_inv * h_p_inv * h_p_inv; u_p = r * h_p_inv;
                     fac = 0.5 * (fac + mass * kernel_gravity(u_p, h_p_inv, h_p3_inv, 1)); // average with neighbor
 #ifdef EVALPOTENTIAL
@@ -2352,14 +2367,16 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                             if(!isnan(fac_corr)) {fac += fac_corr;}
                         }
                     } // if(ptype==ptype_sec)
-#else // if not averaging, follow the standard procedure of 'taking the larger' softening. this leads to less-disparate forces, but is not exact with the 'zeta' terms below //
+                    } // closes block for symmetrizing forces by averaging //
+                    else
+                    { // open block to symmetrize instead with the old method of simply taking the larger of the pair //
                     if(h_p_inv < h_inv) // if the softening of the particle whose force is being summed is greater than the target
                     {
                         h_p3_inv = h_p_inv * h_p_inv * h_p_inv; u_p = r * h_p_inv;
                         fac = mass * kernel_gravity(u_p, h_p_inv, h_p3_inv, 1);
 #ifdef EVALPOTENTIAL
-			            facpot = mass * kernel_gravity(u, h_p_inv, h_p3_inv, -1);
-#endif 			
+                        facpot = mass * kernel_gravity(u, h_p_inv, h_p3_inv, -1);
+#endif
 #ifdef COMPUTE_TIDAL_TENSOR_IN_GRAVTREE
                         fac2_tidal = mass * kernel_gravity(u_p, h_p_inv, h_p3_inv, 2);
 #endif
@@ -2388,7 +2405,7 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                             if(!isnan(fac_corr)) {fac += fac_corr;}
                         }
                     } // if(ptype==ptype_sec)
-#endif
+                    } // closes else{} block for when take the larger of two softenings or symmetrize by averaging
                 } // closes (if((h_p_inv > 0) && (ptype_sec > -1)))
 #endif // #if defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(ADAPTIVE_GRAVSOFT_FORALL) //
             } // closes r < h (else) clause
@@ -2420,6 +2437,8 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                 acc_x += FLT(dx * fac);
                 acc_y += FLT(dy * fac);
                 acc_z += FLT(dz * fac);
+
+                
                 
 #ifdef COMPUTE_TIDAL_TENSOR_IN_GRAVTREE
                 /*
@@ -2454,15 +2473,20 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                 tidal_tensorps[2][1] = tidal_tensorps[1][2];
 #endif // COMPUTE_TIDAL_TENSOR_IN_GRAVTREE //
 #ifdef COMPUTE_JERK_IN_GRAVTREE
-		double dv_dot_dx = dx*dvx + dy*dvy + dz*dvz;	      
-		jerk[0] += dvx * fac - dv_dot_dx * fac2_tidal * dx;
-		jerk[1] += dvy * fac - dv_dot_dx * fac2_tidal * dy;
-		jerk[2] += dvz * fac - dv_dot_dx * fac2_tidal * dz;		
+                double dv_dot_dx = dx*dvx + dy*dvy + dz*dvz;
+                jerk[0] += dvx * fac - dv_dot_dx * fac2_tidal * dx;
+                jerk[1] += dvy * fac - dv_dot_dx * fac2_tidal * dy;
+                jerk[2] += dvz * fac - dv_dot_dx * fac2_tidal * dz;
 #endif		
             } // closes TABINDEX<NTAB
             
             ninteractions++;
             
+
+#ifdef BH_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
+            if(r < r_for_total_menclosed) {m_enc_in_rcrit += mass;}
+#endif
+
 #ifdef RT_USE_TREECOL_FOR_NH
             if(gasmass>0){
                 int bin; // Here we do a simple six-bin angular binning scheme
@@ -2567,15 +2591,19 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
     
     /* store result at the proper place */
     if(mode == 0)
-    {
+    {     
         P[target].GravAccel[0] = acc_x;
         P[target].GravAccel[1] = acc_y;
         P[target].GravAccel[2] = acc_z;
 #ifdef RT_USE_TREECOL_FOR_NH
-        for(int k=0; k < RT_USE_TREECOL_FOR_NH; k++) P[target].ColumnDensityBins[k] = treecol_angular_bins[k];
+        int k;
+        for(k=0; k < RT_USE_TREECOL_FOR_NH; k++) P[target].ColumnDensityBins[k] = treecol_angular_bins[k];
 #endif	
 #ifdef RT_OTVET
         if(valid_gas_particle_for_rt) {int k,k_et; for(k=0;k<N_RT_FREQ_BINS;k++) for(k_et=0;k_et<6;k_et++) {SphP[target].ET[k][k_et] = RT_ET[k][k_et];}} else {if(P[target].Type==0) {int k,k_et; for(k=0;k<N_RT_FREQ_BINS;k++) for(k_et=0;k_et<6;k_et++) {SphP[target].ET[k][k_et]=0;}}}
+#endif
+#ifdef BH_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
+        P[target].MencInRcrit = m_enc_in_rcrit;
 #endif
 #ifdef EVALPOTENTIAL
         P[target].Potential = pot;
@@ -2584,7 +2612,7 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
         for(i1 = 0; i1 < 3; i1++) {for(i2 = 0; i2 < 3; i2++) {P[target].tidal_tensorps[i1][i2] = tidal_tensorps[i1][i2];}}
 #endif
 #ifdef COMPUTE_JERK_IN_GRAVTREE
-	for(i1 = 0; i1 < 3; i1++) {P[target].GravJerk[i1] = jerk[i1];}
+        for(i1 = 0; i1 < 3; i1++) {P[target].GravJerk[i1] = jerk[i1];}
 #endif	
 #ifdef BH_CALC_DISTANCES
         P[target].min_dist_to_bh = sqrt( min_dist_to_bh2 );
@@ -2612,10 +2640,14 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
         GravDataResult[target].Acc[1] = acc_y;
         GravDataResult[target].Acc[2] = acc_z;
 #ifdef RT_USE_TREECOL_FOR_NH
-        for(int k=0; k < RT_USE_TREECOL_FOR_NH; k++) GravDataResult[target].ColumnDensityBins[k] = treecol_angular_bins[k];
+        int k;
+        for(k=0; k < RT_USE_TREECOL_FOR_NH; k++) GravDataResult[target].ColumnDensityBins[k] = treecol_angular_bins[k];
 #endif	
 #ifdef RT_OTVET
         int k,k_et; for(k=0;k<N_RT_FREQ_BINS;k++) for(k_et=0;k_et<6;k_et++) {GravDataResult[target].ET[k][k_et] = RT_ET[k][k_et];}
+#endif
+#ifdef BH_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
+        GravDataResult[target].MencInRcrit = m_enc_in_rcrit;
 #endif
 #ifdef EVALPOTENTIAL
         GravDataResult[target].Potential = pot;
@@ -3745,7 +3777,7 @@ void ewald_init(void)
     }
     else
     {
-        printf("\nNo Ewald tables in file `%s' found.\nRecomputing them...\n", buf);
+        if(ThisTask == 0) {printf("\nNo Ewald tables in file `%s' found.\nRecomputing them...\n", buf);}
         
         /* ok, let's recompute things. Actually, we do that in parallel. */
         

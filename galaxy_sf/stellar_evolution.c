@@ -43,8 +43,8 @@ double calculate_individual_stellar_luminosity(double mdot, double mass, long i)
     lum = rad_eff_protostar * mdot * c_code*c_code;
     /* now for pre-main sequence, need to also check the mass-luminosity relation */
     double lum_sol = 0;
-    lum_sol *= SOLAR_LUM / (All.UnitEnergy_in_cgs / All.UnitTime_in_s);
-    lum += lum_sol;
+
+    
 #endif    
     return lum;
 }
@@ -154,4 +154,16 @@ double mechanical_fb_calculate_eventrates(int i, double dt)
 
 
     
+
+
+
+
+
+
+
+
+
+
+
+
 #endif /* GALSF */

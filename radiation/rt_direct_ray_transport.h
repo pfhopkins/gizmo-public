@@ -13,7 +13,7 @@
 #if defined(RT_EVOLVE_INTENSITIES)
 if(local.Mass>0 && P[j].Mass>0 && dt_hydrostep>0 && Face_Area_Norm>0)
 {
-    double c_light=C_LIGHT_CODE_REDUCED, V_i_invphys=All.cf_a3inv/V_i, V_j_invphys=All.cf_a3inv/V_j, vfluid_minus_vface_dotA=0, cminusv_n_dotA[N_RT_INTENSITY_BINS]={0}, sigma_j=(Get_Particle_Size(j)*All.cf_atime)*(SphP[j].Density*All.cf_a3inv); int k_freq, k_angle;
+    double c_light=C_LIGHT_CODE_REDUCED, V_i_invphys=All.cf_a3inv/V_i, V_j_invphys=All.cf_a3inv/V_j, vfluid_minus_vface_dotA=0, cminusv_n_dotA[N_RT_INTENSITY_BINS]={0}, sigma_j=Particle_Size_j*(SphP[j].Density*All.cf_a3inv); int k_freq, k_angle;
 #if defined(HYDRO_MESHLESS_FINITE_VOLUME) && (HYDRO_FIX_MESH_MOTION<5)
     double v_frame[3]={0}; for(k=0;k<3;k++) {vfluid_minus_vface_dotA+=0.5*((ParticleVel_j[k]+local.ParticleVel[k])-(local.Vel[k]+SphP[j].VelPred[k]))/All.cf_atime * Face_Area_Vec[k];} // frame velocity, not fluid velocity, is what appears here. physical units
 #endif

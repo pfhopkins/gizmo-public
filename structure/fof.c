@@ -1986,8 +1986,7 @@ void fof_assign_HostHaloMass(void)	/* assigns mass of host FoF group to SphP[].H
 
   qsort(required_groups, NgroupsExt, sizeof(struct group_mass_MinID), compare_group_mass_ID);
 
-  for(i = 0; i < N_gas; i++)
-    SphP[i].HostHaloMass = 0;
+    for(i = 0; i < N_gas; i++) {if(P[i].Type==0) {SphP[i].HostHaloMass = 0;}}
 
   for(i = 0, start = 0; i < NgroupsExt; i++)
     {

@@ -104,6 +104,9 @@ void blackhole_end(void)
 #ifdef BH_OUTPUT_GASSWALLOW
         fflush(FdBhSwallowDetails);
 #endif
+#ifdef BH_OUTPUT_FORMATION_PROPERTIES
+        fflush(FdBhFormationDetails);
+#endif
 #if !defined(IO_REDUCED_MODE) || defined(BH_OUTPUT_MOREINFO)
         fflush(FdBlackHolesDetails);
 #ifdef BH_OUTPUT_MOREINFO
@@ -162,5 +165,4 @@ void blackhole_properties_loop(void) /* Note, normalize_temp_info_struct is now 
         /* results dumped to 'blackhole_details' files at the end of blackhole_final_operations so that BH mass is corrected for mass loss to radiation/bal outflows */
     }// for(i=0; i<N_active_loc_BHs; i++)
 }
-
 

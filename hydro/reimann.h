@@ -467,7 +467,7 @@ void Riemann_solver_KurganovTadmor_PWK(struct Input_vec_Riemann Riemann_vec, str
                             double v_line_L, double v_line_R, double cs_L, double cs_R, double h_L, double h_R)
 {
     /* estimate wave speed using the PWK 'switch' alpha */
-    double S_L, S_R, S_M, nu=0, alpha; int k;
+    double S_L, S_R, S_M, nu, alpha; int k; nu=0;
 #if (SLOPE_LIMITER_TOLERANCE==0) || defined(HYDRO_FACE_AREA_LIMITER) || defined(HYDRO_RIEMANN_KT_UNLIMITED)
     alpha = 1; /* default to the more dissipative but smoother limiter function */
 #else

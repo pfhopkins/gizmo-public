@@ -28,6 +28,9 @@ extern struct blackhole_temp_particle_data       // blackholedata_topass
     MyFloat BH_InternalEnergy, Mgas_in_Kernel, Mstar_in_Kernel, Malt_in_Kernel;
     MyFloat Jgas_in_Kernel[3], Jstar_in_Kernel[3], Jalt_in_Kernel[3]; // mass/angular momentum for GAS/STAR/TOTAL components computed always now
     MyLongDouble accreted_Mass, accreted_BH_Mass, accreted_BH_Mass_alphadisk;
+#ifdef GRAIN_FLUID
+    MyFloat accreted_dust_Mass;
+#endif    
 #ifdef BH_ALPHADISK_ACCRETION
     MyFloat mdot_alphadisk;             /*!< gives mdot of mass going into alpha disk */
 #endif
@@ -43,7 +46,7 @@ extern struct blackhole_temp_particle_data       // blackholedata_topass
 #ifdef BH_DYNFRICTION
     MyFloat DF_rms_vel, DF_mean_vel[3], DF_mmax_particles;
 #endif
-#if defined(BH_BONDI) || defined(BH_DRAG) || (BH_GRAVACCRETION >= 5)
+#if defined(BH_BONDI) || defined(BH_DRAG) || (BH_GRAVACCRETION >= 5) || defined(SINGLE_STAR_SINK_DYNAMICS)
     MyFloat BH_SurroundingGasVel[3];
 #endif
 #if (BH_GRAVACCRETION == 8)

@@ -1,8 +1,9 @@
 /* This is a generic code block designed for simple neighbor loops, so that they don't have to
 be copy-pasted and can be generically optimized in a single place */
 {
-    int j, k, ndone, ndone_flag, recvTask, place, save_NextParticle; long long n_exported = 0; double tstart, tend; /* define some variables used only below */
+    int j, k, ndone, ndone_flag, recvTask, place, save_NextParticle; long long n_exported = 0; double tstart, tend, tstart_loop; /* define some variables used only below */
     NextParticle = FirstActiveParticle;    /* begin the main loop; start with this index */
+    tstart_loop = my_second();
     do /* primary point-element loop */
     {
         BufferFullFlag = 0; Nexport = 0; save_NextParticle = NextParticle; tstart = my_second();
@@ -86,7 +87,7 @@ be copy-pasted and can be generically optimized in a single place */
                 if(flagall) {N_chunks_for_import /= 2;} else {break;}
             } while(N_chunks_for_import > 0);
             if(N_chunks_for_import == 0) {printf("Memory is insufficient for even one import-chunk: N_chunks_for_import=%d  ngrp_initial=%d  Nimport=%ld  FreeBytes=%lld , but we need to allocate=%lld \n",N_chunks_for_import, ngrp_initial, Nimport, (long long)FreeBytes,(long long)(Nimport * sizeof(struct INPUT_STRUCT_NAME) + Nimport * sizeof(struct OUTPUT_STRUCT_NAME) + 16384)); endrun(9977);}
-            if(ngrp_initial == 1 && N_chunks_for_import != ((1 << PTask) - ngrp_initial) && ThisTask == 0) PRINT_WARNING("Splitting import operation into sub-chunks as we are hitting memory limits (check this isn't imposing large communication cost)");
+            if(ngrp_initial == 1 && N_chunks_for_import != ((1 << PTask) - ngrp_initial)) PRINT_WARNING("Splitting import operation into sub-chunks as we are hitting memory limits (check this isn't imposing large communication cost)");
             
             /* now allocated the import and results buffers */
             DATAGET_NAME = (struct INPUT_STRUCT_NAME *) mymalloc("DATAGET_NAME", Nimport * sizeof(struct INPUT_STRUCT_NAME));
@@ -122,7 +123,9 @@ be copy-pasted and can be generically optimized in a single place */
 #endif
                 SECONDARY_SUBFUN_NAME(&mainthreadid, loop_iteration);
             }
-            tend = my_second(); timecomp += timediff(tstart, tend);
+            tend = my_second(); timecomp += timediff(tstart, tend); tstart = my_second();
+            MPI_Barrier(MPI_COMM_WORLD); /* insert MPI Barrier here - will be forced by comms below anyways but this allows for clean timing measurements */
+            tend = my_second(); timewait += timediff(tstart, tend);
             
             tstart = my_second(); Nimport = 0;
             for(ngrp = ngrp_initial; ngrp < ngrp_initial + N_chunks_for_import; ngrp++) /* send the results for imported elements back to their host tasks */
@@ -160,7 +163,7 @@ be copy-pasted and can be generically optimized in a single place */
         tend = my_second(); timewait += timediff(tstart, tend);
     }
     while(ndone < NTask);
-    timeall = timediff(t0, tend);
+    timeall += timediff(tstart_loop, my_second());
     
 } /* closes clause, so variables don't 'leak' */
 

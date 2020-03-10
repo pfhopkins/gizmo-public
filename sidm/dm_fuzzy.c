@@ -469,6 +469,7 @@ int DMGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount,
 
 void DMGrad_gradient_calc(void)
 {
+    CPU_Step[CPU_MISC] += measure_time(); double t00_truestart = my_second();
     PRINT_STATUS(" ..calculating higher-order gradients for DM density field\n");
     /* initialize data, if needed */
     if(All.Time==All.TimeBegin) {int i; for(i=FirstActiveParticle; i>=0; i=NextActiveParticle[i]) {P[i].AGS_Numerical_QuantumPotential=0;}}
@@ -497,7 +498,7 @@ void DMGrad_gradient_calc(void)
                 /* finally, we need to apply a sensible slope limiter to the gradients, to prevent overshooting */
                 /* (actually not clear that we need to slope-limit these, because we are not using the gradients for reconstruction.
                     testing this now. if not, we can remove the limiter information entirely and save some time in these computations) */
-                //local_slopelimiter(P[i].AGS_Gradients_Density,DMGradDataPasser[i].Maxima.AGS_Density,DMGradDataPasser[i].Minima.AGS_Density,0.5,PPP[i].AGS_Hsml,0);
+                //local_slopelimiter(P[i].AGS_Gradients_Density,DMGradDataPasser[i].Maxima.AGS_Density,DMGradDataPasser[i].Minima.AGS_Density,0.5,PPP[i].AGS_Hsml,0, 0,0,0);
             } else {
                 int k;
                 for(k=0;k<3;k++)
@@ -508,7 +509,7 @@ void DMGrad_gradient_calc(void)
                     construct_gradient_DMGrad(P[i].AGS_Gradients2_Psi_Re[k],i);
                     construct_gradient_DMGrad(P[i].AGS_Gradients2_Psi_Im[k],i);
 #endif
-                    //local_slopelimiter(P[i].AGS_Gradients2_Density[k],DMGradDataPasser[i].Maxima.AGS_Gradients_Density[k],DMGradDataPasser[i].Minima.AGS_Gradients_Density[k],0.5,PPP[i].AGS_Hsml,0);
+                    //local_slopelimiter(P[i].AGS_Gradients2_Density[k],DMGradDataPasser[i].Maxima.AGS_Gradients_Density[k],DMGradDataPasser[i].Minima.AGS_Gradients_Density[k],0.5,PPP[i].AGS_Hsml,0, 0,0,0);
                 }
                 /* symmetrize the gradients */
                 int k0[3]={0,0,1},k1[3]={1,2,2}; double tmp;
@@ -530,7 +531,9 @@ void DMGrad_gradient_calc(void)
     /* de-allocate memory and collect timing information */
     #include "../system/code_block_xchange_perform_ops_demalloc.h" /* this de-allocates the memory for the MPI/OPENMP/Pthreads parallelization block which must appear above */
     myfree(DMGradDataPasser); /* free the temporary structure we created for the MinMax and additional data passing */
-    CPU_Step[CPU_AGSDENSCOMPUTE] += timecomp; CPU_Step[CPU_AGSDENSWAIT] += timewait; CPU_Step[CPU_AGSDENSCOMM] += timecomm; CPU_Step[CPU_AGSDENSMISC] += timeall - (timecomp + timewait + timecomm);
+    double t1; t1 = WallclockTime = my_second(); timeall = timediff(t00_truestart, t1);
+    CPU_Step[CPU_AGSDENSCOMPUTE] += timecomp; CPU_Step[CPU_AGSDENSWAIT] += timewait; CPU_Step[CPU_AGSDENSCOMM] += timecomm;
+    CPU_Step[CPU_AGSDENSMISC] += timeall - (timecomp + timewait + timecomm);
 }
 #include "../system/code_block_xchange_finalize.h" /* de-define the relevant variables and macros to avoid compilation errors and memory leaks */
 

@@ -414,10 +414,10 @@ double INLINE_FUNC Get_Particle_Size(int i)
         don't have to re-compute it each time. That makes this function fast enough to 
         call -inside- of loops (e.g. hydro computations) */
 #if (NUMDIMS == 1)
-    return 2.00000 * PPP[i].Hsml / PPP[i].NumNgb;
+    return 2.00000 * PPP[i].Hsml / PPP[i].NumNgb; // (2)^(1/1)
 #endif
 #if (NUMDIMS == 2)
-    return 1.25331 * PPP[i].Hsml / PPP[i].NumNgb; // sqrt(Pi/2)
+    return 1.77245 * PPP[i].Hsml / PPP[i].NumNgb; // (pi)^(1/2)
 #endif
 #if (NUMDIMS == 3)
     return 1.61199 * PPP[i].Hsml / PPP[i].NumNgb; // (4pi/3)^(1/3)

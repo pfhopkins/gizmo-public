@@ -17,20 +17,13 @@
 %   initial fields. This corresponds to setting BiniY=0.05517 or BiniY=3.395, 
 %   respectively. So change the example value below to reproduce both limits.
 %
-InitCondFile                       /panfs/ds06/sxs/phopkins/GIZMO_tests/zeldovich_mhd/zeldovich_mhd_ics
-OutputDir                          /panfs/ds06/sxs/phopkins/GIZMO_tests/zeldovich_mhd
-RestartFile                        restart
-SnapshotFileBase                   snapshot
-OutputListFilename                 output_times.txt
+InitCondFile                       zeldovich_mhd_ics
 ICFormat                           3
-SnapFormat                         3
-TimeLimitCPU                       100000
-CpuTimeBetRestartFile              3500
-ResubmitOn                         0
-ResubmitCommand                    my-scriptfile
+OutputDir                          output
+TimeLimitCPU                       50000
 MaxMemSize                         1600
 PartAllocFactor                    5
-BufferSize                         100
+BufferSize                         150
 TimeBegin                          0.047619
 TimeMax                            1
 ComovingIntegrationOn              1
@@ -40,13 +33,9 @@ OmegaBaryon                        1
 HubbleParam                        1
 BoxSize                            1
 OutputListOn                       0
-TimeBetSnapshot                    1.15
 TimeOfFirstSnapshot                0.047619
-TimeBetStatistics                  1.5
-NumFilesPerSnapshot                1
-NumFilesWrittenInParallel          1
+TimeBetSnapshot                    1.15
 MaxSizeTimestep                    0.01
-MinSizeTimestep                    1e-08
 TreeDomainUpdateFrequency          0.005
 DesNumNgb                          32
 BiniX                              0
@@ -56,20 +45,17 @@ UnitLength_in_cm                   1.97483e+26
 UnitMass_in_g                      1.44759e+50
 UnitVelocity_in_cm_per_s           3.6e+09
 UnitMagneticField_in_gauss         5.53268e-05
-GravityConstantInternal            0
-MaxHsml                            1e+09
 MinGasHsmlFractional               1
 SofteningGas                       0.00015
-SofteningHalo                      0.00015
-SofteningDisk                      5e-06
-SofteningBulge                     5e-06
-SofteningStars                     5e-06
-SofteningBndry                     5e-06
+Softening_Type1                    0 % no DM (OmegaBaryon=1); otherwise set this!
+Softening_Type2                    0 % no type-2 particles
+Softening_Type3                    0 % no type-3 particles
+Softening_Type4                    0 % no type-4 (newly-formed star) particles
+Softening_Type5                    0 % no type-5 (blackhole) particles
 SofteningGasMaxPhys                0.00015
-SofteningHaloMaxPhys               0.00015
-SofteningDiskMaxPhys               5e-06
-SofteningBulgeMaxPhys              5e-06
-SofteningStarsMaxPhys              5e-06
-SofteningBndryMaxPhys              5e-06
-InitGasTemp                        0
+Softening_Type1_MaxPhysLimit       0
+Softening_Type2_MaxPhysLimit       0
+Softening_Type3_MaxPhysLimit       0
+Softening_Type4_MaxPhysLimit       0
+Softening_Type5_MaxPhysLimit       0
 MinGasTemp                         1e-20

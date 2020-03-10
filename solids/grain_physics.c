@@ -69,7 +69,7 @@ void apply_grain_dragforce(void)
 #ifdef GRAIN_EPSTEIN_STOKES
                 if(grain_subtype == 0 || grain_subtype == 1)
                 {
-                    double mu = 2.3*PROTONMASS, temperature = mu * (1.4-1.) * U_TO_TEMP_UNITS * P[i].Gas_InternalEnergy; // assume molecular gas (as its the only regime where this is relevant) with gamma=1.4
+                    double mu = 2.3*PROTONMASS, temperature = (mu/PROTONMASS) * (1.4-1.) * U_TO_TEMP_UNITS * P[i].Gas_InternalEnergy; // assume molecular gas (as its the only regime where this is relevant) with gamma=1.4
                     double cross_section = GRAIN_EPSTEIN_STOKES * 2.0e-15 * (1. + 70./temperature);
                     cross_section /= (All.UnitLength_in_cm * All.UnitLength_in_cm / (All.HubbleParam*All.HubbleParam));
                     double n_mol = rho_gas / (mu * All.HubbleParam/All.UnitMass_in_g), mean_free_path = 1 / (n_mol * cross_section); // should be in code units now //
@@ -176,14 +176,14 @@ void apply_grain_dragforce(void)
                 double lorentz_units = sqrt(4.*M_PI*All.UnitPressure_in_cgs*All.HubbleParam*All.HubbleParam); // code B to Gauss
                 lorentz_units *= All.UnitVelocity_in_cm_per_s * (ELECTRONCHARGE/(PROTONMASS*C_LIGHT)); // code velocity to CGS, times base units e/(mp*c)
                 lorentz_units /= All.UnitVelocity_in_cm_per_s / (All.UnitTime_in_s / All.HubbleParam); // convert 'back' to code-units acceleration
-                double efield[3], u_cross_B[3], bhat[3]={0}, bmag=0, v_g[3]; /* define unit vectors and B for evolving the lorentz force */
+                double efield[3], bhat[3]={0}, bmag=0, v_g[3]; /* define unit vectors and B for evolving the lorentz force */
                 for(k=0;k<3;k++) {bhat[k]=P[i].Gas_B[k]; bmag+=bhat[k]*bhat[k]; v_g[k]=P[i].Gas_Velocity[k]/reduced_C;} /* get magnitude and unit vector for B */
                 if(bmag>0) {bmag=sqrt(bmag); for(k=0;k<3;k++) {bhat[k]/=bmag;}} else {bmag=0;} /* take it correctly assuming its non-zero */
                 double efield_coeff = (0.5*dt) * charge_to_mass_ratio_dimensionless * bmag * lorentz_units; // dimensionless half-timestep term for boris integrator //
                 efield[0] = -v_g[1]*bhat[2] + v_g[2]*bhat[1]; efield[1] = -v_g[2]*bhat[0] + v_g[0]*bhat[2]; efield[2] = -v_g[0]*bhat[1] + v_g[1]*bhat[0]; /* efield term, but with magnitude of B factored out for units above */
-                double v_0[3],v0[3],vf[3],v2=0; for(k=0;k<3;k++) {v0[k]=P[i].Vel[k]; v2=v0[k]*v0[k];}
+                double v_0[3],v0[3],vf[3],v2=0; for(k=0;k<3;k++) {v0[k]=P[i].Vel[k]; v2+=v0[k]*v0[k];}
                 if(v2 >= reduced_C*reduced_C) {PRINT_WARNING("VELOCITY HAS EXCEEDED THE SPEED OF LIGHT. BAD.");}
-                double gamma_0=1/sqrt(1-v2/(reduced_C*reduced_C)); for(k=0;k<3;k++) {v_0[k]=v0[k]*gamma_0;} // convert to the momentum term ~gamma*v
+                double gamma_0=1/sqrt(1-v2/(reduced_C*reduced_C)); for(k=0;k<3;k++) {v_0[k]=v0[k]*gamma_0/reduced_C;} // convert to the momentum term ~gamma*v
                 
                 /* now apply the boris integrator */
                 double v_m[3]={0}, v_t[3]={0}, v_p[3]={0}, vcrosst[3]={0}, lorentz_coeff=efield_coeff;
@@ -195,7 +195,7 @@ void apply_grain_dragforce(void)
                 for(k=0;k<3;k++) {v_p[k] = v_m[k] + (2.*lorentz_coeff/(1.+lorentz_coeff*lorentz_coeff)) * vcrosst[k];} // second half-rotation
                 for(k=0;k<3;k++) {v_p[k] += efield_coeff*efield[k];} // second half-step from E-field
                 double vp2=v_p[0]*v_p[0]+v_p[1]*v_p[1]+v_p[2]*v_p[2], gamma_f=sqrt(1+vp2); for(k=0;k<3;k++) {vf[k]=reduced_C*v_p[k]/gamma_f;} // convert back to a velocity 'vf' which is always <= reduced_C
-                    
+
                 for(k=0;k<3;k++)
                 {
 #ifdef GRAIN_BACKREACTION
@@ -211,7 +211,7 @@ void apply_grain_dragforce(void)
 #if defined(GRAIN_BACKREACTION)
     grain_backrx(); /* call master routine to assign the back-reaction force among neighbors */
 #endif
-    PRINT_STATUS("Particulate/grain/PIC force evaluation done.\n");
+    PRINT_STATUS(" ..particulate/grain/PIC force evaluation done.");
     CPU_Step[CPU_DRAGFORCE] += measure_time();
 }
 
@@ -309,13 +309,13 @@ int grain_backrx_evaluate(int target, int mode, int *exportflag, int *exportnode
 
 void grain_backrx(void)
 {
-    PRINT_STATUS(" ..assigning grain back-reaction to gas\n");
+    PRINT_STATUS(" ..assigning grain back-reaction to gas");
      //grain_backrx_initial_operations_preloop(); /* do initial pre-processing operations as needed before main loop [nothing needed here] */
     #include "../system/code_block_xchange_perform_ops_malloc.h" /* this calls the large block of code which contains the memory allocations for the MPI/OPENMP/Pthreads parallelization block which must appear below */
     #include "../system/code_block_xchange_perform_ops.h" /* this calls the large block of code which actually contains all the loops, MPI/OPENMP/Pthreads parallelization */
     #include "../system/code_block_xchange_perform_ops_demalloc.h" /* this de-allocates the memory for the MPI/OPENMP/Pthreads parallelization block which must appear above */
     //grain_backrx_final_operations_and_cleanup(); /* do final operations on results [nothing needed here] */
-    CPU_Step[CPU_DRAGFORCE] += timeall; /* collect timing information [here lumping it all together] */
+    CPU_Step[CPU_DRAGFORCE] += measure_time(); /* collect timings and reset clock for next timing */
 }
 #include "../system/code_block_xchange_finalize.h" /* de-define the relevant variables and macros to avoid compilation errors and memory leaks */
 

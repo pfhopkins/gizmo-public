@@ -14,10 +14,12 @@
  * This file was originally part of the GADGET3 code developed by
  * Volker Springel. The code has been modified
  * somewhat by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
+ * ALIGN issues fixed with patch from Peter Bell Feb. 2020.
  */
 
 #define MAXBLOCKS 500
 #define MAXCHARS  16
+#define MIN_ALIGNMENT 32
 
 static size_t TotBytes;
 static void *Base;
@@ -54,7 +56,7 @@ void mymalloc_init(void)
 
   n = All.MaxMemSize * ((size_t) 1024 * 1024);
 
-  if(!(Base = malloc(n)))
+  if(!(Base = aligned_alloc(MIN_ALIGNMENT, n)))
     {
       printf("Failed to allocate memory for `Base' (%d Mbytes).\n", All.MaxMemSize);
       endrun(122);
@@ -144,11 +146,8 @@ void dump_memory_table(void)
 
 void *mymalloc_fullinfo(const char *varname, size_t n, const char *func, const char *file, int line)
 {
-  if((n % 8) > 0)
-    n = (n / 8 + 1) * 8;
-
-  if(n < 8)
-    n = 8;
+  if((n % MIN_ALIGNMENT) > 0) {n = (n / MIN_ALIGNMENT + 1) * MIN_ALIGNMENT;}
+  if(n < MIN_ALIGNMENT) {n = MIN_ALIGNMENT;}
 
   if(Nblocks >= MAXBLOCKS)
     {
@@ -189,11 +188,8 @@ void *mymalloc_fullinfo(const char *varname, size_t n, const char *func, const c
 void *mymalloc_movable_fullinfo(void *ptr, const char *varname, size_t n, const char *func, const char *file,
 				int line)
 {
-  if((n % 8) > 0)
-    n = (n / 8 + 1) * 8;
-
-  if(n < 8)
-    n = 8;
+  if((n % MIN_ALIGNMENT) > 0) {n = (n / MIN_ALIGNMENT + 1) * MIN_ALIGNMENT;}
+  if(n < MIN_ALIGNMENT) {n = MIN_ALIGNMENT;}
 
   if(Nblocks >= MAXBLOCKS)
     {
@@ -336,8 +332,8 @@ void myfree_movable_fullinfo(void *p, const char *func, const char *file, int li
 
 void *myrealloc_fullinfo(void *p, size_t n, const char *func, const char *file, int line)
 {
-  if((n % 8) > 0)
-    n = (n / 8 + 1) * 8;
+    if((n % MIN_ALIGNMENT) > 0) {n = (n / MIN_ALIGNMENT + 1) * MIN_ALIGNMENT;}
+    if(n < MIN_ALIGNMENT) {n = MIN_ALIGNMENT;}
 
   if(n < 8)
     n = 8;
@@ -382,11 +378,8 @@ void *myrealloc_movable_fullinfo(void *p, size_t n, const char *func, const char
 {
   unsigned int i;
 
-  if((n % 8) > 0)
-    n = (n / 8 + 1) * 8;
-
-  if(n < 8)
-    n = 8;
+  if((n % MIN_ALIGNMENT) > 0) {n = (n / MIN_ALIGNMENT + 1) * MIN_ALIGNMENT;}
+  if(n < MIN_ALIGNMENT) {n = MIN_ALIGNMENT;}
 
   if(Nblocks == 0)
     endrun(768799);

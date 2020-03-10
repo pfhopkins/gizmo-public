@@ -367,7 +367,7 @@ void rt_write_chemistry_stats(void)
     total_nHeI = total_nHeII = 0.0;
 #endif
     
-    for(i = 0; i < N_gas; i++)
+    for(i = 0; i < NumPart; i++)
         if(P[i].Type == 0)
         {
             rho = SphP[i].Density * All.cf_a3inv;

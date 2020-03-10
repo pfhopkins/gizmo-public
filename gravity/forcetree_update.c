@@ -278,8 +278,7 @@ void force_drift_node(int no, integertime time1)
     {
       if(Extnodes[no].Ti_lastkicked != Nodes[no].Ti_current)
 	{
-	  printf("Task=%d Extnodes[no].Ti_lastkicked=%lld  Nodes[no].Ti_current=%lld\n",
-		 ThisTask, (long long)Extnodes[no].Ti_lastkicked, (long long)Nodes[no].Ti_current);
+	  printf("Task=%d Extnodes[no].Ti_lastkicked=%lld  Nodes[no].Ti_current=%lld\n",ThisTask, (long long)Extnodes[no].Ti_lastkicked, (long long)Nodes[no].Ti_current);
 	  terminate("inconsistency in drift node");
 	}
 

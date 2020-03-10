@@ -110,7 +110,8 @@ int disp_density_evaluate(int target, int mode, int *exportflag, int *exportnode
 void disp_density(void)
 {
     /* initialize variables used below, in particlar the structures we need to call throughout the iteration */
-    MyFloat *Left, *Right; double desnumngb=64, desnumngbdev=48; long long ntot;
+    CPU_Step[CPU_MISC] += measure_time(); double t00_truestart = my_second();
+    MyFloat *Left, *Right; double desnumngb=64, desnumngbdev=48; long long ntot; 
     int i, npleft, iter=0, redo_particle;
     Left = (MyFloat *) mymalloc("Left", NumPart * sizeof(MyFloat));
     Right = (MyFloat *) mymalloc("Right", NumPart * sizeof(MyFloat));
@@ -242,7 +243,7 @@ void disp_density(void)
     }
     
     /* collect some timing information */
-    double t1; t1 = WallclockTime = my_second(); timeall += timediff(t0, t1);
+    double t1; t1 = WallclockTime = my_second(); timeall = timediff(t00_truestart, t1);
     CPU_Step[CPU_AGSDENSCOMPUTE] += timecomp; CPU_Step[CPU_AGSDENSWAIT] += timewait;
     CPU_Step[CPU_AGSDENSCOMM] += timecomm; CPU_Step[CPU_AGSDENSMISC] += timeall - (timecomp + timewait + timecomm);
 }

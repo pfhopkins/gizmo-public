@@ -485,6 +485,20 @@ integertime get_timestep(int p,		/*!< particle index */
         csnd = sqrt(csnd);
         double L_particle = Get_Particle_Size(p);
         dt_courant = 0.5 * All.CourantFac * (L_particle*All.cf_atime) / csnd;
+#ifdef PIC_MHD
+        if(P[p].Grain_SubType==3)
+        {
+            double lorentz_units = sqrt(4.*M_PI*All.UnitPressure_in_cgs*All.HubbleParam*All.HubbleParam); // code B to Gauss
+            lorentz_units *= All.UnitVelocity_in_cm_per_s * (ELECTRONCHARGE/(PROTONMASS*C_LIGHT)); // code velocity to CGS, times base units e/(mp*c)
+            lorentz_units /= All.UnitVelocity_in_cm_per_s / (All.UnitTime_in_s / All.HubbleParam); // convert 'back' to code-units acceleration
+            double reduced_C = PIC_SPEEDOFLIGHT_REDUCTION * C_LIGHT_CODE;
+            double charge_to_mass_ratio_dimensionless = All.PIC_Charge_to_Mass_Ratio;
+            double v2=0, B2=0; for(k=0;k<3;k++) {v2=P[p].Vel[k]*P[p].Vel[k]; B2+=P[p].Gas_B[k]*P[p].Gas_B[k];}
+            double gamma=1/sqrt(1-v2/(reduced_C*reduced_C));
+            double dt_courant_pic = 0.5 * gamma / (charge_to_mass_ratio_dimensionless * sqrt(B2) * lorentz_units); /* dt = 0.5/omega_g */
+            if(dt_courant_pic < dt_courant) dt_courant = dt_courant_pic;
+        }
+#endif
         if(dt_courant < dt) dt = dt_courant;
     }
 #endif
@@ -851,26 +865,35 @@ integertime get_timestep(int p,		/*!< particle index */
             if(dt_accr > 0 && dt_accr < dt) {dt = dt_accr;}
 
         double dt_ngbs = (BPP(p).BH_TimeBinGasNeighbor ? (((integertime) 1) << BPP(p).BH_TimeBinGasNeighbor) : 0) * All.Timebase_interval / All.cf_hubble_a;
+#ifndef SINGLE_STAR_SINK_DYNAMICS
+        dt_ngbs *= 4.; /* standard wakeup-type threshold: use this by default here, unless dynamical interaction important (e.g. back-rx term from oscillation of BH c-o-m, which is important for single-sink sims */
+#endif
         if(dt > dt_ngbs && dt_ngbs > 0) {dt = 1.01 * dt_ngbs; }
 
 #if defined(SINGLE_STAR_TIMESTEPPING)
 	    if(P[p].DensAroundStar > 0)
 	    {
-		double eps = DMAX(DMAX(BPP(p).SinkRadius, KERNEL_CORE_SIZE*All.ForceSoftening[5]), BPP(p).BH_dr_to_NearestGasNeighbor);
-		if(eps < MAX_REAL_NUMBER) {eps = DMAX(Get_Particle_Size(p), eps);} else {eps = Get_Particle_Size(p);}
+            double eps = DMAX( KERNEL_CORE_SIZE*All.ForceSoftening[5], BPP(p).BH_dr_to_NearestGasNeighbor);
+#ifdef BH_GRAVCAPTURE_FIXEDSINKRADIUS
+            eps = DMAX(eps, BPP(p).SinkRadius);
+#endif
+            if(eps < MAX_REAL_NUMBER) {eps = DMAX(Get_Particle_Size(p), eps);} else {eps = Get_Particle_Size(p);}
 #if (ADAPTIVE_GRAVSOFT_FORALL & 32)
-		eps = DMAX(eps, KERNEL_CORE_SIZE*P[p].AGS_Hsml);
+            eps = DMAX(eps, KERNEL_CORE_SIZE*P[p].AGS_Hsml);
 #endif		
-		double dt_gas = sqrt(2*All.ErrTolIntAccuracy * pow(eps*All.cf_atime,3) / (All.G * P[p].Mass)); // fraction of the freefall time of the nearest gas particle from rest
-		if(dt > dt_gas && dt_gas > 0) {dt = 1.01 * dt_gas;}
-	    }
-            
-            if(P[p].StellarAge == All.Time){
-                // want a brand new sink to be on the lowest occupied timebin
-                long bin; for(bin = 0; bin < TIMEBINS; bin++) {if(TimeBinCount[bin] > 0) break;}
-                double dt_min =  ((bin ? (((integertime) 1) << bin) : 0) * All.Timebase_interval / All.cf_hubble_a);
-                if(dt > dt_min && dt_min > 0) dt = 1.01 * dt_min;
-            }
+            double dt_ff = sqrt(2*All.ErrTolIntAccuracy * pow(eps*All.cf_atime,3) / (All.G * P[p].Mass)); // fraction of the freefall time of the nearest gas particle from rest
+            if(dt > dt_ff && dt_ff > 0) {dt = 1.01 * dt_ff;}
+		
+            double L_particle = Get_Particle_Size(p);
+            double dt_cour_sink = 0.5 * All.CourantFac * (L_particle*All.cf_atime) / P[p].BH_SurroundingGasVel;
+            if(dt > dt_cour_sink && dt_cour_sink > 0) {dt = 1.01 * dt_cour_sink;}
+        }
+        if(P[p].StellarAge == All.Time)
+        {   // want a brand new sink to be on the lowest occupied timebin
+            long bin; for(bin = 0; bin < TIMEBINS; bin++) {if(TimeBinCount[bin] > 0) break;}
+            double dt_min =  ((bin ? (((integertime) 1) << bin) : 0) * All.Timebase_interval / All.cf_hubble_a);
+            if(dt > dt_min && dt_min > 0) dt = 1.01 * dt_min;
+        }
 #endif
     } // if(P[p].Type == 5)
 
@@ -895,26 +918,27 @@ integertime get_timestep(int p,		/*!< particle index */
     
     if((dt < All.MinSizeTimestep)||(((integertime) (dt / All.Timebase_interval)) <= 1))
     {
-        PRINT_WARNING("warning: Timestep wants to be below the limit `MinSizeTimestep'");
+        PRINT_WARNING("Timestep wants to be below the limit `MinSizeTimestep'");
         if(P[p].Type == 0)
         {
 #ifndef LONGIDS
-            PRINT_WARNING("Part-ID=%d  dt=%g dtc=%g ac=%g xyz=(%g|%g|%g)  hsml=%g  maxcsnd=%g dt0=%g eps=%g\n",
-             (int) P[p].ID, dt, dt_courant * All.cf_hubble_a, ac, P[p].Pos[0], P[p].Pos[1], P[p].Pos[2],
-             PPP[p].Hsml, csnd, sqrt(2 * All.ErrTolIntAccuracy * All.cf_atime * All.SofteningTable[P[p].Type] / ac) * All.cf_hubble_a, All.SofteningTable[P[p].Type]);
+            PRINT_WARNING("Part-ID=%d  dt=%g dtc=%g ac=%g xyz=(%g|%g|%g)  hsml=%g  maxcsnd=%g dt0=%g eps=%g m=%g type=%d\n",
+             (int) P[p].ID, dt, dt_courant * All.cf_hubble_a, ac, P[p].Pos[0], P[p].Pos[1], P[p].Pos[2], PPP[p].Hsml, csnd, sqrt(2 * All.ErrTolIntAccuracy * All.cf_atime * All.SofteningTable[P[p].Type] / ac) * All.cf_hubble_a, All.SofteningTable[P[p].Type], P[p].Mass,P[p].Type);
 #else
-            PRINT_WARNING("Part-ID=%llu  dt=%g dtc=%g ac=%g xyz=(%g|%g|%g)  hsml=%g  maxcsnd=%g dt0=%g eps=%g\n",
-             (MyIDType) P[p].ID, dt, dt_courant * All.cf_hubble_a, ac, P[p].Pos[0], P[p].Pos[1], P[p].Pos[2],
-             PPP[p].Hsml, csnd, sqrt(2 * All.ErrTolIntAccuracy * All.cf_atime * All.SofteningTable[P[p].Type] / ac) * All.cf_hubble_a, All.SofteningTable[P[p].Type]);
+            PRINT_WARNING("Part-ID=%llu  dt=%g dtc=%g ac=%g xyz=(%g|%g|%g)  hsml=%g  maxcsnd=%g dt0=%g eps=%g m=%g type=%d\n",
+             (MyIDType) P[p].ID, dt, dt_courant * All.cf_hubble_a, ac, P[p].Pos[0], P[p].Pos[1], P[p].Pos[2], PPP[p].Hsml, csnd, sqrt(2 * All.ErrTolIntAccuracy * All.cf_atime * All.SofteningTable[P[p].Type] / ac) * All.cf_hubble_a, All.SofteningTable[P[p].Type], P[p].Mass,P[p].Type);
 #endif // ndef LONGIDS
         }
         else // if(P[p].Type == 0)
         {
 #ifndef LONGIDS
-            PRINT_WARNING("Part-ID=%d  dt=%g ac=%g xyz=(%g|%g|%g)\n", (int) P[p].ID, dt, ac, P[p].Pos[0], P[p].Pos[1], P[p].Pos[2]);
+            PRINT_WARNING("Part-ID=%d  dt=%g ac=%g xyz=(%g|%g|%g) type=%d\n", (int) P[p].ID, dt, ac, P[p].Pos[0], P[p].Pos[1], P[p].Pos[2],P[p].Type);
 #else
-            PRINT_WARNING("Part-ID=%llu  dt=%g ac=%g xyz=(%g|%g|%g)\n", (MyIDType) P[p].ID, dt, ac, P[p].Pos[0], P[p].Pos[1], P[p].Pos[2]);
+            PRINT_WARNING("Part-ID=%llu  dt=%g ac=%g xyz=(%g|%g|%g) type=%d\n", (MyIDType) P[p].ID, dt, ac, P[p].Pos[0], P[p].Pos[1], P[p].Pos[2],P[p].Type);
 #endif // ndef LONGIDS
+#ifdef BH_CALC_DISTANCES
+            PRINT_WARNING("Part-ID=%llu  min_dist_to_bh=%g\n", (MyIDType) P[p].ID, P[p].min_dist_to_bh);
+#endif
         }
         fflush(stdout); fprintf(stderr, "\n @ fflush \n");
 #ifdef STOP_WHEN_BELOW_MINTIMESTEP

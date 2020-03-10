@@ -19,6 +19,8 @@
     
 /* Routines for simple FIRE local photo-ionization heating feedback model. This file was written by Phil Hopkins (phopkins@caltech.edu) for GIZMO. */
 
+
+
 #ifdef CHIMES_HII_REGIONS 
 /* This routine is based heavily on the HII_heating_singledomain() routine 
  * used in FIRE for HII heating. I have modified this to make use of the 
@@ -240,5 +242,6 @@ void chimes_HII_regions_singledomain(void)
 	} // if((P[i].Type == 4)||(P[i].Type == 2)||(P[i].Type == 3))
     } // for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
   myfree(Ngblist);
-} 
+  CPU_Step[CPU_HIIHEATING] += measure_time(); /* collect timings and reset clock for next timing */
+}
 #endif // CHIMES_HII_REGIONS 

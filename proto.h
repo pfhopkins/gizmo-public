@@ -402,6 +402,7 @@ void set_injection_accel(void);
 
 
 int density_isactive(int n);
+int GasGrad_isactive(int i);
 
 size_t sizemax(size_t a, size_t b);
 
@@ -483,6 +484,7 @@ struct addFB_evaluate_data_in_
 void particle2in_addFB_fromstars(struct addFB_evaluate_data_in_ *in, int i, int fb_loop_iteration);
 double mechanical_fb_calculate_eventrates(int i, double dt);
 #endif
+
 
 
 #ifdef GRAIN_FLUID
@@ -676,7 +678,7 @@ void rt_source_injection(void);
 #endif
 
 #ifdef RADTRANSFER
-void rt_set_simple_inits(void);
+void rt_set_simple_inits(int RestartFlag);
 #if defined(RT_EVOLVE_INTENSITIES)
 void rt_init_intensity_directions(void);
 #endif
@@ -769,7 +771,8 @@ void subtract_companion_gravity(int i);
 
 void hydro_gradient_calc(void);
 int GasGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int gradient_iteration);
-void local_slopelimiter(double *grad, double valmax, double valmin, double alim, double h, double shoot_tol);
+void construct_gradient(double *grad, int i);
+void local_slopelimiter(double *grad, double valmax, double valmin, double alim, double h, double shoot_tol, int pos_preserve, double d_max, double val_cen);
 
 #ifdef TURB_DIFF_DYNAMIC
 void dynamic_diff_vel_calc(void);

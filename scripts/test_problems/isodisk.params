@@ -26,8 +26,8 @@
 % 
 
 %----  Relevant files
-InitCondFile /panfs/ds06/sxs/phopkins/GIZMO_tests/iso_disk/iso_disk_ics
-OutputDir   /panfs/ds06/sxs/phopkins/GIZMO_tests/iso_disk
+InitCondFile   isodisk_ics
+OutputDir      output
 
 %---- File formats 
 ICFormat    3  % 1=binary, 3=hdf5, 4=cluster 
@@ -44,13 +44,9 @@ NumFilesWrittenInParallel   1  % must be < N_processors & power of 2
 %---- Output frequency 
 TimeOfFirstSnapshot     0.0
 TimeBetSnapshot         0.01 
-TimeBetStatistics       0.05 
 
 %---- CPU-time limits 
 TimeLimitCPU            50000  % in seconds 
-CpuTimeBetRestartFile   3500  	% in seconds 
-ResubmitOn              0 
-ResubmitCommand         my-scriptfile 
 
 %----- Memory allocation 
 MaxMemSize          1500    % sets maximum MPI process memory use in MByte 
@@ -64,14 +60,13 @@ TimeMax     1.0    % End of the simulation
 %---- Cosmological parameters 
 ComovingIntegrationOn   0       % is it cosmological? (yes=1, no=0)
 BoxSize                 10000.  % in code units
-Omega0                  0.27    % =0 for non-cosmological
-OmegaLambda             0.73    % =0 for non-cosmological
-OmegaBaryon             0.044   % =0 for non-cosmological
+Omega0                  0       % =0 for non-cosmological
+OmegaLambda             0       % =0 for non-cosmological
+OmegaBaryon             0       % =0 for non-cosmological
 HubbleParam             1       % little 'h'; =1 for non-cosmological runs
 
 %---- Accuracy of time integration 
 MaxSizeTimestep         0.005   % in code units, set for your problem
-MinSizeTimestep         1.0e-12 % set this very low, or risk stability
 
 %---- Tree algorithm, force accuracy, domain update frequency 
 TreeDomainUpdateFrequency   0.1	% 0.0005-0.05, dept on core+particle number  
@@ -84,13 +79,13 @@ UnitMagneticField_in_gauss  1.0   	        % 1 gauss
 GravityConstantInternal     0		        % calculated by code if =0
 
 %---- Initial temperature & temperature floor 
-InitGasTemp     0	    % set by IC file if =0 
+InitGasTemp     0	    % set by IC file if =0
 MinGasTemp      10.	    % don't set <10 in explicit feedback runs, otherwise 0
 
 %---- Density/volume estimation (kernel) 
 DesNumNgb               32      % 32 for standard kernel, 60-114 for quintic 
-MaxHsml                 200.  % minimum gas kernel length (some very large value to prevent errors)
-MinGasHsmlFractional    0.01       % minimum kernel length relative to gas force softening (<= 1)
+MaxHsml                 1.e4    % minimum gas kernel length (some very large value to prevent errors)
+MinGasHsmlFractional    0.01    % minimum kernel length relative to gas force softening (<= 1)
 
 %---- Gravitational softening lengths 
 %----- Softening lengths per particle type. If ADAPTIVE_GRAVSOFT is set, these  
@@ -102,14 +97,6 @@ SofteningDisk   0.020    % collisionless particles (type=2)
 SofteningBulge  0.020    % collisionless particles (type=3)
 SofteningStars  0.005    % stars spawned from gas (type=4)
 SofteningBndry  0.005    % black holes (if active), or collisionless (type=5)
-%---- if these are set in cosmo runs, SofteningX switches from comoving to physical
-%------- units when the comoving value exceeds the choice here
-SofteningGasMaxPhys     0.001    % switch to 0.5pc physical below z=1 
-SofteningHaloMaxPhys    0.050 
-SofteningDiskMaxPhys    0.020 
-SofteningBulgeMaxPhys   0.020 
-SofteningStarsMaxPhys   0.005 
-SofteningBndryMaxPhys   0.005 
 %----- parameters for adaptive gravitational softening 
 AGS_DesNumNgb           32  % neighbor number for calculating adaptive gravsoft
 

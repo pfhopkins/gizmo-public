@@ -71,7 +71,7 @@
                 cmag = MINMOD(dmet,cmag); // limiter based on mass exchange from MFV HLLC solver //
 #endif
                 out.Dyield[k_species] += cmag;
-                P[j].Metallicity[k_species] -= cmag / P[j].Mass;
+                if(j_is_active_for_fluxes) {SphP[j].Dyield[k_species] -= cmag;}
             }
         }
     }
