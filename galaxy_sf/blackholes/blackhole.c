@@ -166,7 +166,7 @@ double bh_angleweight_localcoupling(int j, double hR, double cos_theta, double r
     if(V_j<0 || isnan(V_j)) {V_j=0;}
     double sph_area = fabs(V_i*V_i*dwk + V_j*V_j*dwk_j); // effective face area //
     wk = 0.5 * (1. - 1./sqrt(1. + sph_area / (M_PI*r*r))); // corresponding geometric weight //
-#if !defined(BH_PUSHAREA)
+#if defined(BH_FB_VOLUMEWEIGHTED)
     wk = 0.5 * (V_j/V_i) * (V_i*wk + V_j*wk_j); // weight in the limit N_particles >> 1 for equal-mass particles (accounts for self-shielding if some in dense disk)
 #endif
 #if defined(BH_FB_COLLIMATED)
@@ -175,18 +175,6 @@ double bh_angleweight_localcoupling(int j, double hR, double cos_theta, double r
 #endif
     if((wk <= 0)||(isnan(wk))) return 0; // no point in going further, there's no physical weight here
     return wk;
-
-#if 0
-    /* optionally below: Nathan Roth's estimate of angular dependence for the momentum flux vs angle for a torus-type configuration */
-    double b0,c0,f;
-    // nathans 'B' and 'C' functions //
-    b0=8.49403/(1.17286+hR);
-    c0=64.4254/(2.5404+hR);
-    f=1-(1+c0*exp(-b0*M_PI/2))/(1+c0*exp(-b0*(M_PI/2-theta)));
-    return P[j].Hsml*P[j].Hsml * f;
-    /* H^2 gives the fraction of the solid angle subtended by the particle (normalized by distance),
-     the 'f' function gives the dForce/dOmega weighting from the radiative transfer calculations */
-#endif
 }
 
 
@@ -204,21 +192,9 @@ double bh_angleweight(double bh_lum_input, MyFloat bh_angle[3], double hR, doubl
 #if defined(BH_FB_COLLIMATED)
     double cos_theta = fabs((dx*bh_angle[0] + dy*bh_angle[1] + dz*bh_angle[2])/sqrt(r2*(bh_angle[0]*bh_angle[0]+bh_angle[1]*bh_angle[1]+bh_angle[2]*bh_angle[2]))); if(!isfinite(cos_theta)) {cos_theta=1;}
     double wt_normalized = 0.0847655*exp(4.5*cos_theta*cos_theta); // ~exp(-x^2/2*hR^2), normalized appropriately to give the correct total flux, for hR~0.3
-    //double costheta2=cos_theta*cos_theta, eps2=0.25; /* eps_width^2 is approximate with in radians of 'core' of jet */
-    //double wt_normalized = 5.33709 * eps_width_jet * (eps_width_jet + costheta2) / ((eps_width_jet + 1) * (eps_width_jet + (1-costheta2)));
     return bh_lum_input * wt_normalized; // ~exp(-x^2/2*hR^2), normalized appropriately to give the correct total flux, for hR~0.3
 #endif
     return bh_lum_input;
-
-#if 0
-    double hRe=hR, y; if(hRe<0.1) hRe=0.1; if(hRe>0.5) hRe=0.5;
-    y = -1.0 / (0.357-10.839*hRe+142.640*hRe*hRe-713.928*hRe*hRe*hRe+1315.132*hRe*hRe*hRe*hRe); y = 1.441 + (-6.42+9.92*hRe) * (exp(cos_theta*cos_theta*y)-exp(y)) / (1-exp(y));  // approximation to nathans fits
-    //double A=5.57*exp(-hRe/0.52);double B=19.0*exp(-hRe/0.21);double C0=20.5+20.2/(1+exp((hRe-0.25)/0.035));
-    //y = 1.441 + A*((1+C0*exp(-B*1.5708))/(1+C0*exp(-B*(1.5708-acos(cos_theta))))-1); // this is nathan's fitting function (fairly expensive with large number of exp calls and arc_cos
-    //y=0.746559 - 9.10916*(-0.658128+exp(-0.418356*cos_theta*cos_theta)); // this is normalized so the total flux is L/(4pi*r*r) and assumed monochromatic IR
-    if(y>1.441) y=1.441; if(y<-5.0) y=-5.0; y*=2.3026; // so we can take exp, instead of pow //
-    return exp(y) * bh_lum_input;
-#endif
 }
 
 #endif /* end of #if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS) */
@@ -342,11 +318,6 @@ void set_blackhole_mdot(int i, int n, double dt)
             double j_eff=0,m_eff=BlackholeTempInfo[i].Malt_in_Kernel; for(k=0;k<3;k++) {j_eff+=BlackholeTempInfo[i].Jalt_in_Kernel[k]*BlackholeTempInfo[i].Jalt_in_Kernel[k];}
             double facc_which_hubber_mdot = DMIN(1, 1.75*sqrt(j_eff)/(m_eff*sqrt(All.G*(m_eff+P[n].Mass)*rmax_for_bhar))); /* disk fraction estimator */
             mdot = DMAX( BlackholeTempInfo[i].hubber_mdot_bondi_limiter , pow(hubber_mdot_from_vr_estimator,1-facc_which_hubber_mdot)*pow(hubber_mdot_disk_estimator,facc_which_hubber_mdot));
-#endif
-#ifdef BH_SIGMAMULTIPLIER
-            double sigma_crit = 3000. * (2.09e-4 / (All.UnitMass_in_g*All.HubbleParam/(All.UnitLength_in_cm*All.UnitLength_in_cm))); // from MG's fit to isolated cloud sims [converts from Msun/pc^2 to code units]
-            double sigma_enc = (BlackholeTempInfo[i].Malt_in_Kernel + P[n].Mass) / (M_PI*rmax_for_bhar*rmax_for_bhar); // effective surface density [total gravitating mass / area]
-            mdot *= sigma_enc / (sigma_enc + sigma_crit);
 #endif
 #ifndef IO_REDUCED_MODE
             printf(" ..BH accretion kernel :: mdot %g Norm %g fdisk %g bh_8 %g fgas %g f0 %g mdisk_9 %g rmax_100 %g \n",
@@ -476,7 +447,7 @@ void set_blackhole_mdot(int i, int n, double dt)
     /* if there -is- an alpha-disk, protect the alpha-disk not to be over-depleted (i.e. overshooting into negative alpha-disk masses) */
     if(dt>0)
     {
-#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_SPAWN)
+#if defined(BH_WIND_CONTINUOUS) || defined(FLAG_NOT_IN_PUBLIC_CODE)
         if(mdot > BPP(n).BH_Mass_AlphaDisk/dt*All.BAL_f_accretion) mdot = BPP(n).BH_Mass_AlphaDisk/dt*All.BAL_f_accretion;
 #else
         if(mdot > BPP(n).BH_Mass_AlphaDisk/dt) mdot = BPP(n).BH_Mass_AlphaDisk/dt;
@@ -488,7 +459,7 @@ void set_blackhole_mdot(int i, int n, double dt)
 
 #else // BH_ALPHADISK_ACCRETION
 
-#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK) || defined(BH_WIND_SPAWN)
+#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK) || defined(FLAG_NOT_IN_PUBLIC_CODE)
     mdot *= All.BAL_f_accretion; /* if there is no alpha-disk, the BHAR defined above is really an mdot into the accretion disk. the rate -to the hole- should be corrected for winds */
 #endif
 #endif // BH_ALPHADISK_ACCRETION
@@ -549,7 +520,7 @@ void set_blackhole_new_mass(int i, int n, double dt)
     if(BPP(n).BH_Mass_AlphaDisk<0) {BPP(n).BH_Mass_AlphaDisk=0;}
     if(P[n].Mass<0) {P[n].Mass=0;}
 #else // #ifdef BH_ALPHADISK_ACCRETION
-#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_SPAWN)
+#if defined(BH_WIND_CONTINUOUS) || defined(FLAG_NOT_IN_PUBLIC_CODE)
     BPP(n).BH_Mass += BPP(n).BH_Mdot * dt / All.BAL_f_accretion; // accrete the winds first, then remove the wind mass in the final loop
 #else
     BPP(n).BH_Mass += BPP(n).BH_Mdot * dt;
@@ -788,22 +759,6 @@ void blackhole_final_operations(void)
         P[n].BH_SurroundingGasVel = sqrt(P[n].BH_SurroundingGasVel);
 #endif
 
-#ifdef BH_WIND_SPAWN
-        /* DAA: for wind spawning, we only need to subtract the BAL wind mass from BH_Mass (or BH_Mass_AlphaDisk) --> wind mass subtracted from P.Mass in blackhole_spawn_particle_wind_shell()  */
-        double dm_wind = (1.-All.BAL_f_accretion) / All.BAL_f_accretion * dm;
-        if(dm_wind > P[n].Mass) {dm_wind = P[n].Mass;}
-#if defined(BH_ALPHADISK_ACCRETION)
-        if(dm_wind > BPP(n).BH_Mass_AlphaDisk) {dm_wind = BPP(n).BH_Mass_AlphaDisk;}
-        BPP(n).BH_Mass_AlphaDisk -= dm_wind;
-#else
-        if(dm_wind > BPP(n).BH_Mass) {dm_wind = BPP(n).BH_Mass;}
-#ifndef BH_DEBUG_FIX_MASS
-        BPP(n).BH_Mass -= dm_wind;
-#endif 
-#endif
-        BPP(n).unspawned_wind_mass += dm_wind;
-        if(BPP(n).unspawned_wind_mass>MaxUnSpanMassBH) {MaxUnSpanMassBH=BPP(n).unspawned_wind_mass;}
-#endif
         
         /* dump the results to the 'blackhole_details' files */
         mass_disk=0; mdot_disk=0; MgasBulge=0; MstarBulge=0; r0 = PPP[n].Hsml * All.cf_atime;

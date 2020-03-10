@@ -152,9 +152,6 @@ int N_gas;			/*!< number of gas particles on the LOCAL processor  */
 #ifdef SEPARATE_STELLARDOMAINDECOMP
 int N_stars;
 #endif
-#ifdef BH_WIND_SPAWN
-double  MaxUnSpanMassBH;
-#endif
 
 long long Ntype[6];		/*!< total number of particles of each type */
 int NtypeLocal[6];		/*!< local number of particles of each type */

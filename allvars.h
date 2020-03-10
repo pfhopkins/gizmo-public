@@ -253,7 +253,7 @@
 #ifdef RT_INFRARED
 #define COOL_LOWTEMP_THIN_ONLY // Don't want to double-count trapping of radiation if we're doing it self-consistently
 #endif
-#if (defined(COOLING) && !defined(COOL_LOWTEMP_THIN_ONLY))
+#if (defined(COOLING) && !defined(FLAG_NOT_IN_PUBLIC_CODE))
 #define RT_USE_TREECOL_FOR_NH 6 
 #endif
 #ifdef COOLING
@@ -583,9 +583,6 @@
 #endif
 #endif
 
-#if defined(EOS_SUBSTELLAR_ISM)
-#define EOS_GAMMA_VARIABLE
-#endif
 
 #if defined(EOS_GAMMA_VARIABLE)
 #define GAMMA(i) (gamma_eos(i)) /*! use an actual function! */
@@ -1296,9 +1293,6 @@ extern int N_gas;		/*!< number of gas particles on the LOCAL processor  */
 #ifdef SEPARATE_STELLARDOMAINDECOMP
 extern int N_stars;
 #endif
-#ifdef BH_WIND_SPAWN
-extern double MaxUnSpanMassBH;
-#endif
 
 
 extern long long Ntype[6];	/*!< total number of particles of each type */
@@ -1820,7 +1814,7 @@ extern struct global_data_all_processes
   double InitStellarAgeinGyr;
 #endif
 
-#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK) || defined(BH_WIND_SPAWN)
+#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK) || defined(FLAG_NOT_IN_PUBLIC_CODE)
     double BAL_f_accretion;
     double BAL_v_outflow;
 #endif
@@ -1916,11 +1910,6 @@ extern struct global_data_all_processes
 #endif
 #ifdef BH_ALPHADISK_ACCRETION
   double SeedAlphaDiskMass;         /*!< Seed alpha disk mass */
-#endif
-#ifdef BH_WIND_SPAWN
-  double BAL_wind_particle_mass;        /*!< target mass for feedback particles to be spawned */
-  double BAL_internal_temperature;
-  MyIDType AGNWindID;
 #endif
 #ifdef BH_SEED_FROM_FOF
   double MinFoFMassForNewSeed;      /*!< Halo mass required before new seed is put in */
@@ -2068,10 +2057,6 @@ extern ALIGN(32) struct particle_data
     MyFloat DensAroundStar;         /*!< gas density in the neighborhood of the collisionless particle (evaluated from neighbors) */
     MyFloat GradRho[3];             /*!< gas density gradient evaluated simply from the neighboring particles, for collisionless centers */
 #endif
-#ifdef RT_USE_TREECOL_FOR_NH
-    MyFloat ColumnDensityBins[RT_USE_TREECOL_FOR_NH];     /*!< angular bins for column density */
-    MyFloat SigmaEff;              /*!< effective column density -log(avg(exp(-sigma))) averaged over column density bins from the gravity tree (does not include the self-contribution) */
-#endif         
 #if defined(RT_SOURCE_INJECTION)
     MyFloat KernelSum_Around_RT_Source; /*!< kernel summation around sources for radiation injection (save so can be different from 'density') */
 #endif
@@ -2103,9 +2088,6 @@ extern ALIGN(32) struct particle_data
 #if defined(BLACK_HOLES)
     MyIDType SwallowID;
     int IndexMapToTempStruc;   /*!< allows for mapping to BlackholeTempInfo struc */
-#ifdef BH_WIND_SPAWN
-    MyFloat unspawned_wind_mass;    /*!< tabulates the wind mass which has not yet been spawned */
-#endif
 #ifdef BH_COUNTPROGS
     int BH_CountProgs;
 #endif
@@ -2675,9 +2657,6 @@ extern struct gravdata_in
 extern struct gravdata_out
 {
     MyLongDouble Acc[3];
-#ifdef RT_USE_TREECOL_FOR_NH
-    MyDouble ColumnDensityBins[RT_USE_TREECOL_FOR_NH];
-#endif    
 #ifdef RT_OTVET
     MyLongDouble ET[N_RT_FREQ_BINS][6];
 #endif
@@ -3015,9 +2994,6 @@ extern ALIGN(32) struct NODE
 
   double GravCost;
   integertime Ti_current;
-#ifdef RT_USE_TREECOL_FOR_NH
-  MyFloat gasmass;
-#endif    
 #ifdef RT_USE_GRAVTREE
   MyFloat stellar_lum[N_RT_FREQ_BINS]; /*!< luminosity in the node*/
 #ifdef CHIMES_STELLAR_FLUXES 

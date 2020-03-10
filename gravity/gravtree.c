@@ -367,9 +367,6 @@ void gravity_tree(void)
 #endif
 #endif // BH_CALC_DISTANCES
 
-#ifdef RT_USE_TREECOL_FOR_NH
-                int kbin=0; for(kbin=0; kbin < RT_USE_TREECOL_FOR_NH; kbin++) {P[place].ColumnDensityBins[kbin] += GravDataOut[j].ColumnDensityBins[kbin];}
-#endif                
 #ifdef BH_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
                 P[place].MencInRcrit += GravDataOut[j].MencInRcrit;
 #endif
@@ -482,12 +479,6 @@ void gravity_tree(void)
                 if(!isnan(trace) && (trace>0)) {for(k=0;k<6;k++) {SphP[i].ET[k_freq][k]/=trace;}} else {SphP[i].ET[k_freq][0]=SphP[i].ET[k_freq][1]=SphP[i].ET[k_freq][2]=1./3.; SphP[i].ET[k_freq][4]=SphP[i].ET[k_freq][5]=SphP[i].ET[k_freq][6]=0;}}}
 #endif
 
-#ifdef RT_USE_TREECOL_FOR_NH  /* compute the effective column density that gives equivalent attenuation of a uniform background: -log(avg(exp(-sigma))) */
-        double sigma_eff=0, sigma_sum=0; int kbin; // first do a sum of the columns and express columns in units of that sum, so that we're plugging O(1) values into exp and avoid overflow when we have unfortunate units. Then we just multiply by the sum at the end.
-        for(kbin=0; kbin<RT_USE_TREECOL_FOR_NH; kbin++) {sigma_sum += P[i].ColumnDensityBins[kbin];}
-        for(kbin=0; kbin<RT_USE_TREECOL_FOR_NH; kbin++) {sigma_eff += exp(-P[i].ColumnDensityBins[kbin]/sigma_sum);}
-        P[i].SigmaEff = -log(sigma_eff/RT_USE_TREECOL_FOR_NH) * sigma_sum;
-#endif        
         
 #if !defined(BOX_PERIODIC) && !defined(PMGRID) /* some factors here in case we are trying to do comoving simulations in a non-periodic box (special use cases) */
         if(All.ComovingIntegrationOn) {for(j=0;j<3;j++) {P[i].GravAccel[j] += 0.5*All.Omega0 *All.Hubble_H0_CodeUnits*All.Hubble_H0_CodeUnits * P[i].Pos[j];}}

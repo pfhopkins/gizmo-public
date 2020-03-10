@@ -280,20 +280,6 @@ void calculate_non_standard_physics(void)
             All.TimeNextOnTheFlyFoF += All.TimeBetOnTheFlyFoF;
     }
 #endif // ifdef FOF
-#ifdef BH_WIND_SPAWN
-    double MaxUnSpanMassBH_global;
-    MPI_Allreduce(&MaxUnSpanMassBH, &MaxUnSpanMassBH_global, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-    if(MaxUnSpanMassBH_global > (BH_WIND_SPAWN)*All.BAL_wind_particle_mass)
-    {
-        spawn_bh_wind_feedback();
-        rearrange_particle_sequence();
-//#ifndef SINGLE_STAR_SINK_DYNAMICS
-//        force_treebuild(NumPart, NULL); // not needed [we think] if we use TreeReconstructFlag to force a new domain decomp+build before next timestep
-//#endif
-        
-        MaxUnSpanMassBH=MaxUnSpanMassBH_global=0.;
-    }
-#endif
 #endif // ifdef BLACK_HOLES or GALSF_SUBGRID_WINDS
     
     

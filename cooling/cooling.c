@@ -466,11 +466,7 @@ double find_abundances_and_rates(double logT, double rho, int target, double shi
         else
             {NH_SS_z = NH_SS*pow(10.,0.173*(logT-4.));}
         double q_SS = nHcgs/NH_SS_z;
-#ifdef COOLING_SELFSHIELD_TESTUPDATE_RAHMATI
-        shieldfac = 0.98 / pow(1 + pow(q_SS,1.64), 2.28) + 0.02 / pow(1 + q_SS, 0.84); // from Rahmati et al. 2012: gives gentler cutoff at high densities
-#else
         shieldfac = 1./(1.+q_SS*(1.+q_SS/2.*(1.+q_SS/3.*(1.+q_SS/4.*(1.+q_SS/5.*(1.+q_SS/6.*q_SS)))))); // this is exp(-q) down to ~1e-5, then a bit shallower, but more than sufficient approximation here //
-#endif
 #ifdef COOL_LOW_TEMPERATURES
         if(logT < Tmin+1) shieldfac *= (logT-Tmin); // make cutoff towards Tmin more continuous: PFH ??? //
 #endif
@@ -727,11 +723,7 @@ double CoolingRate(double logT, double rho, double n_elec_guess, int target)
     else
         NH_SS_z=NH_SS*pow(10.,0.173*(logT-4.));
     double q_SS = nHcgs/NH_SS_z;
-#ifdef COOLING_SELFSHIELD_TESTUPDATE_RAHMATI
-    shieldfac = 0.98 / pow(1 + pow(q_SS,1.64), 2.28) + 0.02 / pow(1 + q_SS, 0.84); // from Rahmati et al. 2012: gives gentler cutoff at high densities
-#else
     shieldfac = 1./(1.+q_SS*(1.+q_SS/2.*(1.+q_SS/3.*(1.+q_SS/4.*(1.+q_SS/5.*(1.+q_SS/6.*q_SS)))))); // this is exp(-q) down to ~1e-5, then a bit shallower, but more than sufficient approximation here //
-#endif
 #ifdef GALSF_EFFECTIVE_EQS
     shieldfac = 1; // self-shielding is implicit in the sub-grid model already //
 #endif
@@ -938,7 +930,7 @@ double CoolingRate(double logT, double rho, double n_elec_guess, int target)
     if (target>=0){SphP[target].CoolingRate = Lambda; SphP[target].HeatingRate = Heat;}
 #endif
 
-#if defined(COOL_LOW_TEMPERATURES) && !defined(COOL_LOWTEMP_THIN_ONLY)
+#if defined(COOL_LOW_TEMPERATURES) && !defined(FLAG_NOT_IN_PUBLIC_CODE)
     /* if we are in the optically thick limit, we need to modify the cooling/heating rates according to the appropriate limits; 
         this flag does so by using a simple approximation. we consider the element as if it were a slab, with a column density 
         calculated from the simulation properties and the Sobolev approximation. we then assume it develops an equilibrium internal 

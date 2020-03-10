@@ -1330,7 +1330,7 @@ void read_parameter_file(char *fname)
         id[nt++] = REAL;
 #endif
 
-#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK) || defined(BH_WIND_SPAWN)
+#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK) || defined(FLAG_NOT_IN_PUBLIC_CODE)
         strcpy(tag[nt],"BAL_f_accretion");
         addr[nt] = &All.BAL_f_accretion;
         id[nt++] = REAL;
@@ -1347,15 +1347,6 @@ void read_parameter_file(char *fname)
 #endif
         
 
-#ifdef BH_WIND_SPAWN
-        strcpy(tag[nt], "BAL_internal_temperature");
-        addr[nt] = &All.BAL_internal_temperature;
-        id[nt++] = REAL;
-        
-        strcpy(tag[nt], "BAL_wind_particle_mass");
-        addr[nt] = &All.BAL_wind_particle_mass;
-        id[nt++] = REAL;
-#endif
 
 
 #endif /* BLACK_HOLES */
@@ -1918,9 +1909,6 @@ void read_parameter_file(char *fname)
 #endif
     if(All.AGS_MaxNumNgbDeviation < 0.05) All.AGS_MaxNumNgbDeviation = 0.05;
 #endif
-#ifdef BH_WIND_SPAWN
-      All.AGNWindID = 1913298393;       // this seems weird, but is the bitshifted version of 1234568912345 for not long IDs.
-#endif
 #endif // closes DEVELOPER_MODE check //
     
     
@@ -1937,7 +1925,7 @@ void read_parameter_file(char *fname)
     /* determines tree cell-opening criterion: 0 for Barnes-Hut, 1 for relative criterion: this
      should only be changed if you -really- know what you're doing! */    
     
-#if defined(MAGNETIC) || defined(HYDRO_MESHLESS_FINITE_VOLUME) || defined(BH_WIND_SPAWN)
+#if defined(MAGNETIC) || defined(HYDRO_MESHLESS_FINITE_VOLUME) || defined(FLAG_NOT_IN_PUBLIC_CODE)
     if(All.CourantFac > 0.2) {All.CourantFac = 0.2;}
     /* (PFH) safety factor needed for MHD calc, because people keep using the same CFac as hydro! */
 #endif

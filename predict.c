@@ -446,15 +446,11 @@ double evaluate_NH_from_GradRho(MyFloat gradrho[3], double hsml, double rho, dou
     double gradrho_mag=0; //double* gradrho = SphP[i].Gradients.Density; double rho=P[i].DensAroundStar, numngb_ndim = P[i].NumNgb, hsml = P[i].Hsml; if(P[i].Type==0) {rho=SphP[i].Density;}
     if(rho>0)
     {
-#ifdef RT_USE_TREECOL_FOR_NH
-        gradrho_mag = include_h * rho * hsml / numngb_ndim; if(target>0) {gradrho_mag += P[target].SigmaEff;}
-#else             
         gradrho_mag = sqrt(gradrho[0]*gradrho[0]+gradrho[1]*gradrho[1]+gradrho[2]*gradrho[2]);
         if(gradrho_mag > 0) {gradrho_mag = rho*rho/gradrho_mag;} else {gradrho_mag=0;}
         if(include_h > 0) if(numngb_ndim > 0) gradrho_mag += include_h * rho * hsml / numngb_ndim; // quick-and-dirty approximation to the effective neighbor number needed here
         //if(include_h > 0) gradrho_mag += include_h * rho * (hsml * (0.124 + 11.45 / (26.55 + All.DesNumNgb))); // quick-and-dirty approximation to the effective neighbor number needed here
         // account for the fact that 'h' is much larger than the inter-particle separation //
-#endif        
     }
     return gradrho_mag * All.cf_a2inv; // (physical units) // *(Z/Zsolar) add metallicity dependence
 }

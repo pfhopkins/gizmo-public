@@ -212,9 +212,6 @@ double get_starformation_rate(int i)
     if(SphP[i].DelayTime > 0) return 0;
 #endif
     
-#ifdef BH_WIND_SPAWN
-    if(P[i].ID == All.AGNWindID) return 0;
-#endif
 
     flag = 1;			/* default is normal cooling */
     if(SphP[i].Density*All.cf_a3inv >= All.PhysDensThresh) {flag = 0;}
@@ -293,7 +290,7 @@ double get_starformation_rate(int i)
     double bmag=0; for(k=0;k<3;k++) {bmag+=Get_Particle_BField(i,k)*Get_Particle_BField(i,k);}
     cs_eff = sqrt(cs_eff*cs_eff + bmag/SphP[i].Density);
 #endif
-#if (defined(COOLING) && !defined(COOL_LOWTEMP_THIN_ONLY)) || defined(EOS_GMC_BAROTROPIC) // if we have to deal with optically-thick thermo
+#if (defined(COOLING) && !defined(FLAG_NOT_IN_PUBLIC_CODE)) || defined(EOS_GMC_BAROTROPIC) // if we have to deal with optically-thick thermo
     double nHcgs = HYDROGEN_MASSFRAC * (SphP[i].Density * All.cf_a3inv * All.UnitDensity_in_cgs * All.HubbleParam * All.HubbleParam) / PROTONMASS;
     if(nHcgs > 1e13) { cs_eff = DMIN(cs_eff, 2e4/All.UnitVelocity_in_cm_per_s);}  //1.62e5/All.UnitVelocity_in_cm_per_s); // limiter to permit sink formation in simulations that really resolve the opacity limit and bog down when an optically-thick core forms. Modify this if you want to follow first collapse more/less - scale as c_s ~ n^(1/5) 
 #endif
@@ -515,9 +512,6 @@ void star_formation_parent_routine(void)
                 double spin_prefac = All.G * P[i].BH_Mass / C_LIGHT_CODE; // assume initially maximally-spinning BH with random orientation
                 P[i].BH_Specific_AngMom[0]=spin_prefac * bh_sin*cos(bh_phi); P[i].BH_Specific_AngMom[1]=spin_prefac * bh_sin*sin(bh_phi); P[i].BH_Specific_AngMom[2]=spin_prefac * bh_mu;
 #endif
-#ifdef BH_WIND_SPAWN
-                P[i].unspawned_wind_mass = 0;
-#endif
 #ifdef BH_COUNTPROGS
                 P[i].BH_CountProgs = 1;
 #endif
@@ -566,7 +560,7 @@ void star_formation_parent_routine(void)
                 P[i].SinkRadius = All.ForceSoftening[5];
 #ifdef SINGLE_STAR_SINK_DYNAMICS
                 double cs = 2e4 / All.UnitVelocity_in_cm_per_s;
-#if (defined(COOLING) && !defined(COOL_LOWTEMP_THIN_ONLY)) || defined(EOS_GMC_BAROTROPIC)
+#if (defined(COOLING) && !defined(FLAG_NOT_IN_PUBLIC_CODE)) || defined(EOS_GMC_BAROTROPIC)
                 double nHcgs = HYDROGEN_MASSFRAC * (SphP[i].Density * All.cf_a3inv * All.UnitDensity_in_cgs * All.HubbleParam * All.HubbleParam) / PROTONMASS;
                 if(nHcgs > 1e10) cs *= pow(nHcgs/1e10, 1./5); // if we're getting opacity-limited then we can set a smaller sink radius, since cs ~ n^1/5
 #endif
@@ -735,15 +729,6 @@ void star_formation_parent_routine(void)
             fflush(FdSfr); // can flush it, because only occuring on master steps anyways
         } // thistask==0
     }
-
-#if 0
-    if(tot_converted+tot_spawned > 0) // TO: Don't call rearrange_particle_sequence(). This makes the cell array inconsistent with the tree
-    {
-        //rearrange_particle_sequence(); force_treebuild(NumPart, NULL); // TreeReconstructFlag = 0; // block of (more expensive) calls to completely rebuild the tree if we convert anything
-        //TreeReconstructFlag = 1; // alternatively, we can simply delay the rebuild, but note that it will be needed, by setting the TreeReconstructFlag
-    }
-#endif
-    
     CPU_Step[CPU_COOLINGSFR] += measure_time();
 } /* end of main sfr_cooling routine!!! */
 
