@@ -228,7 +228,8 @@
 
 
 
-#ifdef SINGLE_STAR_SINK_DYNAMICS_MG_DG_TEST_PACKAGE /* bunch of options -NOT- strictly required here, but this is a temporary convenience block */
+#ifdef SINGLE_STAR_DEFAULTS /* bunch of options -NOT- strictly required here, but this is a temporary convenience block */
+#define LONGIDS
 #define SINGLE_STAR_SINK_DYNAMICS
 #define HERMITE_INTEGRATION 32 // bitflag for which particles to do 4th-order Hermite integration
 #define ADAPTIVE_GRAVSOFT_FORGAS
@@ -272,8 +273,8 @@
 #define GALSF_SFR_VIRIAL_SF_CRITERION 4
 #endif
 #if (SINGLE_STAR_SINK_FORMATION & 16)
-#ifndef SINGLE_STAR_FIND_BINARIES
-#define SINGLE_STAR_FIND_BINARIES
+#ifndef SINGLE_STAR_TIMESTEPPING
+#define SINGLE_STAR_TIMESTEPPING
 #endif
 #endif
 #if (SINGLE_STAR_SINK_FORMATION & 32)
@@ -1986,6 +1987,9 @@ extern ALIGN(32) struct particle_data
     MyFloat GravPM[3];		/*!< particle acceleration due to long-range PM gravity force */
 #endif
     MyFloat OldAcc;			/*!< magnitude of old gravitational force. Used in relative opening criterion */
+#ifdef COUNT_MASS_IN_GRAVTREE
+    MyFloat TreeMass;  /*!< Mass seen by the particle as it sums up the gravitational force from the tree - should be equal to total mass, a useful debug diagnostic  */
+#endif    
 #if defined(EVALPOTENTIAL) || defined(COMPUTE_POTENTIAL_ENERGY) || defined(OUTPUT_POTENTIAL)
     MyFloat Potential;		/*!< gravitational potential */
 #if defined(EVALPOTENTIAL) && defined(PMGRID)
@@ -2112,6 +2116,9 @@ extern ALIGN(32) struct particle_data
 #ifdef BH_FOLLOW_ACCRETED_ANGMOM
     MyFloat BH_Specific_AngMom[3];
 #endif
+#ifdef BH_RETURN_BFLUX
+    MyDouble B[3];
+#endif    
 #ifdef JET_DIRECTION_FROM_KERNEL_AND_SINK
     MyFloat Mgas_in_Kernel;
     MyFloat Jgas_in_Kernel[3];
@@ -2136,7 +2143,7 @@ extern ALIGN(32) struct particle_data
 #ifdef BH_CALC_DISTANCES
     MyFloat min_dist_to_bh;
     MyFloat min_xyz_to_bh[3];
-#if defined(SINGLE_STAR_FIND_BINARIES) || defined(SINGLE_STAR_TIMESTEPPING)
+#if defined(SINGLE_STAR_FIND_BINARIES) || (SINGLE_STAR_TIMESTEPPING > 0)
     MyDouble min_bh_t_orbital; //orbital time for binary
     MyDouble comp_dx[3]; //position offset of binary companion - this will be evolved in the Kepler solution while we use the Pos attribute to track the binary COM
     MyDouble comp_dv[3]; //velocity offset of binary companion - this will be evolved in the Kepler solution while we use the Vel attribute to track the binary COM velocity
@@ -2657,6 +2664,9 @@ extern struct gravdata_in
 extern struct gravdata_out
 {
     MyLongDouble Acc[3];
+#ifdef COUNT_MASS_IN_GRAVTREE
+    MyLongDouble TreeMass;
+#endif    
 #ifdef RT_OTVET
     MyLongDouble ET[N_RT_FREQ_BINS][6];
 #endif

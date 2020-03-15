@@ -342,7 +342,9 @@ void gravity_tree(void)
 #ifdef EVALPOTENTIAL
                 P[place].Potential += GravDataOut[j].Potential;
 #endif
-               
+#ifdef COUNT_MASS_IN_GRAVTREE
+                P[place].TreeMass += GravDataOut[j].TreeMass;
+#endif                
 #ifdef BH_CALC_DISTANCES /* GravDataOut[j].min_dist_to_bh contains the min dist to particle "P[place]" on another task.  We now check if it is smaller than the current value */
                 if(GravDataOut[j].min_dist_to_bh < P[place].min_dist_to_bh)
                 {
@@ -430,7 +432,11 @@ void gravity_tree(void)
         P[i].Potential += P[i].PM_Potential; /* add in long-range potential */
 #endif
 #endif
-
+#ifdef COUNT_MASS_IN_GRAVTREE
+        P[i].TreeMass += P[i].Mass;
+        if(P[i].Type == 5) printf("Particle %d sees mass %g in the gravity tree\n", P[i].ID, P[i].TreeMass);
+#endif        
+        
         /* calculate 'old acceleration' for use in the relative tree-opening criterion */
         if(!(header.flag_ic_info == FLAG_SECOND_ORDER_ICS && All.Ti_Current == 0 && RestartFlag == 0)) /* to prevent that we overwrite OldAcc in the first evaluation for 2lpt ICs */
             {

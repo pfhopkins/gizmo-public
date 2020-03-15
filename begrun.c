@@ -1911,7 +1911,6 @@ void read_parameter_file(char *fname)
 #endif
 #endif // closes DEVELOPER_MODE check //
     
-    
 #ifdef GALSF
     All.CritOverDensity = 1000.0;
     /* this just needs to be some number >> 1, or else we get nonsense.

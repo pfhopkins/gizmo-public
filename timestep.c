@@ -852,7 +852,7 @@ integertime get_timestep(int p,		/*!< particle index */
             dt_accr = 0.05 * DMAX(BPP(p).BH_Mass , All.MaxMassForParticleSplit) / BPP(p).BH_Mdot;
 #endif // defined(BH_GRAVCAPTURE_GAS) || defined(BH_WIND_CONTINUOUS)	    
 #ifdef SINGLE_STAR_SINK_DYNAMICS
-            dt_accr = 0.1 * DMAX(BPP(p).BH_Mass, All.MinMassForParticleMerger) / BPP(p).BH_Mdot;
+            dt_accr = All.MinMassForParticleMerger / BPP(p).BH_Mdot;
 #endif
         } // if(BPP(p).BH_Mdot > 0 && BPP(p).BH_Mass > 0)
 #ifdef BH_SEED_GROWTH_TESTS

@@ -599,6 +599,8 @@ void read_ic(char *fname);
 int read_outputlist(char *fname);
 void read_parameter_file(char *fname);
 void rearrange_particle_sequence(void);
+void swap_treewalk_pointers(int i, int j);
+void remove_particle_from_tree(int i);
 void reorder_gas(void);
 void reorder_particles(void);
 void restart(int modus);

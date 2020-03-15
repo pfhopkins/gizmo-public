@@ -598,6 +598,9 @@ void init(void)
 #ifdef DIVBCLEANING_DEDNER
         SphP[i].Phi = SphP[i].PhiPred = SphP[i].DtPhi = 0;
 #endif
+#ifdef BH_RETURN_BFLUX
+        P[i].B[0] = P[i].B[1] = P[i].B[2] = 0;
+#endif        
 #endif
 #ifdef SPHAV_CD10_VISCOSITY_SWITCH
         SphP[i].alpha = 0.0;

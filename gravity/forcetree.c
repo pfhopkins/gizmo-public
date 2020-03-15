@@ -564,7 +564,7 @@ void force_update_node_recursive(int no, int sib, int father)
         }
         
         last = no;
-        
+
 #ifdef RT_USE_GRAVTREE
         for(j=0;j<N_RT_FREQ_BINS;j++) {stellar_lum[j]=0;}
 #endif
@@ -1541,9 +1541,14 @@ void force_add_star_to_tree(int igas, int istar)
 {
     int no;
     no = Nextnode[igas];
-    Nextnode[igas] = istar;
-    Nextnode[istar] = no;
-    Father[istar] = Father[igas];
+    Nextnode[igas] = istar; // insert new particle into linked list
+    Nextnode[istar] = no; // order correctly
+    Father[istar] = Father[igas]; // set parent node to be the same
+    // update parent node properties [maximum softening, speed] for opening criteria
+    Extnodes[Father[igas]].hmax = DMAX(Extnodes[Father[igas]].hmax, P[igas].Hsml);
+    double vmax = Extnodes[Father[igas]].vmax;
+    int k; for(k=0; k<3; k++) {if(fabs(P[istar].Vel[k]) > vmax) {vmax = fabs(P[istar].Vel[k]);}}
+    Extnodes[Father[igas]].vmax = vmax;    
 }
 
 
@@ -1585,6 +1590,9 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
     double eff_dist, rcut, asmth, asmthfac, rcut2, dist;
     dist = 0;
 #endif
+#ifdef COUNT_MASS_IN_GRAVTREE
+    MyFloat tree_mass = 0;
+#endif    
     MyLongDouble acc_x, acc_y, acc_z;
     // cache some global vars in local vars to help compiler with alias analysis
     int maxPart = All.MaxPart;
@@ -2462,6 +2470,9 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
             if(r < r_for_total_menclosed) {m_enc_in_rcrit += mass;}
 #endif
 
+#ifdef COUNT_MASS_IN_GRAVTREE
+            tree_mass += mass;
+#endif            
 #ifdef RT_USE_GRAVTREE
             if(valid_gas_particle_for_rt)	/* we have a (valid) gas particle as target */
             {
@@ -2561,6 +2572,9 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
         P[target].GravAccel[0] = acc_x;
         P[target].GravAccel[1] = acc_y;
         P[target].GravAccel[2] = acc_z;
+#ifdef COUNT_MASS_IN_GRAVTREE
+        P[target].TreeMass = tree_mass;
+#endif        
 #ifdef RT_OTVET
         if(valid_gas_particle_for_rt) {int k,k_et; for(k=0;k<N_RT_FREQ_BINS;k++) for(k_et=0;k_et<6;k_et++) {SphP[target].ET[k][k_et] = RT_ET[k][k_et];}} else {if(P[target].Type==0) {int k,k_et; for(k=0;k<N_RT_FREQ_BINS;k++) for(k_et=0;k_et<6;k_et++) {SphP[target].ET[k][k_et]=0;}}}
 #endif
@@ -2601,6 +2615,9 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
         GravDataResult[target].Acc[0] = acc_x;
         GravDataResult[target].Acc[1] = acc_y;
         GravDataResult[target].Acc[2] = acc_z;
+#ifdef COUNT_MASS_IN_GRAVTREE
+        GravDataResult[target].TreeMass = tree_mass;
+#endif
 #ifdef RT_OTVET
         int k,k_et; for(k=0;k<N_RT_FREQ_BINS;k++) for(k_et=0;k_et<6;k_et++) {GravDataResult[target].ET[k][k_et] = RT_ET[k][k_et];}
 #endif

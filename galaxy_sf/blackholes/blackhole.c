@@ -360,50 +360,32 @@ void set_blackhole_mdot(int i, int n, double dt)
     /* use the mass in the accretion disk from the previous timestep to determine the BH accretion rate */
     double x_MdiskSelfGravLimiter = BPP(n).BH_Mass_AlphaDisk / (BH_ALPHADISK_ACCRETION * BPP(n).BH_Mass);
     if(x_MdiskSelfGravLimiter > 20.) {mdot=0;} else {mdot *= exp(-0.5*x_MdiskSelfGravLimiter*x_MdiskSelfGravLimiter);}
-    BlackholeTempInfo[i].mdot_alphadisk = mdot;     /* if BH_GRAVCAPTURE_GAS is off, this gets the accretion rate */
-    mdot = 0;
+    BlackholeTempInfo[i].mdot_alphadisk = mdot;  mdot = 0;  /* if BH_GRAVCAPTURE_GAS is off, this gets the accretion rate */
     if(BPP(n).BH_Mass_AlphaDisk > 0)
     {
         /* this below is a more complicated expression using the outer-disk expression from Shakura & Sunyaev. Simpler expression
-            below captures the same physics with considerably less potential to extrapolate to rather odd scalings in extreme regimes */
-        
-        /* mdot = (2.45 * (SOLAR_MASS/All.UnitMass_in_g)/(SEC_PER_YEAR/All.UnitTime_in_s)) * // normalization
-            pow( 0.1 , 8./7.) * // viscous disk 'alpha'
-            pow( BPP(n).BH_Mass*All.UnitMass_in_g / (All.HubbleParam * 1.0e8*SOLAR_MASS) , -5./14. ) * // mbh dependence
-            pow( BPP(n).BH_Mass_AlphaDisk*All.UnitMass_in_g / (All.HubbleParam * 1.0e8*SOLAR_MASS) , 10./7. ) * // m_disk dependence
-            pow( DMIN(0.2,DMIN(PPP[n].Hsml,All.ForceSoftening[5])*All.cf_atime*All.UnitLength_in_cm/(All.HubbleParam * 3.086e18)) , -25./14. ); // r_disk dependence */
-        
-        double t_yr = SEC_PER_YEAR / (All.UnitTime_in_s / All.HubbleParam);
-        double t_acc_disk = 4.2e7 * t_yr * pow((BPP(n).BH_Mass_AlphaDisk+BPP(n).BH_Mass) / BPP(n).BH_Mass_AlphaDisk, 0.4); /* shakura-sunyaev disk, integrated out to Q~1 radius, approximately */
+            below captures the same physics with considerably less potential to extrapolate to rather odd scalings in extreme regimes :
+           mdot = (2.45 * (SOLAR_MASS/All.UnitMass_in_g)/(SEC_PER_YEAR/All.UnitTime_in_s)) * pow( 0.1 , 8./7.) * // normalization, then viscous disk 'alpha'
+             pow( BPP(n).BH_Mass*All.UnitMass_in_g / (All.HubbleParam * 1.0e8*SOLAR_MASS) , -5./14. ) * pow( BPP(n).BH_Mass_AlphaDisk*All.UnitMass_in_g / (All.HubbleParam * 1.0e8*SOLAR_MASS) , 10./7. ) * // mbh , m_disk dependence
+             pow( DMIN(0.2,DMIN(PPP[n].Hsml,All.ForceSoftening[5])*All.cf_atime*All.UnitLength_in_cm/(All.HubbleParam * 3.086e18)) , -25./14. ); // r_disk dependence */
+        double t_acc_disk = 4.2e7 * SEC_PER_YEAR / (All.UnitTime_in_s / All.HubbleParam) * pow((BPP(n).BH_Mass_AlphaDisk+BPP(n).BH_Mass) / BPP(n).BH_Mass_AlphaDisk, 0.4); /* shakura-sunyaev disk, integrated out to Q~1 radius, approximately */
+#ifdef BH_TIMESCALE_SET
+        double f_disk_bh = BPP(n).BH_Mass_AlphaDisk / BPP(n).BH_Mass; t_acc_disk = BH_TIMESCALE_SET * SEC_PER_YEAR / (All.UnitTime_in_s / All.HubbleParam) / sqrt( f_disk_bh * (1 + f_disk_bh) );
+#endif
 
 #ifdef SINGLE_STAR_SINK_DYNAMICS
-        //double Gm_i=1./(All.G*P[n].Mass);
-        double Gm_i=1./(All.G*2.*All.MinMassForParticleMerger); //effectively setting the value to the freefall time the particle has when it forms
-#ifdef BH_GRAVCAPTURE_FIXEDSINKRADIUS
-        double reff = P[n].SinkRadius; // Assuming this is scaled to the nominal minimum resolved Jeans length
-#else	
-        double reff=DMAX(All.SofteningTable[5], Get_Particle_Size(n)); // Note that using dynamic particle size for this can do weird stuff - e.g. accretion rate will vary according to the local interparticle spacing even for a disk that isn't accreting and would physically be in a steady state
+        double reff = All.SofteningTable[5], Gm_i = 1./(All.G*P[n].Mass);
+#if defined(BH_GRAVCAPTURE_FIXEDSINKRADIUS)
+        double cs_min = 2e4 / All.UnitVelocity_in_cm_per_s;
+        reff = All.G*2.*All.MinMassForParticleMerger/(cs_min*cs_min), Gm_i = 1./(All.G*2.*All.MinMassForParticleMerger); // effectively setting the value to the freefall time the particle has when it forms, for both 'size' of disk and 'effective mass' (for dynamical time below)
 #endif
-        double t_dyn_eff=sqrt(reff*reff*reff*Gm_i);
-        t_acc_disk = t_dyn_eff;// dynamical time at radius "H" where the neighbor gas is located
-#if defined(BH_FOLLOW_ACCRETED_ANGMOM)
-        double j=0; for(k=0;k<3;k++) {j+=P[n].BH_Specific_AngMom[k]*P[n].BH_Specific_AngMom[k];}
-        if(j>0) {j=sqrt(j);} else {j=0;} // calculate magnitude of specific ang mom
-#ifdef BH_RETURN_ANGMOM_TO_GAS /* in this particular case, we will assume AM transfer occurs 'first' to the disk, then to the ambient medium, instead of simply assuming specific AM of accreted material is conserved */
-        j *= P[n].Mass / (MIN_REAL_NUMBER + BPP(n).BH_Mass_AlphaDisk); // accounting for the fact that the disk contains all the angular momentum, it specific angulkar momentum is j_disk=m_disk/m_tot*j
-#else
-        j *= 1. + 1./BH_ALPHADISK_ACCRETION; // correction assuming a ratio of accretion disk to sink mass ~BH_ALPHADISK_ACCRETION [max allowed], with the material in the sink having given its angular momentum to the sink [which is what should happen]
+        t_acc_disk = sqrt(reff*reff*reff * Gm_i); // dynamical time at radius "reff", essentially fastest-possible accretion time
+#if defined(BH_FOLLOW_ACCRETED_ANGMOM) && defined(BH_MDOT_FROM_ALPHAMODEL)
+        double j=0; for(k=0;k<3;k++) {j+=P[n].BH_Specific_AngMom[k]*P[n].BH_Specific_AngMom[k];}  // calculate magnitude of specific ang mom
+        j = sqrt(j) * (1. + 1./BH_ALPHADISK_ACCRETION); // correction assuming a ratio of accretion disk to sink mass ~BH_ALPHADISK_ACCRETION [max allowed], with the material in the sink having given its angular momentum to the sink [which is what should happen]
+        t_acc_disk = 2.*M_PI*j*j*j*Gm_i*Gm_i / fabs(BH_MDOT_FROM_ALPHAMODEL); // orbital time at circularization radius of the alpha-disk: BH_MDOT_FROM_ALPHAMODEL is approximately equivalent to the 'alpha' parameter, setting how rapidly accretion occurs (=0.01 -> 100 orbits)
+        if(BH_MDOT_FROM_ALPHAMODEL>0) {t_acc_disk = 100. * t_acc_disk * (1 / (Gm_i * DMIN(reff, j*j*Gm_i))) / soundspeed2;} // Shakura-Sunyaev prescription with alpha=0.01, using minimum of sink and circularization radius
 #endif
-        //t_acc_disk = j*j*j*Gm_i*Gm_i; // dynamical time at circularization radius of the alpha-disk
-//#ifdef SLOPE2_SINKS
-        //t_acc_disk = DMAX(sqrt(pow(0.033*All.SofteningTable[5],3)/(All.G*P[n].BH_Mass)) , t_acc_disk); // catch against un-resolvably small j [since accreted particles are extended, there is always material at non-zero "j" even if accreted at zero impact parameter; 1/30th is conservative estimate for perfect impact parameter]
-        //t_acc_disk = t_dyn_eff; //use the dynamical time as the orbital time (equivalent to circular orbit at sink radius)
-//        t_acc_disk = DMAX(10. * 2.*M_PI*t_acc_disk, t_dyn_eff); // 10 orbits at circularization radius to spiral all the way in (very fast), but should be no less than the resolution-scale dynamical time	
-//#else
-        //if(j*j*Gm_i < 6.957e11 / All.UnitLength_in_cm) {t_acc_disk = 0;} // when angular momentum is low enough, we're falling straight onto the protostellar surface, here taking 10R_solar as a rough number
-        //t_acc_disk = DMAX(100. * t_acc_disk * (1 / (Gm_i * DMIN(reff, j*j*Gm_i))) / soundspeed2, t_dyn_eff); // Shakura-Sunyaev prescription with alpha=0.01, using minimum of sink and circularization radius
-//#endif // SLOPE2_SINKS
-#endif // BH_FOLLOW_ACCRETED_ANGMOM
 #endif // SINGLE_STAR_SINK_DYNAMICS
         
 #if defined(BH_GRAVCAPTURE_GAS)
@@ -707,6 +689,9 @@ void blackhole_final_operations(void)
             BPP(n).BH_Specific_AngMom[1] -= (BlackholeTempInfo[i].accreted_centerofmass[2]*BlackholeTempInfo[i].accreted_momentum[0] - BlackholeTempInfo[i].accreted_centerofmass[0]*BlackholeTempInfo[i].accreted_momentum[2]) / (m_new*m_new);
             BPP(n).BH_Specific_AngMom[2] -= (BlackholeTempInfo[i].accreted_centerofmass[0]*BlackholeTempInfo[i].accreted_momentum[1] - BlackholeTempInfo[i].accreted_centerofmass[1]*BlackholeTempInfo[i].accreted_momentum[0]) / (m_new*m_new);
 #endif
+#if defined(BH_RETURN_BFLUX)            
+            for(k=0;k<3;k++) {P[n].B[k] += BlackholeTempInfo[i].accreted_B[k];}
+#endif            
             P[n].Mass += BlackholeTempInfo[i].accreted_Mass;
             BPP(n).BH_Mass += BlackholeTempInfo[i].accreted_BH_Mass;
 #ifdef BH_ALPHADISK_ACCRETION

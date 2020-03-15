@@ -692,6 +692,78 @@ void merge_particles_ij(int i, int j)
 }
 
 
+/*!
+  This routine swaps the location of two pointers/indices (either to a node or to a particle) in the treewalk needed for neighbor searches and gravity.
+  This should be run if you are messing around with the indices of things but don't intend to do a whole treebuild after. - MYG
+ */ 
+
+void swap_treewalk_pointers(int i, int j){
+    // walk the tree and any time we see a nextnode or sibling set to i, swap it to j and vice versa
+    int no, next, pre_sibling_i=-1, pre_sibling_j=-1, previous_node_i, previous_node_j;
+    no = All.MaxPart;
+    
+    while(no >= 0){ // walk the whole tree, starting from the root node (=All.MaxPart)
+        if(no < All.MaxPart) { // we got a particle
+            next=Nextnode[no];
+            if(no != i && no != j){ // don't mess with Nextnodes if looking at i or j - handle that separately
+                if(next == i) {Nextnode[no] = j; previous_node_i = no;}
+                else if(next == j) { Nextnode[no] = i; previous_node_j = no;}
+            }
+            no = next;
+        } else if(no < All.MaxPart+MaxNodes)  { // we have a node
+            next = Nodes[no].u.d.nextnode;
+            if(next == i) { previous_node_i = no; Nodes[no].u.d.nextnode = j;}
+            else if(next == j) { previous_node_j = no; Nodes[no].u.d.nextnode = i;}
+            if(Nodes[no].u.d.sibling == i) {Nodes[no].u.d.sibling = j; pre_sibling_i = no;}
+            else if(Nodes[no].u.d.sibling == j) { Nodes[no].u.d.sibling = i; pre_sibling_j = no;}
+            no = next;
+        } else { // pseudoparticle
+            next = Nextnode[no - MaxNodes];
+            if(next==i) {Nextnode[no-MaxNodes] = j;}
+            else if(next == j) {Nextnode[no-MaxNodes] = i;}
+            no = next;
+        }
+    }
+    
+    if(Nextnode[i] == j){ // handle case if i->j
+        Nextnode[i] = Nextnode[j];
+        Nextnode[j] = i;
+    } else if (Nextnode[j] == i) { // if j->i
+        Nextnode[j] = Nextnode[i];
+        Nextnode[i] = j;
+    } else { // neither i->j nor j->i
+        no = Nextnode[i];
+        Nextnode[i] = Nextnode[j];
+        Nextnode[j] = no;
+    }
+    no = Father[i];
+    Father[i] = Father[j];
+    Father[j] = no;
+}
+
+
+/*!
+  This routine deletes a particle from the linked list for the treewalk, preserving the lists's integrity. This must be run if you are deleting particles but don't want to do a while treebuild after. - MYG
+*/
+void remove_particle_from_treewalk(int i){
+    int no, next;
+    no = All.MaxPart;
+    while(no >= 0){ // walk the tree to find anything that might point to i and redirect it to i's nextnode
+        if(no < All.MaxPart){
+            next = Nextnode[no];
+            if(Nextnode[no] == i) {Nextnode[no] = Nextnode[i];}
+        } else if (no < All.MaxPart+MaxNodes){
+            next = Nodes[no].u.d.nextnode;
+            if(next == i) {Nodes[no].u.d.nextnode = Nextnode[i];}
+            if(Nodes[no].u.d.sibling == i) {Nodes[no].u.d.sibling = Nextnode[i];}
+        } else {
+            next = Nextnode[no - MaxNodes];
+            if(next == i) {Nextnode[no - MaxNodes] = Nextnode[i];}
+        }
+        no = next;
+    }
+}
+
 /*! This is an important routine used throughout -- any time particle masses are variable OR particles can
     be created/destroyed: it goes through the particle list, makes sure they are in the appropriate order (gas 
     must all come before collisionless particles, though the collisionless particles can be blocked into any order
@@ -747,7 +819,9 @@ void rearrange_particle_sequence(void)
                 sphsave = SphP[i];
                 SphP[i] = SphP[j];
                 SphP[j] = sphsave;  /* have the gas particle take its sph pointer with it */
-
+#ifdef MAINTAIN_TREE_IN_REARRANGE		
+                swap_treewalk_pointers(i,j);
+#endif                
                 
                 /* ok we've now swapped the ordering so the gas particle is still inside the block */
                 flag = 1;
@@ -773,10 +847,17 @@ void rearrange_particle_sequence(void)
                 
                 P[i] = P[N_gas - 1];
                 SphP[i] = SphP[N_gas - 1];
+#ifdef MAINTAIN_TREE_IN_REARRANGE		
+                swap_treewalk_pointers(i, N_gas-1);
+#endif		
                 /* swap with properties of last gas particle (i-- below will force a check of this so its ok) */
                 
                 
                 P[N_gas - 1] = P[NumPart - 1]; /* redirect the final gas pointer to go to the final particle (BH) */
+#ifdef MAINTAIN_TREE_IN_REARRANGE		
+                swap_treewalk_pointers(N_gas - 1, NumPart-1);
+                remove_particle_from_treewalk(NumPart - 1);
+#endif		
                 N_gas--; /* shorten the total N_gas count */
                 count_gaselim++; /* record that a BH was eliminated */
             }
@@ -786,7 +867,12 @@ void rearrange_particle_sequence(void)
                 P[i] = P[NumPart - 1]; /* re-directs pointer for this particle to pointer at final particle -- so we
                                         swap the two; note that ordering -does not- matter among the non-SPH particles
                                         so its fine if this mixes up the list ordering of different particle types */
+#ifdef MAINTAIN_TREE_IN_REARRANGE		
+                swap_treewalk_pointers(i, NumPart - 1);
+                remove_particle_from_treewalk(NumPart - 1);
+#endif		
             }
+            
             NumPart--;
             i--;
             count_elim++;

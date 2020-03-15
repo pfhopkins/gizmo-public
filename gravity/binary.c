@@ -10,7 +10,7 @@
 #include "../proto.h"
 #include "../kernel.h"
 
-#ifdef SINGLE_STAR_TIMESTEPPING
+#if (SINGLE_STAR_TIMESTEPPING > 0)
 // wraps around angle to the interval [0, 2pi)
 double wrap_angle(double angle){
     if (angle > 2*M_PI)	return fmod(angle, 2*M_PI);

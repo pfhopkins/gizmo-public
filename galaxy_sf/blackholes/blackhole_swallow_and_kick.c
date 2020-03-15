@@ -42,6 +42,10 @@ struct INPUT_STRUCT_NAME
 #if defined(BH_RETURN_ANGMOM_TO_GAS)
     MyFloat BH_Specific_AngMom[3], angmom_norm_topass_in_swallowloop;
 #endif
+#if defined(BH_RETURN_BFLUX)
+    MyFloat B[3];
+    MyFloat kernel_norm_topass_in_swallowloop;
+#endif    
 }
 *DATAIN_NAME, *DATAGET_NAME; /* dont mess with these names, they get filled-in by your definitions automatically */
 
@@ -51,7 +55,7 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
     int k, j_tempinfo; j_tempinfo = P[i].IndexMapToTempStruc; /* link to the location in the shared structure where this is stored */
     for(k=0;k<3;k++) {in->Pos[k]=P[i].Pos[k]; in->Vel[k]=P[i].Vel[k];} /* good example - always needed */
     in->Hsml = PPP[i].Hsml; in->Mass = P[i].Mass; in->BH_Mass = BPP(i).BH_Mass; in->ID = P[i].ID; in->Mdot = BPP(i).BH_Mdot;
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)
+#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK)
 #if defined(BH_FOLLOW_ACCRETED_ANGMOM)
     for(k=0;k<3;k++) {in->Jgas_in_Kernel[k] = P[i].BH_Specific_AngMom[k];}
 #else
@@ -74,6 +78,10 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
     for(k=0;k<3;k++) {in->BH_Specific_AngMom[k] = BPP(i).BH_Specific_AngMom[k];}
     in->angmom_norm_topass_in_swallowloop = BlackholeTempInfo[j_tempinfo].angmom_norm_topass_in_swallowloop;
 #endif
+#if defined(BH_RETURN_BFLUX)
+    for(k=0;k<3;k++) {in->B[k] = BPP(i).B[k];}
+    in->kernel_norm_topass_in_swallowloop = BlackholeTempInfo[j_tempinfo].kernel_norm_topass_in_swallowloop;
+#endif    
 }
 
 
@@ -90,6 +98,10 @@ struct OUTPUT_STRUCT_NAME
 #if defined(BH_FOLLOW_ACCRETED_COM)
     MyDouble accreted_centerofmass[3];
 #endif
+#if defined(BH_RETURN_BFLUX)
+    MyDouble accreted_B[3];
+//    MyDouble accreted_Phi; 
+#endif    
 #if defined(BH_FOLLOW_ACCRETED_ANGMOM)
     MyDouble accreted_J[3];
 #endif
@@ -119,6 +131,10 @@ static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, in
 #if defined(BH_FOLLOW_ACCRETED_COM)
     for(k=0;k<3;k++) {ASSIGN_ADD_PRESET(BlackholeTempInfo[target].accreted_centerofmass[k], out->accreted_centerofmass[k], mode);}
 #endif
+#if defined(BH_RETURN_BFLUX)
+    for(k=0;k<3;k++) {ASSIGN_ADD_PRESET(BlackholeTempInfo[target].accreted_B[k], out->accreted_B[k], mode);}
+//    ASSIGN_ADD_PRESET(BlackholeTempInfo[target].accreted_Phi, out->accreted_Phi, mode);
+#endif    
 #if defined(BH_FOLLOW_ACCRETED_ANGMOM)
     for(k=0;k<3;k++) {ASSIGN_ADD_PRESET(BlackholeTempInfo[target].accreted_J[k], out->accreted_J[k], mode);}
 #endif
@@ -175,15 +191,29 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
                 if(local.Pos[0] - P[j].Pos[0] < -boxHalf_X) {dvel[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;}
 #endif
 
+#if defined(BH_RETURN_ANGMOM_TO_GAS) || defined(BH_RETURN_BFLUX)                
+                double wk, dwk, u=0; for(k=0;k<3;k++) {u+=dpos[k]*dpos[k];}
+                u=sqrt(u)/h_i; if(u<1) { kernel_main(u,1., 1.,&wk,&dwk,-1); } else {wk=dwk=0;} 
+#endif                
 #if defined(BH_RETURN_ANGMOM_TO_GAS) /* this should go here [right before the loop that accretes it back onto the BH] */
                 if(P[j].Type == 0)
                 {
                     double dlv[3]; dlv[0]=local.BH_Specific_AngMom[1]*dpos[2]-local.BH_Specific_AngMom[2]*dpos[1]; dlv[1]=local.BH_Specific_AngMom[2]*dpos[0]-local.BH_Specific_AngMom[0]*dpos[2]; dlv[2]=local.BH_Specific_AngMom[0]*dpos[1]-local.BH_Specific_AngMom[1]*dpos[0];
-                    for(k=0;k<3;k++) {dlv[k] *= local.angmom_norm_topass_in_swallowloop; P[j].Vel[k]+=dlv[k]; SphP[j].VelPred[k]+=dlv[k]; out.accreted_momentum[k]-=P[j].Mass*dlv[k];}
+                    for(k=0;k<3;k++) {dlv[k] *= wk * local.angmom_norm_topass_in_swallowloop; P[j].Vel[k]+=dlv[k]; SphP[j].VelPred[k]+=dlv[k]; out.accreted_momentum[k]-=P[j].Mass*dlv[k];}
                     out.accreted_J[0]-=P[j].Mass*(dpos[1]*dlv[2] - dpos[2]*dlv[1]); out.accreted_J[1]-=P[j].Mass*(dpos[2]*dlv[0] - dpos[0]*dlv[2]); out.accreted_J[2]-=P[j].Mass*(dpos[0]*dlv[1] - dpos[1]*dlv[0]);
                 }
 #endif
-                
+#if defined(BH_RETURN_BFLUX) // do a kernel-weighted redistribution of the magnetic flux in the sink into surrounding particles
+                if((P[j].Type == 0) && (local.kernel_norm_topass_in_swallowloop > 0)){                    
+                    double dB, b_fraction_toreturn = DMIN(0.1, local.Dt / (local.BH_Mass_AlphaDisk / local.Mdot)) * wk / local.kernel_norm_topass_in_swallowloop; // return a fraction dt/t_accretion of the total flux, with simple kernel weighting for each particle
+                    for(k=0; k<3;k++) {
+                        dB = b_fraction_toreturn * local.B[k];
+                        SphP[j].B[k] +=  dB;
+                        SphP[j].BPred[k] +=  dB;
+                        out.accreted_B[k] -= dB;                        
+                    }
+                }
+#endif                
                 /* we've found a particle to be swallowed.  This could be a BH merger, DM particle, or baryon w/ feedback */
                 if(P[j].SwallowID == local.ID && P[j].Mass > 0)
                 {   /* accreted quantities to be added [regardless of particle type] */
@@ -216,6 +246,9 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 #if defined(BH_FOLLOW_ACCRETED_COM)
                     for(k=0;k<3;k++) {out.accreted_centerofmass[k] += FLT(mcount_for_conserve * dpos[k]);}
 #endif
+#ifdef BH_RETURN_BFLUX
+                    for(k=0;k<3;k++) {out.accreted_B[k] += FLT(SphP[j].BPred[k]);}
+#endif                    
 #if defined(BH_FOLLOW_ACCRETED_ANGMOM)
                     out.accreted_J[0] += FLT(mcount_for_conserve * ( dpos[1]*dvel[2] - dpos[2]*dvel[1] ));
                     out.accreted_J[1] += FLT(mcount_for_conserve * ( dpos[2]*dvel[0] - dpos[0]*dvel[2] ));

@@ -61,7 +61,7 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
 #endif
 #if defined(BH_RETURN_ANGMOM_TO_GAS)
     for(k=0;k<3;k++) {in->BH_Specific_AngMom[k]=P[i].BH_Specific_AngMom[k];}
-#endif
+#endif  
 }
 
 
@@ -91,6 +91,9 @@ MyFloat Jgas_in_Kernel[3], Jstar_in_Kernel[3], Jalt_in_Kernel[3]; // mass/angula
 #if defined(BH_RETURN_ANGMOM_TO_GAS)
     MyFloat angmom_prepass_sum_for_passback[3];
 #endif
+#if defined(BH_RETURN_BFLUX)
+    MyFloat kernel_norm_topass_in_swallowloop;
+#endif    
 #if defined(BH_ACCRETE_NEARESTFIRST) && defined(BH_GRAVCAPTURE_GAS)
     MyDouble BH_dr_to_NearestGasNeighbor;
 #endif
@@ -134,6 +137,9 @@ static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, in
 #if defined(BH_RETURN_ANGMOM_TO_GAS)
     for(k=0;k<3;k++) {ASSIGN_ADD(BlackholeTempInfo[target].angmom_prepass_sum_for_passback[k],out->angmom_prepass_sum_for_passback[k],mode);}
 #endif
+#if defined(BH_RETURN_BFLUX)
+    ASSIGN_ADD(BlackholeTempInfo[target].kernel_norm_topass_in_swallowloop,out->kernel_norm_topass_in_swallowloop,mode);
+#endif    
 #if defined(BH_ACCRETE_NEARESTFIRST) && defined(BH_GRAVCAPTURE_GAS)
     if(mode==0) {P[i].BH_dr_to_NearestGasNeighbor=out->BH_dr_to_NearestGasNeighbor;} else {if(P[i].BH_dr_to_NearestGasNeighbor > out->BH_dr_to_NearestGasNeighbor) {P[i].BH_dr_to_NearestGasNeighbor=out->BH_dr_to_NearestGasNeighbor;}}
 #endif
@@ -192,7 +198,7 @@ int blackhole_environment_evaluate(int target, int mode, int *exportflag, int *e
 #ifdef BH_ACCRETE_NEARESTFIRST
     out.BH_dr_to_NearestGasNeighbor = MAX_REAL_NUMBER; // initialize large value
 #endif
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS) || (BH_GRAVACCRETION == 8)
+#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS) || (BH_GRAVACCRETION == 8) || defined(BH_RETURN_BFLUX) || defined(BH_RETURN_ANGMOM_TO_GAS)
     MyFloat wk, dwk, u; // initialized here to prevent some annoying compiler warnings
 #endif
     /* Now start the actual neighbor computation for this particle */
@@ -264,10 +270,16 @@ int blackhole_environment_evaluate(int target, int mode, int *exportflag, int *e
 #if defined(BH_BONDI) || defined(BH_DRAG) || (BH_GRAVACCRETION >= 5) || defined(SINGLE_STAR_SINK_DYNAMICS)
                         for(k=0;k<3;k++) {out.BH_SurroundingGasVel[k] += wt*dv[k];}
 #endif
+#if defined(BH_RETURN_ANGMOM_TO_GAS) || defined(BH_RETURN_BFLUX)
+                        u=sqrt(u)/h_i; if(u<1) {kernel_main(u,1., 1.,&wk,&dwk,-1);} else {wk=dwk=0;} // spline weighting function for conserved quantity return
+#endif                        
 #if defined(BH_RETURN_ANGMOM_TO_GAS) /* We need a normalization factor for angular momentum feedback so we will go over all the neighbours */
                         double r2j=dP[0]*dP[0]+dP[1]*dP[1]+dP[2]*dP[2], Lrj=local.BH_Specific_AngMom[0]*dP[0]+local.BH_Specific_AngMom[1]*dP[1]+local.BH_Specific_AngMom[2]*dP[2];
-                        for(k=0;k<3;k++) {out.angmom_prepass_sum_for_passback[k] += wt*(local.BH_Specific_AngMom[k]*r2j - dP[k]*Lrj);}
+                        for(k=0;k<3;k++) {out.angmom_prepass_sum_for_passback[k] += wk * wt*(local.BH_Specific_AngMom[k]*r2j - dP[k]*Lrj);} // this is now kernel-weighted so that the kicks fall off smoothly as r approaches H
 #endif
+#if defined(BH_RETURN_BFLUX)                        
+                        out.kernel_norm_topass_in_swallowloop += wk;
+#endif                  
 #if (BH_GRAVACCRETION == 8)
                         u=0; for(k=0;k<3;k++) {u+=dP[k]*dP[k];}
                         u=sqrt(u)/h_i; if(u<1) {kernel_main(u,hinv3,hinv3*hinv,&wk,&dwk,-1);} else {wk=dwk=0;}

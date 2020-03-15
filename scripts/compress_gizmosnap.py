@@ -30,7 +30,7 @@ def main(filename):
         fs.close();
         return;
     # create a temporary working file for intermediate steps
-    tmpfilename = tempfile.mktemp(suffix='.hdf5');
+    tmpfilename = filename+'__tmp__';
     fd = h5py.File(tmpfilename, 'w');
     # recursively do the work here on the entries (call and compress)
     copy_datasets = functools.partial(copy_level0, fs, fd);
