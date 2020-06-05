@@ -67,6 +67,11 @@ void run(void)
 	
         find_timesteps();		/* find-timesteps */
         int TreeReconstructFlag_local = TreeReconstructFlag;
+#ifdef HERMITE_INTEGRATION 
+        HermiteOnlyFlag = 1;
+        gravity_tree();	/* re-compute gravitational accelerations for synchronous particles */
+        HermiteOnlyFlag = 0;
+#endif        
         do_first_halfstep_kick();	/* half-step kick at beginning of timestep for synchronous particles */
         
         find_next_sync_point_and_drift();	/* find next synchronization point and drift particles to this time.
@@ -123,6 +128,13 @@ void run(void)
         
         calculate_non_standard_physics();	/* source terms are here treated in a strang-split fashion */
         
+#ifdef HERMITE_INTEGRATION // we do a prediction step using the saved "old" pos, accel and jerk from the beginning of the timestep. Then we recompute accel and jerk and do the correction
+        do_hermite_prediction();
+        HermiteOnlyFlag = 2;
+        gravity_tree();	/* re-compute gravitational accelerations for synchronous particles */
+        HermiteOnlyFlag = 0;
+        do_hermite_correction();
+#endif                		                         	
         /* Check whether we need to interrupt the run */
         int stopflag = 0;
         if(ThisTask == 0)
@@ -264,23 +276,16 @@ void calculate_non_standard_physics(void)
     /***** black hole accretion and feedback *****/
     CPU_Step[CPU_MISC] += measure_time();
     blackhole_accretion();
-    CPU_Step[CPU_BLACKHOLES] += measure_time();
+    
+    CPU_Step[CPU_BLACKHOLES] += measure_time();    
 #endif
     
     
-#if defined(BLACK_HOLES) || defined(GALSF_SUBGRID_WINDS)
-#ifdef FOF
-    /* this will find new black hole seed halos and/or assign host halo masses for the variable wind model */
-    if(All.Time >= All.TimeNextOnTheFlyFoF)
-    {
-        fof_fof(-1);
-        if(All.ComovingIntegrationOn)
-            All.TimeNextOnTheFlyFoF *= All.TimeBetOnTheFlyFoF;
-        else
-            All.TimeNextOnTheFlyFoF += All.TimeBetOnTheFlyFoF;
-    }
-#endif // ifdef FOF
-#endif // ifdef BLACK_HOLES or GALSF_SUBGRID_WINDS
+#if (defined(BLACK_HOLES) || defined(GALSF_SUBGRID_WINDS)) && defined(FOF)
+    if(All.Time >= All.TimeNextOnTheFlyFoF) {
+        fof_fof(-1); /* this will find new black hole seed halos and/or assign host halo masses for the variable wind model */
+        if(All.ComovingIntegrationOn) {All.TimeNextOnTheFlyFoF *= All.TimeBetOnTheFlyFoF;} else {All.TimeNextOnTheFlyFoF += All.TimeBetOnTheFlyFoF;}}
+#endif
     
     
 #ifdef COOLING	/**** radiative cooling and star formation *****/
@@ -660,20 +665,20 @@ void output_log_messages(void)
         {
             z = 1.0 / (All.Time) - 1;
 #ifndef IO_REDUCED_MODE
-            fprintf(FdInfo, "\nSync-Point %lld, Time: %g, Redshift: %g, Nf = %d%09d, Systemstep: %g, Dloga: %g\n",
+            fprintf(FdInfo, "Sync-Point %lld, Time: %g, Redshift: %g, Nf = %d%09d, Systemstep: %g, Dloga: %g\n",
                     (long long) All.NumCurrentTiStep, All.Time, z, (int) (GlobNumForceUpdate / 1000000000), (int) (GlobNumForceUpdate % 1000000000), All.TimeStep, log(All.Time) - log(All.Time - All.TimeStep));
             fflush(FdInfo);
-            fprintf(FdTimebin, "\nSync-Point %lld, Time: %g, Redshift: %g, Systemstep: %g, Dloga: %g\n", (long long) All.NumCurrentTiStep, All.Time, z, All.TimeStep, log(All.Time) - log(All.Time - All.TimeStep));
+            fprintf(FdTimebin, "Sync-Point %lld, Time: %g, Redshift: %g, Systemstep: %g, Dloga: %g\n", (long long) All.NumCurrentTiStep, All.Time, z, All.TimeStep, log(All.Time) - log(All.Time - All.TimeStep));
 #endif
             printf("\nSync-Point %lld, Time: %g, Redshift: %g, Systemstep: %g, Dloga: %g\n", (long long) All.NumCurrentTiStep, All.Time, z, All.TimeStep, log(All.Time) - log(All.Time - All.TimeStep));
         }
         else
         {
 #ifndef IO_REDUCED_MODE
-            fprintf(FdInfo, "\nSync-Point %lld, Time: %g, Nf = %d%09d, Systemstep: %g\n", (long long) All.NumCurrentTiStep,
+            fprintf(FdInfo, "Sync-Point %lld, Time: %g, Nf = %d%09d, Systemstep: %g\n", (long long) All.NumCurrentTiStep,
                     All.Time, (int) (GlobNumForceUpdate / 1000000000), (int) (GlobNumForceUpdate % 1000000000), All.TimeStep);
             fflush(FdInfo);
-            fprintf(FdTimebin, "\nSync-Point %lld, Time: %g, Systemstep: %g\n", (long long) All.NumCurrentTiStep, All.Time, All.TimeStep);
+            fprintf(FdTimebin, "Sync-Point %lld, Time: %g, Systemstep: %g\n", (long long) All.NumCurrentTiStep, All.Time, All.TimeStep);
 #endif
             printf("\nSync-Point %lld, Time: %g, Systemstep: %g\n", (long long) All.NumCurrentTiStep, All.Time, All.TimeStep);
         }
@@ -683,8 +688,7 @@ void output_log_messages(void)
 
       for(i = 0; i < TIMEBINS; i++)
 	{
-	  for(j = 0, sum = 0; j < All.CPU_TimeBinCountMeasurements[i]; j++)
-	    sum += All.CPU_TimeBinMeasurements[i][j];
+	  for(j = 0, sum = 0; j < All.CPU_TimeBinCountMeasurements[i]; j++) {sum += All.CPU_TimeBinMeasurements[i][j];}
 	  if(All.CPU_TimeBinCountMeasurements[i]) {avg_CPU_TimeBin[i] = sum / All.CPU_TimeBinCountMeasurements[i];} else {avg_CPU_TimeBin[i] = 0;}
 	}
 
@@ -761,9 +765,7 @@ void output_log_messages(void)
 
 void write_cpu_log(void)
 {
-  double max_CPU_Step[CPU_PARTS], avg_CPU_Step[CPU_PARTS], t0, t1, tsum;
-  int i;
-
+  double max_CPU_Step[CPU_PARTS], avg_CPU_Step[CPU_PARTS], t0, t1, tsum; int i; t0=0; t1=0; tsum=0;
   CPU_Step[CPU_MISC] += measure_time();
 
   for(i = 1, CPU_Step[0] = 0; i < CPU_PARTS; i++) {CPU_Step[0] += CPU_Step[i];}

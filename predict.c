@@ -218,7 +218,7 @@ void drift_particle(int i, integertime time1)
 #endif
 #ifdef RT_RAD_PRESSURE_OUTPUT
             for(j = 0; j < 3; j++)
-                SphP[i].VelPred[j] += SphP[i].RadAccel[j] * All.cf_atime * dt_hydrokick;
+                SphP[i].VelPred[j] += SphP[i].Rad_Accel[j] * All.cf_atime * dt_hydrokick;
 #endif
             
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
@@ -227,7 +227,21 @@ void drift_particle(int i, integertime time1)
             
             SphP[i].Density *= exp(-divv_fac);
             double etmp = SphP[i].InternalEnergyPred + SphP[i].DtInternalEnergy * dt_entr;
+#if defined(RADTRANSFER) && defined(RT_EVOLVE_ENERGY) /* block here to deal with tricky cases where radiation energy density is -much- larger than thermal */ 
+            int kfreq; double erad_tot=0,tot_e_min=0,enew=0,int_e_min=0,dErad=0; for(kfreq=0;kfreq<N_RT_FREQ_BINS;kfreq++) {erad_tot+=SphP[i].Rad_E_gamma_Pred[kfreq];}
+            if(erad_tot > 0)
+            {
+                int_e_min=0.025*SphP[i].InternalEnergyPred; tot_e_min=0.025*(erad_tot+SphP[i].InternalEnergyPred*P[i].Mass);
+                enew=DMAX(erad_tot+etmp*P[i].Mass,tot_e_min);
+                etmp=(enew-erad_tot)/P[i].Mass; if(etmp<int_e_min) {dErad=etmp-int_e_min; etmp=int_e_min;}
+                if(dErad<-0.975*erad_tot) {dErad=-0.975*erad_tot;}
+                SphP[i].InternalEnergyPred = etmp; for(kfreq=0;kfreq<N_RT_FREQ_BINS;kfreq++) {SphP[i].Rad_E_gamma_Pred[kfreq] *= 1 + dErad/erad_tot;}
+            } else {
+                if(etmp<0.5*SphP[i].InternalEnergyPred) {SphP[i].InternalEnergyPred *= 0.5;} else {SphP[i].InternalEnergyPred=etmp;}
+            }
+#else
             if(etmp<0.5*SphP[i].InternalEnergyPred) {SphP[i].InternalEnergyPred *= 0.5;} else {SphP[i].InternalEnergyPred=etmp;}
+#endif
             if(SphP[i].InternalEnergyPred<All.MinEgySpec) SphP[i].InternalEnergyPred=All.MinEgySpec;
             
 #ifdef HYDRO_PRESSURE_SPH
@@ -247,38 +261,9 @@ void drift_particle(int i, integertime time1)
             SphP[i].Pressure = get_pressure(i);
         }
     
-    /* check for reflecting boundaries: if so, do the reflection! */
-#if defined(BOX_REFLECT_X) || defined(BOX_REFLECT_Y) || defined(BOX_REFLECT_Z)
-    double box_upper[3]; box_upper[0]=box_upper[1]=box_upper[2]=1;
-#ifdef BOX_PERIODIC
-    box_upper[0]=boxSize_X; box_upper[1]=boxSize_Y; box_upper[2]=boxSize_Z;
-#endif
-    for(j = 0; j < 3; j++)
-    {
-        /* skip the non-reflecting boundaries */
-#ifndef BOX_REFLECT_X
-        if(j==0) continue;
-#endif
-#ifndef BOX_REFLECT_Y
-        if(j==1) continue;
-#endif
-#ifndef BOX_REFLECT_Z
-        if(j==2) continue;
-#endif
-        if(P[i].Pos[j] <= 0)
-        {
-            if(P[i].Vel[j]<0) {P[i].Vel[j]=-P[i].Vel[j]; if(P[i].Type==0) {SphP[i].VelPred[j]=P[i].Vel[j]; SphP[i].HydroAccel[j]=0;}}
-            P[i].Pos[j]=(0+((double)P[i].ID)*1.e-9)*box_upper[j];
-        }
-        if(P[i].Pos[j] >= box_upper[j])
-        {
-            if(P[i].Vel[j]>0) {P[i].Vel[j]=-P[i].Vel[j]; if(P[i].Type==0) {SphP[i].VelPred[j]=P[i].Vel[j]; SphP[i].HydroAccel[j]=0;}}
-            P[i].Pos[j]=box_upper[j]*(1-((double)P[i].ID)*1.e-9);
-        }
-    }
-#endif
+    /* check for reflecting or outflow or otherwise special boundaries: if so, do the reflection/boundary! */
+    apply_special_boundary_conditions(i,P[i].Mass,0);
 
-    
     P[i].Ti_current = time1;
 }
 
@@ -305,14 +290,14 @@ void drift_sph_extra_physics(int i, integertime tstart, integertime tend, double
     double PhiphysVolphys_to_PhicodeVolCode = 1 / All.cf_a3inv; // for mass-based phi fluxes (otherwise coefficient is 1)
     double dtphi_code = (PhiphysVolphys_to_PhicodeVolCode) * SphP[i].DtPhi;
     SphP[i].PhiPred += dtphi_code  * dt_entr;
-    double t_damp = Get_Particle_PhiField_DampingTimeInv(i);
+    double t_damp = Get_Gas_PhiField_DampingTimeInv(i);
     if((t_damp>0) && (!isnan(t_damp)))
     {
         SphP[i].PhiPred *= exp( -dt_entr * t_damp );
     }
 #endif
 #ifdef MHD_ALTERNATIVE_LEAPFROG_SCHEME
-    for(k=0;k<3;k++) {SphP[i].B[k]=SphP[i].BPred[k];}
+    for(kB=0;kB<3;kB++) {SphP[i].B[kB]=SphP[i].BPred[kB];}
 #ifdef DIVBCLEANING_DEDNER
     SphP[i].Phi=SphP[i].PhiPred;
 #endif
@@ -445,11 +430,15 @@ double evaluate_NH_from_GradRho(MyFloat gradrho[3], double hsml, double rho, dou
     double gradrho_mag=0; //double* gradrho = SphP[i].Gradients.Density; double rho=P[i].DensAroundStar, numngb_ndim = P[i].NumNgb, hsml = P[i].Hsml; if(P[i].Type==0) {rho=SphP[i].Density;}
     if(rho>0)
     {
+#ifdef RT_USE_TREECOL_FOR_NH
+        gradrho_mag = include_h * rho * hsml / numngb_ndim; if(target>0) {gradrho_mag += P[target].SigmaEff;}
+#else             
         gradrho_mag = sqrt(gradrho[0]*gradrho[0]+gradrho[1]*gradrho[1]+gradrho[2]*gradrho[2]);
         if(gradrho_mag > 0) {gradrho_mag = rho*rho/gradrho_mag;} else {gradrho_mag=0;}
         if(include_h > 0) if(numngb_ndim > 0) gradrho_mag += include_h * rho * hsml / numngb_ndim; // quick-and-dirty approximation to the effective neighbor number needed here
         //if(include_h > 0) gradrho_mag += include_h * rho * (hsml * (0.124 + 11.45 / (26.55 + All.DesNumNgb))); // quick-and-dirty approximation to the effective neighbor number needed here
         // account for the fact that 'h' is much larger than the inter-particle separation //
+#endif        
     }
     return gradrho_mag * All.cf_a2inv; // (physical units) // *(Z/Zsolar) add metallicity dependence
 }
@@ -461,11 +450,6 @@ double evaluate_NH_from_GradRho(MyFloat gradrho[3], double hsml, double rho, dou
 
 
 #ifdef MAGNETIC
-double INLINE_FUNC Get_Particle_BField(int i_particle_id, int k_vector_component)
-{
-    return SphP[i_particle_id].BPred[k_vector_component] * SphP[i_particle_id].Density / P[i_particle_id].Mass;
-}
-
 /* this function is needed to control volume fluxes of the normal components of B and phi in the 
     -bad- situation where the meshless method 'faces' do not properly close (usually means you are 
     using boundary conditions that you should not) */
@@ -499,8 +483,7 @@ double Get_DtB_FaceArea_Limiter(int i)
         double area_norm_min_threshold = 0.001;
         double area_norm_weight = 200.0;
 #ifdef PM_HIRES_REGION_CLIPPING
-        area_norm_min_threshold *= 0.01;
-        area_norm_weight *= 2.5; // can be as low as 1.0 (PFH) //
+        area_norm_min_threshold *= 0.01; area_norm_weight *= 2.5; // can be as low as 1.0 (PFH) //
 #endif
         if(area_sum/area_norm > area_norm_min_threshold)
         {
@@ -515,13 +498,13 @@ double Get_DtB_FaceArea_Limiter(int i)
 
 
 #ifdef DIVBCLEANING_DEDNER
-double INLINE_FUNC Get_Particle_PhiField(int i_particle_id)
+double INLINE_FUNC Get_Gas_PhiField(int i_particle_id)
 {
     //return SphP[i_particle_id].PhiPred * SphP[i_particle_id].Density / P[i_particle_id].Mass; // volumetric phy-flux (requires extra term compared to mass-based flux)
     return SphP[i_particle_id].PhiPred / P[i_particle_id].Mass; // mass-based phi-flux
 }
 
-double INLINE_FUNC Get_Particle_PhiField_DampingTimeInv(int i_particle_id)
+double INLINE_FUNC Get_Gas_PhiField_DampingTimeInv(int i_particle_id)
 {
     /* this timescale should always be returned as a -physical- time */
 #ifdef HYDRO_SPH
@@ -541,16 +524,16 @@ double INLINE_FUNC Get_Particle_PhiField_DampingTimeInv(int i_particle_id)
         double h_eff = Get_Particle_Size(i_particle_id);
         double vsig2 = 0.5 * All.cf_afac3 * fabs(SphP[i_particle_id].MaxSignalVel);
         double phi_B_eff = 0.0;
-        if(vsig2 > 0) {phi_B_eff = Get_Particle_PhiField(i_particle_id) / (All.cf_atime * vsig2);}
+        if(vsig2 > 0) {phi_B_eff = Get_Gas_PhiField(i_particle_id) / (All.cf_atime * vsig2);}
         double vsig1 = 0.0;
         if(SphP[i_particle_id].Density > 0)
         {
             vsig1 = All.cf_afac3 *
-            sqrt( Particle_effective_soundspeed_i(i_particle_id)*Particle_effective_soundspeed_i(i_particle_id) +
+            sqrt( Get_Gas_effective_soundspeed_i(i_particle_id)*Get_Gas_effective_soundspeed_i(i_particle_id) +
                  (All.cf_afac1 / All.cf_atime) *
-                 (Get_Particle_BField(i_particle_id,0)*Get_Particle_BField(i_particle_id,0) +
-                  Get_Particle_BField(i_particle_id,1)*Get_Particle_BField(i_particle_id,1) +
-                  Get_Particle_BField(i_particle_id,2)*Get_Particle_BField(i_particle_id,2) +
+                 (Get_Gas_BField(i_particle_id,0)*Get_Gas_BField(i_particle_id,0) +
+                  Get_Gas_BField(i_particle_id,1)*Get_Gas_BField(i_particle_id,1) +
+                  Get_Gas_BField(i_particle_id,2)*Get_Gas_BField(i_particle_id,2) +
                   phi_B_eff*phi_B_eff) / SphP[i_particle_id].Density );
         }
         vsig1 = DMAX(vsig1, vsig2);
@@ -619,16 +602,16 @@ void advect_mesh_point(int i, double dt)
     for(k=0;k<3;k++) {dp[k] += dp_offset[k];}
 #if (HYDRO_FIX_MESH_MOTION == 2) // cylindrical
     double r2=dp[0]*dp[0]+dp[1]*dp[1], r=sqrt(r2), c0=dp[0]/r, s0=dp[1]/r, z=dp[2]; // get r, sin/cos theta, z
-    double vr=c0*SphP[i].ParticleVel[0] + s0*SphP[i].ParticleVel[1], vt=s0*SphP[i].ParticleVel[0] - c0*SphP[i].ParticleVel[1]; vz=SphP[i].ParticleVel[2]; // velocities in these directions
+    double vr=c0*SphP[i].ParticleVel[0] + s0*SphP[i].ParticleVel[1], vt=s0*SphP[i].ParticleVel[0] - c0*SphP[i].ParticleVel[1], vz=SphP[i].ParticleVel[2]; // velocities in these directions
     double r_n=r+vr*dt, z_n=z+vz*dt, c_n=c0-s0*(vt/r)*dt, s_n=s0+c0*(vt/r)*dt; // updated cylindrical values
     dp[0] = c_n*r_n; dp[1] = s_n*r_n; dp[2] = z_n; // back to coordinates
     SphP[i].ParticleVel[0] = c_n*vr + s_n*vt; // re-set velocities in these coordinates //
-    SphP[i].ParticleVel[1] = s_n*vr - c_n*vt
+    SphP[i].ParticleVel[1] = s_n*vr - c_n*vt;
     SphP[i].ParticleVel[2] = vz;
     return;
 #elif (HYDRO_FIX_MESH_MOTION == 3) // spherical
-    double dp[3],v[3],r2=0; for(k=0;k<3;k++) {r2+=dp[k]*dp[k]; v[k]=SphP[i].ParticleVel[k];} // assume center is at coordinate origin
-    double r=sqrt(r2), rxy=sqrt(dp[0]*dp[0]+dp[1]*dp[1]); vr=(dp[0]*v[0] + dp[1]*v[1] + dp[2]*v[2])/r; // updated r is easy
+    double v[3],r2=0; for(k=0;k<3;k++) {r2+=dp[k]*dp[k]; v[k]=SphP[i].ParticleVel[k];} // assume center is at coordinate origin
+    double r=sqrt(r2), rxy=sqrt(dp[0]*dp[0]+dp[1]*dp[1]), vr=(dp[0]*v[0] + dp[1]*v[1] + dp[2]*v[2])/r; // updated r is easy
     double ct = 1./sqrt(1.+dp[1]*dp[1]/(dp[0]*dp[0])), st = (dp[1]/dp[0])*ct; // cos and sin theta
     double cp = sqrt(1.-dp[2]*dp[2]/(r*r)), sp = dp[2]/r; // cos and sin phi
     double t_dot = (v[0]*dp[1]-v[1]*dp[0])/(rxy*rxy), p_dot = (dp[2]*(dp[0]*v[0]+dp[1]*v[1])-rxy*rxy*v[2])/(r*r*rxy); // theta, phi derivatives

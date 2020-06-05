@@ -10,6 +10,7 @@
  * This file was written by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
  */
 /* --------------------------------------------------------------------------------- */
+//#define RT_ENHANCED_NUMERICAL_DIFFUSION /* option which increases numerical diffusion, to get smoother solutions, if desired; akin to slopelimiters~0 model */
 {
     // first define some variables needed regardless //
     double c_light = C_LIGHT_CODE_REDUCED;
@@ -19,21 +20,21 @@
     double v_frame[3]={0}; for(k=0;k<3;k++) {v_frame[k]=0.5*(local.Vel[k]+SphP[j].VelPred[k])/All.cf_atime;} // variable to use below //
 #endif
 #if defined(RT_INFRARED)
-    double Fluxes_E_gamma_T_weighted_IR = 0;
+    double Fluxes_Rad_E_gamma_T_weighted_IR = 0;
 #endif
-    double Fluxes_E_gamma[N_RT_FREQ_BINS];
+    double Fluxes_Rad_E_gamma[N_RT_FREQ_BINS];
     
     
 #if !defined(RT_EVOLVE_FLUX) /* this means we just solve the diffusion equation for the eddington tensor, done in the loop below */
     int k_freq;
     for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++)
     {
-        Fluxes_E_gamma[k_freq] = 0;
+        Fluxes_Rad_E_gamma[k_freq] = 0;
         double kappa_ij = 0.5 * (local.RT_DiffusionCoeff[k_freq] + rt_diffusion_coefficient(j,k_freq)); // physical
         if((kappa_ij>0)&&(local.Mass>0)&&(P[j].Mass>0))
         {
-            double scalar_i = local.E_gamma[k_freq] / V_i; // volumetric photon number density in this frequency bin (1/code volume) //
-            double scalar_j = SphP[j].E_gamma_Pred[k_freq] / V_j;
+            double scalar_i = local.Rad_E_gamma[k_freq] / V_i; // volumetric photon number density in this frequency bin (1/code volume) //
+            double scalar_j = SphP[j].Rad_E_gamma_Pred[k_freq] / V_j;
             
             double d_scalar = (scalar_i - scalar_j); // units (1/code volume)
             double conduction_wt = kappa_ij * All.cf_a3inv/All.cf_atime;  // weight factor and conversion to physical units
@@ -41,11 +42,11 @@
             for(k=0;k<3;k++)
             {
                 /* the flux is determined by the energy density gradient */
-                double grad = 0.5 * (local.Gradients.E_gamma_ET[k_freq][k] + SphP[j].Gradients.E_gamma_ET[k_freq][k]); // (1/(code volume*code length))
+                double grad = 0.5 * (local.Gradients.Rad_E_gamma_ET[k_freq][k] + SphP[j].Gradients.Rad_E_gamma_ET[k_freq][k]); // (1/(code volume*code length))
                 double grad_direct = d_scalar * kernel.dp[k] * rinv*rinv; // (1/(code volume*code length))
                 grad_dot_x_ij += grad * kernel.dp[k];
                 grad = MINMOD_G( grad , grad_direct );
-#if defined(GALSF) || defined(COOLING) || defined(BLACKHOLES)
+#if defined(GALSF) || defined(COOLING) || defined(BLACK_HOLES)
                 double grad_direct_vs_abs_fac = 2.0;
 #else
                 double grad_direct_vs_abs_fac = 5.0;
@@ -67,7 +68,7 @@
             double hll_tmp = -A_dot_grad_alignment * q * Face_Area_Norm * c_hll * d_scalar_hll; // physical
             
             /* add asymptotic-preserving correction so that numerical flux doesn't dominate in optically thick limit */
-            double tau_c_j = Particle_Size_j * SphP[j].Kappa_RT[k_freq]*SphP[j].Density*All.cf_a3inv; // = L_particle / (lambda_mean_free_path) = L*kappa*rho (physical) //
+            double tau_c_j = Particle_Size_j * SphP[j].Rad_Kappa[k_freq]*SphP[j].Density*All.cf_a3inv; // = L_particle / (lambda_mean_free_path) = L*kappa*rho (physical) //
             double hll_corr = 1./(1. + 1.5*DMAX(tau_c_i[k_freq],tau_c_j));
             hll_tmp *= hll_corr;
             
@@ -88,28 +89,42 @@
 #endif
             
             // now we need to add the advective flux. note we do this after the limiters above, since those are designed for the diffusive terms, and this is simpler and more stable. we do this zeroth order (super-diffusive, but that's fine for our purposes)
-            double fluxlim_i=1, fluxlim_j=1, v_Area_dot_rt=0; for(k=0;k<3;k++) {v_Area_dot_rt += v_frame[k] * Face_Area_Vec[k];}
+            double cmag_adv=0, fluxlim_i=1, fluxlim_j=1, v_Area_dot_rt=0; for(k=0;k<3;k++) {v_Area_dot_rt += v_frame[k] * Face_Area_Vec[k];}
             double scalar_ij_phys = 2.*scalar_i*scalar_j/(scalar_i+scalar_j) * All.cf_a3inv; // use harmonic mean here, to weight lower value
+            fluxlim_j = return_flux_limiter(j,k_freq);
 #ifdef RT_FLUXLIMITER
-            fluxlim_i = local.RT_DiffusionCoeff[k_freq] * local.Density * local.Kappa_RT[k_freq] / C_LIGHT_CODE_REDUCED; fluxlim_j = SphP[j].Lambda_FluxLim[k_freq];
+            fluxlim_i = local.RT_DiffusionCoeff[k_freq] * local.Density * local.Rad_Kappa[k_freq] / C_LIGHT_CODE_REDUCED; /* figure this out by what we've passed to save an extra variable being sent, here */
 #endif
-            cmag += -v_Area_dot_rt * scalar_ij_phys * ((4./3.)*(0.5*(fluxlim_i+fluxlim_j)) - 1.); // need to be careful with the sign here. since this is an oriented area and A points from j to i, need to flip the sign here. the 1/3 owes to the fact that this is really the --pressure-- term for FLD-like methods, the energy term is implicitly part of the flux already if we're actually doing this correctly //
+            double fluxlim_ij = 0.5 * (fluxlim_i+fluxlim_j), fac_fluxlim = (4./3.)*fluxlim_ij - 1.;
+#ifdef RT_RADPRESSURE_IN_HYDRO
+            fac_fluxlim = (fluxlim_ij-1.) - 2.*(fluxlim_ij/3.)*rt_absorb_frac_albedo(j,k_freq); // when P is included in hydro solver, some terms are automatically included, some not, so the pre-factor here needs to be revised
+#endif
+            cmag_adv += -v_Area_dot_rt * scalar_ij_phys * fac_fluxlim; // need to be careful with the sign here. since this is an oriented area and A points from j to i, need to flip the sign here. the 1/3 owes to the fact that this is really the --pressure-- term for FLD-like methods, the energy term is implicitly part of the flux already if we're actually doing this correctly //
 #if defined(HYDRO_MESHLESS_FINITE_VOLUME)
-            for(k=0;k<3;k++) {cmag -= (v_frame[k]-0.5*(local.Vel[k]+SphP[j].VelPred[k])/All.cf_atime) * scalar_ij_phys * Face_Area_Vec[k];}
+            for(k=0;k<3;k++) {cmag_adv -= (v_frame[k]-0.5*(local.Vel[k]+SphP[j].VelPred[k])/All.cf_atime) * scalar_ij_phys * Face_Area_Vec[k];}
 #endif
-            cmag += fabs(v_Area_dot_rt) * (scalar_j-scalar_i); // hll (rusanov) flux to stabilize
+            cmag_adv += fabs(v_Area_dot_rt) * (scalar_j-scalar_i); // hll (rusanov) flux to stabilize and smooth flow
+            if(fabs(cmag_adv)>0) // now limit the advective flux like we limit other fluxes
+            {
+                double cmag_max = 0.5 * DMAX(1,0.5*(tau_c_i[k_freq]+tau_c_j)) * (fabs(v_Area_dot_rt/Face_Area_Norm)/c_light) * fabs(cmag); /* the 0.5 factor gives better result for the outflow test */
+                if(fabs(cmag_adv) > cmag_max) {cmag_adv *= cmag_max/fabs(cmag_adv);}
+                cmag += cmag_adv;
+            }
             
             cmag *= dt_hydrostep; // all in physical units //
             if(fabs(cmag) > 0)
             {
                 // enforce a flux limiter for stability (to prevent overshoot) //
                 double thold_hll = 0.25 * DMIN(fabs(scalar_i*V_i-scalar_j*V_j),DMAX(fabs(scalar_i*V_i),fabs(scalar_j*V_j))); // physical
+#ifdef RT_ENHANCED_NUMERICAL_DIFFUSION
+                thold_hll *= 2.0;
+#endif
                 if(check_for_stability_sign<0) {thold_hll *= 1.e-2;}
                 if(fabs(cmag)>thold_hll) {cmag *= thold_hll/fabs(cmag);}
                 cmag /= dt_hydrostep;
-                Fluxes_E_gamma[k_freq] += cmag;
+                Fluxes_Rad_E_gamma[k_freq] += cmag;
 #ifdef RT_INFRARED // define advected radiation temperature based on direction of net radiation flow //
-                if(k_freq==RT_FREQ_BIN_INFRARED) {if(cmag > 0) {Fluxes_E_gamma_T_weighted_IR = cmag/(MIN_REAL_NUMBER+SphP[j].Radiation_Temperature);} else {Fluxes_E_gamma_T_weighted_IR = cmag/(MIN_REAL_NUMBER+local.Radiation_Temperature);}}
+                if(k_freq==RT_FREQ_BIN_INFRARED) {if(cmag > 0) {Fluxes_Rad_E_gamma_T_weighted_IR = cmag/(MIN_REAL_NUMBER+SphP[j].Radiation_Temperature);} else {Fluxes_Rad_E_gamma_T_weighted_IR = cmag/(MIN_REAL_NUMBER+local.Radiation_Temperature);}}
 #endif
             } // if(conduction_wt > 0)
             
@@ -121,27 +136,27 @@
 
 
     int k_freq;
-    double Fluxes_Flux[N_RT_FREQ_BINS][3];
+    double Fluxes_Rad_Flux[N_RT_FREQ_BINS][3];
     double c_hll = 0.5*fabs(face_vel_i-face_vel_j) + c_light; // physical units
     double V_i_phys = V_i / All.cf_a3inv;
     double V_j_phys = V_j / All.cf_a3inv;
     double sthreeinv = 1./sqrt(3.);
     for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++)
     {
-        Fluxes_E_gamma[k_freq] = 0;
-        Fluxes_Flux[k_freq][0]=Fluxes_Flux[k_freq][1]=Fluxes_Flux[k_freq][2]=0;
-        double scalar_i = local.E_gamma[k_freq] / V_i_phys; // volumetric photon number density in this frequency bin (E_phys/L_phys^3)//
-        double scalar_j = SphP[j].E_gamma_Pred[k_freq] / V_j_phys;
+        Fluxes_Rad_E_gamma[k_freq] = 0;
+        Fluxes_Rad_Flux[k_freq][0]=Fluxes_Rad_Flux[k_freq][1]=Fluxes_Rad_Flux[k_freq][2]=0;
+        double scalar_i = local.Rad_E_gamma[k_freq] / V_i_phys; // volumetric photon number density in this frequency bin (E_phys/L_phys^3)//
+        double scalar_j = SphP[j].Rad_E_gamma_Pred[k_freq] / V_j_phys;
         if((scalar_i>0)&&(scalar_j>0)&&(local.Mass>0)&&(P[j].Mass>0)&&(dt_hydrostep>0)&&(Face_Area_Norm>0))
         {
             double d_scalar = scalar_i - scalar_j;
             double face_dot_flux=0., cmag=0., cmag_flux[3]={0}, grad_norm=0, flux_i[3]={0}, flux_j[3]={0}, thold_hll;
-            double kappa_ij = 0.5 * (local.RT_DiffusionCoeff[k_freq] + rt_diffusion_coefficient(j,k_freq)); // physical
-            
+            double kappa_i = local.RT_DiffusionCoeff[k_freq], kappa_j = rt_diffusion_coefficient(j,k_freq), kappa_ij = 0.5*(kappa_i+kappa_j); // physical units
+
             /* calculate the eigenvalues for the HLLE flux-weighting */
             for(k=0;k<3;k++)
             {
-                flux_i[k] = local.Flux[k_freq][k]/V_i_phys; flux_j[k] = SphP[j].Flux_Pred[k_freq][k]/V_j_phys; // units (E_phys/[t_phys*L_phys^2])
+                flux_i[k] = local.Rad_Flux[k_freq][k]/V_i_phys - v_frame[k]*scalar_i;; flux_j[k] = SphP[j].Rad_Flux_Pred[k_freq][k]/V_j_phys - v_frame[k]*scalar_j; // units (E_phys/[t_phys*L_phys^2]) [physical]. include advective flux terms here
                 double grad = 0.5*(flux_i[k] + flux_j[k]);
                 grad_norm += grad*grad;
                 face_dot_flux += Face_Area_Vec[k] * grad; /* remember, our 'flux' variable is a volume-integral */
@@ -163,54 +178,81 @@
             if((lam_m==0)&&(lam_p==0)) {hlle_wtfac_f=0.5;} else {hlle_wtfac_f=lam_p/(lam_p+lam_m);}
             if(hlle_wtfac_f < eps_wtfac_f) {hlle_wtfac_f=eps_wtfac_f;} else {if(hlle_wtfac_f > 1.-eps_wtfac_f) {hlle_wtfac_f=1.-eps_wtfac_f;}}
             hlle_wtfac_u = hlle_wtfac_f * (1.-hlle_wtfac_f) * (lam_p + lam_m); // weight for addition of diffusion term
-             
-            for(k=0;k<3;k++)
-            {
-                /* the flux is already known (its explicitly evolved, rather than determined by the gradient of the energy density */
-                cmag += Face_Area_Vec[k] * (hlle_wtfac_f*flux_i[k] + (1.-hlle_wtfac_f)*flux_j[k]); /* remember, our 'flux' variable is a volume-integral [all physical units here] */
-                int k_xyz=k, k_et_al, k_et_loop[3];
-                if(k_xyz==0) {k_et_loop[0]=0; k_et_loop[1]=3; k_et_loop[2]=5;}
-                if(k_xyz==1) {k_et_loop[0]=3; k_et_loop[1]=1; k_et_loop[2]=4;}
-                if(k_xyz==2) {k_et_loop[0]=5; k_et_loop[1]=4; k_et_loop[2]=2;}
-                for(k_et_al=0;k_et_al<3;k_et_al++) {
-                    cmag_flux[k_xyz] += c_light*c_light * Face_Area_Vec[k_et_al] * (hlle_wtfac_f*scalar_i*local.ET[k_freq][k_et_loop[k_et_al]] + (1.-hlle_wtfac_f)*scalar_j*SphP[j].ET[k_freq][k_et_loop[k_et_al]]);} // [all physical units]
-            }
+#ifdef RT_ENHANCED_NUMERICAL_DIFFUSION
+            hlle_wtfac_u = hlle_wtfac_f = 0.5;
+#endif
+            /* the flux is already known (its explicitly evolved, rather than determined by the gradient of the energy density */
+            for(k=0;k<3;k++) {cmag += Face_Area_Vec[k] * (hlle_wtfac_f*flux_i[k] + (1.-hlle_wtfac_f)*flux_j[k]);} /* remember, our 'flux' variable is a volume-integral [all physical units here] */
+
+            /* now compute the 'flux source term' - divergence of the radiation pressure tensor */
+            double ET_dot_Face_i[3]={0}, ET_dot_Face_j[3]={0};
+            eddington_tensor_dot_vector(local.ET[k_freq],Face_Area_Vec,ET_dot_Face_i); /* compute face dotted into eddington tensors for both sides */
+            eddington_tensor_dot_vector(SphP[j].ET[k_freq],Face_Area_Vec,ET_dot_Face_j); /* compute face dotted into eddington tensors for both sides */
+#ifdef RT_ENHANCED_NUMERICAL_DIFFUSION
+            for(k=0;k<3;k++) {cmag_flux[k] += c_light*c_light * Face_Area_Vec[k] * 0.5*(scalar_i + scalar_j)/3.;}
+#else
+            for(k=0;k<3;k++) {cmag_flux[k] += c_light*c_light * (hlle_wtfac_f*scalar_i*ET_dot_Face_i[k] + (1.-hlle_wtfac_f)*scalar_j*ET_dot_Face_j[k]);}
+#endif
             
             /* add asymptotic-preserving correction so that numerical flux doesn't unphysically dominate in optically thick limit */
             double v_eff_light = DMIN(c_light , kappa_ij / Particle_Size_j); // physical
             c_hll = 0.5*fabs(face_vel_i-face_vel_j) + DMAX(1.,hlle_wtfac_u) * v_eff_light; // physical
-            double tau_c_j = Particle_Size_j * SphP[j].Kappa_RT[k_freq]*(SphP[j].Density*All.cf_a3inv); // = L_particle / (lambda_mean_free_path) = L*kappa*rho [physical units] //
+            double tau_c_j = Particle_Size_j * SphP[j].Rad_Kappa[k_freq]*(SphP[j].Density*All.cf_a3inv); // = L_particle / (lambda_mean_free_path) = L*kappa*rho [physical units] //
             double hll_corr = 1./(1. + 1.5*DMAX(tau_c_i[k_freq],tau_c_j));
             /* q below is a limiter to try and make sure the diffusion speed given by the hll flux doesn't exceed the diffusion speed in the diffusion limit */
             double q = 0.5 * c_hll * (kernel.r*All.cf_atime) / fabs(MIN_REAL_NUMBER + kappa_ij); q = (0.2 + q) / (0.2 + q + q*q); // physical
             double renormerFAC = DMIN(1.,fabs(cos_theta_face_flux*cos_theta_face_flux * q * hll_corr));            
-            
-            // now we need to add the advective flux. note we do this after the limiters above, since those are designed for the diffusive terms, and this is simpler and more stable. we do this zeroth order (super-diffusive, but that's fine for our purposes)
-            double v_Area_dot_rt=0; for(k=0;k<3;k++) {v_Area_dot_rt += v_frame[k] * Face_Area_Vec[k];}
-            cmag += -v_Area_dot_rt*2.*scalar_i*scalar_j/(scalar_i+scalar_j) + 0.5*fabs(v_Area_dot_rt)*(scalar_j-scalar_i); // need to be careful with the sign here. since this is an oriented area and A points from j to i, need to flip the sign here //
+#ifdef RT_ENHANCED_NUMERICAL_DIFFUSION
+            renormerFAC = 1;
+#endif
+#if !defined(RT_ENHANCED_NUMERICAL_DIFFUSION)
+            double RTopticaldepth = DMIN(Particle_Size_i,Particle_Size_j) * C_LIGHT_CODE_REDUCED / kappa_ij;
+            double reductionfactor = sqrt((1.0-exp(-RTopticaldepth*RTopticaldepth))) / RTopticaldepth;
+            double reducedcM1 = reductionfactor * C_LIGHT_CODE_REDUCED / sqrt(3.0);
+            v_eff_light = DMAX(reducedcM1 , 2.*All.cf_afac3*kernel.vsig);
+            c_hll = 0.5*fabs(face_vel_i-face_vel_j) + v_eff_light;
+            hll_corr = 1. / (1. + 1.5 * v_eff_light * DMAX(Particle_Size_j/kappa_j , Particle_Size_i/kappa_i));
+            q = 0.5 * c_hll * (kernel.r * All.cf_atime) / fabs(MIN_REAL_NUMBER + kappa_ij); q = (0.2 + q) / (0.2 + q + q*q);
+            renormerFAC = DMIN(1.,fabs(cos_theta_face_flux*cos_theta_face_flux * q * hll_corr));
+
+            double scalar_jr=scalar_j, scalar_ir=scalar_i, d_scalar_hll=d_scalar, d_scalar_ij=0;
+            for(k=0;k<3;k++) {scalar_jr+=0.5*kernel.dp[k]*local.Gradients.Rad_E_gamma_ET[k_freq][k]; scalar_ir-=0.5*kernel.dp[k]*SphP[j].Gradients.Rad_E_gamma_ET[k_freq][k];}
+            d_scalar_ij=scalar_ir-scalar_jr; if((d_scalar_ij*d_scalar>0)&&(fabs(d_scalar_ij)<fabs(d_scalar))) {d_scalar_hll=d_scalar_ij;}
+            d_scalar = d_scalar_hll;
+#endif
 
             /* flux-limiter to ensure flow is always down the local gradient [no 'uphill' flow] */
             double f_direct = -Face_Area_Norm * c_hll * d_scalar * renormerFAC; // simple HLL term for frame moving at 1/2 inter-particle velocity: here not limited [physical units] //
+            if(dt_hydrostep>0) {
+                double f_direct_max = 0.25 * fabs(d_scalar) * DMIN(V_i_phys , V_j_phys) / dt_hydrostep;
+                if(fabs(f_direct) > f_direct_max) {f_direct *= f_direct_max / fabs(f_direct);}} else {f_direct=0;}
             double sign_c0 = f_direct*cmag;
             if((sign_c0 < 0) && (fabs(f_direct) > fabs(cmag))) {cmag = 0;}
+#ifdef RT_ENHANCED_NUMERICAL_DIFFUSION
             if(cmag != 0)
+#endif
             {
                 if(f_direct != 0)
                 {
                     thold_hll = (0.5*hlle_wtfac_u) * fabs(cmag); // add hll term but flux-limited //
+#ifdef RT_ENHANCED_NUMERICAL_DIFFUSION
                     if(fabs(f_direct) > thold_hll) {f_direct *= thold_hll/fabs(f_direct);}
+#endif
                     cmag += f_direct;
                 }
                 // enforce a flux limiter for stability (to prevent overshoot) //
                 cmag *= dt_hydrostep; // all in physical units //
                 double sVi = scalar_i*V_i_phys, sVj = scalar_j*V_j_phys; // physical units //
                 thold_hll = 0.25 * DMIN(fabs(sVi-sVj), DMAX(fabs(sVi), fabs(sVj)));
+#ifdef RT_ENHANCED_NUMERICAL_DIFFUSION
+                thold_hll *= 2.0;
+#endif
                 if(sign_c0 < 0) {thold_hll *= 1.e-2;} // if opposing signs, restrict this term //
                 if(fabs(cmag)>thold_hll) {cmag *= thold_hll/fabs(cmag);}
                 cmag /= dt_hydrostep;
-                Fluxes_E_gamma[k_freq] += cmag; // returned in physical units //
+                Fluxes_Rad_E_gamma[k_freq] += cmag; // returned in physical units //
 #ifdef RT_INFRARED // define advected radiation temperature based on direction of net radiation flow //
-                if(k_freq==RT_FREQ_BIN_INFRARED) {if(cmag > 0) {Fluxes_E_gamma_T_weighted_IR = cmag/(MIN_REAL_NUMBER+SphP[j].Radiation_Temperature);} else {Fluxes_E_gamma_T_weighted_IR = cmag/(MIN_REAL_NUMBER+local.Radiation_Temperature);}}
+                if(k_freq==RT_FREQ_BIN_INFRARED) {if(cmag > 0) {Fluxes_Rad_E_gamma_T_weighted_IR = cmag/(MIN_REAL_NUMBER+SphP[j].Radiation_Temperature);} else {Fluxes_Rad_E_gamma_T_weighted_IR = cmag/(MIN_REAL_NUMBER+local.Radiation_Temperature);}}
 #endif
             } // cmag != 0
             
@@ -223,13 +265,12 @@
                 if(f_direct != 0)
                 {
                     thold_hll = 1.0 * fabs(cmag_flux[k]) / fabs(f_direct); // coefficient of 0.5-1: 0.5=longer-lasting shadows, more 'memory' effect/shape distortion of HII regions; 1=fill in shadows faster, less HII distortion
-//                    thold_hll = 0.5 * fabs(cmag_flux[k]) / fabs(f_direct); // coefficient of 0.5-1: 0.5=longer-lasting shadows, more 'memory' effect/shape distortion of HII regions; 1=fill in shadows faster, less HII distortion
                     if(thold_hll < hll_mult_dmin) {hll_mult_dmin = thold_hll;}
                 }
             }
                         
             // now we need to add the advective flux. note we do this after the limiters above, since those are designed for the diffusive terms, and this is simpler and more stable. we do this zeroth order (super-diffusive, but that's fine for our purposes)
-            double flux_dot_face=0; for(k=0;k<3;k++) {flux_dot_face += 0.5*(flux_i[k]+flux_j[k]) * Face_Area_Vec[k];} // order of operations needs care here. following through on the divergence theorem carefully, the transport follows v, with A dotted into flux here, rather than A.v or some other law
+            double flux_dot_face=0,v_Area_dot_rt=0; for(k=0;k<3;k++) {flux_dot_face += 0.5*(flux_i[k]+flux_j[k])*Face_Area_Vec[k]; v_Area_dot_rt += v_frame[k]*Face_Area_Vec[k];} // order of operations needs care here. following through on the divergence theorem carefully, the transport follows v, with A dotted into flux here, rather than A.v or some other law
             for(k=0;k<3;k++) {cmag_flux[k] += -v_frame[k]*flux_dot_face + 0.5*fabs(v_Area_dot_rt)*(flux_j[k]-flux_i[k]);} // need to be careful with the sign here. since this is an oriented area and A points from j to i, need to flip the sign here //
             
             for(k=0;k<3;k++)
@@ -242,12 +283,12 @@
                     cmag_flux[k] += hll_mult_dmin * f_direct; // add diffusive flux //
                     /* flux-limiter to prevent overshoot */
                     cmag_flux[k] *= dt_hydrostep;
-                    thold_hll = DMIN( DMAX( DMIN(fabs(local.Flux[k_freq][k]), fabs(SphP[j].Flux_Pred[k_freq][k])) , fabs(local.Flux[k_freq][k]-SphP[j].Flux_Pred[k_freq][k]) ) , DMAX(fabs(local.Flux[k_freq][k]), fabs(SphP[j].Flux_Pred[k_freq][k])) );
+                    thold_hll = DMIN( DMAX( DMIN(fabs(local.Rad_Flux[k_freq][k]), fabs(SphP[j].Rad_Flux_Pred[k_freq][k])) , fabs(local.Rad_Flux[k_freq][k]-SphP[j].Rad_Flux_Pred[k_freq][k]) ) , DMAX(fabs(local.Rad_Flux[k_freq][k]), fabs(SphP[j].Rad_Flux_Pred[k_freq][k])) );
                     double fii=V_i_phys*scalar_i*c_light, fjj=V_j_phys*scalar_j*c_light; // physical units //
                     double tij = DMIN( DMAX( DMIN(fabs(fii),fabs(fjj)) , fabs(fii-fjj) ) , DMAX(fabs(fii),fabs(fjj)) );
                     thold_hll = 0.25 * DMAX( thold_hll , 0.5*tij );
                     if(fabs(cmag_flux[k])>thold_hll) {cmag_flux[k] *= thold_hll/fabs(cmag_flux[k]);}
-                    Fluxes_Flux[k_freq][k] += cmag_flux[k] / dt_hydrostep; // all returned in physical units
+                    Fluxes_Rad_Flux[k_freq][k] += cmag_flux[k] / dt_hydrostep; // all returned in physical units
                 }
             }
         } // close check that energy and masses are positive
@@ -256,15 +297,15 @@
 #endif
     
     // assign the actual fluxes //
-    for(k=0;k<N_RT_FREQ_BINS;k++) {out.Dt_E_gamma[k] += Fluxes_E_gamma[k];}
-    if(j_is_active_for_fluxes) {for(k=0;k<N_RT_FREQ_BINS;k++) {SphP[j].Dt_E_gamma[k] -= Fluxes_E_gamma[k];}}
+    for(k=0;k<N_RT_FREQ_BINS;k++) {out.Dt_Rad_E_gamma[k] += Fluxes_Rad_E_gamma[k];}
+    if(j_is_active_for_fluxes) {for(k=0;k<N_RT_FREQ_BINS;k++) {SphP[j].Dt_Rad_E_gamma[k] -= Fluxes_Rad_E_gamma[k];}}
 #if defined(RT_INFRARED)
-    out.Dt_E_gamma_T_weighted_IR += Fluxes_E_gamma_T_weighted_IR;
-    if(j_is_active_for_fluxes) {SphP[j].Dt_E_gamma_T_weighted_IR -= Fluxes_E_gamma_T_weighted_IR;}
+    out.Dt_Rad_E_gamma_T_weighted_IR += Fluxes_Rad_E_gamma_T_weighted_IR;
+    if(j_is_active_for_fluxes) {SphP[j].Dt_Rad_E_gamma_T_weighted_IR -= Fluxes_Rad_E_gamma_T_weighted_IR;}
 #endif
 #ifdef RT_EVOLVE_FLUX
-    for(k=0;k<N_RT_FREQ_BINS;k++) {int k_dir; for(k_dir=0;k_dir<3;k_dir++) {out.Dt_Flux[k][k_dir] += Fluxes_Flux[k][k_dir];}}
-    if(j_is_active_for_fluxes) {for(k=0;k<N_RT_FREQ_BINS;k++) {int k_dir; for(k_dir=0;k_dir<3;k_dir++) {SphP[j].Dt_Flux[k][k_dir] -= Fluxes_Flux[k][k_dir];}}}
+    for(k=0;k<N_RT_FREQ_BINS;k++) {int k_dir; for(k_dir=0;k_dir<3;k_dir++) {out.Dt_Rad_Flux[k][k_dir] += Fluxes_Rad_Flux[k][k_dir];}}
+    if(j_is_active_for_fluxes) {for(k=0;k<N_RT_FREQ_BINS;k++) {int k_dir; for(k_dir=0;k_dir<3;k_dir++) {SphP[j].Dt_Rad_Flux[k][k_dir] -= Fluxes_Rad_Flux[k][k_dir];}}}
 #endif
     
 }

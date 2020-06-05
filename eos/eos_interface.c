@@ -3,7 +3,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
 #include <gsl/gsl_const_cgsm.h>
 
 #ifdef _OPENMP
@@ -115,15 +114,15 @@ int eos_compute(struct eos_input const * in_, struct eos_output * out_)
 
 static int eos_input_to_cgs(struct eos_input * vars)
 {
-  vars->rho *= All.UnitDensity_in_cgs;
-  vars->eps *= All.UnitEnergy_in_cgs / All.UnitMass_in_g;
+  vars->rho *= UNIT_DENSITY_IN_CGS;
+  vars->eps *= UNIT_SPECEGY_IN_CGS;
   return 0;
 }
 
 static int eos_output_from_cgs(struct eos_output * vars)
 {
-  vars->press  /= All.UnitPressure_in_cgs;
-  vars->csound /= All.UnitVelocity_in_cm_per_s;
+  vars->press  /= UNIT_PRESSURE_IN_CGS;
+  vars->csound /= UNIT_VEL_IN_CGS;
   return 0;
 }
 
@@ -220,3 +219,5 @@ static int eos_compute_from_valid(struct eos_input const * in, struct eos_output
 
   return 0;
 }
+
+

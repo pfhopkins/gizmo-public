@@ -77,6 +77,9 @@ void compute_hydro_densities_and_forces(void)
 #ifdef TURB_DIFF_DYNAMIC
         dynamic_diff_vel_calc(); /* This must be called between density and gradient calculations */
 #endif
+#if defined(RT_OPACITY_FROM_EXPLICIT_GRAINS)
+        interpolate_fluxes_opacities_gasgrains();
+#endif
 
         hydro_gradient_calc(); /* calculates the gradients of hydrodynamical quantities  */
         PRINT_STATUS(" ..gradient computation done.");
@@ -135,10 +138,6 @@ void compute_stellar_feedback(void)
 #endif
     
 
-#ifdef CHIMES_HII_REGIONS 
-    chimes_HII_regions_singledomain(); 
-    CPU_Step[CPU_HIIHEATING] += measure_time(); /* collect timings and reset clock for next timing */
-#endif
     
     
     CPU_Step[CPU_MISC] += measure_time();

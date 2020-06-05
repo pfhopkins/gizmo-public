@@ -62,7 +62,7 @@ DesNumNgb                          32
 BiniX                              0
 BiniY                              0
 BiniZ                              6.1019e-05  % initial field strength
-UnitLength_in_cm                   3.08568e+18
+UnitLength_in_cm                   3.085678e+18
 UnitMass_in_g                      1.9891e+33
 UnitVelocity_in_cm_per_s           100000
 UnitMagneticField_in_gauss         1

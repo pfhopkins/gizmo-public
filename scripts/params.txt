@@ -160,6 +160,9 @@ Grain_KickPerCollision           0     % velocity 'kick' [code units] per collis
 %---- Star Formation parameters (GALSF on)
 CritPhysDensity              100.    %  critical physical density for star formation (cm^(-3))
 SfEffPerFreeFall             1.0     %  SFR/(Mgas/tfreefall) for gas which meets SF criteria
+%---- initialize metallicity+ages of gas+stars in simulation (for GALSF or metal-dependent COOLING)
+InitMetallicity              1e-5   % initial gas+stellar metallicity [for all pre-existing elements] (in solar)
+InitStellarAge               1      % initial mean age (in Gyr; for pre-existing stars in sim ICs)
 
 
 %---- sub-grid (Springel+Hernquist/GADGET/AREPO) "effective equation of state" 
@@ -182,25 +185,22 @@ VariableWindSpecMomentum     5000   % wind momentum per unit stellar mass (code 
 
 
 
-%-------------- FIRE (PFH) explicit star formation & feedback model (FIRE on)
-%--- initial metallicity of gas & stars in simulation 
-InitMetallicity              1e-5    % initial gas+stellar metallicity (in solar)
-InitStellarAge               1e-3    % initial mean age (in Gyr; for stars in sim ICs)
-%--- local radiation-pressure driven winds (GALSF_FB_FIRE_RT_LOCALRP) 
-WindMomentumLoading          1.0     % fraction of photon momentum to couple
+%-------------- FIRE (PFH) explicit star formation & feedback model (FIRE on; all have 'alt name' alternative name options and defaults)
+%--- local coupling from LEBRON-first-stage of radiation-pressure photon momentum flux (GALSF_FB_FIRE_RT_LOCALRP)
+RP_Local_Momentum_Renormalization       1   % fraction of absorbed physical photon momentum to couple (alt name: 'WindMomentumLoading')
 %--- SneII Heating Model (GALSF_FB_MECHANICAL) 
-SNeIIEnergyFrac              1.0     % fraction of mechanical energy to couple
+SNe_Energy_Renormalization              1   % fraction of physical SNe energy to inject -before- cooling (alt name: 'SNeIIEnergyFrac')
 %--- HII region photo-heating model (GALSF_FB_FIRE_RT_HIIHEATING)  
-HIIRegion_fLum_Coupled       1.0     % fraction of ionizing photons allowed to see gas
+HIIRegion_fLum_Coupled                  1   % fraction of ionizing photons allowed to see gas (alt name: 'HIIRegion_fLum_Coupled')
 %--- long-range radiation pressure acceleration (GALSF_FB_FIRE_RT_LONGRANGE) 
-PhotonMomentum_Coupled_Fraction  1   % fraction of L to allow incident
-PhotonMomentum_fUV           0.0     % incident SED f(L) in UV (minimum scattering)
-PhotonMomentum_fOPT          0.0     % incident SED f(L) in optical/near-IR
+PhotonMomentum_Coupled_Fraction         1   % fraction of L to allow incident (alt name: 'PhotonMomentum_Coupled_Fraction')
+PhotonMomentum_fUV                      0   % minimum local-escape fraction in UV from incident SED, to propagate to long-range LEBRON component
+PhotonMomentum_fOPT                     0   % minimum local-escape fraction in optical from incident SED, to propagate to long-range LEBRON component
 %--- gas return/recycling
-GasReturnFraction            1.0     % fraction of gas mass returned (relative to ssp)
-GasReturnEnergy              1.0     % fraction of returned gas energy+momentum (relative to ssp)
+StellarMassLoss_Rate_Renormalization    1   % fraction of gas mass returned, relative to ssp (alt name 'GasReturnFraction')
+StellarMassLoss_Energy_Renormalization  1   % fraction of returned gas energy+momentum, relative to ssp (alt name 'GasReturnEnergy')
 %--- cosmic rays (COSMIC_RAYS)
-CosmicRay_SNeFraction        0.1     % fraction of SNe ejecta kinetic energy into cosmic rays (~10%)
+CosmicRay_SNeFraction                   0.1 % fraction of SNe ejecta kinetic energy into cosmic rays (~10%)
 
 
 %-------------- Black Hole accretion & formation (BLACK_HOLES on)
@@ -221,7 +221,7 @@ BlackHoleMaxAccretionRadius  0.02	    % max radius for BH neighbor search/accret
 BlackHoleRadiativeEfficiency 0.1        % radiative efficiency (for accretion and feedback)
 %--- feedback 
 BlackHoleFeedbackFactor      1.0	    % generic feedback strength multiplier 
-BH_FluxMomentumFactor        1.0	    % multiply radiation pressure (BH_PHOTONMOMENTUM) 
+BH_Rad_MomentumFactor        1.0	    % multiply radiation pressure (BH_PHOTONMOMENTUM) 
 BAL_f_accretion              0.5        % fraction of gas swallowed by BH (BH_WIND options)
 BAL_v_outflow                30000	    % velocity (code units) of BAL outflow (BH_WIND options)
 BAL_internal_temperature     1.0e4      % internal temperature (K) of BAL outflow (BH_WIND_SPAWN)

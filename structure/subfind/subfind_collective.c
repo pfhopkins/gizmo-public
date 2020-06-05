@@ -1283,10 +1283,8 @@ int subfind_col_unbind(struct unbind_data *d, int num, int *num_non_gas)
 	  s[j] += pos[j];
 
 #ifdef BOX_PERIODIC
-	  while(s[j] < 0)
-	    s[j] += boxsize;
-	  while(s[j] >= boxsize)
-	    s[j] -= boxsize;
+	  while(s[j] < 0) {s[j] += boxsize;}
+	  while(s[j] >= boxsize) {s[j] -= boxsize;}
 #endif
 	}
 

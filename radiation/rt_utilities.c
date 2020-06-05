@@ -48,50 +48,46 @@ extern pthread_mutex_t mutex_partnodedrift;
 #if defined(RADTRANSFER) || defined(RT_USE_GRAVTREE)
 
 /***********************************************************************************************************/
-/* routine which returns the luminosity [total volume/mass integrated] for the desired source particles in physical code units (energy/time), as a function of whatever the user desires, in the relevant bands */
+/* routine which returns the luminosity [total volume/mass integrated] for the desired source particles in physical code units (energy/time),
+    as a function of whatever the user desires, in the relevant bands. inpute here:
+    'i' = index of target particle/cell for which the luminosity should be computed
+    'mode' = flag for special behaviors. if <0 (e.g. -1), just returns whether or not a particle is 'active' (eligible as an RT source). if =0, normal behavior. if =1, then some bands have special behavior, for example self-shielding estimated -at the source-
+    'lum' = pointer to vector of length N_RT_FREQ_BINS to hold luminosities for all bands
+ */
 /***********************************************************************************************************/
 #ifdef CHIMES_STELLAR_FLUXES  
-int rt_get_source_luminosity(int i, double sigma_0, double *lum, double *chimes_lum_G0, double *chimes_lum_ion)
+int rt_get_source_luminosity(int i, int mode, double *lum, double *chimes_lum_G0, double *chimes_lum_ion)
 #else 
-int rt_get_source_luminosity(int i, double sigma_0, double *lum)
+int rt_get_source_luminosity(int i, int mode, double *lum)
 #endif 
 {
     int active_check = 0;
     
 
-#if defined(RADTRANSFER) && (defined(GALSF))
-    /* restrict the star particles acting as sources, because they need their own sub-loops */
-    if( ((P[i].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[i].Type == 2)||(P[i].Type==3)))) && P[i].Mass>0 && PPP[i].Hsml>0 )
-    {
-        double star_age = evaluate_stellar_age_Gyr(P[i].StellarAge);
-	    if((star_age > 0.1)||(star_age <= 0)||(isnan(star_age))) return 0;
-    }
-#endif
 
     
 
+    
 #if defined(RT_INFRARED) /* can add direct infrared sources, but default to no direct IR (just re-emitted light) */
     if((1 << P[i].Type) & (RT_SOURCES))
     {
         lum[RT_FREQ_BIN_INFRARED] = 0.0; //default to no direct IR (just re-emitted light)
-#if defined(TEST_RT_M1)
-        if(P[i].Type == 5) {lum[RT_FREQ_BIN_INFRARED] = bh_lum_bol(P[i].BH_Mdot,P[i].Mass,i);} //set the entire bolometric luminosity from the sink a
-#endif
     }
 #endif
 
+    
 #if defined(RT_NUV)
     /* Near-UV approximate spectra (UV/optical spectra, sub-photo-electric, but high-opacity) for stars as used in the FIRE (Hopkins et al.) models */
     if((1 << P[i].Type) & (RT_SOURCES)) // check if the particle falls into one of the allowed source types
     {
         if( ((P[i].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[i].Type == 2)||(P[i].Type==3)))) && P[i].Mass>0 && PPP[i].Hsml>0 )
         {
-            if(sigma_0<0) {return 1;} active_check = 1;
+            if(mode<0) {return 1;} active_check = 1;
             double star_age = evaluate_stellar_age_Gyr(P[i].StellarAge), f_op=0;
             if(star_age <= 0.0025) {f_op=0.09;} else {
                 if(star_age <= 0.006) {f_op=0.09*(1+((star_age-0.0025)/0.004)*((star_age-0.0025)/0.004));
                 } else {f_op=1-0.8410937/(1+sqrt((star_age-0.006)/0.3));}}
-            double fac = 3.95e33 * (P[i].Mass * All.UnitMass_in_g / SOLAR_MASS) * All.UnitTime_in_s / (All.HubbleParam * All.UnitEnergy_in_cgs); // converts to code units
+            double fac = P[i].Mass * UNIT_MASS_IN_SOLAR / UNIT_LUM_IN_SOLAR; // converts to code units
             lum[RT_FREQ_BIN_NUV] = (1-f_op) * fac * evaluate_light_to_mass_ratio(star_age, i);
         }
     }
@@ -104,25 +100,26 @@ int rt_get_source_luminosity(int i, double sigma_0, double *lum)
     {
         if( ((P[i].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[i].Type == 2)||(P[i].Type==3)))) && P[i].Mass>0 && PPP[i].Hsml>0 )
         {
-            if(sigma_0<0) {return 1;} active_check = 1;
+            if(mode<0) {return 1;} active_check = 1;
             double star_age = evaluate_stellar_age_Gyr(P[i].StellarAge), f_op=0;
             if(star_age <= 0.0025) {f_op=0.09;} else {
                 if(star_age <= 0.006) {f_op=0.09*(1+((star_age-0.0025)/0.004)*((star_age-0.0025)/0.004));
                 } else {f_op=1-0.8410937/(1+sqrt((star_age-0.006)/0.3));}}
-            double fac = 3.95e33 * (P[i].Mass * All.UnitMass_in_g / SOLAR_MASS) * All.UnitTime_in_s / (All.HubbleParam * All.UnitEnergy_in_cgs); // converts to code units
+            double fac = P[i].Mass * UNIT_MASS_IN_SOLAR / UNIT_LUM_IN_SOLAR; // converts to code units
             lum[RT_FREQ_BIN_OPTICAL_NIR] = f_op * fac * evaluate_light_to_mass_ratio(star_age, i);
         }
     }
 #endif
 
+    
 #ifdef RT_PHOTOELECTRIC
     /* photo-electric bands (8-13.6 eV, specifically): below is from integrating the spectra from STARBURST99 with the Geneva40 solar-metallicity + lower tracks */
     if((1 << P[i].Type) & (RT_SOURCES)) // check if the particle falls into one of the allowed source types
     {
         if( ((P[i].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[i].Type == 2)||(P[i].Type==3)))) && P[i].Mass>0 && PPP[i].Hsml>0 )
         {
-            if(sigma_0<0) {return 1;} active_check = 1;
-            double fac = (P[i].Mass * All.UnitMass_in_g / SOLAR_MASS) * All.UnitTime_in_s / (All.HubbleParam * All.UnitEnergy_in_cgs); // converts to code units
+            if(mode<0) {return 1;} active_check = 1;
+            double fac = (P[i].Mass * UNIT_MASS_IN_SOLAR) / UNIT_LUM_IN_CGS; // converts to code units
             //double star_age = evaluate_stellar_age_Gyr(P[i].StellarAge); 
             //double l_band = 2.14e36 / sqrt(1. + pow(star_age/4.e-3,3.6)) * fac; // solar tracks, no nebular
             double l_band, x_age = evaluate_stellar_age_Gyr(P[i].StellarAge) / 3.4e-3;
@@ -144,8 +141,8 @@ int rt_get_source_luminosity(int i, double sigma_0, double *lum)
     {
         if( ((P[i].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[i].Type == 2)||(P[i].Type==3)))) && P[i].Mass>0 && PPP[i].Hsml>0 )
         {
-            if(sigma_0<0) {return 1;} active_check = 1;
-            double fac = (P[i].Mass * All.UnitMass_in_g / SOLAR_MASS) * All.UnitTime_in_s / (All.HubbleParam * All.UnitEnergy_in_cgs); // converts to code units
+            if(mode<0) {return 1;} active_check = 1;
+            double fac = (P[i].Mass * UNIT_MASS_IN_SOLAR) / UNIT_LUM_IN_CGS; // converts to code units
             double l_band, x_age = evaluate_stellar_age_Gyr(P[i].StellarAge) / 3.4e-3;
             if(x_age <= 1) 
             { 
@@ -169,14 +166,14 @@ int rt_get_source_luminosity(int i, double sigma_0, double *lum)
         /* calculate ionizing flux based on actual stellar or BH physics */
         if( ((P[i].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[i].Type == 2)||(P[i].Type==3)))) && P[i].Mass>0 && PPP[i].Hsml>0 )
         {
-            if(sigma_0<0) {return 1;} active_check=1;
-            fac += particle_ionizing_luminosity_in_cgs(i) * (All.UnitTime_in_s / (All.HubbleParam * All.UnitEnergy_in_cgs));
+            if(mode<0) {return 1;} active_check=1;
+            fac += particle_ionizing_luminosity_in_cgs(i) / UNIT_LUM_IN_CGS;
         }
 #else
 #ifdef RT_ILIEV_TEST1
-        if(P[i].Type==4) {if(sigma_0<0) {return 1;} active_check=1; fac += 5.0e48 * (13.6*ELECTRONVOLT_IN_ERGS) * All.UnitTime_in_s / (All.HubbleParam * All.UnitEnergy_in_cgs);} // 5e48 in ionizing photons per second //
+        if(P[i].Type==4) {if(mode<0) {return 1;} active_check=1; fac += 5.0e48 * (13.6*ELECTRONVOLT_IN_ERGS) / UNIT_LUM_IN_CGS;} // 5e48 in ionizing photons per second //
 #else
-        if(P[i].Type==4) {if(sigma_0<0) {return 1;} active_check=1; fac += (P[i].Mass * All.UnitMass_in_g / SOLAR_MASS) * All.IonizingLuminosityPerSolarMass_cgs * All.UnitTime_in_s / (All.HubbleParam * All.UnitEnergy_in_cgs);} // flux from star particles according to mass
+        if(P[i].Type==4) {if(mode<0) {return 1;} active_check=1; fac += All.IonizingLuminosityPerSolarMass_cgs * (P[i].Mass * UNIT_MASS_IN_SOLAR) / UNIT_LUM_IN_CGS;} // flux from star particles according to mass
 #endif
 #endif // GALSF else
 #if defined(RT_PHOTOION_MULTIFREQUENCY)
@@ -188,7 +185,6 @@ int rt_get_source_luminosity(int i, double sigma_0, double *lum)
 #endif
     }
 #endif // RT_CHEM_PHOTOION
-
 
 
 #if defined(RT_HARD_XRAY) || defined(RT_SOFT_XRAY)
@@ -203,9 +199,9 @@ int rt_get_source_luminosity(int i, double sigma_0, double *lum)
 #if defined(BLACK_HOLES)
         if(P[i].Type == 5) 
         {
-            if(sigma_0<0) {return 1;} active_check=1;
-            double lbol = bh_lum_bol(P[i].BH_Mdot,P[i].Mass,i);
-            double lbol_lsun = lbol / (SOLAR_LUM * All.UnitTime_in_s / (All.HubbleParam * All.UnitEnergy_in_cgs));
+            if(mode<0) {return 1;} active_check=1;
+            double lbol = bh_lum_bol(P[i].BH_Mdot,P[i].Mass,i); // luminosity in physical code units // 
+            double lbol_lsun = lbol * UNIT_LUM_IN_SOLAR;
             double bol_corr = 0;
 #if defined(RT_HARD_XRAY) 
             bol_corr = 0.43 * (10.83 * pow(lbol_lsun/1.e10,0.28) + 6.08 * pow(lbol_lsun/1.e10,-0.02)); // 0.5 for -ALL- hard-x-ray, 1.0 prefactor for just 2-10 keV
@@ -219,8 +215,8 @@ int rt_get_source_luminosity(int i, double sigma_0, double *lum)
 #endif
         if(P[i].Type == 4) 
         {
-            if(sigma_0<0) {return 1;} active_check=1;
-            double fac = (P[i].Mass * All.UnitMass_in_g / SOLAR_MASS) * All.UnitTime_in_s / (All.HubbleParam * All.UnitEnergy_in_cgs); // converts to code units
+            if(mode<0) {return 1;} active_check=1;
+            double fac = (P[i].Mass * UNIT_MASS_IN_SOLAR) / UNIT_LUM_IN_CGS; // converts to code units
             double L_HMXBs = 0.0; 
 #ifdef GALSF
             double star_age = evaluate_stellar_age_Gyr(P[i].StellarAge);
@@ -237,15 +233,30 @@ int rt_get_source_luminosity(int i, double sigma_0, double *lum)
 #endif // RT_HARD_XRAY
 
     
+#if defined(RT_GENERIC_USER_FREQ)
+    if((1 << P[i].Type) & (RT_SOURCES)) // check if the particle falls into one of the allowed source types
+    {
+        if(P[i].Type == 4)
+        {
+            if(mode<0) {return 1;} active_check=1;
+            lum[RT_FREQ_BIN_GENERIC_USER_FREQ] = 0;
+#ifdef GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION /* assume special units for this problem, and that total mass of 'sources' is 1 */
+            lum[RT_FREQ_BIN_GENERIC_USER_FREQ] = P[i].Mass * All.Vertical_Grain_Accel * C_LIGHT_CODE / (0.75*GRAIN_RDI_TESTPROBLEM_Q_AT_GRAIN_MAX/All.Grain_Size_Max); // special behavior for particular test of stratified boxes compared to explicit dust opacities
+#endif
+        }
+    }
+#endif
+    
+    
 #ifdef RADTRANSFER
     /* generic sub routines for gas as a source term */
     if((1 << P[i].Type) & (RT_SOURCES)) // check if the particle falls into one of the allowed source types
     {
         if(P[i].Type == 0)
         {
-            if(sigma_0<0) {return 1;} active_check=1; // active //
+            if(mode<0) {return 1;} active_check=1; // active //
             rt_get_lum_gas(i,lum); /* optionally re-distributes cooling flux as a blackbody */
-            int k; for(k=0;k<N_RT_FREQ_BINS;k++) {lum[k] += SphP[i].Je[k];}        
+            int k; for(k=0;k<N_RT_FREQ_BINS;k++) {lum[k] += SphP[i].Rad_Je[k];}        
         }
     }
 #endif
@@ -265,9 +276,17 @@ int rt_get_source_luminosity(int i, double sigma_0, double *lum)
 /***********************************************************************************************************/
 double rt_kappa(int i, int k_freq)
 {
+
+#if defined(RT_OPACITY_FROM_EXPLICIT_GRAINS)
+#ifdef GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION /* special test problem implementation */
+    return 1*SphP[i].Interpolated_Opacity[k_freq] + 0.001 * All.Dust_to_Gas_Mass_Ratio * 0.75*GRAIN_RDI_TESTPROBLEM_Q_AT_GRAIN_MAX/All.Grain_Size_Max; /* enforce minimum */
+#endif
+    return MIN_REAL_NUMBER + SphP[i].Interpolated_Opacity[k_freq]; /* this is calculated in a different routine, just return it now */
+#endif
+
 #ifdef RT_CHEM_PHOTOION
     /* opacity to ionizing radiation for Petkova & Springel bands. note rt_update_chemistry is where ionization is actually calculated */
-    double nH_over_Density = HYDROGEN_MASSFRAC / PROTONMASS * All.UnitMass_in_g / All.HubbleParam;
+    double nH_over_Density = HYDROGEN_MASSFRAC / PROTONMASS * UNIT_MASS_IN_CGS;
     double kappa = nH_over_Density * (SphP[i].HI + MIN_REAL_NUMBER) * rt_sigma_HI[k_freq];
 #if defined(RT_CHEM_PHOTOION_HE) && defined(RT_PHOTOION_MULTIFREQUENCY)
     kappa += nH_over_Density * ((SphP[i].HeI + MIN_REAL_NUMBER) * rt_sigma_HeI[k_freq] + (SphP[i].HeII + MIN_REAL_NUMBER) * rt_sigma_HeII[k_freq]);
@@ -279,15 +298,15 @@ double rt_kappa(int i, int k_freq)
 #endif
 
 #if defined(RT_HARD_XRAY) || defined(RT_SOFT_XRAY) || defined(RT_PHOTOELECTRIC) || defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(RT_NUV) || defined(RT_OPTICAL_NIR) || defined(RT_LYMAN_WERNER) || defined(RT_INFRARED) || defined(RT_FREEFREE)
-    double fac = All.UnitMass_in_g * All.HubbleParam / (All.UnitLength_in_cm * All.UnitLength_in_cm); /* units */
-    double Zfac = 1.0; // assume solar metallicity 
+    double fac = UNIT_SURFDEN_IN_CGS, Zfac; /* units */
+    Zfac = 1.0; // assume solar metallicity 
 #ifdef METALS
     Zfac = P[i].Metallicity[0]/All.SolarAbundances[0];
 #endif
 #ifdef RT_FREEFREE /* pure (grey, non-relativistic) Thompson scattering opacity + free-free absorption opacity */
     if(k_freq==RT_FREQ_BIN_FREEFREE)
     {
-        double T_eff=0.59*(GAMMA(i)-1.)*U_TO_TEMP_UNITS*SphP[i].InternalEnergyPred, rho=SphP[i].Density*All.cf_a3inv*All.UnitDensity_in_cgs*All.HubbleParam*All.HubbleParam; // we're assuming fully-ionized gas with a simple equation-of-state here, nothing fancy, to get the temperature //
+        double T_eff=0.59*(GAMMA(i)-1.)*U_TO_TEMP_UNITS*SphP[i].InternalEnergyPred, rho=SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_CGS; // we're assuming fully-ionized gas with a simple equation-of-state here, nothing fancy, to get the temperature //
         double kappa_abs = 1.e30*rho*pow(T_eff,-3.5);
         return (0.35 + kappa_abs) * fac;
     }
@@ -359,7 +378,9 @@ double rt_kappa(int i, int k_freq)
             if(dx_excess > 0) {kappa *= exp(0.57*dx_excess);} // assumes kappa scales linearly with temperature (1/lambda) above maximum in fit; pretty good approximation //
             kappa *= Zfac; // the above are all dust opacities, so they scale with metallicity
         }
+#ifdef COOLING
         kappa += 0.35 * SphP[i].Ne; // Thompson scattering
+#endif
         return kappa * fac; // convert units and return
     }
 #endif
@@ -378,6 +399,14 @@ double rt_kappa(int i, int k_freq)
 /***********************************************************************************************************/
 double rt_absorb_frac_albedo(int i, int k_freq)
 {
+#if defined(RT_OPACITY_FROM_EXPLICIT_GRAINS)
+#ifdef GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION
+    return DMAX(1.e-6,DMIN(1.0-1.e-6,(1.0*GRAIN_RDI_TESTPROBLEM_SET_ABSFRAC)));
+#endif
+    return 0.5; /* appropriate for single-scattering (e.g. ISM dust at optical wavelengths) */
+    //return 1.-1.e-6; /* appropriate for multiple-scattering at far-IR (wavelength much longer than dust size) */
+#endif
+
 #ifdef RT_CHEM_PHOTOION
     if(k_freq==RT_FREQ_BIN_H0)  {return 1.-1.e-6;} /* negligible scattering for ionizing radiation */
 #if defined(RT_CHEM_PHOTOION_HE) && defined(RT_PHOTOION_MULTIFREQUENCY)
@@ -386,7 +415,7 @@ double rt_absorb_frac_albedo(int i, int k_freq)
 #endif
 
 #if defined(RT_HARD_XRAY) || defined(RT_SOFT_XRAY) || defined(RT_INFRARED) /* these have mixed opacities from dust(assume albedo=1/2), ionization(albedo=0), and Thompson (albedo=1) */
-    double fac=All.UnitMass_in_g * All.HubbleParam / (All.UnitLength_in_cm * All.UnitLength_in_cm); /* units */
+    double fac; fac = UNIT_SURFDEN_IN_CGS; /* units */
 #ifdef RT_HARD_XRAY /* opacity comes from H+He (Thompson) + metal ions -- assume 0 scattering from ions, 1 from Thompson */
     if(k_freq==RT_FREQ_BIN_HARD_XRAY) {return 1.-0.5*(0. + DMIN(1.,0.35*fac/rt_kappa(i,k_freq)));}
 #endif
@@ -394,21 +423,27 @@ double rt_absorb_frac_albedo(int i, int k_freq)
     if(k_freq==RT_FREQ_BIN_SOFT_XRAY) {return 1.-0.5*(0. + DMIN(1.,0.35*fac/rt_kappa(i,k_freq)));}
 #endif
 #ifdef RT_INFRARED /* opacity comes from Thompson + dust -- assume 0.5/(1 + (Trad/725K)^(-2)) scattering from dust [Rayleigh, since we're in the long-wavelength limit by definition here], 1 from Thompson */
-    if(k_freq==RT_FREQ_BIN_INFRARED) {return (1.-0.5/(1.+((725.*725.)/(1.+SphP[i].Radiation_Temperature*SphP[i].Radiation_Temperature))))*(1.-DMIN(1.,0.35*SphP[i].Ne*fac/rt_kappa(i,k_freq)));}
+    if(k_freq==RT_FREQ_BIN_INFRARED)
+    {
+        double fA_tmp = (1.-0.5/(1.+((725.*725.)/(1.+SphP[i].Radiation_Temperature*SphP[i].Radiation_Temperature))));
+#ifdef COOLING
+        fA_tmp *= (1.-DMIN(1.,0.35*SphP[i].Ne*fac/rt_kappa(i,k_freq)));
+#endif
+        return fA_tmp;
+    }
 #endif
 #endif
     
 #ifdef RT_FREEFREE
     if(k_freq==RT_FREQ_BIN_FREEFREE)
     {
-        double T_eff=0.59*(GAMMA(i)-1.)*U_TO_TEMP_UNITS*SphP[i].InternalEnergyPred, rho=SphP[i].Density*All.cf_a3inv*All.UnitDensity_in_cgs*All.HubbleParam*All.HubbleParam, kappa_abs = 1.e30*rho*pow(T_eff,-3.5);
+        double T_eff=0.59*(GAMMA(i)-1.)*U_TO_TEMP_UNITS*SphP[i].InternalEnergyPred, rho=SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_CGS, kappa_abs = 1.e30*rho*pow(T_eff,-3.5);
         return kappa_abs / (0.35 + kappa_abs);
     }
 #endif
     
     return 0.5; /* default to assuming kappa_scattering = kappa_absorption (pretty reasonable for dust at most wavelengths) */
 }
-
 
 
 
@@ -452,35 +487,32 @@ double rt_absorption_rate(int i, int k_freq)
 /***********************************************************************************************************/
 double rt_diffusion_coefficient(int i, int k_freq)
 {
-    double coeff = C_LIGHT_CODE_REDUCED / (1.e-45 + SphP[i].Kappa_RT[k_freq] * SphP[i].Density*All.cf_a3inv);
-#ifdef RT_FLUXLIMITER
-    coeff *= SphP[i].Lambda_FluxLim[k_freq]; // apply flux-limiter
-#endif
-    return coeff;
+    return return_flux_limiter(i,k_freq) * C_LIGHT_CODE_REDUCED / (1.e-45 + SphP[i].Rad_Kappa[k_freq] * SphP[i].Density*All.cf_a3inv);
 }
 
 
 
 /***********************************************************************************************************/
-/* calculate the eddington tensor according to the M1 formalism (for use with that solver, obviously) */
+/* calculate the eddington tensor according to the different closure option[s] adopted */
 /***********************************************************************************************************/
 void rt_eddington_update_calculation(int j)
 {
+#ifdef RT_OTVET
+    return; /* eddington tensor is calculated elsewhere [in the gravity subroutine]: don't mess with it here! */
+#endif
 #ifdef RT_M1
-    int k_freq, k;
-    double c_light = C_LIGHT_CODE_REDUCED;
-    double n_flux_j[3], fmag_j, V_j_inv = SphP[j].Density / P[j].Mass;
+    /* calculate the eddington tensor with the M1 closure */
+    int k_freq, k; double c_light = C_LIGHT_CODE_REDUCED, n_flux_j[3], fmag_j, V_j_inv = SphP[j].Density / P[j].Mass;
     for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++)
     {
         n_flux_j[0]=n_flux_j[1]=n_flux_j[2]=0;
-        double flux_vol[3]; for(k=0;k<3;k++) {flux_vol[k] = SphP[j].Flux[k_freq][k] * V_j_inv;}
+        double flux_vol[3]; for(k=0;k<3;k++) {flux_vol[k] = SphP[j].Rad_Flux[k_freq][k] * V_j_inv;}
         fmag_j = 0; for(k=0;k<3;k++) {fmag_j += flux_vol[k]*flux_vol[k];}
         if(fmag_j <= 0) {fmag_j=0;} else {fmag_j=sqrt(fmag_j); for(k=0;k<3;k++) {n_flux_j[k]=flux_vol[k]/fmag_j;}}
-        double f_chifac = fmag_j / (MIN_REAL_NUMBER + c_light * SphP[j].E_gamma[k_freq] * V_j_inv);
+        double f_chifac = fmag_j / (MIN_REAL_NUMBER + c_light * SphP[j].Rad_E_gamma[k_freq] * V_j_inv);
         if(f_chifac < 0) {f_chifac=0;}
         if(fmag_j <= 0) {f_chifac = 0;}
-        // restrict values of f_chifac to physical range.  
-        //   [optional, not here]: impose additional condition: if optically thick locally, use isotropic tensor
+        // restrict values of f_chifac to physical range.
         double f_min = 0.01, f_max = 0.99;
         if((f_chifac < f_min) || (isnan(f_chifac))) {f_chifac = f_min;}
         if(f_chifac > f_max) {f_chifac = f_max;}
@@ -489,6 +521,7 @@ void rt_eddington_update_calculation(int j)
         double chifac_n_j = 0.5 * (3.*chi_j-1.);
         for(k=0;k<6;k++)
         {
+            SphP[j].ET[k_freq][k] = 0;
             if(k<3)
             {
                 SphP[j].ET[k_freq][k] = chifac_iso_j + chifac_n_j * n_flux_j[k]*n_flux_j[k];
@@ -499,9 +532,46 @@ void rt_eddington_update_calculation(int j)
             }
         }
     }
+    return;
 #endif
+#ifdef RT_FLUXLIMITEDDIFFUSION
+    /* always assume the isotropic eddington tensor */
+    int k_freq; for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++) {SphP[j].ET[k_freq][0]=SphP[j].ET[k_freq][1]=SphP[j].ET[k_freq][2]=1./3.; SphP[j].ET[k_freq][3]=SphP[j].ET[k_freq][4]=SphP[j].ET[k_freq][5]=0;}
+    return;
+#endif
+    
+    /* if nothing is set, default to guess the isotropic eddington tensor */
+    {int k_freq; for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++) {SphP[j].ET[k_freq][0]=SphP[j].ET[k_freq][1]=SphP[j].ET[k_freq][2]=1./3.; SphP[j].ET[k_freq][3]=SphP[j].ET[k_freq][4]=SphP[j].ET[k_freq][5]=0;}}
+    return;
 }
 
+
+/***********************************************************************************************************/
+/*! simple subroutine to compute the dot product of the symmetric Eddington tensor ET=D with a
+    vector v=vec_in, returning u=vec_out as u=D.v. Here u[0,1,2]=u[x,y,z], and
+    D[0]=xx,D[1]=yy,D[2]=zz,D[3]=xy,D[4]=yz,D[5]=xz components of ET following our convention */
+/***********************************************************************************************************/
+void eddington_tensor_dot_vector(double ET[6], double vec_in[3], double vec_out[3])
+{
+    vec_out[0] = vec_in[0]*ET[0] + vec_in[1]*ET[3] + vec_in[2]*ET[5];
+    vec_out[1] = vec_in[0]*ET[3] + vec_in[1]*ET[1] + vec_in[2]*ET[4];
+    vec_out[2] = vec_in[0]*ET[5] + vec_in[1]*ET[4] + vec_in[2]*ET[2];
+    return;
+}
+
+
+
+
+/***********************************************************************************************************/
+/*! return the value of the flux-limiter function, as needed */
+/***********************************************************************************************************/
+double return_flux_limiter(int target, int k_freq)
+{
+#ifdef RT_FLUXLIMITER
+    return SphP[target].Rad_Flux_Limiter[k_freq]; // apply flux-limiter
+#endif
+    return 1;
+}
 
 
 
@@ -519,16 +589,15 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
 #if defined(RT_EVOLVE_ENERGY) || defined(RT_EVOLVE_INTENSITIES)
     int kf, k_tmp; double total_erad_emission_minus_absorption = 0;
 #if defined(RT_EVOLVE_INTENSITIES)
-    for(kf=0;kf<N_RT_FREQ_BINS;kf++) {SphP[i].E_gamma[kf]=0; for(k_tmp=0;k_tmp<N_RT_INTENSITY_BINS;k_tmp++) {SphP[i].E_gamma[kf]+=RT_INTENSITY_BINS_DOMEGA*SphP[i].Intensity[kf][k_tmp];}}
+    for(kf=0;kf<N_RT_FREQ_BINS;kf++) {SphP[i].Rad_E_gamma[kf]=0; for(k_tmp=0;k_tmp<N_RT_INTENSITY_BINS;k_tmp++) {SphP[i].Rad_E_gamma[kf]+=RT_INTENSITY_BINS_DOMEGA*SphP[i].Rad_Intensity[kf][k_tmp];}}
     double de_emission_minus_absorption_saved[N_RT_FREQ_BINS][N_RT_INTENSITY_BINS]; // save this for use below
 #endif
 #ifdef RT_INFRARED
     double E_abs_tot = 0;/* energy absorbed in other bands is transfered to IR, by default: track it here */
-    double c_light = C_LIGHT_CODE, c_light_reduced = C_LIGHT_CODE_REDUCED;
-    double E_gamma_tot = 0; // dust temperature defined by total radiation energy density //
-    {int j; for(j=0;j<N_RT_FREQ_BINS;j++) {E_gamma_tot += SphP[i].E_gamma[j];}}
-    double u_gamma = E_gamma_tot * (SphP[i].Density*All.cf_a3inv/P[i].Mass) * All.UnitPressure_in_cgs * All.HubbleParam*All.HubbleParam; // photon energy density in CGS //
-    double Dust_Temperature_4 = All.UnitVelocity_in_cm_per_s * c_light_reduced * u_gamma / (4. * 5.67e-5); // estimated effective temperature of local rad field in equilibrium with dust emission //
+    double Rad_E_gamma_tot = 0; // dust temperature defined by total radiation energy density //
+    {int j; for(j=0;j<N_RT_FREQ_BINS;j++) {Rad_E_gamma_tot += SphP[i].Rad_E_gamma[j];}}
+    double u_gamma = Rad_E_gamma_tot * (SphP[i].Density*All.cf_a3inv/P[i].Mass) * UNIT_PRESSURE_IN_CGS; // photon energy density in CGS //
+    double Dust_Temperature_4 = C_LIGHT_CODE_REDUCED*UNIT_VEL_IN_CGS * u_gamma / (4. * 5.67e-5); // estimated effective temperature of local rad field in equilibrium with dust emission //
     SphP[i].Dust_Temperature = sqrt(sqrt(Dust_Temperature_4));
     double T_min = get_min_allowed_dustIRrad_temperature();
     if(SphP[i].Dust_Temperature <= T_min) {SphP[i].Dust_Temperature = T_min;} // dust temperature shouldn't be below CMB
@@ -546,13 +615,13 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
             kf = k_tmp; // normal loop
             double e0, dt_e_gamma_band=0, total_de_dt=0, a0 = -rt_absorption_rate(i,kf);
 #if defined(RT_EVOLVE_INTENSITIES)
-            if(mode==0) {e0 = RT_INTENSITY_BINS_DOMEGA*SphP[i].Intensity[kf][k_angle];} else {e0 = RT_INTENSITY_BINS_DOMEGA*SphP[i].Intensity_Pred[kf][k_angle];}
-            dt_e_gamma_band = RT_INTENSITY_BINS_DOMEGA*SphP[i].Dt_Intensity[kf][k_angle];
+            if(mode==0) {e0 = RT_INTENSITY_BINS_DOMEGA*SphP[i].Rad_Intensity[kf][k_angle];} else {e0 = RT_INTENSITY_BINS_DOMEGA*SphP[i].Rad_Intensity_Pred[kf][k_angle];}
+            dt_e_gamma_band = RT_INTENSITY_BINS_DOMEGA*SphP[i].Dt_Rad_Intensity[kf][k_angle];
 #else
-            if(mode==0) {e0 = SphP[i].E_gamma[kf];} else {e0 = SphP[i].E_gamma_Pred[kf];}
-            dt_e_gamma_band = SphP[i].Dt_E_gamma[kf];
+            if(mode==0) {e0 = SphP[i].Rad_E_gamma[kf];} else {e0 = SphP[i].Rad_E_gamma_Pred[kf];}
+            dt_e_gamma_band = SphP[i].Dt_Rad_E_gamma[kf];
 #endif
-            total_de_dt = SphP[i].Je[kf] + dt_e_gamma_band;
+            total_de_dt = SphP[i].Rad_Je[kf] + dt_e_gamma_band;
 
 #ifdef RT_INFRARED
             if(kf == RT_FREQ_BIN_INFRARED)
@@ -561,7 +630,7 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
                 {
                     // advected radiation changes temperature of radiation field, before absorption //
                     double dE_fac = dt_e_gamma_band * dt_entr; // change in energy from advection
-                    double dTE_fac = SphP[i].Dt_E_gamma_T_weighted_IR * dt_entr; // T-weighted change from advection
+                    double dTE_fac = SphP[i].Dt_Rad_E_gamma_T_weighted_IR * dt_entr; // T-weighted change from advection
                     double dE_abs = -e0 * (1. - exp(a0*dt_entr)); // change in energy from absorption
                     double rfac=1; if(dE_fac < -0.5*(e0+dE_abs)) {rfac=fabs(0.5*(e0+dE_abs))/fabs(dE_fac);} else {if(dE_fac > 0.5*e0) {rfac=0.5*e0/dE_fac;}}
                     dE_fac*=rfac; dTE_fac*=rfac; // limit temperature change from advection to prevent spurious divergences
@@ -571,12 +640,12 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
                     SphP[i].Radiation_Temperature = DMIN(SphP[i].Radiation_Temperature, T_max);
                     a0 = -rt_absorption_rate(i,kf); // update absorption rate using the new radiation temperature //
                 }
-                double total_emission_rate = E_abs_tot + fabs(a0)*e0 + SphP[i].Je[kf]; // add the summed absorption as emissivity here //
-                total_de_dt = E_abs_tot + SphP[i].Je[kf] + dt_e_gamma_band;
+                double total_emission_rate = E_abs_tot + fabs(a0)*e0 + SphP[i].Rad_Je[kf]; // add the summed absorption as emissivity here //
+                total_de_dt = E_abs_tot + SphP[i].Rad_Je[kf] + dt_e_gamma_band;
                 if(fabs(a0)>0)
                 {
-                    Dust_Temperature_4 = total_emission_rate * (SphP[i].Density*All.cf_a3inv/P[i].Mass) / (4. * (MIN_REAL_NUMBER + fabs(a0)) / c_light_reduced); // flux units
-                    Dust_Temperature_4 *= (All.UnitPressure_in_cgs * All.HubbleParam * All.HubbleParam * All.UnitVelocity_in_cm_per_s) / (5.67e-5); // convert to cgs
+                    Dust_Temperature_4 = total_emission_rate * (SphP[i].Density*All.cf_a3inv/P[i].Mass) / (4. * (MIN_REAL_NUMBER + fabs(a0)) / C_LIGHT_CODE_REDUCED); // flux units
+                    Dust_Temperature_4 *= UNIT_FLUX_IN_CGS / (5.67e-5); // convert to cgs
                     SphP[i].Dust_Temperature = sqrt(sqrt(Dust_Temperature_4));
                     if(SphP[i].Dust_Temperature < T_min) {SphP[i].Dust_Temperature = T_min;} // dust temperature shouldn't be below CMB
                 }
@@ -610,27 +679,24 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
             double de_emission_minus_absorption = (ef - (e0 + dt_e_gamma_band * dt_entr)); // total change, relative to what we would get with just advection (positive = net energy increase in the gas)
             if((dt_entr <= 0) || (de_abs <= 0)) {de_abs = 0;}
             
-#if defined(RT_RAD_PRESSURE_FORCES) && defined(RT_COMPGRAD_EDDINGTON_TENSOR) && !defined(RT_EVOLVE_FLUX)
+#if defined(RT_RAD_PRESSURE_FORCES) && defined(RT_COMPGRAD_EDDINGTON_TENSOR) && !defined(RT_EVOLVE_FLUX) && !defined(RT_RADPRESSURE_IN_HYDRO)
             // for OTVET/FLD methods, need to apply radiation pressure term here so can limit this b/c just based on a gradient which is not flux-limited [as in hydro operators] //
             {
                 double radacc[3]={0}, rmag=0, vel_i[3], L_particle = Get_Particle_Size(i)*All.cf_atime; // particle effective size/slab thickness
                 double Sigma_particle = P[i].Mass / (M_PI*L_particle*L_particle); // effective surface density through particle
-                double abs_per_kappa_dt = c_light_reduced * (SphP[i].Density*All.cf_a3inv) * dt_entr; // fractional absorption over timestep
+                double abs_per_kappa_dt = C_LIGHT_CODE_REDUCED * (SphP[i].Density*All.cf_a3inv) * dt_entr; // fractional absorption over timestep
                 double f_kappa_abs = rt_absorb_frac_albedo(i,kf); // get albedo, we'll need this below
-                double slabfac_rp = slab_averaging_function(f_kappa_abs*SphP[i].Kappa_RT[kf]*Sigma_particle) * slab_averaging_function(f_kappa_abs*SphP[i].Kappa_RT[kf]*abs_per_kappa_dt); // reduction factor for absorption over dt
+                double slabfac_rp = slab_averaging_function(f_kappa_abs*SphP[i].Rad_Kappa[kf]*Sigma_particle) * slab_averaging_function(f_kappa_abs*SphP[i].Rad_Kappa[kf]*abs_per_kappa_dt); // reduction factor for absorption over dt
                 int kx; for(kx=0;kx<3;kx++)
                 {
-                    radacc[kx] = -dt_entr * slabfac_rp * (SphP[i].Gradients.E_gamma_ET[kf][kx] / SphP[i].Density) / All.cf_atime; // naive radiation-pressure calc for FLD methods [physical units]
-#ifdef RT_FLUXLIMITER
-                    radacc[kx] *= SphP[i].Lambda_FluxLim[kf]; // apply flux-limiter
-#endif
+                    radacc[kx] = -dt_entr * slabfac_rp * return_flux_limiter(i,kf) * (SphP[i].Gradients.Rad_E_gamma_ET[kf][kx] / SphP[i].Density) / All.cf_atime; // naive radiation-pressure calc for FLD methods [physical units]
                     rmag += radacc[kx]*radacc[kx]; // compute magnitude
                     if(mode==0) {vel_i[kx]=P[i].Vel[kx]/All.cf_atime;} else {vel_i[kx]=SphP[i].VelPred[kx]/All.cf_atime;}
                 }
                 if(rmag > 0)
                 {
                     rmag = sqrt(rmag); for(kx=0;kx<3;kx++) {radacc[kx] /= rmag;} // normalize
-                    double rmag_max = de_abs / (P[i].Mass * c_light_reduced * (MIN_REAL_NUMBER + f_kappa_abs)); // limit magnitude to absorbed photon momentum
+                    double rmag_max = de_abs / (P[i].Mass * C_LIGHT_CODE_REDUCED * (MIN_REAL_NUMBER + f_kappa_abs)); // limit magnitude to absorbed photon momentum
                     if(rmag > rmag_max) {rmag=rmag_max;}
 #if defined(RT_ENABLE_R15_GRADIENTFIX)
                     rmag = rmag_max; // set to maximum (optically thin limit)
@@ -645,9 +711,9 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
                     double d_egy_rad = (2.*f_kappa_abs-1.)*work_band , d_egy_int = -2.*f_kappa_abs*work_band;
                     if(mode==0) {SphP[i].InternalEnergy += d_egy_int;} else {SphP[i].InternalEnergyPred += d_egy_int;}
 #if defined(RT_EVOLVE_INTENSITIES)
-                    {int k_q; for(k_q=0;k_q<N_RT_INTENSITY_BINS;k_q++) {if(mode==0) {SphP[i].Intensity[kf][k_q]+=d_egy_rad/RT_INTENSITY_BINS_DOMEGA;} else {SphP[i].Intensity_Pred[kf][k_q]+=d_egy_rad/RT_INTENSITY_BINS_DOMEGA;}}}
+                    {int k_q; for(k_q=0;k_q<N_RT_INTENSITY_BINS;k_q++) {if(mode==0) {SphP[i].Rad_Intensity[kf][k_q]+=d_egy_rad/RT_INTENSITY_BINS_DOMEGA;} else {SphP[i].Rad_Intensity_Pred[kf][k_q]+=d_egy_rad/RT_INTENSITY_BINS_DOMEGA;}}}
 #else
-                    if(mode==0) {SphP[i].E_gamma[kf]+=d_egy_rad;} else {SphP[i].E_gamma_Pred[kf]+=d_egy_rad;}
+                    if(mode==0) {SphP[i].Rad_E_gamma[kf]+=d_egy_rad;} else {SphP[i].Rad_E_gamma_Pred[kf]+=d_egy_rad;}
 #endif
                 }
             }
@@ -679,40 +745,46 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
 #endif
             // isotropically re-emit the donated radiation into the target bin[s] //
 #if defined(RT_EVOLVE_INTENSITIES)
-            if(donation_target_bin >= 0) {int k_q; for(k_q=0;k_q<N_RT_INTENSITY_BINS;k_q++) {if(mode==0) {SphP[i].Intensity[donation_target_bin][k_q] += de_abs/RT_INTENSITY_BINS_DOMEGA;} else {SphP[i].Intensity_Pred[donation_target_bin][k_q] += de_abs/RT_INTENSITY_BINS_DOMEGA;}}}
+            if(donation_target_bin >= 0) {int k_q; for(k_q=0;k_q<N_RT_INTENSITY_BINS;k_q++) {if(mode==0) {SphP[i].Rad_Intensity[donation_target_bin][k_q] += de_abs/RT_INTENSITY_BINS_DOMEGA;} else {SphP[i].Rad_Intensity_Pred[donation_target_bin][k_q] += de_abs/RT_INTENSITY_BINS_DOMEGA;}}}
             if((ef < 0)||(isnan(ef))) {ef=0;}
-            if(mode==0) {SphP[i].Intensity[kf][k_angle] = ef/RT_INTENSITY_BINS_DOMEGA;} else {SphP[i].Intensity_Pred[kf][k_angle] = ef/RT_INTENSITY_BINS_DOMEGA;}
+            if(mode==0) {SphP[i].Rad_Intensity[kf][k_angle] = ef/RT_INTENSITY_BINS_DOMEGA;} else {SphP[i].Rad_Intensity_Pred[kf][k_angle] = ef/RT_INTENSITY_BINS_DOMEGA;}
 #else
-            if(donation_target_bin >= 0) {if(mode==0) {SphP[i].E_gamma[donation_target_bin] += de_abs;} else {SphP[i].E_gamma_Pred[donation_target_bin] += de_abs;}}
+            if(donation_target_bin >= 0) {if(mode==0) {SphP[i].Rad_E_gamma[donation_target_bin] += de_abs;} else {SphP[i].Rad_E_gamma_Pred[donation_target_bin] += de_abs;}}
             if((ef < 0)||(isnan(ef))) {ef=0;}
-            if(mode==0) {SphP[i].E_gamma[kf] = ef;} else {SphP[i].E_gamma_Pred[kf] = ef;}
+            if(mode==0) {SphP[i].Rad_E_gamma[kf] = ef;} else {SphP[i].Rad_E_gamma_Pred[kf] = ef;}
 #endif
 
 #if defined(RT_EVOLVE_FLUX)
-            int k_dir; double f_mag=0, rho=SphP[i].Density*All.cf_a3inv, e_mid=0.5*(e0+ef), vdot_h[3], vel_i[3], DeltaFluxEff[3]; // use energy density averaged over this update for the operation below
+            int k_dir; double f_mag=0, E_rad_forflux=0, vdot_h[3]={0}, vel_i[3]={0}, DeltaFluxEff[3]={0}, rho=SphP[i].Density*All.cf_a3inv; E_rad_forflux=0.5*(e0+ef); // use energy density averaged over this update for the operation below
             for(k_dir=0;k_dir<3;k_dir++) {if(mode==0) {vel_i[k_dir]=P[i].Vel[k_dir]/All.cf_atime;} else {vel_i[k_dir]=SphP[i].VelPred[k_dir]/All.cf_atime;}} // need gas velocity at this time
-            double teqm_inv=SphP[i].Kappa_RT[kf]*rho*C_LIGHT_CODE_REDUCED, etoflux=e_mid*teqm_inv; // physical code units of 1/time, defines characteristic timescale for coming to equilibrium flux. see notes for CR second-order module for details. //
-            for(k_dir=0;k_dir<3;k_dir++) {vdot_h[k_dir]=vel_i[k_dir]*etoflux*(1. + SphP[i].ET[kf][k_dir]);} // calculate volume integral of scattering coefficient t_inv * (gas_vel . [e_rad*I + P_rad_tensor]), which gives an additional time-derivative term //
-            vdot_h[0]+=etoflux*(vel_i[1]*SphP[i].ET[kf][3]+vel_i[2]*SphP[i].ET[kf][5]); vdot_h[1]+=etoflux*(vel_i[0]*SphP[i].ET[kf][3]+vel_i[2]*SphP[i].ET[kf][4]); vdot_h[2]+=etoflux*(vel_i[0]*SphP[i].ET[kf][5]+vel_i[1]*SphP[i].ET[kf][4]);
-            for(k_dir=0;k_dir<3;k_dir++) {DeltaFluxEff[k_dir] = (SphP[i].Dt_Flux[kf][k_dir] + vdot_h[k_dir]) * dt_entr;} // add the term from the neighbor computation to this term
-            double tau=dt_entr*teqm_inv, f00=exp(-tau), f11=(1.-f00)/tau;
-            if(tau > 0)
+            double teqm_inv = SphP[i].Rad_Kappa[kf] * rho * C_LIGHT_CODE_REDUCED + MIN_REAL_NUMBER; // physical code units of 1/time, defines characteristic timescale for coming to equilibrium flux. see notes for CR second-order module for details. //
+            eddington_tensor_dot_vector(SphP[i].ET[kf],vel_i,vdot_h); // calculate volume integral of scattering coefficient t_inv * (gas_vel . [e_rad*I + P_rad_tensor]), which gives an additional time-derivative term. this is the P term //
+            for(k_dir=0;k_dir<3;k_dir++) {vdot_h[k_dir] = E_rad_forflux * (vel_i[k_dir] + vdot_h[k_dir]);} // and this is the eI term, multiply both by radiation energy to use in this step //
+#ifdef RT_COMPGRAD_EDDINGTON_TENSOR
+            for(k_dir=0;k_dir<3;k_dir++) {DeltaFluxEff[k_dir] -= (P[i].Mass/rho) * (C_LIGHT_CODE_REDUCED*C_LIGHT_CODE_REDUCED/teqm_inv) * SphP[i].Gradients.Rad_E_gamma_ET[kf][k_dir];}
+#else
+            for(k_dir=0;k_dir<3;k_dir++) {DeltaFluxEff[k_dir] += (SphP[i].Dt_Rad_Flux[kf][k_dir]/teqm_inv);}
+#endif
+            for(k_dir=0;k_dir<3;k_dir++) {DeltaFluxEff[k_dir] += vdot_h[k_dir] * dt_entr;} // add the 'enthalpy advection' term here, vdot_h = Erad v.(e*I + P_rad)
+
+            double tau=dt_entr*teqm_inv, f00=exp(-tau), f11=1.-f00;
+            if(tau > 0 && isfinite(tau))
             {
-                if(tau <= 0.04) {f11=1.-0.5*tau+tau*tau/6.;} // some limits to prevent small/large number problems here
-                if(!isfinite(f00)) {f00=0.; f11=1./tau;} // some limits to prevent small/large number problems here
-                if(tau >= 20.) {f00=DMAX(0.,DMIN(2.e-9,f00)); f11=(1.-f00)/tau;} // some limits to prevent small/large number problems here
+                if(tau <= 0.04) {f11=tau-0.5*tau*tau+tau*tau*tau/6.; f00=1.-f11;} // some limits to prevent small/large number problems here
+                if(!isfinite(f00) || !isfinite(f11)) {f00=1.; f11=0.;} // some limits to prevent small/large number problems here
+                if(tau >= 20.) {f00=DMAX(0.,DMIN(1.e-11,f00)); f11=1.-f00;} // some limits to prevent small/large number problems here
                 for(k_dir=0;k_dir<3;k_dir++)
                 {
-                    double flux_0; if(mode==0) {flux_0 = SphP[i].Flux[kf][k_dir];} else {flux_0 = SphP[i].Flux_Pred[kf][k_dir];}
-                    flux_0 += vel_i[k_dir] * de_emission_minus_absorption; // add Lorentz term from net energy injected by absorption and re-emission
+                    double flux_0; if(mode==0) {flux_0 = SphP[i].Rad_Flux[kf][k_dir];} else {flux_0 = SphP[i].Rad_Flux_Pred[kf][k_dir];}
+                    flux_0 += vel_i[k_dir] * de_emission_minus_absorption; // add Lorentz term from net energy injected by absorption and re-emission (effectively, we operator-split this term and solve it -BEFORE- going to the next step)
                     double flux_f = flux_0 * f00 + DeltaFluxEff[k_dir] * f11; // exact solution for dE/dt = -E*abs + de , the 'reduction factor' appropriately suppresses the source term //
-                    if(mode==0) {SphP[i].Flux[kf][k_dir] = flux_f;} else {SphP[i].Flux_Pred[kf][k_dir] = flux_f;}
+                    if(mode==0) {SphP[i].Rad_Flux[kf][k_dir] = flux_f;} else {SphP[i].Rad_Flux_Pred[kf][k_dir] = flux_f;}
                     f_mag += flux_f*flux_f; // magnitude of flux vector
                 }
                 if(f_mag > 0) // limit the flux according the physical (optically thin) maximum //
                 {
-                    f_mag=sqrt(f_mag); double fmag_max = 1.1 * C_LIGHT_CODE * ef; // maximum flux should be optically-thin limit: e_gamma/c: here allow some tolerance for numerical leapfrogging in timestepping. NOT the reduced RSOL here.
-                    if(f_mag > fmag_max) {for(k_dir=0;k_dir<3;k_dir++) {if(mode==0) {SphP[i].Flux[kf][k_dir] *= fmag_max/f_mag;} else {SphP[i].Flux_Pred[kf][k_dir] *= fmag_max/f_mag;}}}
+                    f_mag=sqrt(f_mag); double fmag_max = 1.0 * C_LIGHT_CODE * ef; // maximum flux should be optically-thin limit: e_gamma/c: here allow some tolerance for numerical leapfrogging in timestepping. NOT the reduced RSOL here.
+                    if(f_mag > fmag_max) {for(k_dir=0;k_dir<3;k_dir++) {if(mode==0) {SphP[i].Rad_Flux[kf][k_dir] *= fmag_max/f_mag;} else {SphP[i].Rad_Flux_Pred[kf][k_dir] *= fmag_max/f_mag;}}}
                 }
             }
 #endif
@@ -726,18 +798,18 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
 #if defined(RT_EVOLVE_INTENSITIES)
     for(kf=0;kf<N_RT_FREQ_BINS;kf++)
     {
-        int k,k_om; double rho=SphP[i].Density*All.cf_a3inv, ceff=C_LIGHT_CODE_REDUCED, teq_inv=SphP[i].Kappa_RT[kf]*rho*ceff, beta[3], f_a=rt_absorb_frac_albedo(i,kf), f_s=1.-f_a, b_dot_n[N_RT_INTENSITY_BINS]={0}, beta_2=0.;
+        int k,k_om; double rho=SphP[i].Density*All.cf_a3inv, ceff=C_LIGHT_CODE_REDUCED, teq_inv=SphP[i].Rad_Kappa[kf]*rho*ceff, beta[3], f_a=rt_absorb_frac_albedo(i,kf), f_s=1.-f_a, b_dot_n[N_RT_INTENSITY_BINS]={0}, beta_2=0.;
         int n_iter = 1 + (int)(DMIN(DMAX(4. , dt_entr/teq_inv), 1000.)); // number of iterations to subcycle everything below //
         double dt=dt_entr/n_iter, tau=dt*teq_inv, i0[N_RT_INTENSITY_BINS]={0}, invfourpi=1./(4.*M_PI), J, b_dot_H, b2_dot_K; int i_iter;
         for(i_iter=0; i_iter<n_iter; i_iter++)
         {
             double egy_0=0,flux_0[3]={0},egy_f=0,flux_f[3]={0}; // compute total change over sub-cycle, to update gas properties
             // load all the gas and intensity properties we need [all can change on the subcycle so some re-computing here]
-            for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {if(mode==0) {i0[k_om] = RT_INTENSITY_BINS_DOMEGA*SphP[i].Intensity[kf][k_om];} else {i0[k_om] = RT_INTENSITY_BINS_DOMEGA*SphP[i].Intensity_Pred[kf][k_om];}}
+            for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {if(mode==0) {i0[k_om] = RT_INTENSITY_BINS_DOMEGA*SphP[i].Rad_Intensity[kf][k_om];} else {i0[k_om] = RT_INTENSITY_BINS_DOMEGA*SphP[i].Rad_Intensity_Pred[kf][k_om];}}
             for(k=0;k<3;k++) {if(mode==0) {beta[k]=P[i].Vel[k]/(All.cf_atime*ceff);} else {beta[k]=SphP[i].VelPred[k]/(All.cf_atime*ceff);}} // need gas velocity at this time
-            for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {b_dot_n[k_om]=0; for(k=0;k<3;k++) {b_dot_n[k_om]+=All.RT_Intensity_Direction[k_om][k]*beta[k];}}
+            for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {b_dot_n[k_om]=0; for(k=0;k<3;k++) {b_dot_n[k_om]+=All.Rad_Intensity_Direction[k_om][k]*beta[k];}}
             beta_2=0; for(k=0;k<3;k++) {beta_2+=beta[k]*beta[k];}
-            for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {egy_0+=i0[k_om]; for(k=0;k<3;k++) {flux_0[k]+=All.RT_Intensity_Direction[k_om][k]*i0[k_om];}}
+            for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {egy_0+=i0[k_om]; for(k=0;k<3;k++) {flux_0[k]+=All.Rad_Intensity_Direction[k_om][k]*i0[k_om];}}
             J=0,b_dot_H=0,b2_dot_K=0; for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {J+=i0[k_om]*invfourpi; b_dot_H=b_dot_n[k_om]*i0[k_om]*invfourpi; b2_dot_K=b_dot_n[k_om]*b_dot_n[k_om]*i0[k_om]*invfourpi;}
 
             // isotropic terms that change total energy in bin (part of the 'work term' for the photon momentum)
@@ -757,7 +829,7 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
             for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {work=b_dot_n[k_om]*(f_a+f_s)*i0[k_om]; if((work>0) || (i0[k_om]<=0)) {i0[k_om]+=work;} else {i0[k_om]/=(1-work/i0[k_om]);}}
 
             // ok -now- calculate the net change in momentum and energy, for updating the gas quantities
-            for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {egy_f+=i0[k_om]; for(k=0;k<3;k++) {flux_f[k]+=All.RT_Intensity_Direction[k_om][k]*i0[k_om];}}
+            for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {egy_f+=i0[k_om]; for(k=0;k<3;k++) {flux_f[k]+=All.Rad_Intensity_Direction[k_om][k]*i0[k_om];}}
             double dv_gas[3]={0}, ke_gas_0=0, ke_gas_f=0, v0g=0, u0=0;
             for(k=0;k<3;k++) {dv_gas[k] = -(flux_f[k]-flux_0[k])/(ceff*P[i].Mass); v0g=ceff*beta[k]; ke_gas_0+=(v0g*v0g); ke_gas_f+=(v0g+dv_gas[k])*(v0g+dv_gas[k]);} // note everything is volume-integrated, accounted for above, and we defined flux for convience without the c, so just one power of c here.
             double d_ke_gas = 0.5*(ke_gas_f - ke_gas_0)*P[i].Mass, de_gas=-(egy_f-egy_0), de_gas_internal=(de_gas-d_ke_gas)/P[i].Mass;
@@ -767,8 +839,8 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
             // assign everything back to the appropriate variables after update
             for(k=0;k<3;k++) {if(mode==0) {P[i].Vel[k] += dv_gas[k]*All.cf_atime;} else {SphP[i].VelPred[k] += dv_gas[k]*All.cf_atime;}} // update gas velocities (radiation pressure forces here)
             if(mode==0) {SphP[i].InternalEnergy += de_gas_internal;} else {SphP[i].InternalEnergyPred += de_gas_internal;} // update gas internal energy (work terms, after subtracting kinetic energy changes)
-            for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {if(mode==0) {SphP[i].Intensity[kf][k_om] = i0[k_om]/RT_INTENSITY_BINS_DOMEGA;} else {SphP[i].Intensity_Pred[kf][k_om] = i0[k_om]/RT_INTENSITY_BINS_DOMEGA;}} // update intensities (all of the above)
-            SphP[i].E_gamma[kf]=egy_f; // set this every time this subroutine is called, so it is accessible everywhere else //
+            for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {if(mode==0) {SphP[i].Rad_Intensity[kf][k_om] = i0[k_om]/RT_INTENSITY_BINS_DOMEGA;} else {SphP[i].Rad_Intensity_Pred[kf][k_om] = i0[k_om]/RT_INTENSITY_BINS_DOMEGA;}} // update intensities (all of the above)
+            SphP[i].Rad_E_gamma[kf]=egy_f; // set this every time this subroutine is called, so it is accessible everywhere else //
         } // loop over iterations
     } // loop over frequencies
 #else
@@ -804,10 +876,10 @@ void rt_set_simple_inits(int RestartFlag)
 #ifdef RT_INFRARED
             SphP[i].Dust_Temperature = All.InitGasTemp; //get_min_allowed_dustIRrad_temperature(); // in K, floor = CMB temperature or 10K
             SphP[i].Radiation_Temperature = All.InitGasTemp; //SphP[i].Dust_Temperature;
-            SphP[i].Dt_E_gamma_T_weighted_IR = 0;
+            SphP[i].Dt_Rad_E_gamma_T_weighted_IR = 0;
 #endif
 #ifdef RT_RAD_PRESSURE_OUTPUT
-            for(k=0;k<3;k++) {SphP[i].RadAccel[k]=0;}
+            for(k=0;k<3;k++) {SphP[i].Rad_Accel[k]=0;}
 #endif
 #ifdef RT_CHEM_PHOTOION
             SphP[i].HII = MIN_REAL_NUMBER;
@@ -823,26 +895,35 @@ void rt_set_simple_inits(int RestartFlag)
 #endif
             for(k = 0; k < N_RT_FREQ_BINS; k++)
             {
-                if(RestartFlag==0) {SphP[i].E_gamma[k] = MIN_REAL_NUMBER;}
+                if(RestartFlag==0) {SphP[i].Rad_E_gamma[k] = MIN_REAL_NUMBER;}
                 SphP[i].ET[k][0]=SphP[i].ET[k][1]=SphP[i].ET[k][2]=1./3.; SphP[i].ET[k][3]=SphP[i].ET[k][4]=SphP[i].ET[k][5]=0;
-                SphP[i].Je[k] = 0;
-                SphP[i].Kappa_RT[k] = rt_kappa(i,k);
+                SphP[i].Rad_Je[k] = 0; SphP[i].Rad_Kappa[k] = rt_kappa(i,k);
 #ifdef RT_FLUXLIMITER
-                SphP[i].Lambda_FluxLim[k] = 1;
+                SphP[i].Rad_Flux_Limiter[k] = 1;
 #endif
 #ifdef RT_INFRARED
-                if(k==RT_FREQ_BIN_INFRARED) {SphP[i].E_gamma[RT_FREQ_BIN_INFRARED] = 5.67e-5 * 4 / (C_LIGHT * RT_SPEEDOFLIGHT_REDUCTION) * pow(All.InitGasTemp,4.) / All.UnitPressure_in_cgs * P[i].Mass / (SphP[i].Density*All.cf_a3inv);}
+                if(k==RT_FREQ_BIN_INFRARED) {SphP[i].Rad_E_gamma[RT_FREQ_BIN_INFRARED] = 5.67e-5 * 4 / (C_LIGHT * RT_SPEEDOFLIGHT_REDUCTION) * pow(All.InitGasTemp,4.) / UNIT_PRESSURE_IN_CGS * P[i].Mass / (SphP[i].Density*All.cf_a3inv);}
 #endif
 #ifdef RT_EVOLVE_ENERGY
-                SphP[i].E_gamma_Pred[k] = SphP[i].E_gamma[k];
-                SphP[i].Dt_E_gamma[k] = 0;
+                SphP[i].Rad_E_gamma_Pred[k] = SphP[i].Rad_E_gamma[k]; SphP[i].Dt_Rad_E_gamma[k] = 0;
 #endif
 #ifdef RT_EVOLVE_FLUX
-                int k_dir; for(k_dir=0;k_dir<3;k_dir++) {SphP[i].Flux_Pred[k][k_dir] = SphP[i].Flux[k][k_dir] = SphP[i].Dt_Flux[k][k_dir] = 0;}
+                int k_dir; for(k_dir=0;k_dir<3;k_dir++) {SphP[i].Rad_Flux_Pred[k][k_dir] = SphP[i].Rad_Flux[k][k_dir] = SphP[i].Dt_Rad_Flux[k][k_dir] = 0;}
 #endif
 #ifdef RT_EVOLVE_INTENSITIES
-                int k_dir; for(k_dir=0;k_dir<N_RT_INTENSITY_BINS;k_dir++) {SphP[i].Intensity_Pred[k][k_dir] = SphP[i].Intensity[k][k_dir] = MIN_REAL_NUMBER; SphP[i].Dt_Intensity[k][k_dir] = 0;}
+                int k_dir; for(k_dir=0;k_dir<N_RT_INTENSITY_BINS;k_dir++) {SphP[i].Rad_Intensity_Pred[k][k_dir] = SphP[i].Rad_Intensity[k][k_dir] = MIN_REAL_NUMBER; SphP[i].Dt_Rad_Intensity[k][k_dir] = 0;}
 #endif
+                
+#ifdef GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION
+                double q_a=0.75*GRAIN_RDI_TESTPROBLEM_Q_AT_GRAIN_MAX/All.Grain_Size_Max, e0=All.Vertical_Grain_Accel/q_a, kappa0=All.Dust_to_Gas_Mass_Ratio*q_a;
+                e0 *= (P[i].Mass/SphP[i].Density) * exp(-kappa0*(1.-exp(-P[i].Pos[2]))); // attenuate according to equilibrium expectation, if we're using single-scattering radiation pressure [otherwise comment this line out] //
+                SphP[i].Rad_E_gamma_Pred[k]=SphP[i].Rad_E_gamma[k]=e0;
+#if defined(RT_EVOLVE_FLUX)
+                SphP[i].Rad_Flux_Pred[k][2]=SphP[i].Rad_Flux[k][2] = e0*C_LIGHT_CODE_REDUCED;
+                SphP[i].Rad_Flux[k][0]=SphP[i].Rad_Flux[k][1]=SphP[i].Rad_Flux_Pred[k][0]=SphP[i].Rad_Flux_Pred[k][1]=0;
+#endif
+#endif
+                
             }
         }
     }
@@ -868,8 +949,8 @@ void rt_init_intensity_directions(void)
     int n_polar = RT_LOCALRAYGRID;
     if(n_polar < 1) {printf("Number of rays is invalid (<1). Terminating.\n"); endrun(5346343);}
 
-    double mu[n_polar]; int i,j,k,l,n=0,n_oct=n_polar*(n_polar+1)/2,n_tot=8*n_oct;
-    double Intensity_Direction_tmp[n_oct][3];
+    double mu[n_polar]; int i,j,k,l,n=0,n_oct=n_polar*(n_polar+1)/2;
+    double Rad_Intensity_Direction_tmp[n_oct][3];
     for(j=0;j<n_polar;j++) {mu[j] = sqrt( (j + 1./6.) / (n_polar - 1./2.) );}
     
     for(i=0;i<n_polar;i++)
@@ -877,7 +958,7 @@ void rt_init_intensity_directions(void)
         for(j=0;j<n_polar-i;j++)
         {
             k=n_polar-1-i-j;
-            Intensity_Direction_tmp[n][0]=mu[i]; Intensity_Direction_tmp[n][1]=mu[j]; Intensity_Direction_tmp[n][2]=mu[k];
+            Rad_Intensity_Direction_tmp[n][0]=mu[i]; Rad_Intensity_Direction_tmp[n][1]=mu[j]; Rad_Intensity_Direction_tmp[n][2]=mu[k];
             n++;
         }
     }
@@ -893,9 +974,9 @@ void rt_init_intensity_directions(void)
                 double sign_z = 1 - 2*k;
                 for(l=0;l<n_oct;l++)
                 {
-                    All.RT_Intensity_Direction[n][0] = Intensity_Direction_tmp[l][0] * sign_x;
-                    All.RT_Intensity_Direction[n][1] = Intensity_Direction_tmp[l][1] * sign_y;
-                    All.RT_Intensity_Direction[n][2] = Intensity_Direction_tmp[l][2] * sign_z;
+                    All.Rad_Intensity_Direction[n][0] = Rad_Intensity_Direction_tmp[l][0] * sign_x;
+                    All.Rad_Intensity_Direction[n][1] = Rad_Intensity_Direction_tmp[l][1] * sign_y;
+                    All.Rad_Intensity_Direction[n][2] = Rad_Intensity_Direction_tmp[l][2] * sign_z;
                     n++;
                 }
             }
@@ -913,8 +994,7 @@ void rt_get_lum_gas(int target, double *je)
 #ifdef RT_FREEFREE
     int k = RT_FREQ_BIN_FREEFREE;
     double t_eff = 0.59 * (GAMMA(target)-1.) * U_TO_TEMP_UNITS * SphP[target].InternalEnergyPred; // we're assuming fully-ionized gas with a simple equation-of-state here, nothing fancy, to get the temperature //
-    double flux_unit_fac = All.UnitEnergy_in_cgs / (All.UnitTime_in_s * (All.UnitLength_in_cm * All.UnitLength_in_cm)) * All.HubbleParam*All.HubbleParam; // needed for units conversion below //
-    je[k] = rt_absorb_frac_albedo(target,k) * rt_kappa(target,k) * P[target].Mass * ((4. * 5.67e-5) * t_eff*t_eff*t_eff*t_eff) / flux_unit_fac; // blackbody emissivity (Kirchoff's law): account for albedo [absorption opacity], and units //
+    je[k] = rt_absorb_frac_albedo(target,k) * rt_kappa(target,k) * P[target].Mass * ((4. * 5.67e-5) * t_eff*t_eff*t_eff*t_eff) / UNIT_FLUX_IN_CGS; // blackbody emissivity (Kirchoff's law): account for albedo [absorption opacity], and units //
 #endif
 }
 
@@ -944,23 +1024,20 @@ double get_min_allowed_dustIRrad_temperature(void)
 }
 
 /* return LambdaDust, the dust heating/cooling rate (>0 is heating, <0 is cooling) */
-double get_rt_ir_lambdadust_effective(double T, double rho, double *ne_guess, int target)
+double get_rt_ir_lambdadust_effective(double T, double rho, double *nH0_guess, double *ne_guess, int target)
 {
+#ifdef COOLING
     double Tdust_0 = SphP[target].Dust_Temperature; // dust temperature estimate from previous loop over radiation operators
     double LambdaDust_initial_guess = 1.116e-32 * (Tdust_0-T) * sqrt(T)*(1.-0.8*exp(-75./T)) * (P[target].Metallicity[0]/All.SolarAbundances[0]); // guess value based on the -current- values of T, Tdust //
         
     double egy_therm = SphP[target].InternalEnergyPred*P[target].Mass; // true internal energy (before this cooling loop)
-#ifdef RT_EVOLVE_ENERGY
-    double egy_rad = SphP[target].E_gamma_Pred[RT_FREQ_BIN_INFRARED]; // true radiation field energy (before this cooling loop)
-#else
-    double egy_rad = SphP[target].E_gamma[RT_FREQ_BIN_INFRARED]; // true radiation field energy (before this cooling loop) [prev-kicked is drifted by intensities]
-#endif
+    double egy_rad = SphP[target].Rad_E_gamma_Pred[RT_FREQ_BIN_INFRARED]; // true radiation field energy (before this cooling loop)
     double egy_tot = egy_rad + egy_therm; // true total energy [in code units]
     double nHcgs = HYDROGEN_MASSFRAC * rho / PROTONMASS;    // effective hydrogen number dens in cgs units (just for normalization convention)
     double volume = (P[target].Mass / (SphP[target].Density*All.cf_a3inv)); // particle volume in code units
-    double ratefact = (nHcgs*nHcgs) * volume / (All.UnitPressure_in_cgs*All.HubbleParam*All.HubbleParam / (All.UnitTime_in_s/All.HubbleParam)); // conversion b/t Lambda and du used by code
-    double Erad_to_T4_fac = RT_SPEEDOFLIGHT_REDUCTION * 1.32e14*(All.UnitPressure_in_cgs/All.HubbleParam) / volume; // conversion from absolute rad energy to T^4 units, used multiple places below, coefficient = cL_reduced/(4*sigma_B)
-    double Teff = get_mu(T, rho, ne_guess, target) * (GAMMA(target)-1.) * U_TO_TEMP_UNITS * (egy_tot / P[target].Mass); // convert from internal energy to temperature units for factor below
+    double ratefact = (nHcgs*nHcgs) * volume / (UNIT_PRESSURE_IN_CGS /UNIT_TIME_IN_CGS); // conversion b/t Lambda and du used by code
+    double Erad_to_T4_fac = RT_SPEEDOFLIGHT_REDUCTION * 1.32e14 * UNIT_PRESSURE_IN_CGS / volume; // conversion from absolute rad energy to T^4 units, used multiple places below, coefficient = cL_reduced/(4*sigma_B)
+    double Teff = Get_Gas_Mean_Molecular_Weight_mu(T, rho, nH0_guess, ne_guess, 0, target) * (GAMMA(target)-1.) * U_TO_TEMP_UNITS * (egy_tot / P[target].Mass); // convert from internal energy to temperature units for factor below
 
     double xf, a = Teff*Teff*Teff*Teff / (Erad_to_T4_fac*egy_tot); // dimensionless factors needed to solve for the equilibrium Tdust-Tgas relation
     if(a<0.2138) {xf=(1+19*a+132*a*a+418*a*a*a+580*a*a*a*a+243*a*a*a*a*a)/(1+20*a+148*a*a+508*a*a*a+796*a*a*a*a+432*a*a*a*a*a);} // eqm solution (power series approx)
@@ -976,8 +1053,9 @@ double get_rt_ir_lambdadust_effective(double T, double rho, double *ne_guess, in
     double lambda_eff = sign_term * L0_abs * xfac; // final effective cooling/heating rate
 
     SphP[target].Dust_Temperature = DMAX(pow(Erad_to_T4_fac*DMAX( 0., egy_rad - lambda_eff*ratefact*dt ), 0.25), get_min_allowed_dustIRrad_temperature()); // update dust temperature guess //
-    
     return lambda_eff;
+#endif
+    return 0;
 }
 
 #endif

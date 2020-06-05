@@ -201,10 +201,7 @@ int ags_density_evaluate(int target, int mode, int *exportflag, int *exportnodec
                             kernel.dv[1] = local.Vel[1] - P[j].Vel[1];
                             kernel.dv[2] = local.Vel[2] - P[j].Vel[2];
                         }
-#ifdef BOX_SHEARING
-                        if(local.Pos[0] - P[j].Pos[0] > +boxHalf_X) {kernel.dv[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;}
-                        if(local.Pos[0] - P[j].Pos[0] < -boxHalf_X) {kernel.dv[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;}
-#endif
+                        NGB_SHEARBOX_BOUNDARY_VELCORR_(local.Pos,P[j].Pos,kernel.dv,1); /* wrap velocities for shearing boxes if needed */
                         double v_dot_r = kernel.dp[0] * kernel.dv[0] + kernel.dp[1] * kernel.dv[1] + kernel.dp[2] * kernel.dv[2];
                         if(v_dot_r > 0) {v_dot_r *= 0.333333;} // receding elements don't signal strong change in forces in the same manner as approaching/converging particles
                         double vsig = 0.5 * fabs( fac_mu * v_dot_r / kernel.r );
@@ -556,13 +553,7 @@ void ags_density(void)
             } else {
                 PPPZ[i].AGS_zeta = 0; PPP[i].NumNgb = 0; PPP[i].AGS_Hsml = All.ForceSoftening[P[i].Type];
             }
-#ifdef PM_HIRES_REGION_CLIPPING
-            if(PPP[i].NumNgb <= 0) {P[i].Mass = 0;}
-            if((PPP[i].AGS_Hsml <= 0) || (PPP[i].AGS_Hsml >= PM_HIRES_REGION_CLIPPING)) {P[i].Mass = 0;}
-            double vmag=0; for(k=0;k<3;k++) {vmag+=P[i].Vel[k]*P[i].Vel[k];} vmag = sqrt(vmag);
-            if(vmag>5.e9*All.cf_atime/All.UnitVelocity_in_cm_per_s) {P[i].Mass=0;}
-            if(vmag>1.e9*All.cf_atime/All.UnitVelocity_in_cm_per_s) {for(k=0;k<3;k++) {P[i].Vel[k]*=(1.e9*All.cf_atime/All.UnitVelocity_in_cm_per_s)/vmag;}}
-#endif
+            apply_pm_hires_region_clipping_selection(i);
         }
     }
     myfree(AGS_Prev);
@@ -617,7 +608,7 @@ int ags_density_isactive(int i)
 double ags_return_maxsoft(int i)
 {
     double maxsoft = All.MaxHsml; // user-specified maximum: nothing is allowed to exceed this
-#ifdef PMGRID /* Maximum allowed gravitational softening when using the TreePM method. The quantity is given in units of the scale used for the force split (ASMTH) */
+#ifdef PMGRID /* Maximum allowed gravitational softening when using the TreePM method. The quantity is given in units of the scale used for the force split (PM_ASMTH) */
     maxsoft = DMIN(maxsoft, 1e3 * 0.5 * All.Asmth[0]); /* no more than 1/2 the size of the largest PM cell, times a 'safety factor' which can be pretty big */
 #endif
 #if (ADAPTIVE_GRAVSOFT_FORALL & 32) && defined(BLACK_HOLES) && !defined(SINGLE_STAR_SINK_DYNAMICS)
@@ -682,7 +673,7 @@ double get_particle_volume_ags(int j)
 /* routine to invert the NV_T matrix after neighbor pass */
 double do_cbe_nvt_inversion_for_faces(int i)
 {
-    MyFloat NV_T[3][3]; int j,k;
+    MyLongDouble NV_T[3][3]; int j,k;
     for(j=0;j<3;j++) {for(k=0;k<3;k++) {NV_T[j][k]=P[i].NV_T[j][k];}} // initialize matrix to be inverted //
     double Tinv[3][3], FrobNorm=0, FrobNorm_inv=0, detT=0;
     for(j=0;j<3;j++) {for(k=0;k<3;k++) {Tinv[j][k]=0;}}
@@ -760,7 +751,7 @@ struct INPUT_STRUCT_NAME
     int Type;
     integertime dt_step;
 #if defined(AGS_FACE_CALCULATION_IS_ACTIVE)
-    double NV_T[3][3];
+    MyLongDouble NV_T[3][3];
     double V_i;
 #endif
 #if defined(DM_FUZZY)

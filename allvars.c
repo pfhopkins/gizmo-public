@@ -24,32 +24,6 @@
 
 
 
-#ifdef BOX_PERIODIC
-MyDouble boxSize, boxHalf, inverse_boxSize;
-
-#ifdef BOX_LONG_X
-MyDouble boxSize_X, boxHalf_X, inverse_boxSize_X;
-#else
-#endif
-#ifdef BOX_LONG_Y
-MyDouble boxSize_Y, boxHalf_Y, inverse_boxSize_Y;
-#else
-#endif
-#ifdef BOX_LONG_Z
-MyDouble boxSize_Z, boxHalf_Z, inverse_boxSize_Z;
-#else
-#endif
-#endif
-
-#ifdef BOX_SHEARING
-MyDouble Shearing_Box_Vel_Offset;
-MyDouble Shearing_Box_Pos_Offset;
-#endif
-
-
-#ifdef FIX_PATHSCALE_MPI_STATUS_IGNORE_BUG
-MPI_Status mpistat;
-#endif
 
 /*********************************************************/
 /*  Global variables                                     */
@@ -69,9 +43,8 @@ int NumSphUpdate;		/*!< number of active SPH particles on local processor in cur
 
 int MaxTopNodes;		/*!< Maximum number of nodes in the top-level tree used for domain decomposition */
 
-int RestartFlag;		/*!< taken from command line used to start code. 0 is normal start-up from
-				   initial conditions, 1 is resuming a run from a set of restart files, while 2
-				   marks a restart from a snapshot file. */
+int RestartFlag;		/*!< taken from command line used to start code. 0 is normal start-up from initial conditions, 1 is resuming a run from a set of restart files, while 2 marks a restart from a snapshot file. */
+
 int RestartSnapNum;
 int SelRnd;
 
@@ -98,6 +71,34 @@ int *PrevInTimeBin;
 
 size_t HighMark_run, HighMark_domain, HighMark_gravtree,
   HighMark_pmperiodic, HighMark_pmnonperiodic, HighMark_sphdensity, HighMark_sphhydro, HighMark_GasGrad;
+
+#ifdef BOX_PERIODIC
+MyDouble boxSize, boxHalf;      /* size of the box! these variables are technically redundant but used -constantly- so very helpful */
+#endif
+#ifdef BOX_LONG_X
+MyDouble boxSize_X, boxHalf_X;
+#endif
+#ifdef BOX_LONG_Y
+MyDouble boxSize_Y, boxHalf_Y;
+#endif
+#ifdef BOX_LONG_Z
+MyDouble boxSize_Z, boxHalf_Z;
+#endif
+
+#ifdef BOX_SHEARING
+MyDouble Shearing_Box_Vel_Offset;
+MyDouble Shearing_Box_Pos_Offset;
+#endif
+
+#if defined(BOX_REFLECT_X) || defined(BOX_REFLECT_Y) || defined(BOX_REFLECT_Z) || defined(BOX_OUTFLOW_X) || defined(BOX_OUTFLOW_Y) || defined(BOX_OUTFLOW_Z)
+short int special_boundary_condition_xyz_def_reflect[3];
+short int special_boundary_condition_xyz_def_outflow[3];
+#endif
+
+#ifdef FIX_PATHSCALE_MPI_STATUS_IGNORE_BUG
+MPI_Status mpistat;
+#endif
+
 
 #ifdef TURB_DRIVING
 size_t HighMark_turbpower;
@@ -146,6 +147,9 @@ int NeedToWakeupParticles;      /*!< Flags used to signal that wakeups need to b
 int NeedToWakeupParticles_local;
 #endif
 int GlobFlag;
+#ifdef HERMITE_INTEGRATION
+int HermiteOnlyFlag;            /*! Flag used to indicate whether to skip non-Hermite integrated particles in the force evaluation */
+#endif
 
 int NumPart;			/*!< number of particles on the LOCAL processor */
 int N_gas;			/*!< number of gas particles on the LOCAL processor  */

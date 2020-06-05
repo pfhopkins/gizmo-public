@@ -35,15 +35,14 @@ void tillotson_eos_init(void)
         {0.5,1.4,5.50e12,3.500,1.31e12,4.90e11,4.50e10,1.50e11,5.0,5.0,8.13e11,9.0e10},  // olivine/dunite
         {0.5,0.9,2.00e10,1.000,2.00e11,1.00e11,4.000e9,2.00e10,5.0,5.0,1.000e0,1.00e0}}; // water
     int j_t,k_t;
-    double u0_unit=All.UnitEnergy_in_cgs/All.UnitMass_in_g, rho0_unit=All.UnitDensity_in_cgs*All.HubbleParam*All.HubbleParam, p0_unit=All.UnitPressure_in_cgs*All.HubbleParam*All.HubbleParam;
     for(j_t=1;j_t<7;j_t++)
     {
         for(k_t=0;k_t<10;k_t++)
         {
             All.Tillotson_EOS_params[j_t][k_t] = qtmp[j_t-1][k_t];
-            if((k_t==2)||(k_t==6)||(k_t==7)) {All.Tillotson_EOS_params[j_t][k_t] /= u0_unit;}
-            if(k_t==3) {All.Tillotson_EOS_params[j_t][k_t] /= rho0_unit;}
-            if((k_t==4)||(k_t==5)||(k_t==10)||(k_t==11)) {All.Tillotson_EOS_params[j_t][k_t] /= p0_unit;}
+            if((k_t==2)||(k_t==6)||(k_t==7)) {All.Tillotson_EOS_params[j_t][k_t] /= UNIT_SPECEGY_IN_CGS;}
+            if(k_t==3) {All.Tillotson_EOS_params[j_t][k_t] /= UNIT_DENSITY_IN_CGS;}
+            if((k_t==4)||(k_t==5)||(k_t==10)||(k_t==11)) {All.Tillotson_EOS_params[j_t][k_t] /= UNIT_PRESSURE_IN_CGS;}
         }
     }
     return;

@@ -277,8 +277,8 @@ void subfind_density(int j_in)
 		  if(iter >= MAXITER - 10)
 		    {
 		      printf
-			("i=%d task=%d ID=%d Hsml=%g Left=%g Right=%g Ngbs=%g Right-Left=%g\n   pos=(%g|%g|%g)\n",
-			 i, ThisTask, (int) P[i].ID, P[i].DM_Hsml, Left[i], Right[i],
+			("i=%d task=%d ID=%llu Hsml=%g Left=%g Right=%g Ngbs=%g Right-Left=%g\n   pos=(%g|%g|%g)\n",
+			 i, ThisTask, (unsigned long long) P[i].ID, P[i].DM_Hsml, Left[i], Right[i],
 			 (double) P[i].DM_NumNgb, Right[i] - Left[i], P[i].Pos[0], P[i].Pos[1], P[i].Pos[2]);
 		      fflush(stdout);
 		    }

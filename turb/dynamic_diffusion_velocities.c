@@ -109,9 +109,8 @@ void dynamic_diff_vel_calc_initial_operations_preloop(void)
  */
 int DiffFilter_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration) {
     int startnode, numngb, listindex = 0;
-    int j, k, v, k2, n, swap_to_j;
-    double hinv, hinv3, hinv4, r2, u, hinv_j, hinv3_j, hinv4_j;
-    double shear_factor;
+    int j, k, n, swap_to_j;
+    double hinv, hinv3, hinv4, r2, u;
     struct kernel_DiffFilter kernel;
     struct INPUT_STRUCT_NAME local;
     struct OUTPUT_STRUCT_NAME out;
@@ -192,7 +191,6 @@ int DiffFilter_evaluate(int target, int mode, int *exportflag, int *exportnodeco
                 double h_avg = 0.5 * (kernel.h_i + h_j);
                 double hhat = All.TurbDynamicDiffFac * kernel.h_i;
                 double hhat_j = All.TurbDynamicDiffFac * h_j;
-                double hhat_avg = All.TurbDynamicDiffFac * h_avg;
                 double hhat2 = hhat * hhat;
                 double hhatj2 = hhat_j * hhat_j;
 
@@ -307,12 +305,12 @@ int DiffFilter_evaluate(int target, int mode, int *exportflag, int *exportnodeco
  */
 void dynamic_diff_vel_calc(void) {
     CPU_Step[CPU_MISC] += measure_time(); double t00_truestart = my_second();
-    PRINT_STATUS("Start velocity smoothing computation...\n");
+    PRINT_STATUS("Start velocity smoothing computation...");
     dynamic_diff_vel_calc_initial_operations_preloop(); /* any initial operations */
     #include "../system/code_block_xchange_perform_ops_malloc.h" /* this calls the large block of code which contains the memory allocations for the MPI/OPENMP/Pthreads parallelization block which must appear below */
     #include "../system/code_block_xchange_perform_ops.h" /* this calls the large block of code which actually contains all the loops, MPI/OPENMP/Pthreads parallelization */
     #include "../system/code_block_xchange_perform_ops_demalloc.h" /* this de-allocates the memory for the MPI/OPENMP/Pthreads parallelization block which must appear above */
-    PRINT_STATUS(" ..velocity smoothing done.\n");
+    PRINT_STATUS(" ..velocity smoothing done.");
     double t1; t1 = WallclockTime = my_second(); timeall = timediff(t00_truestart, t1);
     CPU_Step[CPU_IMPROVDIFFCOMPUTE] += timecomp; CPU_Step[CPU_IMPROVDIFFWAIT] += timewait; CPU_Step[CPU_IMPROVDIFFCOMM] += timecomm;
     CPU_Step[CPU_IMPROVDIFFMISC] += timeall - (timecomp + timewait + timecomm);

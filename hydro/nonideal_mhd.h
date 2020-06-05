@@ -62,7 +62,7 @@ if((local.Mass > 0) && (P[j].Mass > 0))
         if(eta_ad>0) {for(k=0;k<3;k++) {b_flux[k] += eta_ad * JcrossBcrossB[k];}} // a.d. ~ (JxB)xB
         if(eta_hall>0) {for(k=0;k<3;k++) {b_flux[k] += -eta_hall * JcrossB[k];}} // hall ~ (JxB)
         
-        // calculate dB/dt = Area.cross.Flux //
+        // calculate dB/dt = Area.cross.flux //
         bflux_from_nonideal_effects[0] = Face_Area_Vec[1]*b_flux[2] - Face_Area_Vec[2]*b_flux[1];
         bflux_from_nonideal_effects[1] = Face_Area_Vec[2]*b_flux[0] - Face_Area_Vec[0]*b_flux[2];
         bflux_from_nonideal_effects[2] = Face_Area_Vec[0]*b_flux[1] - Face_Area_Vec[1]*b_flux[0];

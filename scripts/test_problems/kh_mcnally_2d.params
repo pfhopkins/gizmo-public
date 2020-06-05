@@ -10,7 +10,7 @@
 %        KERNEL_FUNCTION=5
 %
 % (The choice of KERNEL_FUNCTION is optional here. Experiment with different kernels.
-%   But be sure to set DesNumNgb accordingly; for e.g. KERNEL_FUNCTION=5 or 7, use 40, =3 or 5, use 20)
+%   But be sure to set DesNumNgb accordingly; for e.g. KERNEL_FUNCTION=5 or 7, use 40-50, =3 or 4, use 20-32)
 %
 % the parameters above are required for the hydro version of this problem.  
 %   (modulo, of course, the choice of hydro method). For the MHD version of the 

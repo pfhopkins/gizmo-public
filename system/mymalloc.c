@@ -56,7 +56,11 @@ void mymalloc_init(void)
 
   n = All.MaxMemSize * ((size_t) 1024 * 1024);
 
+#ifdef DISABLE_ALIGNED_ALLOC
+  if(!(Base = malloc(n)))
+#else
   if(!(Base = aligned_alloc(MIN_ALIGNMENT, n)))
+#endif
     {
       printf("Failed to allocate memory for `Base' (%d Mbytes).\n", All.MaxMemSize);
       endrun(122);

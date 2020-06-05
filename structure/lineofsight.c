@@ -9,6 +9,7 @@
 
 #include "../allvars.h"
 #include "../proto.h"
+#include "../kernel.h"
 
 /*! compute line-of-sight integrated quantities (for e.g. Lyman-alpha forest studies) */
 
@@ -253,7 +254,7 @@ void find_particles_and_save_them(int num)
 void add_along_lines_of_sight(void)
 {
   int n, bin, i, iz0, iz1, iz;
-  double dx, dy, dz, r, r2, ne, nh0, nHeII, utherm, temp, meanWeight;
+  double dx, dy, dz, r, r2, ne, nh0, nHeII, utherm, temp;
   double u, wk, dwk, weight, h3inv;
   double z0, z1;
 
@@ -324,9 +325,7 @@ void add_along_lines_of_sight(void)
 		      while(bin < 0)
                   bin += PIXELS;
 
-		      ne = SphP[n].Ne;
-                utherm = DMAX(All.MinEgySpec, SphP[i].InternalEnergyPred);
-
+              utherm = DMAX(All.MinEgySpec, SphP[i].InternalEnergyPred);
               double mu_in = 1, nHe0, nHepp, nhp;
               temp = ThermalProperties(utherm, SphP[n].Density * All.cf_a3inv, n, &mu_in, &ne, &nh0, &nhp, &nHe0, &nHeII, &nHepp);
 
@@ -387,12 +386,12 @@ void sum_over_processors_and_normalize(void)
 	  /* neutral hydrogen quantities */
 	  LosGlobal->VpecHI[bin] /= LosGlobal->RhoHI[bin];
 	  LosGlobal->TempHI[bin] /= LosGlobal->RhoHI[bin];
-	  LosGlobal->NHI[bin] = LosGlobal->RhoHI[bin] * (All.UnitMass_in_g / PROTONMASS);
+	  LosGlobal->NHI[bin] = LosGlobal->RhoHI[bin] * (UNIT_MASS_IN_CGS / PROTONMASS);
 
 	  /* HeII quantities */
 	  LosGlobal->VpecHeII[bin] /= (All.Time * LosGlobal->RhoHeII[bin]);
 	  LosGlobal->TempHeII[bin] /= LosGlobal->RhoHeII[bin];
-	  LosGlobal->NHeII[bin] = LosGlobal->RhoHeII[bin] * (All.UnitMass_in_g / (4 * PROTONMASS));
+	  LosGlobal->NHeII[bin] = LosGlobal->RhoHeII[bin] * (UNIT_MASS_IN_CGS / (4 * PROTONMASS));
 	}
     }
 }
@@ -423,7 +422,7 @@ void absorb_along_lines_of_sight(void)
 	      while(dv > PIXELS / 2)
 		dv -= PIXELS;
 
-	      dv = (dv * Wmax / PIXELS + LosGlobal->VpecHI[k]) * All.UnitVelocity_in_cm_per_s;
+	      dv = (dv * Wmax / PIXELS + LosGlobal->VpecHI[k]) * UNIT_VEL_IN_CGS;
 
 	      b = sqrt(2 * BOLTZMANN * LosGlobal->TempHI[k] / PROTONMASS);
 
@@ -438,7 +437,7 @@ void absorb_along_lines_of_sight(void)
 	      while(dv > PIXELS / 2)
 		dv -= PIXELS;
 
-	      dv = (dv * Wmax / PIXELS + LosGlobal->VpecHeII[k]) * All.UnitVelocity_in_cm_per_s;
+	      dv = (dv * Wmax / PIXELS + LosGlobal->VpecHeII[k]) * UNIT_VEL_IN_CGS;
 
 	      b = sqrt(2 * BOLTZMANN * LosGlobal->TempHeII[k] / (4 * PROTONMASS));
 
@@ -450,10 +449,8 @@ void absorb_along_lines_of_sight(void)
       /* multiply with correct prefactors */
 
       /*  to get things into cgs units */
-      fac = 1 / pow(All.UnitLength_in_cm, 2);
-      fac *= All.HubbleParam * All.HubbleParam;
-      fac *= OSCILLATOR_STRENGTH * M_PI * LYMAN_ALPHA * sqrt(3 * THOMPSON / (8 * M_PI));	/* Ly-alpha cross section */
-      fac *= C_LIGHT / (All.Time * All.Time) / sqrt(M_PI);
+      fac = 1 / (UNIT_LENGTH_IN_CGS*UNIT_LENGTH_IN_CGS);
+      fac *= OSCILLATOR_STRENGTH * M_PI * LYMAN_ALPHA * sqrt(3 * THOMPSON / (8 * M_PI)) * C_LIGHT / (All.cf_atime * All.cf_atime) / sqrt(M_PI);	/* Ly-alpha cross section */
 
       /* Note: For HeII, the oscillator strength is equal to that of HI,
          and the Lyman-alpha wavelength is 4 times shorter */
@@ -540,7 +537,7 @@ integertime find_next_lineofsighttime(integertime time0)
 
   if(i1 <= 1) {df1 = u1 * GravKickTable[0];} else {df1 = GravKickTable[i1 - 1] + (GravKickTable[i1] - GravKickTable[i1 - 1]) * (u1 - i1);}
 
-  df2 = df1 + All.BoxSize / (C_LIGHT / All.UnitVelocity_in_cm_per_s);
+  df2 = df1 + All.BoxSize / C_LIGHT_CODE;
 
   i2 = DRIFT_TABLE_LENGTH - 1;
 

@@ -45,13 +45,18 @@ long long report_comittable_memory(long long *MemTotal,
 void merge_and_split_particles(void);
 int does_particle_need_to_be_merged(int i);
 int does_particle_need_to_be_split(int i);
-double ref_mass_factor(int i);
+double target_mass_renormalization_factor_for_mergesplit(int i);
 void merge_particles_ij(int i, int j);
 //void split_particle_i(int i, int n_particles_split, int i_nearest, double r2_nearest);
 void split_particle_i(int i, int n_particles_split, int i_nearest); 
 double gamma_eos(int i);
 void do_first_halfstep_kick(void);
 void do_second_halfstep_kick(void);
+#ifdef HERMITE_INTEGRATION
+int eligible_for_hermite(int i);
+void do_hermite_prediction(void);
+void do_hermite_correction(void);
+#endif
 void find_timesteps(void);
 #ifdef GALSF
 void compute_stellar_feedback(void);
@@ -72,7 +77,10 @@ void   sub_turb_read_table(void);
 void   sub_turb_parent_halo_accel(double dx, double dy, double dz, double *acc);
 double sub_turb_enclosed_mass(double r, double msub, double vmax, double radvmax, double c);
 
-
+void interpolate_fluxes_opacities_gasgrains(void);
+#if defined(RT_OPACITY_FROM_EXPLICIT_GRAINS)
+double return_grain_absorption_efficiency_Q(int i, int k_freq);
+#endif
 int powerspec_turb_find_nearest_evaluate(int target, int mode, int *nexport, int *nsend_local);
 void powerspec_turb_calc_dispersion(void);
 double powerspec_turb_obtain_fields(void);
@@ -187,6 +195,7 @@ void mpi_distribute_items_to_tasks(void *data, int task_offset, int *n_items, in
 void parallel_sort_special_P_GrNr_ID(void);
 void calculate_power_spectra(int num, long long *ntot_type_all);
 
+
 int pmforce_is_particle_high_res(int type, MyDouble *pos);
 
 void compare_partitions(void);
@@ -213,6 +222,7 @@ void parallel_sort(void *base, size_t nmemb, size_t size, int (*compar) (const v
 void parallel_sort_comm(void *base, size_t nmemb, size_t size, int (*compar) (const void *, const void *), MPI_Comm comm);
 int compare_IDs(const void *a, const void *b);
 void test_id_uniqueness(void);
+int compare_densities_for_sort(const void *a, const void *b);
 
 
 int io_compare_P_ID(const void *a, const void *b);
@@ -272,19 +282,25 @@ double bhgrowth(double z1, double z2);
 int fof_find_dmparticles_evaluate(int target, int mode, int *nexport, int *nsend_local);
 
 double INLINE_FUNC Get_Particle_Size(int i);
-double INLINE_FUNC Particle_density_for_energy_i(int i);
+double INLINE_FUNC Get_Gas_density_for_energy_i(int i);
 double INLINE_FUNC Get_Particle_Expected_Area(double h);
+double Get_Gas_Ionized_Fraction(int i);
 #ifdef EOS_ELASTIC
 void elastic_body_update_driftkick(int i, double dt_entr, int mode);
 #endif
 double INLINE_FUNC convert_internalenergy_soundspeed2(int i, double u);
-double INLINE_FUNC Particle_effective_soundspeed_i(int i);
+double INLINE_FUNC Get_Gas_effective_soundspeed_i(int i);
+double INLINE_FUNC Get_Gas_thermal_soundspeed_i(int i);
+double Get_Gas_Alfven_speed_i(int i);
+double Get_Gas_Mean_Molecular_Weight_mu(double T_guess, double rho, double *xH0, double *ne_guess, double urad_from_uvb_in_G0, int target);
+double yhelium(int target);
+double Get_Gas_Molecular_Mass_Fraction(int i, double temperature, double neutral_fraction, double urad_from_uvb_in_G0, double clumping_factor);
+double INLINE_FUNC Get_Gas_BField(int i_particle_id, int k_vector_component);
 #ifdef MAGNETIC
-double INLINE_FUNC Get_Particle_BField(int i_particle_id, int k_vector_component);
 double Get_DtB_FaceArea_Limiter(int i);
 #ifdef DIVBCLEANING_DEDNER
-double INLINE_FUNC Get_Particle_PhiField(int i_particle_id);
-double INLINE_FUNC Get_Particle_PhiField_DampingTimeInv(int i_particle_id);
+double INLINE_FUNC Get_Gas_PhiField(int i_particle_id);
+double INLINE_FUNC Get_Gas_PhiField_DampingTimeInv(int i_particle_id);
 #endif
 #endif
 #ifdef AGS_HSML_CALCULATION_IS_ACTIVE
@@ -482,14 +498,13 @@ double mechanical_fb_calculate_eventrates(int i, double dt);
 #endif
 
 
-
 #ifdef GRAIN_FLUID
 void apply_grain_dragforce(void);
 #endif
 
 #ifdef RT_INFRARED
 double get_min_allowed_dustIRrad_temperature(void);
-double get_rt_ir_lambdadust_effective(double T, double rho, double *ne_guess, int target);
+double get_rt_ir_lambdadust_effective(double T, double rho, double *nH0_guess, double *ne_guess, int target);
 #endif
 
 #if defined(FLAG_NOT_IN_PUBLIC_CODE) || (defined(RT_CHEM_PHOTOION) && defined(GALSF))
@@ -497,9 +512,6 @@ double particle_ionizing_luminosity_in_cgs(long i);
 #endif
 
 
-#ifdef CHIMES_HII_REGIONS 
-void chimes_HII_regions_singledomain(void); 
-#endif
 
 
 #ifdef GALSF_FB_MECHANICAL
@@ -522,10 +534,8 @@ void ReadMultiSpeciesTables(int iT);
 char *GetMultiSpeciesFilename(int i, int hk);
 #endif
 
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)
-double bh_angleweight(double bh_lum_input, MyFloat bh_angle[3], double hR, double dx, double dy, double dz);
-double bh_angleweight_localcoupling(int j, double hR, double cos_theta, double r, double H_bh);
-#endif
+double bh_angleweight(double bh_lum_input, MyFloat bh_angle[3], double dx, double dy, double dz);
+double bh_angleweight_localcoupling(int j, double cos_theta, double r, double H_bh);
 
 #if defined(GALSF_SUBGRID_WINDS)
 void assign_wind_kick_from_sf_routine(int i, double sm, double dtime, double* pvtau_return);
@@ -578,8 +588,10 @@ void gravity_tree(void);
 void hydro_force(void);
 void init(void);
 void do_the_cooling_for_particle(int i);
+double get_equilibrium_dust_temperature_estimate(int i);
+void apply_pm_hires_region_clipping_selection(int i);
 double get_starformation_rate(int i);
-void update_internalenergy_for_galsf_effective_eos(int i, double tcool, double tsfr, double x, double rateOfSF);
+void update_internalenergy_for_galsf_effective_eos(int i, double tcool, double tsfr, double cloudmass_fraction, double rateOfSF);
 void init_clouds(void);
 void integrate_sfr(void);
 void insert_node(int i);
@@ -612,6 +624,7 @@ void set_softenings(void);
 void set_sph_kernel(void);
 void set_units(void);
 void setup_smoothinglengths(void);
+void apply_special_boundary_conditions(int i, double mass_for_dp, int mode);
 
 void minimum_large_ints(int n, long long *src, long long *res);
 void sumup_large_ints(int n, int *src, long long *res);
@@ -660,10 +673,12 @@ void pm_setup_nonperiodic_kernel(void);
 #ifdef CHIMES_STELLAR_FLUXES 
 double chimes_G0_luminosity(double stellar_age, double stellar_mass); 
 double chimes_ion_luminosity(double stellar_age, double stellar_mass); 
-int rt_get_source_luminosity(int i, double sigma_0, double *lum, double *chimes_lum_G0, double *chimes_lum_ion); 
+int rt_get_source_luminosity(int i, int mode, double *lum, double *chimes_lum_G0, double *chimes_lum_ion);
 #else 
-int rt_get_source_luminosity(int i, double sigma_0, double *lum);
-#endif 
+int rt_get_source_luminosity(int i, int mode, double *lum);
+#endif
+void eddington_tensor_dot_vector(double ET[6], double vec_in[3], double vec_out[3]);
+double return_flux_limiter(int target, int k_freq);
 double rt_kappa(int j, int k_freq);
 double rt_absorb_frac_albedo(int j, int k_freq);
 double rt_absorption_rate(int i, int k_freq);

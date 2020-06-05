@@ -6,17 +6,12 @@
 * see notes in blackhole.c for details on code history.
 */
 
-#ifndef gizmo_blackhole_h
-#define gizmo_blackhole_h
-
-
-#if defined(BLACK_HOLES)
+#ifdef BLACK_HOLES // master flag [needs to be here to prevent compiler breaking when this is not active] //
 
 
 #ifndef BH_CSND_FRAC_BH_MERGE
 #define BH_CSND_FRAC_BH_MERGE 1.0 /* Relative velocity fraction (in units of soundspeed) for merging blackholes, default=1.0 */
 #endif
-
 
 #define BHPOTVALUEINIT 1.0e30
 extern int N_active_loc_BHs;    /*!< number of active black holes on the LOCAL processor */
@@ -39,14 +34,17 @@ extern struct blackhole_temp_particle_data       // blackholedata_topass
 #if defined(BH_GRAVACCRETION) && (BH_GRAVACCRETION == 0)
     MyFloat MgasBulge_in_Kernel, MstarBulge_in_Kernel;
 #endif
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)
-    MyFloat GradRho_in_Kernel[3], BH_angle_weighted_kernel_sum;
+#ifdef BH_CALC_LOCAL_ANGLEWEIGHTS
+    MyFloat BH_angle_weighted_kernel_sum;
 #endif
 #ifdef BH_DYNFRICTION
     MyFloat DF_rms_vel, DF_mean_vel[3], DF_mmax_particles;
 #endif
-#if defined(BH_BONDI) || defined(BH_DRAG) || (BH_GRAVACCRETION >= 5) || defined(SINGLE_STAR_SINK_DYNAMICS)
+#if defined(BH_BONDI) || defined(BH_DRAG) || (BH_GRAVACCRETION >= 5) || defined(SINGLE_STAR_SINK_DYNAMICS) || defined(SINGLE_STAR_TIMESTEPPING)
     MyFloat BH_SurroundingGasVel[3];
+#endif
+#ifdef JET_DIRECTION_FROM_KERNEL_AND_SINK
+    MyFloat BH_SurroundingGasCOM[3];
 #endif
 #if (BH_GRAVACCRETION == 8)
     MyFloat hubber_mdot_vr_estimator, hubber_mdot_disk_estimator, hubber_mdot_bondi_limiter;
@@ -107,11 +105,8 @@ void set_blackhole_new_mass(int i, int n, double dt);
 #if defined(BH_DRAG) || defined(BH_DYNFRICTION)
 void set_blackhole_drag(int i, int n, double dt);
 #endif
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(BH_WIND_CONTINUOUS)
 void set_blackhole_long_range_rp(int i, int n);
-#endif
 
 
 
-#endif
-#endif
+#endif // master flag

@@ -9,11 +9,8 @@
   int maxNodes = MaxNodes;
   int bunchSize = All.BunchSize;
   integertime ti_Current = All.Ti_Current;
-  MyDouble dx, dy, dz, dist;
+  MyDouble dx, dy, dz, dist, xtmp; xtmp=0;
 
-#ifdef BOX_PERIODIC
-  MyDouble xtmp;
-#endif
 #ifdef REDUCE_TREEWALK_BRANCHING
   t_vector box, hbox, vcenter;
 #ifdef BOX_PERIODIC

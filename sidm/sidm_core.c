@@ -35,7 +35,7 @@ double prob_of_interaction(double mass, double r, double h_si, double dV[3], int
     double dt = dt_step * All.Timebase_interval / All.cf_hubble_a; // time in physical
     double rho_eff = mass / (h_si*h_si*h_si) * All.cf_a3inv; // density in physical
     double cx_eff = All.DM_InteractionCrossSection * g_geo(r/h_si); // effective cross section (physical) scaled to cgs
-    double units = All.UnitDensity_in_cgs * All.UnitLength_in_cm * All.HubbleParam; // needed to convert everything to cgs
+    double units = UNIT_SURFDEN_IN_CGS; // needed to convert everything to cgs
     if(All.DM_InteractionVelocityScale>0) {double x=dVmag/All.DM_InteractionVelocityScale; cx_eff/=1+x*x*x*x;} // take velocity dependence
     return rho_eff * cx_eff * dVmag * dt * units; // dimensionless probability
 }

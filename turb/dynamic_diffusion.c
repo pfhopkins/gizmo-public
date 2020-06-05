@@ -204,7 +204,7 @@ static inline void out2particle_DynamicDiff(struct DynamicDiffdata_out *out, int
 void dynamic_diff_calc(void) {
     PRINT_STATUS("Start dynamic diffusion calculations...");
     CPU_Step[CPU_MISC] += measure_time();
-    int i, j, k, v, k1, u, ngrp, ndone, ndone_flag, dynamic_iteration;
+    int i, j, k, v, u, ngrp, ndone, ndone_flag, dynamic_iteration;
     double shear_factor, dynamic_denominator, trace = 0, trace_dynamic_fac = 0, hhat2 = 0, leonardTensor[3][3], prefactor = 0;
 #ifdef IO_TURB_DIFF_DYNAMIC_ERROR
     double trace_dynamic_fac_const = 0;
@@ -215,7 +215,6 @@ void dynamic_diff_calc(void) {
     double timecomp, timecomm, timewait, tstart, tend, t0, t1;
     int save_NextParticle;
     long long n_exported = 0;
-    int startnode, numngb;
 
     /* allocate buffers to arrange communication */
     long long NTaskTimesNumPart;
@@ -757,8 +756,8 @@ void dynamic_diff_calc(void) {
  */
 int DynamicDiff_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int dynamic_iteration) {
     int startnode, numngb, listindex = 0;
-    int j, k, v, k2, n, swap_to_j;
-    double hinv, hinv3, hinv4, r2, u, hinv_j, hinv3_j, hinv4_j;
+    int j, k, v, n, swap_to_j;
+    double hinv, hinv3, hinv4, r2, u;
     struct kernel_DynamicDiff kernel;
     struct DynamicDiffdata_in local;
 
@@ -883,25 +882,11 @@ int DynamicDiff_evaluate(int target, int mode, int *exportflag, int *exportnodec
 
                 if (dynamic_iteration == 0) {
                     /* Need to calculate the filtered velocity gradient for the filtered shear */
-                    double dv_hat[3];
-                    
-                    for (k = 0; k < 3; k++) {
-                        dv_hat[k] = SphP[j].Velocity_hat[k] - local.Velocity_hat[k];
-#ifdef SHEARING_BOX
-                        if (k == SHEARING_BOX_PHI_COORDINATE) {
-                            if (local.Pos[0] - P[j].Pos[0] > +boxHalf_X) {
-                                dv_hat[k] -= Shearing_Box_Vel_Offset;
-                            }
-
-                            if (local.Pos[0] - P[j].Pos[0] < -boxHalf_X) {
-                                dv_hat[k] += Shearing_Box_Vel_Offset;
-                            }
-                        }
-#endif
+                    double dv_hat[3]; for (k=0;k<3;k++) {dv_hat[k] = SphP[j].Velocity_hat[k] - local.Velocity_hat[k];}
+                    NGB_SHEARBOX_BOUNDARY_VELCORR_(local.Pos,P[j].Pos,dv_hat,-1); /* wrap velocities for shearing boxes if needed */
+                    for (k=0;k<3;k++) {
                         MINMAX_CHECK(dv_hat[k], out.Minima.Velocity_hat[k], out.Maxima.Velocity_hat[k]);
-                        if (swap_to_j) {
-                            MINMAX_CHECK(-dv_hat[k], DynamicDiffDataPasser[j].Minima.Velocity_hat[k], DynamicDiffDataPasser[j].Maxima.Velocity_hat[k]);
-                        }
+                        if (swap_to_j) {MINMAX_CHECK(-dv_hat[k], DynamicDiffDataPasser[j].Minima.Velocity_hat[k], DynamicDiffDataPasser[j].Maxima.Velocity_hat[k]);}
                     }
 
                     double hinv_forgrad, hinv3_forgrad, hinv4_forgrad, u_forgrad, wk_i_forgrad, dwk_i_forgrad;

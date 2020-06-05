@@ -2582,7 +2582,16 @@ void domain_findExtent(void)
       DomainCenter[j] = 0.5 * (xmin_glob[j] + xmax_glob[j]);
       DomainCorner[j] = 0.5 * (xmin_glob[j] + xmax_glob[j]) - 0.5 * len;
     }
-    
+#ifdef RANDOMIZE_GRAVTREE // double the size of the root node and pick a random offset for its center, so that forcetree errors get decorrelated each time the tree is rebuilt
+  double dx[3]; 
+  if(ThisTask == 0) { for(j = 0; j < 3; j++) {dx[j] = len * (get_random_number((MyIDType) (All.NumCurrentTiStep) + j) - 0.5);}}
+  MPI_Bcast(dx, 3, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+  for(j=0; j<3; j++) {
+      DomainCenter[j] += dx[j];
+      DomainCorner[j] = DomainCenter[j] - len;
+  }
+  len *= 2;
+#endif  
   DomainLen = len;
   DomainFac = 1.0 / len * (((peanokey) 1) << (BITS_PER_DIMENSION));
 }

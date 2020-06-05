@@ -76,10 +76,7 @@ int ngb_filter_variables(long long numngb, int list[], t_vector * center, t_vect
     for(no = 0; no < numngb_old; no++)
     {
         int p = list[no];
-        MyDouble dx, dy, dz, d2;
-#ifdef BOX_PERIODIC
-        MyDouble xtmp;
-#endif
+        MyDouble dx, dy, dz, d2, xtmp; xtmp=0;
         if(searchbothways_mode == 1) {dist = DMAX(PPP[p].Hsml, hsml);}
         dx = NGB_PERIODIC_BOX_LONG_X(P[p].Pos[0] - center->d[0], P[p].Pos[1] - center->d[1], P[p].Pos[2] - center->d[2],-1);
         dy = NGB_PERIODIC_BOX_LONG_Y(P[p].Pos[0] - center->d[0], P[p].Pos[1] - center->d[1], P[p].Pos[2] - center->d[2],-1);
@@ -204,10 +201,8 @@ int ngb_treefind_fof_primary(MyDouble searchcenter[3], MyFloat hsml, int target,
     int maxPart = All.MaxPart;
     int maxNodes = MaxNodes;
     int bunchSize = All.BunchSize;
-    
-#ifdef BOX_PERIODIC
-    MyDouble xtmp;
-#endif
+    MyDouble xtmp; xtmp=0;
+
 #ifdef REDUCE_TREEWALK_BRANCHING
     t_vector box, hbox, vcenter;
 #ifdef BOX_PERIODIC

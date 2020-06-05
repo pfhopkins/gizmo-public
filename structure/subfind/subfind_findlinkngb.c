@@ -243,8 +243,8 @@ void subfind_find_linkngb(void)
 		  if(iter >= MAXITER - 10)
 		    {
 		      printf
-			("i=%d task=%d ID=%d DM_Hsml=%g Left=%g Right=%g Ngbs=%g Right-Left=%g\n   pos=(%g|%g|%g)\n",
-			 i, ThisTask, (int) P[i].ID, P[i].DM_Hsml, Left[i], Right[i],
+			("i=%d task=%d ID=%llu DM_Hsml=%g Left=%g Right=%g Ngbs=%g Right-Left=%g\n   pos=(%g|%g|%g)\n",
+			 i, ThisTask, (unsigned long long) P[i].ID, P[i].DM_Hsml, Left[i], Right[i],
 			 (double) P[i].DM_NumNgb, Right[i] - Left[i], P[i].Pos[0], P[i].Pos[1], P[i].Pos[2]);
 		      fflush(stdout);
 		    }
@@ -415,7 +415,7 @@ int subfind_ngb_treefind_linkngb(MyDouble searchcenter[3], double hsml, int targ
 #endif
 	    continue;
 
-        dist = hsml; double xtmp;
+        dist = hsml; double xtmp; xtmp=0;
       dx = NGB_PERIODIC_BOX_LONG_X(P[p].Pos[0] - searchcenter[0], P[p].Pos[1] - searchcenter[1], P[p].Pos[2] - searchcenter[2], -1);
 	  if(dx > dist)
 	    continue;
@@ -493,7 +493,7 @@ int subfind_ngb_treefind_linkngb(MyDouble searchcenter[3], double hsml, int targ
 
 	  no = current->u.d.sibling;	/* in case the node can be discarded */
 
-        dist = hsml + 0.5 * current->len; double xtmp;
+        dist = hsml + 0.5 * current->len; double xtmp; xtmp=0;
       dx = NGB_PERIODIC_BOX_LONG_X(current->center[0] - searchcenter[0], current->center[1] - searchcenter[1], current->center[2] - searchcenter[2], -1);
 	  if(dx > dist)
 	    continue;
@@ -575,7 +575,7 @@ int subfind_ngb_treefind_linkpairs(MyDouble searchcenter[3], double hsml, int ta
 #endif
 	    continue;
 
-        dist = DMAX(P[p].DM_Hsml, hsml); double xtmp;
+        dist = DMAX(P[p].DM_Hsml, hsml); double xtmp; xtmp=0;
       dx = NGB_PERIODIC_BOX_LONG_X(P[p].Pos[0] - searchcenter[0], P[p].Pos[1] - searchcenter[1], P[p].Pos[2] - searchcenter[2], -1);
 	  if(dx > dist)
 	    continue;
@@ -652,7 +652,7 @@ int subfind_ngb_treefind_linkpairs(MyDouble searchcenter[3], double hsml, int ta
 	    }
 
 	  dist = DMAX(Extnodes[no].hmax, hsml) + 0.5 * current->len;
-        no = current->u.d.sibling; double xtmp;	/* in case the node can be discarded */
+        no = current->u.d.sibling; double xtmp; xtmp=0;	/* in case the node can be discarded */
       dx = NGB_PERIODIC_BOX_LONG_X(current->center[0] - searchcenter[0], current->center[1] - searchcenter[1], current->center[2] - searchcenter[2], -1);
 	  if(dx > dist)
 	    continue;

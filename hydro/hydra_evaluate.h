@@ -105,7 +105,7 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
 #endif // MAGNETIC //
 
 #ifdef RT_SOLVER_EXPLICIT
-    double tau_c_i[N_RT_FREQ_BINS]; for(k=0;k<N_RT_FREQ_BINS;k++) {tau_c_i[k] = Particle_Size_i * local.Kappa_RT[k]*local.Density*All.cf_a3inv;}
+    double tau_c_i[N_RT_FREQ_BINS]; for(k=0;k<N_RT_FREQ_BINS;k++) {tau_c_i[k] = Particle_Size_i * local.Rad_Kappa[k]*local.Density*All.cf_a3inv;}
 #endif
     
     /* --------------------------------------------------------------------------------- */
@@ -145,7 +145,7 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
 #endif
 
                 /* check if I need to compute this pair-wise interaction from "i" to "j", or skip it and let it be computed from "j" to "i" */
-                integertime TimeStep_J = (P[j].TimeBin ? (((integertime) 1) << P[j].TimeBin) : 0);
+                integertime TimeStep_J; TimeStep_J = (P[j].TimeBin ? (((integertime) 1) << P[j].TimeBin) : 0);
                 int j_is_active_for_fluxes = 0;
 #if !defined(BOX_SHEARING) && !defined(_OPENMP) // (shearing box means the fluxes at the boundaries are not actually symmetric, so can't do this; OpenMP on some new compilers goes bad here because pointers [e.g. P...] are not thread-safe shared with predictive operations, and vectorization means no gain here with OMP anyways) //
                 if(local.Timestep > TimeStep_J) continue; /* compute from particle with smaller timestep */
@@ -184,12 +184,10 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
 #ifdef BOX_SHEARING
                 /* in a shearing box, need to set dv appropriately for the shearing boundary conditions */
                 MyDouble VelPred_j[3]; for(k=0;k<3;k++) {VelPred_j[k]=SphP[j].VelPred[k];}
-                if(local.Pos[0] - P[j].Pos[0] > +boxHalf_X) {VelPred_j[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;}
-                if(local.Pos[0] - P[j].Pos[0] < -boxHalf_X) {VelPred_j[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;}
+                NGB_SHEARBOX_BOUNDARY_VELCORR_(local.Pos,P[j].Pos,VelPred_j,-1); /* wrap velocities for shearing boxes if needed */
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
                 MyDouble ParticleVel_j[3]; for(k=0;k<3;k++) {ParticleVel_j[k]=SphP[j].VelPred[k];}
-                if(local.Pos[0] - P[j].Pos[0] > +boxHalf_X) {ParticleVel_j[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;}
-                if(local.Pos[0] - P[j].Pos[0] < -boxHalf_X) {ParticleVel_j[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;}
+                NGB_SHEARBOX_BOUNDARY_VELCORR_(local.Pos,P[j].Pos,ParticleVel_j,-1); /* wrap velocities for shearing boxes if needed */
 #endif
 #else
                 /* faster to just set a pointer directly */
@@ -202,17 +200,17 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
                 kernel.dv[1] = local.Vel[1] - VelPred_j[1];
                 kernel.dv[2] = local.Vel[2] - VelPred_j[2];
                 kernel.rho_ij_inv = 2.0 / (local.Density + SphP[j].Density);
-                double Particle_Size_j = Get_Particle_Size(j) * All.cf_atime; /* physical units */
+                double Particle_Size_j; Particle_Size_j = Get_Particle_Size(j) * All.cf_atime; /* physical units */
 
                 /* --------------------------------------------------------------------------------- */
                 /* sound speed, relative velocity, and signal velocity computation */
-                kernel.sound_j = Particle_effective_soundspeed_i(j);
+                kernel.sound_j = Get_Gas_effective_soundspeed_i(j);
                 kernel.vsig = kernel.sound_i + kernel.sound_j;
 #ifdef MAGNETIC
                 double BPred_j[3];
-                for(k=0;k<3;k++) {BPred_j[k]=Get_Particle_BField(j,k);} /* defined j b-field in appropriate units for everything */
+                for(k=0;k<3;k++) {BPred_j[k]=Get_Gas_BField(j,k);} /* defined j b-field in appropriate units for everything */
 #ifdef DIVBCLEANING_DEDNER
-                double PhiPred_j = Get_Particle_PhiField(j); /* define j phi-field in appropriate units */
+                double PhiPred_j = Get_Gas_PhiField(j); /* define j phi-field in appropriate units */
 #endif
                 kernel.b2_j = BPred_j[0]*BPred_j[0] + BPred_j[1]*BPred_j[1] + BPred_j[2]*BPred_j[2];
                 kernel.alfven2_j = kernel.b2_j * fac_magnetic_pressure / SphP[j].Density;
@@ -325,7 +323,7 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
 #define HLL_correction(ui,uj,wt,kappa) (k_hll = v_hll * (wt) * kernel.r * All.cf_atime / fabs(kappa),\
                                         k_hll = (0.2 + k_hll) / (0.2 + k_hll + k_hll*k_hll),\
                                         -1.0*k_hll*Face_Area_Norm*v_hll*((ui)-(uj)))
-#if !defined(MAGNETIC) || defined(GALSF) || defined(COOLING) || defined(BLACKHOLES)
+#if !defined(MAGNETIC) || defined(GALSF) || defined(COOLING) || defined(BLACK_HOLES)
 #define HLL_DIFFUSION_OVERSHOOT_FACTOR  0.005
 #else
 #define HLL_DIFFUSION_OVERSHOOT_FACTOR  1.0

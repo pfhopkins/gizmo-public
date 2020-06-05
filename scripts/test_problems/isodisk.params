@@ -180,7 +180,7 @@ BlackHoleMaxAccretionRadius  0.02	    % max radius for BH neighbor search/accret
 BlackHoleRadiativeEfficiency 0.1        % radiative efficiency 
 %--- feedback 
 BlackHoleFeedbackFactor      1.0	    % generic feedback strength multiplier 
-BH_FluxMomentumFactor        1.0	    % multiply radiation pressure (BH_PHOTONMOMENTUM) 
+BH_Rad_MomentumFactor        1.0	    % multiply radiation pressure (BH_PHOTONMOMENTUM) 
 BAL_f_accretion              0.5        % fraction of gas swallowed by BH (BH_BAL_WINDS) 
 BAL_v_outflow                30000	    % velocity (code units) of BAL outflow (BH_BAL_WINDS) 
 

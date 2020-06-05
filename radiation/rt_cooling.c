@@ -25,10 +25,10 @@
 double rt_DoHeating(int i, double dt_internal)
 {
     double sigma, nH, rate, du, de, e_gamma, nHI;
-    nH = HYDROGEN_MASSFRAC * SphP[i].Density * All.cf_a3inv / PROTONMASS * All.UnitMass_in_g / All.HubbleParam;
+    nH = HYDROGEN_MASSFRAC * SphP[i].Density * All.cf_a3inv / PROTONMASS * UNIT_MASS_IN_CGS;
     nHI = SphP[i].HI * nH;
-    sigma = 1.63e-18 / All.UnitLength_in_cm / All.UnitLength_in_cm * All.HubbleParam * All.HubbleParam;
-    e_gamma = SphP[i].E_gamma[0] * (SphP[i].Density*All.cf_a3inv/P[i].Mass);  // want the photon energy density //
+    sigma = 1.63e-18 / (UNIT_LENGTH_IN_CGS*UNIT_LENGTH_IN_CGS);
+    e_gamma = SphP[i].Rad_E_gamma[0] * (SphP[i].Density*All.cf_a3inv/P[i].Mass);  // want the photon energy density //
     rate = nHI * C_LIGHT_CODE * sigma * e_gamma;
     return rate / (All.cf_hubble_a * (SphP[i].Density * All.cf_a3inv));
 }
@@ -41,7 +41,7 @@ double rt_DoHeating(int i, double dt_internal)
 #ifdef RT_CHEM_PHOTOION_HE
     double nHeI, nHeII, nHeIII;
 #endif
-    nH = HYDROGEN_MASSFRAC * SphP[i].Density * All.cf_a3inv / PROTONMASS * All.UnitMass_in_g / All.HubbleParam;
+    nH = HYDROGEN_MASSFRAC * SphP[i].Density * All.cf_a3inv / PROTONMASS * UNIT_MASS_IN_CGS;
     nHI = SphP[i].HI * nH;
 #ifdef RT_CHEM_PHOTOION_HE
     nHeI = SphP[i].HeI * nH;
@@ -142,9 +142,9 @@ double rt_get_cooling_rate(int i, double internal_energy)
     double deHe2, deHe3, deHe4, deHe5;
 #endif
     
-    double fac = All.UnitTime_in_s / pow(All.UnitLength_in_cm, 3) / All.UnitEnergy_in_cgs * pow(All.HubbleParam, 3);
+    double fac = 1. / (UNIT_LENGTH_IN_CGS*UNIT_LENGTH_IN_CGS*UNIT_LENGTH_IN_CGS * UNIT_LUM_IN_CGS);
     
-    nH = HYDROGEN_MASSFRAC * SphP[i].Density * All.cf_a3inv / PROTONMASS * All.UnitMass_in_g / All.HubbleParam;	//physical
+    nH = HYDROGEN_MASSFRAC * SphP[i].Density * All.cf_a3inv * UNIT_MASS_IN_CGS / PROTONMASS;	//physical
     temp = rt_photoion_chem_return_temperature(i, internal_energy);
 
     /* all rates in erg cm^3 s^-1 in code units */
@@ -185,7 +185,7 @@ double rt_get_cooling_rate(int i, double internal_energy)
     deHe3 += SphP[i].HeII * nH * SphP[i].Ne * nH * rateHe3;
     
     rateHe3 = 5.01e-27 * pow(temp, -0.1687) / (1.0 + sqrt(temp / 1e5)) * exp(-55338 / temp) * fac;
-    rateHe3 *= pow(All.HubbleParam / All.UnitLength_in_cm, 3);
+    rateHe3 /= pow(UNIT_LENGTH_IN_CGS, 3);
     deHe3 += SphP[i].HeII * nH * SphP[i].Ne * nH * SphP[i].Ne * nH * rateHe3;
     
     /* collisional excitation cooling rate */
@@ -193,7 +193,7 @@ double rt_get_cooling_rate(int i, double internal_energy)
     deHe4 = SphP[i].HeII * nH * SphP[i].Ne * nH * rateHe4;
     
     rateHe4 = 9.10e-27 * pow(temp, -0.1687) / (1.0 + sqrt(temp / 1e5)) * exp(-13179 / temp) * fac;
-    rateHe4 *= pow(All.HubbleParam / All.UnitLength_in_cm, 3);
+    rateHe4 /= pow(UNIT_LENGTH_IN_CGS, 3);
     deHe4 += SphP[i].HeII * nH * SphP[i].Ne * nH * SphP[i].Ne * nH * rateHe4;
     
     /* Bremsstrahlung cooling rate */

@@ -60,7 +60,7 @@ static int *first_slab_of_task;
 #endif
 
 #ifndef USE_FFTW3
-static int slabstart_x, nslab_x, slabstart_y, nslab_y, smallest_slab;
+static int slabstart_x, nslab_x, slabstart_y, nslab_y; //, smallest_slab;
 static int fftsize, maxfftsize;
 #else 
 static ptrdiff_t *slabs_per_task;
@@ -108,13 +108,13 @@ static int *part_sortindex;
  */
 void pm_init_periodic(void)
 {
-  int i;
-  int slab_to_task_local[PMGRID];
-  double bytes_tot = 0;
-  size_t bytes;
-
-  All.Asmth[0] = ASMTH * All.BoxSize / PMGRID; /* note that these routines REQUIRE a uniform (BOX_LONG_X=BOX_LONG_Y=BOX_LONG_Z=1) box, so we can just use 'BoxSize' */
-  All.Rcut[0] = RCUT * All.Asmth[0];
+  int i, slab_to_task_local[PMGRID];
+#ifdef USE_FFTW3
+  double bytes_tot; bytes_tot = 0; size_t bytes;
+#endif
+    
+  All.Asmth[0] = PM_ASMTH * All.BoxSize / PMGRID; /* note that these routines REQUIRE a uniform (BOX_LONG_X=BOX_LONG_Y=BOX_LONG_Z=1) box, so we can just use 'BoxSize' */
+  All.Rcut[0] = PM_RCUT * All.Asmth[0];
 
 #ifndef USE_FFTW3
   /* Set up the FFTW plan files. */
@@ -3170,9 +3170,9 @@ double PowerSpec_Efstathiou(double k)
   double AA, BB, CC, nu, ShapeGamma;
 
   ShapeGamma = 0.21;
-  AA = 6.4 / ShapeGamma * (3.085678e24 / All.UnitLength_in_cm);
-  BB = 3.0 / ShapeGamma * (3.085678e24 / All.UnitLength_in_cm);
-  CC = 1.7 / ShapeGamma * (3.085678e24 / All.UnitLength_in_cm);
+  AA = 6.4 / ShapeGamma * (1000. / UNIT_LENGTH_IN_KPC);
+  BB = 3.0 / ShapeGamma * (1000. / UNIT_LENGTH_IN_KPC);
+  CC = 1.7 / ShapeGamma * (1000. / UNIT_LENGTH_IN_KPC);
   nu = 1.13;
 
 

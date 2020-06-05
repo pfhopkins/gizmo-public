@@ -519,10 +519,8 @@ int subfind_unbind(struct unbind_data *ud, int len, int *len_non_gas)
 	  s[j] += pos[j];
 
 #ifdef BOX_PERIODIC
-	  while(s[j] < 0)
-	    s[j] += boxsize;
-	  while(s[j] >= boxsize)
-	    s[j] -= boxsize;
+	  while(s[j] < 0) {s[j] += boxsize;}
+	  while(s[j] >= boxsize) {s[j] -= boxsize;}
 #endif
 	}
 
@@ -754,10 +752,8 @@ void subfind_determine_sub_halo_properties(struct unbind_data *d, int num, doubl
       s[j] += pos[j];
 
 #ifdef BOX_PERIODIC
-      while(s[j] < 0)
-	s[j] += boxsize;
-      while(s[j] >= boxsize)
-	s[j] -= boxsize;
+      while(s[j] < 0) {s[j] += boxsize;}
+      while(s[j] >= boxsize) {s[j] -= boxsize;}
 #endif
 
       cm[j] = s[j];
@@ -1023,10 +1019,8 @@ void subfind_col_determine_sub_halo_properties(struct unbind_data *d, int num, d
       s[j] += pos[j];
 
 #ifdef BOX_PERIODIC
-      while(s[j] < 0)
-	s[j] += boxsize;
-      while(s[j] >= boxsize)
-	s[j] -= boxsize;
+      while(s[j] < 0) {s[j] += boxsize;}
+      while(s[j] >= boxsize) {s[j] -= boxsize;}
 #endif
 
       cm[j] = s[j];

@@ -166,10 +166,10 @@ int addthermalFB_evaluate(int target, int mode, int *exportflag, int *exportnode
                 /* if the sub-grid 'cooling turnoff' model is enabled, turn off cooling for the 'blastwave timescale',
                  which is physically the timescale for the blastwave to be completely stopped by ISM ram-pressure
                  (much longer than the actual cooling time of the blastwave) */
-                double Esne51 = local.Esne * (All.UnitEnergy_in_cgs/All.HubbleParam) / 1.e51;
-                double density_to_n = All.cf_a3inv*All.UnitDensity_in_cgs * All.HubbleParam*All.HubbleParam / PROTONMASS;
+                double Esne51 = local.Esne * UNIT_ENERGY_IN_CGS/1.e51;
+                double density_to_n = All.cf_a3inv*UNIT_DENSITY_IN_NHCGS;
                 double pressure_to_p4 = (1/All.cf_afac1)*density_to_n*U_TO_TEMP_UNITS / 1.0e4; 
-                double dt_ram = 7.08 * pow(Esne51*SphP[j].Density*density_to_n,0.34) * pow(SphP[j].Pressure*pressure_to_p4,-0.70) / (All.UnitTime_in_Megayears/All.HubbleParam);
+                double dt_ram = 7.08 * pow(Esne51*SphP[j].Density*density_to_n,0.34) * pow(SphP[j].Pressure*pressure_to_p4,-0.70) / (UNIT_TIME_IN_MYR);
                 if(dt_ram > SphP[j].DelayTimeCoolingSNe) SphP[j].DelayTimeCoolingSNe = dt_ram;
 #endif
             } // for(n = 0; n < numngb; n++)

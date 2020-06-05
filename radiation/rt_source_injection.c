@@ -109,10 +109,10 @@ void rt_source_injection_initial_operations_preloop(void)
     for(j=0;j<NumPart;j++) {
         if(P[j].Type==0) {
             double lum[N_RT_FREQ_BINS]; int k;
-            for(k=0;k<N_RT_FREQ_BINS;k++) {SphP[j].Je[k]=0;} // need to zero -before- calling injection //
+            for(k=0;k<N_RT_FREQ_BINS;k++) {SphP[j].Rad_Je[k]=0;} // need to zero -before- calling injection //
             int active_check = rt_get_source_luminosity(j,0,lum);
             /* here is where we would need to code some source luminosity for the gas */
-            for(k=0;k<N_RT_FREQ_BINS;k++) if(active_check) {SphP[j].Je[k]=lum[k];}
+            for(k=0;k<N_RT_FREQ_BINS;k++) if(active_check) {SphP[j].Rad_Je[k]=lum[k];}
         }
     }
 }
@@ -161,7 +161,7 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
                 // pre-compute a set of weights based on the projection of the particle position along the radial direction for the radiation direction //
                 for(kx=0;kx<N_RT_INTENSITY_BINS;kx++)
                 {
-                    double cos_t=0; int kq; for(kq=0;kq<3;kq++) {cos_t+=All.RT_Intensity_Direction[kx][kq]*dp[kq]/r;}
+                    double cos_t=0; int kq; for(kq=0;kq<3;kq++) {cos_t+=All.Rad_Intensity_Direction[kx][kq]*dp[kq]/r;}
                     double wt_function = cos_t*cos_t*cos_t*cos_t; if(cos_t < 0) {wt_function=0;}
                     angle_wt_Inu[kx] = wt_function; angle_wt_Inu_sum += angle_wt_Inu[kx];
                 }
@@ -172,13 +172,13 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
                 {
                     double dE = wk * local.Luminosity[k];
 #if defined(RT_INJECT_PHOTONS_DISCRETELY)
-                    SphP[j].E_gamma[k] += dE;
+                    SphP[j].Rad_E_gamma[k] += dE;
 #ifdef RT_EVOLVE_ENERGY
-                    SphP[j].E_gamma_Pred[k] += dE; // dump discreetly (noisier, but works smoothly with large timebin hierarchy)
+                    SphP[j].Rad_E_gamma_Pred[k] += dE; // dump discreetly (noisier, but works smoothly with large timebin hierarchy)
 #endif
 #if defined(RT_INJECT_PHOTONS_DISCRETELY_ADD_MOMENTUM_FOR_LOCAL_EXTINCTION)
                     // add discrete photon momentum from un-resolved absorption //
-                    double x_abs = 2. * SphP[j].Kappa_RT[k] * (SphP[j].Density*All.cf_a3inv) * (DMAX(2.*Get_Particle_Size(j),lmax_0)*All.cf_atime); // effective optical depth through particle
+                    double x_abs = 2. * SphP[j].Rad_Kappa[k] * (SphP[j].Density*All.cf_a3inv) * (DMAX(2.*Get_Particle_Size(j),lmax_0)*All.cf_atime); // effective optical depth through particle
                     double slabfac_x = x_abs * slab_averaging_function(x_abs); // 1-exp(-x)
                     if(isnan(slabfac_x)||(slabfac_x<=0)) {slabfac_x=0;}
                     if(slabfac_x>1) {slabfac_x=1;}
@@ -186,18 +186,21 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
                     int kv; for(kv=0;kv<3;kv++) {P[j].Vel[kv] += dv*dp[kv]; SphP[j].VelPred[kv] += dv*dp[kv];}
 #if defined(RT_EVOLVE_FLUX)
                     double dflux = -dE * c_light_eff / r;
-                    for(kv=0;kv<3;kv++) {SphP[j].Flux[k][kv] += dflux*dp[kv]; SphP[j].Flux_Pred[k][kv] += dflux*dp[kv];}
+                    for(kv=0;kv<3;kv++) {SphP[j].Rad_Flux[k][kv] += dflux*dp[kv]; SphP[j].Rad_Flux_Pred[k][kv] += dflux*dp[kv];}
 #endif
 #ifdef RT_EVOLVE_INTENSITIES
                     double dflux = dE / angle_wt_Inu_sum;
-                    for(kv=0;kv<N_RT_INTENSITY_BINS;kv++) {SphP[j].Intensity[k][kv] += dflux * angle_wt_Inu[N_RT_INTENSITY_BINS]; SphP[j].Intensity_Pred[k][kv] += dflux * angle_wt_Inu[N_RT_INTENSITY_BINS];}
+                    for(kv=0;kv<N_RT_INTENSITY_BINS;kv++) {SphP[j].Rad_Intensity[k][kv] += dflux * angle_wt_Inu[N_RT_INTENSITY_BINS]; SphP[j].Rad_Intensity_Pred[k][kv] += dflux * angle_wt_Inu[N_RT_INTENSITY_BINS];}
 #endif
 #endif // local extinction-corrected version gets the 'full' thin flux above: more general formulation allows these to build up self-consistently, since we don't know what the flux 'should' be in fact
 #if defined(RT_EVOLVE_FLUX) // add relativistic corrections here, which should be there in general. however we will ignore [here] the 'back-reaction' term, since we're assuming the source is a star or something like that, where this would be negligible. gas self gain/loss is handled separately.
-                    for(kv=0;kv<3;kv++) {SphP[j].Flux[k][kv] += dE*local.Vel[kv]/All.cf_atime; SphP[j].Flux_Pred[k][kv] += dE*local.Vel[kv]/All.cf_atime;}
+                    {int kv; for(kv=0;kv<3;kv++) {SphP[j].Rad_Flux[k][kv] += dE*local.Vel[kv]/All.cf_atime; SphP[j].Rad_Flux_Pred[k][kv] += dE*local.Vel[kv]/All.cf_atime;}}
+#ifdef GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION
+                    {double dflux=dE*C_LIGHT_CODE_REDUCED; SphP[j].Rad_Flux_Pred[k][2]+=dflux; SphP[j].Rad_Flux[k][2]+=dflux;}
+#endif
 #endif
 #else // end discrete injection clause
-                    SphP[j].Je[k] += dE; // treat continuously
+                    SphP[j].Rad_Je[k] += dE; // treat continuously
 #endif
                 }
             } // for(n = 0; n < numngb; n++)
@@ -223,6 +226,7 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
 /*! routine to do the master loop over particles, for the source injection (photons put into surrounding gas) */
 void rt_source_injection(void)
 {
+    PRINT_STATUS(" ..injecting radiation onto grid for RHD steps");
     rt_source_injection_initial_operations_preloop(); /* operations before the main loop */
     #include "../system/code_block_xchange_perform_ops_malloc.h" /* this calls the large block of code which contains the memory allocations for the MPI/OPENMP/Pthreads parallelization block which must appear below */
     #include "../system/code_block_xchange_perform_ops.h" /* this calls the large block of code which actually contains all the loops, MPI/OPENMP/Pthreads parallelization */

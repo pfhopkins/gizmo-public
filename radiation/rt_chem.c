@@ -14,7 +14,7 @@
 /* return photon number density in physical code units */
 double rt_return_photon_number_density(int i, int k)
 {
-    return SphP[i].E_gamma[k] * (SphP[i].Density*All.cf_a3inv/P[i].Mass) / (rt_nu_eff_eV[k]*ELECTRONVOLT_IN_ERGS / All.UnitEnergy_in_cgs * All.HubbleParam);
+    return SphP[i].Rad_E_gamma[k] * (SphP[i].Density*All.cf_a3inv/P[i].Mass) / (rt_nu_eff_eV[k]*ELECTRONVOLT_IN_ERGS/UNIT_ENERGY_IN_CGS);
 }
 
 double rt_photoion_chem_return_temperature(int i, double internal_energy)
@@ -36,14 +36,14 @@ void rt_get_sigma(void)
         nu[k] = 0; rt_nu_eff_eV[k] = nu[k]; 
         G_HI[k]=G_HeI[k]=G_HeII[k]=rt_sigma_HI[k]=rt_sigma_HeI[k]=rt_sigma_HeII[k]=precalc_stellar_luminosity_fraction[k]=0;
     }
-    double fac = 1.0 / All.UnitLength_in_cm / All.UnitLength_in_cm * All.HubbleParam * All.HubbleParam;
+    double fac = 1.0 / (UNIT_LENGTH_IN_CGS*UNIT_LENGTH_IN_CGS);
     
 #ifndef RT_PHOTOION_MULTIFREQUENCY
     /* just the hydrogen ionization bin */
     rt_sigma_HI[RT_FREQ_BIN_H0] = 6.3e-18 * fac; // cross-section (blackbody-weighted) for photons
     nu[RT_FREQ_BIN_H0] = 13.6; // minimum frequency [in eV] of photons of interest
     rt_nu_eff_eV[RT_FREQ_BIN_H0] = 27.2; // typical blackbody-weighted frequency [in eV] of photons of interest: to convert energies to numbers
-    G_HI[RT_FREQ_BIN_H0] = (rt_nu_eff_eV[RT_FREQ_BIN_H0]-13.6)*ELECTRONVOLT_IN_ERGS / All.UnitEnergy_in_cgs * All.HubbleParam; // absorption cross-section weighted photon energy in code units
+    G_HI[RT_FREQ_BIN_H0] = (rt_nu_eff_eV[RT_FREQ_BIN_H0]-13.6)*ELECTRONVOLT_IN_ERGS/UNIT_ENERGY_IN_CGS; // absorption cross-section weighted photon energy in code units
 #else
     
     /* now we use the multi-bin spectral information */
@@ -58,7 +58,7 @@ void rt_get_sigma(void)
 #else 
     T_eff = All.star_Teff;
 #endif
-    fac_two = ELECTRONVOLT_IN_ERGS / All.UnitEnergy_in_cgs * All.HubbleParam;
+    fac_two = ELECTRONVOLT_IN_ERGS/UNIT_ENERGY_IN_CGS;
 #ifdef RT_CHEM_PHOTOION_HE
     double sum_HeI_sigma=0, sum_HeII_sigma=0, sum_HeI_G=0, sum_HeII_G=0;
 #endif    
@@ -152,7 +152,7 @@ void rt_update_chemistry(void)
     double alpha_HeII, alpha_HeIII, gamma_HeI, gamma_HeII, nHeII, nHeIII, D, E, F, G, J, L, y_fac;
 #endif
     
-    fac = All.UnitTime_in_s / pow(All.UnitLength_in_cm, 3) * All.HubbleParam * All.HubbleParam;
+    fac = UNIT_TIME_IN_CGS / (UNIT_LENGTH_IN_CGS*UNIT_LENGTH_IN_CGS*UNIT_LENGTH_IN_CGS);
     c_light = C_LIGHT_CODE;
     
     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
@@ -160,7 +160,7 @@ void rt_update_chemistry(void)
         {
             dtime = (P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0) * All.Timebase_interval / All.cf_hubble_a;
             rho = SphP[i].Density * All.cf_a3inv;
-            nH = HYDROGEN_MASSFRAC * rho / PROTONMASS * All.UnitMass_in_g / All.HubbleParam;
+            nH = HYDROGEN_MASSFRAC * rho / PROTONMASS * UNIT_MASS_IN_CGS;
             temp = rt_photoion_chem_return_temperature(i,SphP[i].InternalEnergyPred);
             /* collisional ionization rate */
             gamma_HI = 5.85e-11 * sqrt(temp) * exp(-157809.1 / temp) / (1.0 + sqrt(temp / 1e5)) * fac;
@@ -171,7 +171,7 @@ void rt_update_chemistry(void)
             if(n_photons_vol < 0 || isnan(n_photons_vol))
             {
                 printf("NEGATIVE n_photons_per_volume: %g %d %d \n", n_photons_vol, i, ThisTask);
-                printf("E_gamma %g mass %g All.cf_a3inv %g \n", SphP[i].E_gamma[0], P[i].Mass, All.cf_a3inv);
+                printf("Rad_E_gamma %g mass %g All.cf_a3inv %g \n", SphP[i].Rad_E_gamma[0], P[i].Mass, All.cf_a3inv);
                 endrun(111);
             }
             
@@ -249,7 +249,7 @@ void rt_update_chemistry(void)
     double alpha_HeII, alpha_HeIII, gamma_HeI, gamma_HeII, nHeII, nHeIII, D, E, F, G, J, L, k_HeI, k_HeII, y_fac;
 #endif
     
-    fac = All.UnitTime_in_s / pow(All.UnitLength_in_cm, 3) * All.HubbleParam * All.HubbleParam;
+    fac = UNIT_TIME_IN_CGS / (UNIT_LENGTH_IN_CGS*UNIT_LENGTH_IN_CGS*UNIT_LENGTH_IN_CGS);
     c_light = C_LIGHT_CODE;
     
     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
@@ -272,7 +272,7 @@ void rt_update_chemistry(void)
             
             dtime = (P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0) * All.Timebase_interval / All.cf_hubble_a;
             rho = SphP[i].Density * All.cf_a3inv;
-            nH = HYDROGEN_MASSFRAC * rho / PROTONMASS * All.UnitMass_in_g / All.HubbleParam;
+            nH = HYDROGEN_MASSFRAC * rho / PROTONMASS * UNIT_MASS_IN_CGS;
             temp = rt_photoion_chem_return_temperature(i,SphP[i].InternalEnergyPred);
             /* collisional ionization rate */
             gamma_HI = 5.85e-11 * sqrt(temp) * exp(-157809.1 / temp) / (1.0 + sqrt(temp / 1e5)) * fac;
@@ -297,7 +297,7 @@ void rt_update_chemistry(void)
                 printf("temp %g \n",temp);
                 printf("pressure %g \n",SphP[i].Pressure);
                 printf("kHI %g \n",k_HI);
-                printf("E_gamma %g \n",SphP[i].E_gamma[0]);
+                printf("Rad_E_gamma %g \n",SphP[i].Rad_E_gamma[0]);
                 endrun(333);
             }
             SphP[i].Ne = nHII;

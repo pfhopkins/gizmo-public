@@ -69,28 +69,20 @@ HG_BRANCH := $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null)
 BUILDINFO = "Build on $(HOSTNAME) by $(USER) from $(HG_BRANCH):$(HG_COMMIT) at $(HG_REPO)"
 OPT += -DBUILDINFO='$(BUILDINFO)'
 
-ifeq (FIRE_PHYSICS_DEFAULTS,$(findstring FIRE_PHYSICS_DEFAULTS,$(CONFIGVARS)))  # using 'fire default' instead of all the above
-    CONFIGVARS += COOLING COOL_LOW_TEMPERATURES COOL_METAL_LINES_BY_SPECIES
-    CONFIGVARS += GALSF METALS TURB_DIFF_METALS TURB_DIFF_METALS_LOWORDER GALSF_SFR_MOLECULAR_CRITERION GALSF_SFR_VIRIAL_SF_CRITERION=0
-    CONFIGVARS += GALSF_FB_FIRE_RT_HIIHEATING GALSF_FB_MECHANICAL GALSF_FB_FIRE_RT_LONGRANGE
-    CONFIGVARS += GALSF_FB_FIRE_RT_UVHEATING GALSF_FB_FIRE_RT_LOCALRP GALSF_FB_FIRE_RPROCESS=4
-#    CONFIGVARS += GALSF_SFR_IMF_VARIATION
-endif
 
-
-CC       = mpicc        # sets the C-compiler (default)
-CXX       = mpiCC       # sets the C++-compiler (default)
-
-FC 	 = mpif90
-
+# initialize some default flags -- these will all get re-written below
+CC	= mpicc		# sets the C-compiler (default, will be set for machine below)
+CXX	= mpiCC		# sets the C++-compiler (default, will be set for machine below)
+FC	= mpif90	# sets the fortran compiler (default, will be set for machine below)
 OPTIMIZE = -Wall  -g   # optimization and warning flags (default)
+MPICHLIB = -lmpich	# mpi library (arbitrary default, set for machine below)
+CHIMESINCL = # default to empty, will only be used below if called
+CHIMESLIBS = # default to empty, will only be used below if called
 
-MPICHLIB = -lmpich
-
-GRACKLEINCL =
-GRACKLELIBS = -lgrackle
-
-
+# one annoying thing here is the FFTW libraries, since they are named differently depending on
+#  whether they are compiled in different precision levels, or with different parallelization options, so we
+#  have to have a big block here 'sorting them out'.
+#
 ifeq (NOTYPEPREFIX_FFTW,$(findstring NOTYPEPREFIX_FFTW,$(CONFIGVARS)))  # fftw installed without type prefix?
     FFTW_LIBNAMES =  #-lrfftw_mpi -lfftw_mpi -lrfftw -lfftw
 else
@@ -100,7 +92,6 @@ else
     FFTW_LIBNAMES =  #-lsrfftw_mpi -lsfftw_mpi -lsrfftw -lsfftw
 endif
 endif
-
 # we only need fftw if PMGRID is turned on
 ifneq (USE_FFTW3, $(findstring USE_FFTW3, $(CONFIGVARS)))
 ifeq (PMGRID, $(findstring PMGRID, $(CONFIGVARS)))
@@ -151,6 +142,7 @@ endif
 endif
 
 
+## read the systype information to use the blocks below for different machines
 ifdef SYSTYPE
 SYSTYPE := "$(SYSTYPE)"
 -include Makefile.systype
@@ -326,21 +318,37 @@ endif
 ifeq ($(SYSTYPE),"MacBookPro")
 CC       =  mpicc
 CXX      =  mpiccxx
-FC       =  $(CC) #mpifort
+FC       =  $(CC) #mpifort  ## change this to "mpifort" for packages requiring linking secondary fortran code, currently -only- the helmholtz eos modules do this, so I leave it un-linked for now to save people the compiler headaches
 OPTIMIZE = -O1 -funroll-loops
 OPTIMIZE += -g -Wall # compiler warnings
+ifeq (CHIMES,$(findstring CHIMES,$(CONFIGVARS)))
+CHIMESINCL = -I/usr/local/include/sundials
+CHIMESLIBS = -L/usr/local/lib -lsundials_cvode -lsundials_nvecserial
+endif
 GMP_INCL = #
 GMP_LIBS = #
 MKL_INCL = #
 MKL_LIBS = #
-GSL_INCL = -I/usr/local/include -I$(PORTINCLUDE)
-GSL_LIBS = -L/usr/local/lib -L$(PORTLIB)
+GSL_INCL = -I/usr/local/include #-I$(PORTINCLUDE)
+GSL_LIBS = -L/usr/local/lib #-L$(PORTLIB)
 FFTW_INCL= -I/usr/local/include
 FFTW_LIBS= -L/usr/local/lib
-HDF5INCL = -I/usr/local/include -I$(PORTINCLUDE) -DH5_USE_16_API
-HDF5LIB  = -L/usr/local/lib -L$(PORTLIB) -lhdf5 -lz
+HDF5INCL = -I/usr/local/include -DH5_USE_16_API #-I$(PORTINCLUDE) -DH5_USE_16_API
+HDF5LIB  = -L/usr/local/lib -lhdf5 -lz #-L$(PORTLIB)
 MPICHLIB = #
-OPT     += #
+OPT     += -DDISABLE_ALIGNED_ALLOC -DCHIMES_USE_DOUBLE_PRECISION #
+##
+## update 2020: on more recent macs, MacPorts is not as useful a library installer.
+##  I [PFH] switched over to homebrew. First you still need to install the extended XCode developer
+##  tools and make sure all the appropriate extended tools, permissions, etc, are installed on your mac.
+##  You can find tutorials online with simple searches like "how to install gcc and mpicc on osx"
+##  rather than looking for something GIZMO-specific. Then look for how to install homebrew or
+##  another package manager.
+## Most of the compilation tools will then be available. You may need to install your own HDF5 libraries,
+##  but this can be done with homebrew. Similarly some special code sub-modules require their own
+##  packages. For example, chimes modules require sundials, which can be easily installed with
+##  "brew install sundials". In the above, /usr/local/lib etc reflect the default homebrew install locations.
+## FFTW is trickier, see the instructions below [special treatment is still needed]
 ##
 ## PFH: this is my own laptop installation (2013 MacBook Pro running Yosemite)
 ## --
@@ -665,7 +673,7 @@ OPTIMIZE += -parallel -openmp # openmp required compiler flags
 endif
 ifeq (CHIMES,$(findstring CHIMES,$(CONFIGVARS)))
 CHIMESINCL = -I/home/ajr882/sundials/include  
-CHIMESLIBS = -L/home/ajr882/sundials/lib -lsundials_cvode -lsundials_kinsol -lsundials_nvecserial 
+CHIMESLIBS = -L/home/ajr882/sundials/lib -lsundials_cvode -lsundials_nvecserial 
 endif 
 GMP_INCL = #
 GMP_LIBS = #
@@ -696,8 +704,8 @@ ifeq (OPENMP,$(findstring OPENMP,$(CONFIGVARS)))
 OPTIMIZE += -parallel -openmp -mt_mpi 
 endif
 ifeq (CHIMES,$(findstring CHIMES,$(CONFIGVARS)))
-CHIMESINCL = -I/home/ajr882/sundials/include  
-CHIMESLIBS = -L/home/ajr882/sundials/lib -lsundials_cvode -lsundials_kinsol -lsundials_nvecserial 
+CHIMESINCL = -I/home/sundials/include  
+CHIMESLIBS = -L/home/sundials/lib -lsundials_cvode -lsundials_nvecserial 
 endif 
 GMP_INCL = #
 GMP_LIBS = #
@@ -705,8 +713,8 @@ MKL_INCL = -I$(MKLROOT)/include
 MKL_LIBS = -L$(MKLROOT)/lib/intel64 -lm -lmkl_core -lmkl_sequential -lmkl_scalapack_lp64 -lmkl_intel_lp64 -lmkl_blacs_intelmpi_lp64
 GSL_INCL = 
 GSL_LIBS = 
-FFTW_INCL= -I/home/ajr882/libraries/fftw-2.1.5_install/include 
-FFTW_LIBS= -L/home/ajr882/libraries/fftw-2.1.5_install/lib 
+FFTW_INCL= -I/home/libraries/fftw-2.1.5_install/include 
+FFTW_LIBS= -L/home/libraries/fftw-2.1.5_install/lib 
 HDF5INCL = -DH5_USE_16_API 
 HDF5LIB  = -lhdf5 -lz
 MPICHLIB = 
@@ -1082,153 +1090,76 @@ endif
 #----------------------------------------------------------------------------------------------
 
 
+#
+# different code groups that need to be compiled. the groupings below are
+# arbitrary (they will all be added to OBJS and compiled, and if they are
+# un-used it should be through use of macro flags in the source code). But
+# they are grouped below for the sake of clarity when adding/removing code
+# blocks in the future
+#
+CORE_OBJS =	main.o accel.o  timestep.o init.o restart.o io.o \
+			predict.o global.o begrun.o run.o allvars.o read_ic.o \
+			domain.o driftfac.o kicks.o ngb.o compile_time_info.o merge_split.o
 
-ifeq (IO_DISABLE_HDF5,$(findstring IO_DISABLE_HDF5,$(CONFIGVARS)))
-HDF5INCL =
-HDF5LIB  =
-endif
+SYSTEM_OBJS =   system/system.o \
+				system/allocate.o \
+				system/mymalloc.o \
+				system/parallel_sort.o \
+                system/peano.o \
+                system/parallel_sort_special.o \
+                system/mpi_util.o \
+                system/pinning.o
 
+GRAVITY_OBJS  = gravity/forcetree.o \
+                gravity/forcetree_update.o \
+                gravity/gravtree.o \
+				gravity/cosmology.o \
+				gravity/potential.o \
+				gravity/pm_periodic.o \
+                gravity/pm_nonperiodic.o \
+                gravity/longrange.o \
+                gravity/ags_hsml.o \
+                gravity/binary.o
 
-ifeq (COOL_GRACKLE,$(findstring COOL_GRACKLE,$(CONFIGVARS)))
-OPT += -DCONFIG_BFLOAT_8
-else
-GRACKLEINCL =
-GRACKLELIBS =
-endif
+HYDRO_OBJS = 	hydro/hydra_master.o \
+				hydro/density.o \
+				hydro/gradients.o \
+				turb/dynamic_diffusion.o \
+				turb/dynamic_diffusion_velocities.o \
+				turb/turb_driving.o \
+				turb/turb_powerspectra.o
 
+EOSCOOL_OBJS =  cooling/cooling.o \
+				cooling/grackle.o \
+				eos/eos.o \
+				eos/cosmic_ray_fluid/cosmic_ray_alfven.o \
+				eos/cosmic_ray_fluid/cosmic_ray_utilities.o \
+				solids/elastic_physics.o \
+				solids/grain_physics.o \
+				nuclear/nuclear_network_solver.o \
+				nuclear/nuclear_network.o 
 
+STARFORM_OBJS = galaxy_sf/sfr_eff.o \
+                galaxy_sf/stellar_evolution.o \
+                galaxy_sf/mechanical_fb.o \
+                galaxy_sf/thermal_fb.o \
+                galaxy_sf/radfb_local.o \
+                galaxy_sf/dm_dispersion_hsml.o
 
-SYSTEM_OBJS =   system/system.o system/allocate.o system/mymalloc.o system/parallel_sort.o \
-                system/peano.o system/parallel_sort_special.o system/mpi_util.o
+SINK_OBJS = galaxy_sf/blackholes/blackhole.o \
+            galaxy_sf/blackholes/blackhole_util.o \
+            galaxy_sf/blackholes/blackhole_environment.o \
+            galaxy_sf/blackholes/blackhole_feed.o \
+            galaxy_sf/blackholes/blackhole_swallow_and_kick.o
 
-GRAVITY_OBJS  = gravity/forcetree.o gravity/cosmology.o gravity/pm_periodic.o gravity/potential.o \
-                gravity/gravtree.o gravity/forcetree_update.o gravity/pm_nonperiodic.o gravity/longrange.o \
-                gravity/ags_hsml.o
+RHD_OBJS =  radiation/rt_utilities.o \
+			radiation/rt_CGmethod.o \
+			radiation/rt_source_injection.o \
+			radiation/rt_chem.o \
+			radiation/rt_cooling.o
 
-HYDRO_OBJS = hydro/hydra_master.o hydro/density.o hydro/gradients.o eos/eos.o solids/elastic_physics.o
-
-
-L3_OBJS =
-
-
-OPTIONS = $(OPTIMIZE) $(OPT) 
-
-FOPTIONS = $(OPTIMIZE) $(FOPT)
-
-EXEC   = GIZMO
-
-OBJS  =  main.o accel.o  timestep.o init.o restart.o io.o \
-         predict.o global.o begrun.o run.o allvars.o read_ic.o \
-         domain.o driftfac.o kicks.o ngb.o compile_time_info.o merge_split.o
-FOBJS =
-
-OBJS	+= $(GRAVITY_OBJS) $(HYDRO_OBJS) $(SYSTEM_OBJS)
-OBJS	+= $(L3_OBJS)
-
-INCL    += allvars.h proto.h gravity/forcetree.h domain.h system/myqsort.h kernel.h eos/eos.h Makefile \
-	   gravity/myfftw3.h
-
-
-ifeq (GALSF_SUBGRID_WINDS,$(findstring GALSF_SUBGRID_WINDS,$(CONFIGVARS)))
-OBJS    += galaxy_sf/dm_dispersion_hsml.o
-endif
-
-ifeq (GRAIN_FLUID,$(findstring GRAIN_FLUID,$(CONFIGVARS)))
-OBJS    += solids/grain_physics.o
-else
-ifeq (PIC_MHD,$(findstring PIC_MHD,$(CONFIGVARS)))
-OBJS    += solids/grain_physics.o
-endif
-endif
-
-ifeq (GALSF,$(findstring GALSF,$(CONFIGVARS)))
-OBJS    += galaxy_sf/sfr_eff.o galaxy_sf/stellar_evolution.o
-endif
-
-ifeq (CBE_INTEGRATOR,$(findstring CBE_INTEGRATOR,$(CONFIGVARS)))
-OBJS    += sidm/cbe_integrator.o
-endif
-
-ifeq (DM_FUZZY,$(findstring DM_FUZZY,$(CONFIGVARS)))
-OBJS    += sidm/dm_fuzzy.o
-endif
-
-ifeq (OUTPUT_TWOPOINT_ENABLED,$(findstring OUTPUT_TWOPOINT_ENABLED,$(CONFIGVARS)))
-OBJS    += structure/twopoint.o
-endif
-
-ifeq (GALSF_FB_MECHANICAL,$(findstring GALSF_FB_MECHANICAL,$(CONFIGVARS)))
-OBJS    += galaxy_sf/mechanical_fb.o
-endif
-
-ifeq (GALSF_FB_THERMAL,$(findstring GALSF_FB_THERMAL,$(CONFIGVARS)))
-OBJS    += galaxy_sf/thermal_fb.o
-endif
-
-ifeq (GALSF_FB_FIRE_RT,$(findstring GALSF_FB_FIRE_RT,$(CONFIGVARS)))
-OBJS    += galaxy_sf/radfb_local.o
-endif
-
-ifeq (BLACK_HOLES,$(findstring BLACK_HOLES,$(CONFIGVARS)))
-OBJS    += galaxy_sf/blackholes/blackhole.o
-OBJS    += galaxy_sf/blackholes/blackhole_util.o
-OBJS    += galaxy_sf/blackholes/blackhole_environment.o
-OBJS    += galaxy_sf/blackholes/blackhole_feed.o
-OBJS    += galaxy_sf/blackholes/blackhole_swallow_and_kick.o
-INCL    += galaxy_sf/blackholes/blackhole.h
-endif
-
-
-ifeq (SINGLE_STAR,$(findstring SINGLE_STAR,$(CONFIGVARS)))
-OBJS    += galaxy_sf/sfr_eff.o galaxy_sf/stellar_evolution.o galaxy_sf/mechanical_fb.o galaxy_sf/radfb_local.o
-OBJS    += galaxy_sf/blackholes/blackhole.o galaxy_sf/blackholes/blackhole_util.o galaxy_sf/blackholes/blackhole_environment.o galaxy_sf/blackholes/blackhole_feed.o galaxy_sf/blackholes/blackhole_swallow_and_kick.o
-OBJS    += gravity/binary.o
-INCL    += galaxy_sf/blackholes/blackhole.h
-endif
-
-ifeq (FOF,$(findstring FOF,$(CONFIGVARS)))
-OBJS    += structure/fof.o
-INCL	+= structure/fof.h
-endif
-
-ifeq (OUTPUT_LINEOFSIGHT,$(findstring OUTPUT_LINEOFSIGHT,$(CONFIGVARS)))
-OBJS    += structure/lineofsight.o
-endif
-
-ifeq (COOLING,$(findstring COOLING,$(CONFIGVARS)))
-OBJS    += cooling/cooling.o
-INCL	+= cooling/cooling.h
-endif
-
-ifeq (COOL_GRACKLE,$(findstring COOL_GRACKLE,$(CONFIGVARS)))
-OBJS    += cooling/grackle.o
-endif
-
-ifeq (CHIMES,$(findstring CHIMES,$(CONFIGVARS)))
-OBJS    += cooling/chimes/chimes.o cooling/chimes/cooling.o cooling/chimes/init_chimes.o cooling/chimes/init_chimes_parallel.o cooling/chimes/interpol.o cooling/chimes/optimise.o cooling/chimes/rate_coefficients.o cooling/chimes/rate_equations.o cooling/chimes/set_rates.o 
-endif
-
-ifeq (EOS_HELMHOLTZ,$(findstring EOS_HELMHOLTZ,$(CONFIGVARS)))
-OBJS    += eos/eos_interface.o
-INCL    += eos/helmholtz/helm_wrap.h
-FOBJS   += eos/helmholtz/helm_impl.o eos/helmholtz/helm_wrap.o
-FINCL   += eos/helmholtz/helm_const.dek eos/helmholtz/helm_implno.dek eos/helmholtz/helm_table_storage.dek eos/helmholtz/helm_vector_eos.dek
-endif
-
-ifeq (IMPOSE_PINNING,$(findstring IMPOSE_PINNING,$(CONFIGVARS)))
-OBJS	+= system/pinning.o
-endif
-
-ifeq (GDE_DISTORTIONTENSOR,$(findstring GDE_DISTORTIONTENSOR,$(CONFIGVARS)))
-OBJS	+= modules/phasespace/phasespace.o modules/phasespace/phasespace_math.o
-endif
-
-ifeq (RT_,$(findstring RT_,$(CONFIGVARS)))
-OBJS	+= radiation/rt_utilities.o radiation/rt_CGmethod.o radiation/rt_source_injection.o radiation/rt_chem.o radiation/rt_cooling.o
-endif
-
-ifeq (SUBFIND,$(findstring SUBFIND,$(CONFIGVARS)))
-OBJS	+=  structure/subfind/subfind.o \
+FOF_OBJS =	structure/fof.o \
+			structure/subfind/subfind.o \
 			structure/subfind/subfind_vars.o \
 			structure/subfind/subfind_collective.o \
 			structure/subfind/subfind_serial.o \
@@ -1239,54 +1170,97 @@ OBJS	+=  structure/subfind/subfind.o \
 			structure/subfind/subfind_nearesttwo.o \
 			structure/subfind/subfind_loctree.o \
 			structure/subfind/subfind_potential.o \
-			structure/subfind/subfind_density.o
-INCL	+= structure/subfind/subfind.h
+			structure/subfind/subfind_density.o \
+			structure/twopoint.o \
+			structure/lineofsight.o
+
+MISC_OBJS = sidm/cbe_integrator.o \
+			sidm/dm_fuzzy.o \
+			sidm/sidm_core.o
+
+## name of executable and optimizations
+EXEC   = GIZMO
+OPTIONS = $(OPTIMIZE) $(OPT)
+
+## combine all the objects above
+OBJS  = $(CORE_OBJS) $(SYSTEM_OBJS) $(GRAVITY_OBJS) $(HYDRO_OBJS) \
+		$(EOSCOOL_OBJS) $(STARFORM_OBJS) $(SINK_OBJS) $(RHD_OBJS) \
+		$(FOF_OBJS) $(MISC_OBJS)
+
+## fortran recompiler block
+FOPTIONS = $(OPTIMIZE) $(FOPT)
+FOBJS =
+
+## include files needed at compile time for the above objects
+INCL    += 	allvars.h \
+			proto.h \
+			gravity/forcetree.h \
+			gravity/myfftw3.h \
+			domain.h \
+			system/myqsort.h \
+			kernel.h \
+			eos/eos.h \
+			galaxy_sf/blackholes/blackhole.h \
+			structure/fof.h \
+			structure/subfind/subfind.h \
+			cooling/cooling.h \
+			nuclear/nuclear_network.h \
+			Makefile
+
+
+## now we add special cases dependent on compiler flags. normally we would
+##  include the files always, and simply use the in-file compiler variables
+##  to determine whether certain code is compiled [this allows us to take
+##  advantage of compiler logic, and makes it easier for the user to
+##  always specify what they want]. However special cases can arise, if e.g.
+##  there are certain special libraries needed, or external compilers, for
+##  certain features
+
+# helmholtz eos routines need special treatment here because they are written
+#  in fortran and call the additional fortran compilers and linkers. these could
+#  be written to always compile and just be ignored, but then the large majority
+#  of cases that -don't- need the fortran linker would always have to go
+#  through these additional compilation options and steps (and this
+#  can cause additional problems on some machines). so we sandbox it here.
+ifeq (EOS_HELMHOLTZ,$(findstring EOS_HELMHOLTZ,$(CONFIGVARS)))
+OBJS    += eos/eos_interface.o
+INCL    += eos/helmholtz/helm_wrap.h
+FOBJS   += eos/helmholtz/helm_impl.o eos/helmholtz/helm_wrap.o
+FINCL   += eos/helmholtz/helm_const.dek eos/helmholtz/helm_implno.dek eos/helmholtz/helm_table_storage.dek eos/helmholtz/helm_vector_eos.dek
 endif
 
-ifeq (TURB_DIFF_DYNAMIC,$(findstring TURB_DIFF_DYNAMIC,$(CONFIGVARS)))
-OBJS += turb/dynamic_diffusion.o turb/dynamic_diffusion_velocities.o
+# chimes files are treated as special for now because they are not in the public
+#  code and have not had their macro logic cleaned up to allow appropriate compilation without chimes flags enabled
+ifeq (CHIMES,$(findstring CHIMES,$(CONFIGVARS)))
+OBJS    += cooling/chimes/chimes.o cooling/chimes/chimes_cooling.o cooling/chimes/init_chimes.o cooling/chimes/rate_equations.o cooling/chimes/update_rates.o 
+INCL    += cooling/chimes/chimes_interpol.h cooling/chimes/chimes_proto.h cooling/chimes/chimes_vars.h 
 endif
 
-ifeq (DM_SIDM,$(findstring DM_SIDM,$(CONFIGVARS)))
-OBJS    +=  sidm/sidm_core.o 
+# if HDF5 explicitly disabled, remove the linked libraries
+ifeq (IO_DISABLE_HDF5,$(findstring IO_DISABLE_HDF5,$(CONFIGVARS)))
+HDF5INCL =
+HDF5LIB  =
 endif
 
-ifeq (GRAIN_COLLISIONS,$(findstring GRAIN_COLLISIONS,$(CONFIGVARS)))
-OBJS    +=  sidm/sidm_core.o
-endif
-
-ifeq (NUCLEAR_NETWORK,$(findstring NUCLEAR_NETWORK,$(CONFIGVARS)))
-OBJS	+=  nuclear/nuclear_network_solver.o nuclear/nuclear_network.o
-INCL	+=  nuclear/nuclear_network.h
-endif
-
-ifeq (TURB_DRIVING,$(findstring TURB_DRIVING,$(CONFIGVARS)))
-OBJS	+= turb/turb_driving.o turb/turb_powerspectra.o
-endif
-
-CFLAGS = $(OPTIONS) $(GSL_INCL) $(FFTW_INCL) $(HDF5INCL) $(GMP_INCL) $(GRACKLEINCL)
-
-ifeq (CHIMES,$(findstring CHIMES,$(CONFIGVARS))) 
-CFLAGS += $(CHIMESINCL) 
-endif 
-
-ifeq (VIP,$(findstring VIP,$(CONFIGVARS)))
-FFLAGS = $(FOPTIONS)
+# if grackle libraries are installed they must be a shared library as defined here
+ifeq (COOL_GRACKLE,$(findstring COOL_GRACKLE,$(CONFIGVARS)))
+OPTIONS += -DCONFIG_BFLOAT_8
+GRACKLEINCL =
+GRACKLELIBS = -lgrackle
 else
-FFLAGS = $(OPTIONS)
+GRACKLEINCL =
+GRACKLELIBS =
 endif
 
+# linking libraries (includes machine-dependent options above)
+CFLAGS = $(OPTIONS) $(GSL_INCL) $(FFTW_INCL) $(HDF5INCL) $(GMP_INCL) \
+         $(GRACKLEINCL) $(CHIMESINCL)
 
-FFTW = $(FFTW_LIBS)  $(FFTW_LIBNAMES)
-
-LIBS   = $(HDF5LIB) -g $(MPICHLIB) $(GSL_LIBS) -lgsl -lgslcblas $(FFTW) -lm $(GRACKLELIBS)
-
-ifeq (CHIMES,$(findstring CHIMES,$(CONFIGVARS))) 
-LIBS += $(CHIMESLIBS) 
-endif 
+LIBS = $(HDF5LIB) -g $(MPICHLIB) $(GSL_LIBS) -lgsl -lgslcblas \
+	   $(FFTW_LIBS) $(FFTW_LIBNAMES) -lm $(GRACKLELIBS) $(CHIMESLIBS)
 
 ifeq (PTHREADS_NUM_THREADS,$(findstring PTHREADS_NUM_THREADS,$(CONFIGVARS))) 
-LIBS   +=  -lpthread
+LIBS += -lpthread
 endif
 
 $(EXEC): $(OBJS) $(FOBJS)  

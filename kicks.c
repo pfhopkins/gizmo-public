@@ -94,6 +94,54 @@ void do_second_halfstep_kick(void)
 #endif
 }
 
+#ifdef HERMITE_INTEGRATION
+int eligible_for_hermite(int i)
+{
+    if(!(HERMITE_INTEGRATION & (1<<P[i].Type))) return 0;
+#if defined(BLACK_HOLES) || defined(GALSF)    
+    if(P[i].StellarAge >= DMAX(All.Time - 2*(P[i].dt_step * All.Timebase_interval), 0)) return 0; // if we were literally born yesterday then let things settle down a bit with the less-accurate, but more-robust regular integration
+    if(P[i].AccretedThisTimestep) return 0;
+#endif
+#if (SINGLE_STAR_TIMESTEPPING > 0)
+    if(P[i].SuperTimestepFlag >= 2) return 0;
+#endif   
+    return 1;
+}
+
+// Initial "prediction" step of Hermite integration, performed after the initial force evaluation 
+// Note: the below routines only account for gravitational acceleration - only appropriate for stars or collisionless particles
+void do_hermite_prediction(void)
+{
+    int i,j; integertime ti_step, tstart=0, tend=0;
+    for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) {
+	if(eligible_for_hermite(i)) { /* check if we're actually eligible */	    
+	    if(P[i].Mass > 0) { /* skip massless particles scheduled for deletion */
+		ti_step = P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0;
+		tstart = P[i].Ti_begstep;    /* beginning of step */
+		tend = P[i].Ti_begstep + ti_step;    /* end of step */
+		double dt_grav = (tend - tstart) * All.Timebase_interval;
+		for(j=0; j<3; j++) {
+		    P[i].Pos[j] = P[i].OldPos[j] + dt_grav * (P[i].OldVel[j] + dt_grav/2 * (P[i].Hermite_OldAcc[j] + dt_grav/3 * P[i].OldJerk[j])) ;
+		    P[i].Vel[j] = P[i].OldVel[j] + dt_grav * (P[i].Hermite_OldAcc[j] + dt_grav/2 * P[i].OldJerk[j]);
+		}}}} // for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) 
+}
+
+void do_hermite_correction(void) // corrector step
+{
+    int i,j; integertime ti_step, tstart=0, tend=0;    
+    for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) {	
+	if(eligible_for_hermite(i)){
+                if(P[i].Mass > 0) {
+                    ti_step = P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0;
+                    tstart = P[i].Ti_begstep;    /* beginning of step */
+                    tend = P[i].Ti_begstep + ti_step;    /* end of step */
+                    double dt_grav = (tend - tstart) * All.Timebase_interval;
+                    for(j=0; j<3; j++) {
+                        P[i].Vel[j] = P[i].OldVel[j] + dt_grav * 0.5*(P[i].Hermite_OldAcc[j] + P[i].GravAccel[j]) + (P[i].OldJerk[j] - P[i].GravJerk[j]) * dt_grav * dt_grav/12;
+                        P[i].Pos[j] = P[i].OldPos[j] + dt_grav * 0.5*(P[i].Vel[j] + P[i].OldVel[j]) + (P[i].Hermite_OldAcc[j] - P[i].GravAccel[j]) * dt_grav * dt_grav/12;
+		    }}}} //     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
+}
+#endif // HERMITE_INTEGRATION
 
 
 #ifdef PMGRID
@@ -225,7 +273,7 @@ void do_the_kick(int i, integertime tstart, integertime tend, integertime tcurre
             //  both are not needed. we find slightly cleaner results on that test keeping the gravity and removing the KE switch
             
             // also check for flows which are totally dominated by the adiabatic component of their temperature evolution //
-            // double mach = fabs(SphP[i].MaxSignalVel/Particle_effective_soundspeed_i(i) - 2.0); //
+            // double mach = fabs(SphP[i].MaxSignalVel/Get_Gas_effective_soundspeed_i(i) - 2.0); //
             // if(mach < 1.1) {do_entropy=1;} // (actually, this switch tends to do more harm than good!) //
             //do_entropy = 0; // seems unstable in tests like interacting blastwaves... //
             if(do_entropy)
@@ -249,7 +297,20 @@ void do_the_kick(int i, integertime tstart, integertime tend, integertime tcurre
             }
 #endif // closes ENERGY_ENTROPY_SWITCH_IS_ACTIVE
             
+#ifdef RADTRANSFER /* block here to deal with tricky cases where radiation energy density is -much- larger than thermal */
+            int kfreq; double erad_tot=0,emin=0,enew=0,demin=0,dErad=0; for(kfreq=0;kfreq<N_RT_FREQ_BINS;kfreq++) {erad_tot+=SphP[i].Rad_E_gamma[kfreq];}
+            if(erad_tot > 0)
+            {
+                demin=0.025*SphP[i].InternalEnergy; emin=0.025*(erad_tot+SphP[i].InternalEnergy*P[i].Mass); enew=DMAX(erad_tot+dEnt*P[i].Mass,emin);
+                dEnt=(enew-erad_tot)/P[i].Mass; if(dEnt<demin) {dErad=dEnt-demin; dEnt=demin;}
+                if(dErad<-0.975*erad_tot) {dErad=-0.975*erad_tot;}
+                SphP[i].InternalEnergy = dEnt; for(kfreq=0;kfreq<N_RT_FREQ_BINS;kfreq++) {SphP[i].Rad_E_gamma[kfreq] *= 1 + dErad/erad_tot;}
+            } else {
+                if(dEnt < 0.5*SphP[i].InternalEnergy) {SphP[i].InternalEnergy *= 0.5;} else {SphP[i].InternalEnergy = dEnt;}
+            }
+#else
             if(dEnt < 0.5*SphP[i].InternalEnergy) {SphP[i].InternalEnergy *= 0.5;} else {SphP[i].InternalEnergy = dEnt;}
+#endif
             check_particle_for_temperature_minimum(i); /* if we've fallen below the minimum temperature, force the 'floor' */
         }
         
@@ -264,47 +325,34 @@ void do_the_kick(int i, integertime tstart, integertime tend, integertime tcurre
                 dp[j] += mass_pred * SphP[i].TurbAccel[j] * dt_gravkick;
 #endif
 #ifdef RT_RAD_PRESSURE_OUTPUT
-                dp[j] += mass_pred * SphP[i].RadAccel[j] * All.cf_atime * dt_hydrokick;
+                dp[j] += mass_pred * SphP[i].Rad_Accel[j] * All.cf_atime * dt_hydrokick;
 #endif
             }
             dp[j] += mass_pred * P[i].GravAccel[j] * dt_gravkick;
 #if (SINGLE_STAR_TIMESTEPPING > 0)  //if we're super-timestepping, the above accounts for the change in COM velocity. Now we do the internal binary velocity change
             if((P[i].Type == 5) && (P[i].SuperTimestepFlag>=2)) {dp[j] += mass_pred * (P[i].COM_GravAccel[j]-P[i].GravAccel[j]) * dt_gravkick;} 
 #endif
+#ifdef HERMITE_INTEGRATION
+            // we augment this to a whole-step kick for the initial Hermite prediction step, which is done alongside the first half-step kick.
+            if((1<<P[i].Type) & HERMITE_INTEGRATION)
+            {
+                if(mode == 0)
+                {
+                    P[i].OldVel[j] = P[i].Vel[j];
+                    P[i].OldPos[j] = P[i].Pos[j];
+                    P[i].OldJerk[j] = P[i].GravJerk[j];
+                    P[i].Hermite_OldAcc[j] = P[i].GravAccel[j]; // this is the value from the first Hermite tree pass for this timestep
+                }
+            }
+#endif	    
             P[i].Vel[j] += dp[j] / mass_new; /* correctly accounts for mass change if its allowed */
         }
 
  
-        /* check for reflecting boundaries: if so, do the reflection! */
-#if defined(BOX_REFLECT_X) || defined(BOX_REFLECT_Y) || defined(BOX_REFLECT_Z)
-        double box_upper[3]; box_upper[0]=box_upper[1]=box_upper[2]=1;
-#ifdef BOX_PERIODIC
-        box_upper[0]=boxSize_X; box_upper[1]=boxSize_Y; box_upper[2]=boxSize_Z;
-#endif
-        for(j = 0; j < 3; j++)
-        {
-            /* skip the non-reflecting boundaries */
-#ifndef BOX_REFLECT_X
-            if(j==0) continue;
-#endif
-#ifndef BOX_REFLECT_Y
-            if(j==1) continue;
-#endif
-#ifndef BOX_REFLECT_Z
-            if(j==2) continue;
-#endif
-            if(P[i].Pos[j] <= 0)
-            {
-                if(P[i].Vel[j]<0) {P[i].Vel[j]=-P[i].Vel[j]; if(P[i].Type==0) {SphP[i].VelPred[j]=P[i].Vel[j]; SphP[i].HydroAccel[j]=0;} dp[j]+=2*P[i].Vel[j]*mass_new;}
-                P[i].Pos[j]=(0.+((double)P[i].ID)*1.e-9)*box_upper[j];
-            }
-            if(P[i].Pos[j] >= box_upper[j])
-            {
-                if(P[i].Vel[j]>0) {P[i].Vel[j]=-P[i].Vel[j]; if(P[i].Type==0) {SphP[i].VelPred[j]=P[i].Vel[j]; SphP[i].HydroAccel[j]=0;} dp[j]+=2*P[i].Vel[j]*mass_new;}
-                P[i].Pos[j]=box_upper[j]*(1.-((double)P[i].ID)*1.e-9);
-            }
-        }
-#endif
+        /* check for reflecting or outflow or otherwise special boundaries: if so, do the reflection/boundary! */
+        apply_special_boundary_conditions(i,mass_new,1);
+        if(P[i].Mass==0) {return;} /* exit if we have zero'd the particle mass, to avoid errors with dividing by zero */
+
         /* any other gas-specific kicks (e.g. B-fields, radiation) go here */
         if(P[i].Type==0)
         {
@@ -318,8 +366,7 @@ void do_the_kick(int i, integertime tstart, integertime tend, integertime tcurre
                 //for(j=0;j<3;j++) {P[i].Vel[j] *= exp(-0.15);} // coefficient is constant per-timestep: adjust to make as aggressive or weak as desired //
 #endif
 
-                for(j = 0; j < 3; j++)
-                    SphP[i].VelPred[j] = P[i].Vel[j];//(mass_old*v_old[j] + dp[j]) / mass_new;
+                for(j=0; j<3; j++) {SphP[i].VelPred[j] = P[i].Vel[j];}//(mass_old*v_old[j] + dp[j]) / mass_new;
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
                 P[i].Mass = SphP[i].MassTrue; //mass_old + SphP[i].DtMass * dt_hydrokick;
 #endif
@@ -357,15 +404,15 @@ void set_predicted_sph_quantities_for_extra_physics(int i)
 #if defined(RT_EVOLVE_ENERGY)
         for(kf=0;kf<N_RT_FREQ_BINS;kf++)
         {
-            SphP[i].E_gamma_Pred[kf] = SphP[i].E_gamma[kf];
+            SphP[i].Rad_E_gamma_Pred[kf] = SphP[i].Rad_E_gamma[kf];
 #if defined(RT_EVOLVE_FLUX)
-            for(k=0;k<3;k++) SphP[i].Flux_Pred[kf][k] = SphP[i].Flux[kf][k];
+            for(k=0;k<3;k++) SphP[i].Rad_Flux_Pred[kf][k] = SphP[i].Rad_Flux[kf][k];
 #endif
         }
         rt_eddington_update_calculation(i);
 #endif
 #ifdef RT_EVOLVE_INTENSITIES
-        for(kf=0;kf<N_RT_FREQ_BINS;kf++) {for(k=0;k<N_RT_INTENSITY_BINS;k++) {SphP[i].Intensity_Pred[kf][k] = SphP[i].Intensity[kf][k];}}
+        for(kf=0;kf<N_RT_FREQ_BINS;kf++) {for(k=0;k<N_RT_INTENSITY_BINS;k++) {SphP[i].Rad_Intensity_Pred[kf][k] = SphP[i].Rad_Intensity[kf][k];}}
 #endif
 
 #ifdef EOS_ELASTIC
@@ -391,14 +438,14 @@ void do_sph_kick_for_extra_physics(int i, integertime tstart, integertime tend, 
     if(SphP[i].Density > 0)
     {
         /* now we're going to check for physically reasonable phi values */
-        double cs_phys = All.cf_afac3 * Particle_effective_soundspeed_i(i);
+        double cs_phys = All.cf_afac3 * Get_Gas_effective_soundspeed_i(i);
         double b_phys = 0.0;
-        for(j = 0; j < 3; j++) {b_phys += Get_Particle_BField(i,j)*Get_Particle_BField(i,j);}
+        for(j = 0; j < 3; j++) {b_phys += Get_Gas_BField(i,j)*Get_Gas_BField(i,j);}
         b_phys = sqrt(b_phys)*All.cf_a2inv;
         double vsig1 = sqrt(cs_phys*cs_phys + b_phys*b_phys/(SphP[i].Density*All.cf_a3inv));
         double vsig2 = 0.5 * All.cf_afac3 * fabs(SphP[i].MaxSignalVel);
         double vsig_max = DMAX( DMAX(vsig1,vsig2) , All.FastestWaveSpeed );
-        double phi_phys_abs = fabs(Get_Particle_PhiField(i)) * All.cf_a3inv;
+        double phi_phys_abs = fabs(Get_Gas_PhiField(i)) * All.cf_a3inv;
         double vb_phy_abs = vsig_max * b_phys;
 
         if((!isnan(SphP[i].DtPhi))&&(phi_phys_abs>0)&&(vb_phy_abs>0)&&(!isnan(phi_phys_abs))&&(!isnan(vb_phy_abs)))
@@ -431,7 +478,7 @@ void do_sph_kick_for_extra_physics(int i, integertime tstart, integertime tend, 
         SphP[i].Phi = SphP[i].PhiPred = SphP[i].DtPhi = 0;
     }
     /* now apply the usual damping term */
-    double t_damp = Get_Particle_PhiField_DampingTimeInv(i);
+    double t_damp = Get_Gas_PhiField_DampingTimeInv(i);
     if((t_damp>0) && (!isnan(t_damp)) && (dt_entr>0))
     {
         SphP[i].Phi *= exp( -dt_entr * t_damp );
@@ -447,6 +494,13 @@ void do_sph_kick_for_extra_physics(int i, integertime tstart, integertime tend, 
     
 #ifdef RADTRANSFER
     rt_update_driftkick(i,dt_entr,0);
+#ifdef GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION
+    if(P[i].Pos[2] > DMIN(14. + (All.Vertical_Grain_Accel*All.Dust_to_Gas_Mass_Ratio - All.Vertical_Gravity_Strength)*All.Time*All.Time/2., 18.)) {for(j=0;j<N_RT_FREQ_BINS;j++) {SphP[i].Rad_E_gamma[j]*=0.5; SphP[i].Rad_E_gamma_Pred[j]*=0.5;
+#ifdef RT_EVOLVE_FLUX
+        if(SphP[i].Rad_Flux[j][2] < 0) {SphP[i].Rad_Flux[j][2]=-SphP[i].Rad_Flux[j][2]; SphP[i].Rad_Flux_Pred[j][2]=SphP[i].Rad_Flux[j][2];}
+#endif
+    }}
+#endif
 #endif
 
 #ifdef EOS_ELASTIC
@@ -454,3 +508,49 @@ void do_sph_kick_for_extra_physics(int i, integertime tstart, integertime tend, 
 #endif
 }
 
+    
+    
+void apply_special_boundary_conditions(int i, double mass_for_dp, int mode)
+{
+#if BOX_DEFINED_SPECIAL_XYZ_BOUNDARY_CONDITIONS_ARE_ACTIVE
+    double box_upper[3]; int j;
+    box_upper[0]=boxSize_X; box_upper[1]=boxSize_Y; box_upper[2]=boxSize_Z;
+    for(j=0; j<3; j++)
+    {
+        if(P[i].Pos[j] <= 0)
+        {
+            if(special_boundary_condition_xyz_def_reflect[j] == 0 || special_boundary_condition_xyz_def_reflect[j] == -1)
+            {
+                if(P[i].Vel[j]<0) {P[i].Vel[j]=-P[i].Vel[j]; if(P[i].Type==0) {SphP[i].VelPred[j]=P[i].Vel[j]; SphP[i].HydroAccel[j]=0;} if(mode==1) {P[i].dp[j]+=2*P[i].Vel[j]*mass_for_dp;}}
+                P[i].Pos[j]=(0.+((double)P[i].ID)*1.e-9)*box_upper[j];
+#ifdef GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION
+                P[i].Pos[j]+=3.e-3; /* special because of our wierd boundary condition for this problem, sorry to have so many hacks for this! */
+#endif
+#ifdef RT_EVOLVE_FLUX
+                if(P[i].Type==0) {int kf; for(kf=0;kf<N_RT_FREQ_BINS;kf++) {if(SphP[i].Rad_Flux[kf][j]<0) {SphP[i].Rad_Flux[kf][j]=-SphP[i].Rad_Flux[kf][j]; SphP[i].Rad_Flux_Pred[kf][j]=SphP[i].Rad_Flux[kf][j];}}}
+#endif
+#ifdef COSMIC_RAYS_M1
+                if(P[i].Type==0) {int kf; for(kf=0;kf<N_CR_PARTICLE_BINS;kf++) {if(SphP[i].CosmicRayFlux[kf][j]<0) {SphP[i].CosmicRayFlux[kf][j]=-SphP[i].CosmicRayFlux[kf][j]; SphP[i].CosmicRayFluxPred[kf][j]=SphP[i].CosmicRayFlux[kf][j];}}}
+#endif
+            }
+            if(special_boundary_condition_xyz_def_outflow[j] == 0 || special_boundary_condition_xyz_def_outflow[j] == -1) {P[i].Mass=0; if(mode==1) {P[i].dp[0]=P[i].dp[1]=P[i].dp[2]=0;}}
+        }
+        else if (P[i].Pos[j] >= box_upper[j])
+        {
+            if(special_boundary_condition_xyz_def_reflect[j] == 0 || special_boundary_condition_xyz_def_reflect[j] == 1)
+            {
+                if(P[i].Vel[j]>0) {P[i].Vel[j]=-P[i].Vel[j]; if(P[i].Type==0) {SphP[i].VelPred[j]=P[i].Vel[j]; SphP[i].HydroAccel[j]=0;} if(mode==1) {P[i].dp[j]+=2*P[i].Vel[j]*mass_for_dp;}}
+                P[i].Pos[j]=box_upper[j]*(1.-((double)P[i].ID)*1.e-9);
+#ifdef RT_EVOLVE_FLUX
+                if(P[i].Type==0) {int kf; for(kf=0;kf<N_RT_FREQ_BINS;kf++) {if(SphP[i].Rad_Flux[kf][j]>0) {SphP[i].Rad_Flux[kf][j]=-SphP[i].Rad_Flux[kf][j]; SphP[i].Rad_Flux_Pred[kf][j]=SphP[i].Rad_Flux[kf][j];}}}
+#endif
+#ifdef COSMIC_RAYS_M1
+                if(P[i].Type==0) {int kf; for(kf=0;kf<N_CR_PARTICLE_BINS;kf++) {if(SphP[i].CosmicRayFlux[kf][j]>0) {SphP[i].CosmicRayFlux[kf][j]=-SphP[i].CosmicRayFlux[kf][j]; SphP[i].CosmicRayFluxPred[kf][j]=SphP[i].CosmicRayFlux[kf][j];}}}
+#endif
+            }
+            if(special_boundary_condition_xyz_def_outflow[j] == 0 || special_boundary_condition_xyz_def_outflow[j] == 1) {P[i].Mass=0; if(mode==1) {P[i].dp[0]=P[i].dp[1]=P[i].dp[2]=0;}}
+        }
+    }
+#endif
+    return;
+}

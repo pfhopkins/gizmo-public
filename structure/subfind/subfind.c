@@ -1167,10 +1167,8 @@ void subfind_save_local_catalogue(int num)
   header.npartTotalHighWord[2] = (unsigned int) (TotNids >> 32);
 
   header.time = All.Time;
-  if(All.ComovingIntegrationOn)
-    header.redshift = 1.0 / All.Time - 1;
-  else
-    header.redshift = 0;
+  if(All.ComovingIntegrationOn) {header.redshift = 1.0 / All.Time - 1;}
+    else {header.redshift = 0;}
 
 #ifdef COOLING
   header.flag_cooling = 1;
