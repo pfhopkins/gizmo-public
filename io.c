@@ -630,7 +630,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             break;
 
         case IO_DELAY_TIME_HII: 
-#ifdef OUTPUT_DELAY_TIME_HII
+#if (defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(FLAG_NOT_IN_PUBLIC_CODE)) && defined(OUTPUT_DELAY_TIME_HII)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
@@ -2290,7 +2290,7 @@ int blockpresent(enum iofields blocknr)
             break;
 
         case IO_DELAY_TIME_HII:
-#ifdef OUTPUT_DELAY_TIME_HII
+#if (defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(FLAG_NOT_IN_PUBLIC_CODE)) && defined(OUTPUT_DELAY_TIME_HII)
             return 1;
 #endif
             break;
