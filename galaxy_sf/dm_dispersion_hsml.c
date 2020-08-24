@@ -81,6 +81,7 @@ int disp_density_isactive(int i)
 
 
 /*! This function represents the core of the density computation. The target particle may either be local, or reside in the communication buffer. */
+/*!   -- this subroutine contains no writes to shared memory -- */
 int disp_density_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
 {
     int startnode, numngb_inbox, listindex = 0, j, n; struct INPUT_STRUCT_NAME local; struct OUTPUT_STRUCT_NAME out; memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME)); /* define variables and zero memory and import data for local target*/
@@ -93,7 +94,7 @@ int disp_density_evaluate(int target, int mode, int *exportflag, int *exportnode
             if(numngb_inbox < 0) return -1;
             for(n = 0; n < numngb_inbox; n++)
             {
-                j = ngblist[n];
+                j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */
                 if(P[j].Mass <= 0) continue;
                 out.DM_Vx += P[j].Vel[0]; out.DM_Vy += P[j].Vel[1]; out.DM_Vz += P[j].Vel[2];
                 out.DM_Vel_Disp += (P[j].Vel[0] * P[j].Vel[0] + P[j].Vel[1] * P[j].Vel[1] + P[j].Vel[2] * P[j].Vel[2]);

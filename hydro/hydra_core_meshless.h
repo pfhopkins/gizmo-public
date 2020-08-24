@@ -12,6 +12,9 @@
 #if (SLOPE_LIMITER_TOLERANCE==0)
 #define HYDRO_FACE_AREA_LIMITER // use more restrictive face-area limiter in the simulations [some applications this is useful, but unclear if we can generally apply it] //
 #endif
+#if !defined(PROTECT_FROZEN_FIRE) && !defined(HYDRO_FACE_AREA_LIMITER)
+//#define HYDRO_FACE_VOLUME_RECONSTRUCTION_CORRECTION
+#endif
     
     double s_star_ij,s_i,s_j,v_frame[3],n_unit[3],dummy_pressure;
     double distance_from_i[3],distance_from_j[3];
@@ -55,8 +58,10 @@
 #if defined(COOLING) || (SLOPE_LIMITER_TOLERANCE==0)
     if((fabs(V_i-V_j)/DMIN(V_i,V_j))/NUMDIMS > 1.25) {wt_i=wt_j=2.*V_i*V_j/(V_i+V_j);} else {wt_i=V_i; wt_j=V_j;} //wt_i=wt_j = 2.*V_i*V_j / (V_i + V_j); // more conservatively, could use DMIN(V_i,V_j), but that is less accurate
 #else
-    if((fabs(V_i-V_j)/DMIN(V_i,V_j))/NUMDIMS > 1.50) {wt_i=wt_j=(V_i*PPP[j].Hsml+V_j*local.Hsml)/(local.Hsml+PPP[j].Hsml);} else {wt_i=V_i; wt_j=V_j;} //wt_i=wt_j = (V_i*PPP[j].Hsml + V_j*local.Hsml) / (local.Hsml+PPP[j].Hsml); // should these be H, or be -effective sizes- //
+    if((fabs(V_i-V_j)/DMIN(V_i,V_j))/NUMDIMS > 1.50) {wt_i=wt_j=(V_i*Particle_Size_j+V_j*Particle_Size_i)/(Particle_Size_i+Particle_Size_j);} else {wt_i=V_i; wt_j=V_j;} //wt_i=wt_j = (V_i*PPP[j].Hsml + V_j*local.Hsml) / (local.Hsml+PPP[j].Hsml); // should these be H, or be -effective sizes- //
 #endif
+#elif defined(GALSF)
+    if( (fabs(log(V_i/V_j)/NUMDIMS) > 1.25) && (kernel.r > local.Hsml || kernel.r > PPP[j].Hsml) ) {wt_i=wt_j=(V_i*Particle_Size_j+V_j*Particle_Size_i)/(Particle_Size_i+Particle_Size_j);}
 #endif
     /* the effective gradient matrix is well-conditioned: we can safely use the consistent EOM */
     // note the 'default' formulation from Lanson and Vila takes wt_i=V_i, wt_j=V_j; but this assumes negligible variation in h between particles;
@@ -101,7 +106,15 @@
     }
 #endif
 
-    
+#if defined(HYDRO_FACE_VOLUME_RECONSTRUCTION_CORRECTION)
+    double Vi_phys=V_i/All.cf_a3inv, Vj_phys=V_j/All.cf_a3inv, Vi_inv_corr=1., Vj_inv_corr=1., Vol_min = fabs(0.5*facenormal_dot_dp) * All.cf_atime / 3.; // area of an oblique pyramid, origin at one origin point, face at midpoint
+    if(Vol_min > DMIN(Vi_phys,Vj_phys)) // minimum volume extrapolated to face is larger than one of the particle volumes, so we will apply a correction to avoid too-large a flux
+    {
+        if(Vol_min > Vi_phys) {Vi_inv_corr = Vi_phys/Vol_min;}
+        if(Vol_min > Vj_phys) {Vj_inv_corr = Vj_phys/Vol_min;}
+    }
+#endif
+
     if((SphP[j].ConditionNumber*SphP[j].ConditionNumber > 1.0e12 + cnumcrit2) || (facenormal_dot_dp < 0))
     {
         /* the effective gradient matrix is ill-conditioned (or not positive-definite!): for stability, we revert to the "RSPH" EOM */
@@ -151,13 +164,13 @@
         /* advance the faces a half-step forward in time (given our leapfrog scheme, this actually has
             very, very weak effects on the errors. nonetheless it does help a small amount in reducing
             certain types of noise and oscillations (but not always!) */
-        s_i += 0.5 * dt_hydrostep * (local.Vel[0]*kernel.dp[0] + local.Vel[1]*kernel.dp[1] + local.Vel[2]*kernel.dp[2]) * rinv;
-        s_j += 0.5 * dt_hydrostep * (VelPred_j[0]*kernel.dp[0] + VelPred_j[1]*kernel.dp[1] + VelPred_j[2]*kernel.dp[2]) * rinv;
+        s_i += 0.5 * DMIN(dt_hydrostep_i,dt_hydrostep_j) * (local.Vel[0]*kernel.dp[0] + local.Vel[1]*kernel.dp[1] + local.Vel[2]*kernel.dp[2]) * rinv;
+        s_j += 0.5 * DMIN(dt_hydrostep_i,dt_hydrostep_j) * (VelPred_j[0]*kernel.dp[0] + VelPred_j[1]*kernel.dp[1] + VelPred_j[2]*kernel.dp[2]) * rinv;
 #endif
 #ifdef DO_UPWIND_TIME_CENTERING
         //(simple up-winding formulation: use if desired instead of time-centered fluxes)//
-        double delta_halfstep_i = kernel.sound_i*0.5*dt_hydrostep*(All.cf_afac3/All.cf_atime); if(delta_halfstep_i>s_i) {delta_halfstep_i=s_i;}
-        double delta_halfstep_j = kernel.sound_j*0.5*dt_hydrostep*(All.cf_afac3/All.cf_atime); if(delta_halfstep_j>-s_j) {delta_halfstep_j=-s_j;}
+        double delta_halfstep_i = kernel.sound_i*0.5*dt_hydrostep_i*(All.cf_afac3/All.cf_atime); if(delta_halfstep_i>s_i) {delta_halfstep_i=s_i;}
+        double delta_halfstep_j = kernel.sound_j*0.5*dt_hydrostep_j*(All.cf_afac3/All.cf_atime); if(delta_halfstep_j>-s_j) {delta_halfstep_j=-s_j;}
         s_i = s_star_ij - s_i + delta_halfstep_i; /* projection element for gradients */
         s_j = s_star_ij - s_j - delta_halfstep_j;
 #else
@@ -194,9 +207,17 @@
 #if defined(GALSF) || defined(COOLING)
         if(fabs(vdotr2_phys)*UNIT_VEL_IN_KMS > 1000.) {recon_mode = 0;} // particle approach/recession velocity > 1000 km/s: be extra careful here!
 #endif
-        reconstruct_face_states(local.Density, local.Gradients.Density, SphP[j].Density, SphP[j].Gradients.Density,
+        //if(kernel.r > local.Hsml || kernel.r > PPP[j].Hsml) {recon_mode = 0;} // some extrapolation: this is more conservative but does help preserve contact discontinuities (perhaps too well?)
+        
+        double rho_i=local.Density, rho_j=SphP[j].Density, P_i=Pressure_i, P_j=Pressure_j; // initialize for below
+#if defined(HYDRO_FACE_VOLUME_RECONSTRUCTION_CORRECTION)
+        if(Vi_inv_corr*Vj_inv_corr < 0.999) {recon_mode = 0;} // if this correction is needed, reconstruction is unsafe, must revert to lower-order
+        rho_i*=Vi_inv_corr; P_i*=Vi_inv_corr; rho_j*=Vj_inv_corr; P_j*=Vj_inv_corr; // do scalar correction
+#endif
+
+        reconstruct_face_states(rho_i, local.Gradients.Density, rho_j, SphP[j].Gradients.Density,
                                 distance_from_i, distance_from_j, &Riemann_vec.L.rho, &Riemann_vec.R.rho, recon_mode);
-        reconstruct_face_states(Pressure_i, local.Gradients.Pressure, Pressure_j, SphP[j].Gradients.Pressure,
+        reconstruct_face_states(P_i, local.Gradients.Pressure, P_j, SphP[j].Gradients.Pressure,
                                 distance_from_i, distance_from_j, &Riemann_vec.L.p, &Riemann_vec.R.p, recon_mode);
 #ifdef EOS_GENERAL
         reconstruct_face_states(local.InternalEnergyPred, local.Gradients.InternalEnergy, SphP[j].InternalEnergyPred, SphP[j].Gradients.InternalEnergy,
@@ -231,7 +252,7 @@
         /* advance the faces a half-step forward in time (given our leapfrog scheme, this actually has
             very, very weak effects on the errors. nonetheless it does help a small amount in reducing 
             certain types of noise and oscillations */
-        double dt_half = 0.5*dt_hydrostep;
+        double dt_half = 0.5*DMIN(dt_hydrostep_i,dt_hydrostep_j);
         for(k=0;k<3;k++)
         {
             Riemann_vec.R.rho -= dt_half * local.Density * local.Gradients.Velocity[k][k];

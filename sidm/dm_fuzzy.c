@@ -70,10 +70,10 @@ void do_dm_fuzzy_flux_computation_old(double HLLwt, double dt, double m0, double
     double r=sqrt(r2), wavespeed=2.*f00*(M_PI/r); // approximate k = 2pi/lambda = 2pi/(2*dr) as the maximum k the code will allow locally */
     /* note that the QPT admits waves parallel to k, with wavespeed omega = pm 2*f00*k, so include these for HLLC solution */
     if(dv_Right_minus_Left > wavespeed) return; // elements are receding super-sonically, no way to communicate pressure //
-    
+
     double fluxmag=0, Face_Area_Norm=0; for(m=0;m<3;m++) {Face_Area_Norm+=Area[m]*Area[m];}
     Face_Area_Norm=sqrt(Face_Area_Norm);
-    
+
     for(m=0;m<3;m++)
     {
         for(n=0;n<3;n++)
@@ -91,7 +91,7 @@ void do_dm_fuzzy_flux_computation_old(double HLLwt, double dt, double m0, double
     fluxmag = sqrt(fluxmag);
     double fluxmax = 100. * Face_Area_Norm * f2 * 0.5*(rho_L+rho_R) / (r*r); // limiter to prevent crazy values where derivatives are ill-posed (e.g. discontinuities)
     if(fluxmag > fluxmax) {for(m=0;m<3;m++) {fluxes[m] *= fluxmax/fluxmag;}}
-    
+
     for(m=0;m<3;m++)
     {
         double ftmp = (2./3.)*AGS_Numerical_QuantumPotential*Area[m]; // 2/3 b/c the equation-of-state of the 'quantum pressure tensor' is gamma=5/3 under isotropic compression/expansion //
@@ -100,7 +100,7 @@ void do_dm_fuzzy_flux_computation_old(double HLLwt, double dt, double m0, double
         fluxes[m] += ftmp; // add numerical 'pressure' stored from previous timesteps //
     }
     fluxmag=0; for(m=0;m<3;m++) {fluxmag += fluxes[m]*fluxes[m];} if(fluxmag > 0) {fluxmag = sqrt(fluxmag);} else {fluxmag = 0;}
-    
+
     /* now we have to introduce the numerical diffusivity (the up-wind mixing part from the Reimann problem);
      this can have one of a couple forms, but the most accurate and stable appears to be the traditional HLLC form which we use by default below */
     if(dv_Right_minus_Left < 0) // converging flow, upwind dissipation terms appear //
@@ -155,7 +155,7 @@ void do_dm_fuzzy_drift_kick(int i, double dt, int mode)
         NQ1 = DMAX(0,DMAX(NQ1,0.1*NQ0)); NQ1 = DMIN(NQ1,1.1*DMAX(DMAX(KE0+NQ0,fabs(QP0)),KE0+NQ0+QP0)); // limit kick to not produce unphysical energy over-or-under-shoot
         P[i].AGS_Numerical_QuantumPotential = NQ1;
     }
-    
+
 #if (DM_FUZZY > 0) /* if using direct-wavefunction integration methods */
     double vol_inv = P[i].AGS_Density / P[i].Mass;
     if(mode == 0)
@@ -196,16 +196,16 @@ void do_dm_fuzzy_initialization(void)
         double volume = P[i].AGS_Density / P[i].Mass, psimag = sqrt(P[i].AGS_Density), phase = 0; int k=0;
         /* approximation for initial phase below is fine for slowly-varying k, otherwise not ideal */
         for(k=0;k<3;k++) {phase += P[i].Pos[k] * P[i].Vel[k] / All.ScalarField_hbar_over_mass;}
-        
+
         P[i].AGS_Psi_Re = psimag * volume * cos(phase); /* remember, we evolve the volume-integrated value of psi */
         P[i].AGS_Psi_Im = psimag * volume * sin(phase);
-        
+
         P[i].AGS_Dt_Psi_Mass = 0; P[i].AGS_Dt_Psi_Re = 0; P[i].AGS_Dt_Psi_Im = 0;
         P[i].AGS_Psi_Re_Pred = P[i].AGS_Psi_Re; P[i].AGS_Psi_Im_Pred = P[i].AGS_Psi_Im;
     }
 #endif
 }
- 
+
 
 
 void dm_fuzzy_reconstruct_and_slopelimit(double *u_R, double du_R[3], double *u_L, double du_L[3],
@@ -232,7 +232,7 @@ void dm_fuzzy_reconstruct_and_slopelimit_sub(double *u_R_f, double *u_L_f, doubl
     double dq_R=0; for(k=0;k<3;k++) {dq_R -= 0.5*dx[k]*dq_R_0[k];}
     double q0=q_L, u_L=0, u_R=0; q_L-=q0; q_R-=q0;
     //double qmid = 0.5*q_R;
-    
+
     if(dq_L*q_R<0) {dq_L=0;}
     if(dq_R*q_R<0) {dq_R=0;}
     u_L = dq_L; u_R = q_R + dq_R;
@@ -351,7 +351,7 @@ static inline void out2particle_DMGrad(struct OUTPUT_STRUCT_NAME *out, int i, in
 #endif
     } else {
         int k,k2;
-        for(k=0;k<3;k++) 
+        for(k=0;k<3;k++)
         {
             MAX_ADD(DMGradDataPasser[i].Maxima.AGS_Gradients_Density[k],out->Maxima.AGS_Gradients_Density[k],mode);
             MIN_ADD(DMGradDataPasser[i].Minima.AGS_Gradients_Density[k],out->Minima.AGS_Gradients_Density[k],mode);
@@ -377,6 +377,7 @@ void construct_gradient_DMGrad(double *grad, int i)
 
 
 /* this subroutine does the actual neighbor-element calculations (this is the 'core' of the loop, essentially) */
+/*!   -- this subroutine contains no writes to shared memory -- */
 int DMGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
 {
     /* define variables */
@@ -397,7 +398,7 @@ int DMGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount,
     double h2_i = kernel.h_i*kernel.h_i;
     kernel_hinv(kernel.h_i, &hinv, &hinv3, &hinv4);
     int AGS_kernel_shared_BITFLAG = ags_gravity_kernel_shared_BITFLAG(local.Type); // determine allowed particle types for search for adaptive gravitational softening terms
-    
+
     /* Now start the actual neighbor computation for this particle */
     if(mode == 0) {startnode = All.MaxPart; /* root node */} else {startnode = DATAGET_NAME[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode;    /* open it */}
     while(startnode >= 0)
@@ -409,7 +410,7 @@ int DMGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount,
             if(numngb_inbox < 0) {return -1;} /* no neighbors! */
             for(n = 0; n < numngb_inbox; n++) /* neighbor loop */
             {
-                j = ngblist[n];
+                j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */
                 if((P[j].Mass <= 0)||(P[j].AGS_Density <= 0)) {continue;} /* make sure neighbor is valid */
                 /* calculate position relative to target */
                 kernel.dp[0] = local.Pos[0] - P[j].Pos[0]; kernel.dp[1] = local.Pos[1] - P[j].Pos[1]; kernel.dp[2] = local.Pos[2] - P[j].Pos[2];
@@ -525,7 +526,7 @@ void DMGrad_gradient_calc(void)
             }
         }
     } // end of loop_iteration
-        
+
     /* de-allocate memory and collect timing information */
     #include "../system/code_block_xchange_perform_ops_demalloc.h" /* this de-allocates the memory for the MPI/OPENMP/Pthreads parallelization block which must appear above */
     myfree(DMGradDataPasser); /* free the temporary structure we created for the MinMax and additional data passing */
@@ -539,4 +540,3 @@ void DMGrad_gradient_calc(void)
 
 
 #endif // DM_FUZZY
-

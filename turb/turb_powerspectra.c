@@ -774,31 +774,16 @@ void powerspec_turb_save(char *fname, double *disp)
   FILE *fd;
   char buf[500];
   int i;
-
   if(ThisTask == 0)
     {
-      if(!(fd = fopen(fname, "w")))
-	{
-	  sprintf(buf, "can't open file `%s`\n", fname);
-	  terminate(buf);
-	}
-
+      if(!(fd = fopen(fname, "w"))) {sprintf(buf, "can't open file `%s`\n", fname); terminate(buf);}
       fprintf(fd, "%g\n", All.Time);
       i = TURB_DRIVING_SPECTRUMGRID;
       fprintf(fd, "%d\n", i);
       i = BINS_PS;
       fprintf(fd, "%d\n", i);
-
-      fprintf(fd, "%g\n", disp[0]);
-      fprintf(fd, "%g\n", disp[1]);
-      fprintf(fd, "%g\n", disp[2]);
-
-      for(i = 0; i < BINS_PS; i++)
-	{
-	  fprintf(fd, "%g %g %g %g\n", 
-		  Kbin[i], Power[i], (double) CountModes[i], SumPower[i]);
-	}
-
+      fprintf(fd, "%g\n", disp[0]); fprintf(fd, "%g\n", disp[1]); fprintf(fd, "%g\n", disp[2]);
+      for(i = 0; i < BINS_PS; i++) {fprintf(fd, "%g %g %g %g\n", Kbin[i], Power[i], (double) CountModes[i], SumPower[i]);}
       fclose(fd);
     }
 }
@@ -1241,7 +1226,8 @@ void powerspec_turb_calc_dispersion(void)
 }
 
 
-
+/* check neighbors and project them onto the grid for kernel-distance locations where we need to account for kernel effects */
+/*!   -- this subroutine contains no writes to shared memory -- */
 int powerspec_turb_find_nearest_evaluate(int target, int mode, int *nexport, int *nsend_local)
 {
   int j, n, index, listindex = 0;
@@ -1291,7 +1277,7 @@ int powerspec_turb_find_nearest_evaluate(int target, int mode, int *nexport, int
     {
       while(startnode >= 0)
 	{
-	  numngb_inbox = ngb_treefind_variable_targeted(pos, h, target, &startnode, mode, nexport, nsend_local,1); // search for gas: 2^0=1
+	  numngb_inbox = ngb_treefind_variable_targeted(pos, h, target, &startnode, mode, nexport, nsend_local, 1); // search for gas: 2^0=1
 
 	  if(numngb_inbox < 0)
 	    return -1;
@@ -1302,7 +1288,7 @@ int powerspec_turb_find_nearest_evaluate(int target, int mode, int *nexport, int
 	      dx = pos[0] - P[j].Pos[0];
 	      dy = pos[1] - P[j].Pos[1];
 	      dz = pos[2] - P[j].Pos[2];
-            NEAREST_XYZ(dx,dy,dz,1); /*  now find the closest image in the given box size  */
+          NEAREST_XYZ(dx,dy,dz,1); /*  now find the closest image in the given box size  */
 	      r2 = dx * dx + dy * dy + dz * dz;
 	      if(r2 < r2max && r2 < h * h)
 		{

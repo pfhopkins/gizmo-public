@@ -26,7 +26,7 @@ dz = NGB_PERIODIC_BOX_LONG_Z(P[p].Pos[0] - searchcenter[0], P[p].Pos[1] - search
 if(dz > dist) continue;
 if(dx * dx + dy * dy + dz * dz > dist * dist) continue;
 #endif
-ngblist[numngb++] = p;  /* Note: unlike in previous versions of the code, the buffer can hold up to all particles */
+ngblist[numngb++] = p;  /* Note: unlike in previous versions of the code, the buffer can hold up to all particles. note also the threaded-vs-unthreaded use of n vs N in ngblist */
 }
 else
 {

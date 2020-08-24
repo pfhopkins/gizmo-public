@@ -84,6 +84,7 @@ double bh_lum_bol(double mdot, double mass, long id);
 
 /* blackholes.c */
 void blackhole_final_operations(void);
+int bhsink_isactive(int i);
 
 /* blackhole_environment.c */
 void blackhole_environment_loop(void);

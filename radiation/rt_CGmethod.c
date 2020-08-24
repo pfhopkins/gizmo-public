@@ -123,7 +123,8 @@ for(k=0;k<N_RT_FREQ_BINS;k++) memset(x[k], 0, N_gas * sizeof(double));}
 void rt_diffusion_cg_solve(void)
 {
     PRINT_STATUS("start CG iteration for radiative transfer (diffusion equation)...");
-    int k, j; double alpha_cg, beta, sum, rel, res, maxrel, glob_maxrel, DQ, dt = (All.Radiation_Ti_endstep - All.Radiation_Ti_begstep) * All.Timebase_interval / All.cf_hubble_a;
+    int k, j; double alpha_cg, beta, sum, rel, res, maxrel, glob_maxrel, DQ;
+    double dt = (All.Radiation_Ti_endstep - All.Radiation_Ti_begstep) * UNIT_INTEGERTIME_IN_PHYSICAL;
     
     /* initialization for the CG method */
     MALLOC_CG(ZVec); MALLOC_CG(XVec); MALLOC_CG(QVec); MALLOC_CG(DVec); MALLOC_CG(Residue); MALLOC_CG(Diag); MALLOC_CG(Diag2); // allocate and zero all the arrays
@@ -417,7 +418,7 @@ void rt_diffusion_cg_matrix_multiply(double **matrixmult_in, double **matrixmult
 
     
     /* do final operations on results */
-    {double dt = (All.Radiation_Ti_endstep - All.Radiation_Ti_begstep) * All.Timebase_interval / All.cf_hubble_a; int i;
+    {double dt = (All.Radiation_Ti_endstep - All.Radiation_Ti_begstep) * UNIT_INTEGERTIME_IN_PHYSICAL; int i;
     for(i = 0; i < N_gas; i++)
         if(P[i].Type == 0) {
             for(k = 0; k < N_RT_FREQ_BINS; k++) {
@@ -432,6 +433,7 @@ void rt_diffusion_cg_matrix_multiply(double **matrixmult_in, double **matrixmult
 
 
 /* subroutine that actually does the neighbor calculation: this needs to be customized for your problem! */
+/*   -- this subroutine contains no writes to shared memory -- */
 int rt_diffusion_cg_evaluate(int target, int mode, double **matrixmult_in, double **matrixmult_out, double **matrixmult_sum, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist)
 {
     /* Load the data for the particle */
@@ -445,7 +447,7 @@ int rt_diffusion_cg_evaluate(int target, int mode, double **matrixmult_in, doubl
     if(local.Hsml<=0) return 0; // zero-extent kernel, no particles //
     double hinv, hinv3, hinv4, h2=local.Hsml*local.Hsml;
     kernel_hinv(local.Hsml, &hinv, &hinv3, &hinv4);
-    double dt = (All.Radiation_Ti_endstep - All.Radiation_Ti_begstep) * All.Timebase_interval / All.cf_hubble_a;
+    double dt = (All.Radiation_Ti_endstep - All.Radiation_Ti_begstep) * UNIT_INTEGERTIME_IN_PHYSICAL;
 #ifdef RT_DIFFUSION_CG_MODIFY_EDDINGTON_TENSOR
     /*modify Eddington tensor */
     for(j=0;j<N_RT_FREQ_BINS;j++)
@@ -469,7 +471,7 @@ int rt_diffusion_cg_evaluate(int target, int mode, double **matrixmult_in, doubl
             if(numngb_inbox < 0) {return -1;}
             for(n = 0; n < numngb_inbox; n++)
             {
-                j = ngblist[n];
+                j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */
                 if(P[j].Type != 0) continue; // require a gas particle //
                 if(P[j].Mass <= 0) continue; // require the particle has mass //
                 double dp[3]; for(k=0; k<3; k++) {dp[k] = local.Pos[k] - P[j].Pos[k];}

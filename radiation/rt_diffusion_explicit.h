@@ -17,7 +17,7 @@
 #if defined(HYDRO_MESHLESS_FINITE_VOLUME)
     double v_frame[3]={0}; for(k=0;k<3;k++) {v_frame[k]=0.5*(ParticleVel_j[k] + local.ParticleVel[k])/All.cf_atime;} // frame velocity, not fluid velocity, is what appears here
 #else
-    double v_frame[3]={0}; for(k=0;k<3;k++) {v_frame[k]=0.5*(local.Vel[k]+SphP[j].VelPred[k])/All.cf_atime;} // variable to use below //
+    double v_frame[3]={0}; for(k=0;k<3;k++) {v_frame[k]=0.5*(VelPred_j[k] + local.Vel[k])/All.cf_atime;} // variable to use below //
 #endif
 #if defined(RT_INFRARED)
     double Fluxes_Rad_E_gamma_T_weighted_IR = 0;
@@ -101,7 +101,7 @@
 #endif
             cmag_adv += -v_Area_dot_rt * scalar_ij_phys * fac_fluxlim; // need to be careful with the sign here. since this is an oriented area and A points from j to i, need to flip the sign here. the 1/3 owes to the fact that this is really the --pressure-- term for FLD-like methods, the energy term is implicitly part of the flux already if we're actually doing this correctly //
 #if defined(HYDRO_MESHLESS_FINITE_VOLUME)
-            for(k=0;k<3;k++) {cmag_adv -= (v_frame[k]-0.5*(local.Vel[k]+SphP[j].VelPred[k])/All.cf_atime) * scalar_ij_phys * Face_Area_Vec[k];}
+            for(k=0;k<3;k++) {cmag_adv -= (v_frame[k]-0.5*(local.Vel[k]+VelPred_j[k])/All.cf_atime) * scalar_ij_phys * Face_Area_Vec[k];}
 #endif
             cmag_adv += fabs(v_Area_dot_rt) * (scalar_j-scalar_i); // hll (rusanov) flux to stabilize and smooth flow
             if(fabs(cmag_adv)>0) // now limit the advective flux like we limit other fluxes

@@ -115,12 +115,26 @@ double TimeBin_BH_Mdot[TIMEBINS];
 double TimeBin_BH_Medd[TIMEBINS];
 #endif
 
+/*
 #ifdef RT_CHEM_PHOTOION
-double nu[N_RT_FREQ_BINS];
-double rt_sigma_HI[N_RT_FREQ_BINS];
-double rt_sigma_HeI[N_RT_FREQ_BINS];
-double rt_sigma_HeII[N_RT_FREQ_BINS];
+double rt_ion_nu_min[N_RT_FREQ_BINS];
+double rt_nu_eff_eV[N_RT_FREQ_BINS];
+double rt_ion_precalc_stellar_luminosity_fraction[N_RT_FREQ_BINS];
+double rt_ion_sigma_HI[N_RT_FREQ_BINS];
+double rt_ion_sigma_HeI[N_RT_FREQ_BINS];
+double rt_ion_sigma_HeII[N_RT_FREQ_BINS];
+double rt_ion_G_HI[N_RT_FREQ_BINS];
+double rt_ion_G_HeI[N_RT_FREQ_BINS];
+double rt_ion_G_HeII[N_RT_FREQ_BINS];
 #endif
+#if defined(FLAG_NOT_IN_PUBLIC_CODE_EVOLVE_SPECTRUM)
+double CR_global_min_rigidity_in_bin[N_CR_PARTICLE_BINS];
+double CR_global_max_rigidity_in_bin[N_CR_PARTICLE_BINS];
+double CR_global_rigidity_at_bin_center[N_CR_PARTICLE_BINS];
+double CR_global_charge_in_bin[N_CR_PARTICLE_BINS];
+double CR_global_slope_lut[N_CR_PARTICLE_BINS][N_CR_SPECTRUM_LUT]; 
+#endif
+*/
 
 
 char DumpFlag = 1;
@@ -368,5 +382,3 @@ int maxThreads = 1;
 #if defined(DM_SIDM)
 MyDouble GeoFactorTable[GEOFACTOR_TABLE_LENGTH];
 #endif
-
-

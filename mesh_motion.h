@@ -104,7 +104,7 @@ void MeshMotion_CircularOrbitExternalGravity(int i)
     routine below can trivially be modified to halt, at a certain point, if things become too dense) */
 void MeshMotion_FreeFallExternalGravity(int i)
 {
-    double dt = P[i].dt_step * All.Timebase_interval / All.cf_hubble_a; int k;
+    double dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i); int k;
     for(k=0;k<3;k++) {SphP[i].ParticleVel[k]+=P[i].GravAccel[k]*dt;}
 }
 
@@ -152,6 +152,9 @@ void MeshMotion_ShearingSheet(int i)
 #ifdef BOX_SHEARING
     SphP[i].ParticleVel[0] = SphP[i].ParticleVel[1] = SphP[i].ParticleVel[2] = 0;
     SphP[i].ParticleVel[BOX_SHEARING_PHI_COORDINATE] = -BOX_SHEARING_Q * (P[i].Pos[0]-boxHalf_X) * BOX_SHEARING_OMEGA_BOX_CENTER; // equilibrium motion is purely in phi
+#ifdef GRAIN_RDI_TESTPROBLEM
+     SphP[i].ParticleVel[BOX_SHEARING_PHI_COORDINATE] -= All.Pressure_Gradient_Accel / (2. * BOX_SHEARING_OMEGA_BOX_CENTER); // equilibrium motion is purely in phi
+#endif
 #endif
 }
 

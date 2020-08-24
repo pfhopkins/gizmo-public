@@ -31,9 +31,9 @@
 /*
  * This file was originally part of the GADGET3 code developed by
  * Volker Springel. The code has been modified
- * in part by Phil Hopkins (phopkins@caltech.edu) for GIZMO. The modifications 
+ * in part by Phil Hopkins (phopkins@caltech.edu) for GIZMO. The modifications
  * mostly center on added functionality for new modules, elimination of unnecessary
- * variables, implementing the DEVELOPER_MODE options, and re-organizing the read order 
+ * variables, implementing the DEVELOPER_MODE options, and re-organizing the read order
  * to allow easier manipulation on restarts.
  */
 
@@ -52,8 +52,8 @@ void begrun(void)
 #pragma omp parallel private(tid)
       {
 #pragma omp master
-	printf("Using %d OpenMP threads\n", omp_get_num_threads());
-	tid = omp_get_thread_num();
+          printf("Using %d OpenMP threads\n", omp_get_num_threads());
+          tid = omp_get_thread_num();
       }
 #endif
 
@@ -62,24 +62,24 @@ void begrun(void)
 
     }
 
-#ifdef CHIMES_TURB_DIFF_IONS 
-  // Check that TURB_DIFF_METALS and TURB_DIFF_METALS_LOWORDER 
-  // have also been switched on. 
-#ifndef TURB_DIFF_METALS 
-  if (ThisTask == 0) 
+#ifdef CHIMES_TURB_DIFF_IONS
+  // Check that TURB_DIFF_METALS and TURB_DIFF_METALS_LOWORDER
+  // have also been switched on.
+#ifndef TURB_DIFF_METALS
+  if (ThisTask == 0)
     {
-      printf("ERROR: CHIMES_TURB_DIFF_IONS requires TURB_DIFF_METALS, but this is missing. Aborting.\n"); 
-      endrun(6572); 
+      printf("ERROR: CHIMES_TURB_DIFF_IONS requires TURB_DIFF_METALS, but this is missing. Aborting.\n");
+      endrun(6572);
     }
-#endif // !(TURB_DIFF_METALS) 
-#ifndef TURB_DIFF_METALS_LOWORDER 
-  if (ThisTask == 0) 
+#endif // !(TURB_DIFF_METALS)
+#ifndef TURB_DIFF_METALS_LOWORDER
+  if (ThisTask == 0)
     {
-      printf("ERROR: CHIMES_TURB_DIFF_IONS requires TURB_DIFF_METALS_LOWORDER, but this is missing. Aborting.\n"); 
-      endrun(6573); 
+      printf("ERROR: CHIMES_TURB_DIFF_IONS requires TURB_DIFF_METALS_LOWORDER, but this is missing. Aborting.\n");
+      endrun(6573);
     }
-#endif // !(TURB_DIFF_METALS_LOWORDER) 
-#endif // CHIMES_TURB_DIFF_IONS 
+#endif // !(TURB_DIFF_METALS_LOWORDER)
+#endif // CHIMES_TURB_DIFF_IONS
 
   read_parameter_file(ParameterFile);	/* ... read in parameters for this run */
 
@@ -99,7 +99,7 @@ void begrun(void)
   set_units();
   set_cosmo_factors_for_current_time();
   All.Time = All.TimeBegin;
-    
+
 #ifdef COOLING
   InitCool();
 #endif
@@ -124,7 +124,7 @@ void begrun(void)
     boxSize_Z = All.BoxSize * BOX_LONG_Z;
     boxHalf_Z = 0.5 * boxSize_Z;
 #endif
-    
+
 #ifdef BOX_SHEARING
 #ifdef BOX_LONG_X
     Shearing_Box_Vel_Offset = BOX_SHEARING_Q * BOX_SHEARING_OMEGA_BOX_CENTER * All.BoxSize * BOX_LONG_X;
@@ -185,8 +185,8 @@ void begrun(void)
 
 #endif /* end set of clauses to deal with causal flags for special boundary conditions */
 
-    
-    
+
+
 
   random_generator = gsl_rng_alloc(gsl_rng_ranlxd1);
 
@@ -216,7 +216,7 @@ void begrun(void)
 #ifdef EOS_TILLOTSON
     tillotson_eos_init();
 #endif
-    
+
 
 #ifdef TURB_DRIVING
     init_turb();
@@ -258,7 +258,7 @@ void begrun(void)
       All.ErrTolIntAccuracy = all.ErrTolIntAccuracy;
       All.MinGasHsmlFractional = all.MinGasHsmlFractional;
       All.MinGasTemp = all.MinGasTemp;
-       
+
         /* allow softenings to be modified during the run */
         if(All.ComovingIntegrationOn)
         {
@@ -295,7 +295,7 @@ void begrun(void)
       All.CritPhysDensity = all.CritPhysDensity;
       All.MaxSfrTimescale = all.MaxSfrTimescale;
 #endif
-        
+
 
 #ifdef SPHAV_CD10_VISCOSITY_SWITCH
       All.ArtBulkViscConst = all.ArtBulkViscConst;
@@ -326,10 +326,20 @@ void begrun(void)
         All.PhotonMomentum_Coupled_Fraction = all.PhotonMomentum_Coupled_Fraction;
 #endif
 
+#ifdef GALSF_FB_FIRE_AGE_TRACERS
+      All.AgeTracerRateNormalization = all.AgeTracerRateNormalization;
+#ifdef GALSF_FB_FIRE_AGE_TRACERS_CUSTOM
+      strcpy(All.AgeTracerListFilename, all.AgeTracerListFilename);
+#else
+      All.AgeTracerBinStart = all.AgeTracerBinStart;
+      All.AgeTracerBinEnd = all.AgeTracerBinEnd;
+#endif
+#endif
+
 #ifdef GR_TABULATED_COSMOLOGY
       All.DarkEnergyConstantW = all.DarkEnergyConstantW;
 #endif
-        
+
       All.MaxNumNgbDeviation = all.MaxNumNgbDeviation;
 #ifdef AGS_HSML_CALCULATION_IS_ACTIVE
       /* Allow the tolerance over the number of neighbours to vary during the run:
@@ -411,8 +421,11 @@ void begrun(void)
 #endif
     rt_set_simple_inits(RestartFlag);
 #endif
+#if defined(FLAG_NOT_IN_PUBLIC_CODE_EVOLVE_SPECTRUM)
+    CR_initialize_multibin_quantities(); // initialize the global variables and look-up tables //
+#endif
 
-    
+
   if(All.ComovingIntegrationOn)
     init_drift_table();
 
@@ -457,7 +470,7 @@ void set_units(void)
       printf("  unit B[internal] in gauss  = %g \n", UNIT_B_IN_GAUSS);
       printf("\n");
     }
-    
+
     double meanweight = 4.0 / (1 + 3 * HYDROGEN_MASSFRAC); /* assumes fully-atomic otherwise */
 #ifdef COOL_LOW_TEMPERATURES
     meanweight = 1. / ( HYDROGEN_MASSFRAC*0.5 + (1-HYDROGEN_MASSFRAC)/4. + 1./(16.+12.)); /* assumes fully-molecular if low-temp cooling enabled */
@@ -475,12 +488,11 @@ void set_units(void)
 #endif
 
 
-    
 #ifdef DM_FUZZY
     /* For Schroedinger equation: this encodes the coefficient with the mass of the particle: units vel*L = hbar / particle_mass. This is the key variable used throughout */
     All.ScalarField_hbar_over_mass = 591569.0 / ((double)All.ScalarField_hbar_over_mass * UNIT_VEL_IN_CGS * UNIT_LENGTH_IN_CGS);
 #endif
-    
+
 
 #if defined(CONDUCTION_SPITZER) || defined(VISCOSITY_BRAGINSKII)
     /* Note: Because we replace \nabla(T) in the conduction equation with \nabla(u), our conduction coefficient is not the usual kappa, but
@@ -499,8 +511,7 @@ void set_units(void)
 #endif
     /* factor used for determining saturation */
     All.ElectronFreePathFactor = 8 * pow(3.0, 1.5) * pow((GAMMA_DEFAULT-1), 2) / pow(3 + 5 * HYDROGEN_MASSFRAC, 2)
-        / (1 + HYDROGEN_MASSFRAC) / sqrt(M_PI) / coulomb_log * pow(PROTONMASS, 3) / pow(ELECTRONCHARGE, 4)
-        / (UNIT_DENSITY_IN_CGS) * pow(UNIT_SPECEGY_IN_CGS, 2);
+        / (1 + HYDROGEN_MASSFRAC) / sqrt(M_PI) / coulomb_log * pow(PROTONMASS, 3) / pow(ELECTRONCHARGE, 4) / (UNIT_DENSITY_IN_CGS) * pow(UNIT_SPECEGY_IN_CGS, 2);
 
   /* If the above value is multiplied with u^2/rho in code units (with rho being the physical density), then
    * one gets the electron mean free path in centimeters. Since we want to compare this with another length
@@ -514,116 +525,57 @@ void set_units(void)
 
 
 
-/*!  This function opens various log-files that report on the status and
- *   performance of the simulstion. On restart from restart-files
- *   (start-option 1), the code will append to these files.
- */
+/*!  This function opens various log-files that report on the status and performance of the simulation.
+        On restart from restart-files, (start-option 1), the code will append to these files. */
 void open_outputfiles(void)
 {
   char mode[2], buf[200];
-
-  if(RestartFlag == 0)
-    strcpy(mode, "w");
-  else
-    strcpy(mode, "a");
-
-  if(ThisTask == 0)
-    mkdir(All.OutputDir, 02755);
+  if(RestartFlag == 0) {strcpy(mode, "w");} else {strcpy(mode, "a");}
+  if(ThisTask == 0) {mkdir(All.OutputDir, 02755);}
   MPI_Barrier(MPI_COMM_WORLD);
 
-#ifdef BLACK_HOLES
-  /* Note: This is done by everyone, even if it might be empty */
-  if(ThisTask == 0)
-    {
-      sprintf(buf, "%sblackhole_details", All.OutputDir);
-      mkdir(buf, 02755);
-    }
+#ifdef BLACK_HOLES /* Note: This is done by everyone [all tasks can write to these log-files], even if it might be empty */
+  if(ThisTask == 0) {sprintf(buf, "%sblackhole_details", All.OutputDir); mkdir(buf, 02755);}
   MPI_Barrier(MPI_COMM_WORLD);
 #if !defined(IO_REDUCED_MODE) || defined(BH_OUTPUT_MOREINFO)
   sprintf(buf, "%sblackhole_details/blackhole_details_%d.txt", All.OutputDir, ThisTask);
-  if(!(FdBlackHolesDetails = fopen(buf, mode)))
-    {
-      printf("error in opening file '%s'\n", buf);
-      endrun(1);
-    }
-#endif // no io-reduced, or more-info if
+  if(!(FdBlackHolesDetails = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
+#endif
 #ifdef BH_OUTPUT_GASSWALLOW
-  sprintf(buf, "%sblackhole_details/bhswallow_%d.txt", All.OutputDir, ThisTask); 
-  if(!(FdBhSwallowDetails = fopen(buf, mode)))
-    {
-      printf("error in opening file '%s'\n", buf);
-      endrun(1);
-    }
-#endif // output-gas-swallow if
+  sprintf(buf, "%sblackhole_details/bhswallow_%d.txt", All.OutputDir, ThisTask);
+  if(!(FdBhSwallowDetails = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
+#endif
 #ifdef BH_OUTPUT_FORMATION_PROPERTIES
-  sprintf(buf, "%sblackhole_details/bhformation_%d.txt", All.OutputDir, ThisTask); 
-  if(!(FdBhFormationDetails = fopen(buf, mode)))
-    {
-      printf("error in opening file '%s'\n", buf);
-      endrun(1);
-    }
-#endif // output-gas-formation if
+  sprintf(buf, "%sblackhole_details/bhformation_%d.txt", All.OutputDir, ThisTask);
+  if(!(FdBhFormationDetails = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
+#endif
 #ifdef BH_OUTPUT_MOREINFO
-  sprintf(buf, "%sblackhole_details/bhmergers_%d.txt", All.OutputDir, ThisTask); 
-  if(!(FdBhMergerDetails = fopen(buf, mode)))
-    {
-      printf("error in opening file '%s'\n", buf);
-      endrun(1);
-    }
+  sprintf(buf, "%sblackhole_details/bhmergers_%d.txt", All.OutputDir, ThisTask);
+  if(!(FdBhMergerDetails = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
 #ifdef BH_WIND_KICK
   sprintf(buf, "%sblackhole_details/bhwinds_%d.txt", All.OutputDir, ThisTask);
-  if(!(FdBhWindDetails = fopen(buf, mode)))
-    {
-      printf("error in opening file '%s'\n", buf);
-      endrun(1);
-    }
-#endif // bh-wind-kick if
+  if(!(FdBhWindDetails = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
+#endif
 #endif // bh-output-more-info if
 #endif // black-holes if
 
-  if(ThisTask != 0)		/* only the root processors writes to the log files */
-    return;
-    
+    if(ThisTask != 0) {return;}	/* only the root processors writes to the log files listed below */
+
     sprintf(buf, "%s%s", All.OutputDir, "cpu.txt");
-    if(!(FdCPU = fopen(buf, mode)))
-    {
-        printf("error in opening file '%s'\n", buf);
-        endrun(1);
-    }
-    
+    if(!(FdCPU = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
+
 #ifndef IO_REDUCED_MODE
     sprintf(buf, "%s%s", All.OutputDir, "timebin.txt");
-    if(!(FdTimebin = fopen(buf, mode)))
-    {
-        printf("error in opening file '%s'\n", buf);
-        endrun(1);
-    }
-    
+    if(!(FdTimebin = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
     sprintf(buf, "%s%s", All.OutputDir, "info.txt");
-    if(!(FdInfo = fopen(buf, mode)))
-    {
-        printf("error in opening file '%s'\n", buf);
-        endrun(1);
-    }
-    
+    if(!(FdInfo = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
     sprintf(buf, "%s%s", All.OutputDir, "energy.txt");
-    if(!(FdEnergy = fopen(buf, mode)))
-    {
-        printf("error in opening file '%s'\n", buf);
-        endrun(1);
-    }
+    if(!(FdEnergy = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
     sprintf(buf, "%s%s", All.OutputDir, "timings.txt");
-    if(!(FdTimings = fopen(buf, mode)))
-    {
-        printf("error in opening file '%s'\n", buf);
-        endrun(1);
-    }
+    if(!(FdTimings = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
+
     sprintf(buf, "%s%s", All.OutputDir, "balance.txt");
-    if(!(FdBalance = fopen(buf, mode)))
-    {
-        printf("error in opening file '%s'\n", buf);
-        endrun(1);
-    }
+    if(!(FdBalance = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
     fprintf(FdBalance, "\n");
     fprintf(FdBalance, "Treewalk1      = '%c' / '%c'\n", CPU_Symbol[CPU_TREEWALK1], CPU_SymbolImbalance[CPU_TREEWALK1]);
     fprintf(FdBalance, "Treewalk2      = '%c' / '%c'\n", CPU_Symbol[CPU_TREEWALK2], CPU_SymbolImbalance[CPU_TREEWALK2]);
@@ -674,66 +626,39 @@ void open_outputfiles(void)
     fprintf(FdBalance, "\n");
 #endif
 
-
 #ifdef GALSF
   sprintf(buf, "%s%s", All.OutputDir, "sfr.txt");
-  if(!(FdSfr = fopen(buf, mode)))
-    {
-      printf("error in opening file '%s'\n", buf);
-      endrun(1);
-    }
+  if(!(FdSfr = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
 #endif
 
-    
+
+
 #ifdef GALSF_FB_MECHANICAL
     sprintf(buf, "%s%s", All.OutputDir, "SNeIIheating.txt");
-    if(!(FdSneIIHeating = fopen(buf, mode)))
-    {
-        printf("error in opening file '%s'\n", buf);
-        endrun(1);
-    }  
+    if(!(FdSneIIHeating = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
 #endif
 
 #if defined(RT_CHEM_PHOTOION) && !defined(IO_REDUCED_MODE)
   sprintf(buf, "%s%s", All.OutputDir, "rt_photoion_chem.txt");
-  if(!(FdRad = fopen(buf, mode)))
-    {
-      printf("error in opening file '%s'\n", buf);
-      endrun(1);
-    }
+  if(!(FdRad = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
 #endif
 
 
 #ifdef BLACK_HOLES
   sprintf(buf, "%s%s", All.OutputDir, "blackholes.txt");
-  if(!(FdBlackHoles = fopen(buf, mode)))
-    {
-      printf("error in opening file '%s'\n", buf);
-      endrun(1);
-    }
+  if(!(FdBlackHoles = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
 #endif
 
 #if defined(TURB_DRIVING) && !defined(IO_REDUCED_MODE)
   sprintf(buf, "%s%s", All.OutputDir, "turb.txt");
-  if(!(FdTurb = fopen(buf, mode)))
-    {
-      printf("error in opening file '%s'\n", buf);
-      endrun(1);
-    }
+  if(!(FdTurb = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
 #endif
-
 
 #if defined(GR_TABULATED_COSMOLOGY) && !defined(IO_REDUCED_MODE)
   sprintf(buf, "%s%s", All.OutputDir, "darkenergy.txt");
-  if(!(FdDE = fopen(buf, mode)))
-    {
-      printf("error in opening file '%s'\n", buf);
-      endrun(1);
-    }
-  else
-    {
-      if(RestartFlag == 0)
-	{
+  if(!(FdDE = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
+  else if(RestartFlag == 0)
+  {
 	  fprintf(FdDE, "nstep time H(a) ");
 #ifndef GR_TABULATED_COSMOLOGY_W
 	  fprintf(FdDE, "w0 Omega_L ");
@@ -743,10 +668,8 @@ void open_outputfiles(void)
 #ifdef GR_TABULATED_COSMOLOGY_G
 	  fprintf(FdDE, "dH dG ");
 #endif
-	  fprintf(FdDE, "\n");
-	  fflush(FdDE);
-	}
-    }
+      fprintf(FdDE, "\n"); fflush(FdDE);
+  }
 #endif
 
 }
@@ -843,7 +766,7 @@ void read_parameter_file(char *fname)
       addr[nt] = All.ResubmitCommand;
       id[nt++] = STRING;
 #endif
-        
+
       strcpy(tag[nt], "OutputListFilename");
       strcpy(alternate_tag[nt], "Snapshot_Times_Table_Filename");
       addr[nt] = All.OutputListFilename;
@@ -899,7 +822,7 @@ void read_parameter_file(char *fname)
       addr[nt] = &All.TimeBetStatistics;
       id[nt++] = REAL;
 #endif
-        
+
       strcpy(tag[nt], "TimeBegin");
       strcpy(alternate_tag[nt], "Time_at_ICs_Begin");
       addr[nt] = &All.TimeBegin;
@@ -962,7 +885,7 @@ void read_parameter_file(char *fname)
         strcpy(tag[nt], "MaxRMSDisplacementFac");
         addr[nt] = &All.MaxRMSDisplacementFac;
         id[nt++] = REAL;
-        
+
 #ifdef HYDRO_SPH
         strcpy(tag[nt], "ArtBulkViscConst");
         addr[nt] = &All.ArtBulkViscConst;
@@ -976,7 +899,7 @@ void read_parameter_file(char *fname)
         strcpy(tag[nt], "ViscosityAMin");
         addr[nt] = &All.ViscosityAMin;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "ViscosityAMax");
         addr[nt] = &All.ViscosityAMax;
         id[nt++] = REAL;
@@ -987,19 +910,19 @@ void read_parameter_file(char *fname)
         id[nt++] = REAL;
 #endif
 #endif
-        
+
 #ifdef DIVBCLEANING_DEDNER
         strcpy(tag[nt], "DivBcleaningParabolicSigma");
         addr[nt] = &All.DivBcleanParabolicSigma;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "DivBcleaningHyperbolicSigma");
         addr[nt] = &All.DivBcleanHyperbolicSigma;
         id[nt++] = REAL;
 #endif
 #endif // closes DEVELOPER_MODE check
-        
-        
+
+
 #ifdef GRAIN_FLUID
 #ifdef GRAIN_RDI_TESTPROBLEM
         strcpy(tag[nt],"Grain_Charge_Parameter");
@@ -1021,12 +944,19 @@ void read_parameter_file(char *fname)
         strcpy(tag[nt],"Vertical_Grain_Accel_Angle");
         addr[nt] = &All.Vertical_Grain_Accel_Angle;
         id[nt++] = REAL;
+        
+#ifdef BOX_SHEARING
+        strcpy(tag[nt],"Pressure_Gradient_Accel");
+        addr[nt] = &All.Pressure_Gradient_Accel;
+        id[nt++] = REAL;
+#endif
+
 #endif
 #if !defined(PIC_MHD) || defined(GRAIN_FLUID_AND_PIC_BOTH_DEFINED)
         strcpy(tag[nt],"Grain_Internal_Density");
         addr[nt] = &All.Grain_Internal_Density;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt],"Grain_Size_Min");
         addr[nt] = &All.Grain_Size_Min;
         id[nt++] = REAL;
@@ -1047,45 +977,66 @@ void read_parameter_file(char *fname)
         id[nt++] = REAL;
 #endif
 
-#if defined(COOL_METAL_LINES_BY_SPECIES) || defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(GALSF_FB_MECHANICAL) || defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(GALSF_FB_THERMAL)
+#if defined(INIT_STELLAR_METALS_AGES_DEFINED)
         strcpy(tag[nt],"InitMetallicity");
         strcpy(alternate_tag[nt],"Initial_Metallicity");
         addr[nt] = &All.InitMetallicityinSolar;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt],"InitStellarAge");
         strcpy(alternate_tag[nt],"Initial_StellarAge_NonTypeFourStars");
         addr[nt] = &All.InitStellarAgeinGyr;
         id[nt++] = REAL;
 #endif
-        
 
-       
 
+
+
+
+#ifdef GALSF_FB_FIRE_AGE_TRACERS
+        strcpy(tag[nt], "AgeTracerActiveTimestepFraction");
+        strcpy(alternate_tag[nt], "AgeTracerEventsPerTimeBin");
+        addr[nt] = &All.AgeTracerRateNormalization;
+        id[nt++] = REAL;
+
+#ifdef GALSF_FB_FIRE_AGE_TRACERS_CUSTOM
+        strcpy(tag[nt], "AgeTracerListFilename");
+        addr[nt] = &All.AgeTracerListFilename;
+        id[nt++] = STRING;
+#else
+        strcpy(tag[nt], "AgeTracerBinStart");
+        addr[nt] = &All.AgeTracerBinStart;
+        id[nt++] = REAL;
+
+        strcpy(tag[nt], "AgeTracerBinEnd");
+        addr[nt] = &All.AgeTracerBinEnd;
+        id[nt++] = REAL;
+#endif
+#endif
 
 #ifdef RT_LEBRON
         strcpy(tag[nt], "PhotonMomentum_Coupled_Fraction");
         addr[nt] = &All.PhotonMomentum_Coupled_Fraction;
         id[nt++] = REAL;
 #endif
-        
 
-        
-        
+
+
+
 #ifdef DM_SIDM
 #ifdef GRAIN_COLLISIONS
         strcpy(tag[nt], "Grain_InteractionRenormalization");
         addr[nt] = &All.DM_InteractionCrossSection;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "Grain_DissipationFactor");
         addr[nt] = &All.DM_DissipationFactor;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "Grain_KickPerCollision");
         addr[nt] = &All.DM_KickPerCollision;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "Grain_InteractionVelocityScale");
         addr[nt] = &All.DM_InteractionVelocityScale;
         id[nt++] = REAL;
@@ -1107,29 +1058,29 @@ void read_parameter_file(char *fname)
         id[nt++] = REAL;
 #endif
 #endif
-        
+
 
         strcpy(tag[nt], "MinGasHsmlFractional");
         strcpy(alternate_tag[nt], "Minimum_Gas_KernelSize_RelativetoSoftening");
         addr[nt] = &All.MinGasHsmlFractional;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "MaxHsml");
         strcpy(alternate_tag[nt], "Maximum_KernelSize_CodeUnits");
         addr[nt] = &All.MaxHsml;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "MaxSizeTimestep");
         strcpy(alternate_tag[nt], "Maximum_Timestep_Allowed");
         addr[nt] = &All.MaxSizeTimestep;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "MinSizeTimestep");
         strcpy(alternate_tag[nt], "Minimum_Timestep_Allowed");
         addr[nt] = &All.MinSizeTimestep;
         id[nt++] = REAL;
-        
-        
+
+
         strcpy(tag[nt], "DesNumNgb");
         strcpy(alternate_tag[nt], "Effective_Kernel_NeighborNumber");
         addr[nt] = &All.DesNumNgb;
@@ -1148,7 +1099,7 @@ void read_parameter_file(char *fname)
         addr[nt] = &All.MaxNumNgbDeviation;
         id[nt++] = REAL;
 #endif
-        
+
       strcpy(tag[nt], "ComovingIntegrationOn");
       strcpy(alternate_tag[nt], "Cosmological_Simulation_On");
       addr[nt] = &All.ComovingIntegrationOn;
@@ -1179,7 +1130,7 @@ void read_parameter_file(char *fname)
         addr[nt] = All.GrackleDataFile;
         id[nt++] = STRING;
 #endif
-        
+
       strcpy(tag[nt], "TimeLimitCPU");
       strcpy(alternate_tag[nt], "MaxSimulationWallTime_in_Seconds");
       addr[nt] = &All.TimeLimitCPU;
@@ -1295,8 +1246,8 @@ void read_parameter_file(char *fname)
       id[nt++] = REAL;
 #endif
 
-        
-        
+
+
 
 #if (defined(BLACK_HOLES) || defined(GALSF_SUBGRID_WINDS)) && defined(FOF)
       strcpy(tag[nt], "TimeBetOnTheFlyFoF");
@@ -1312,11 +1263,11 @@ void read_parameter_file(char *fname)
         strcpy(tag[nt], "BlackHoleEddingtonFactor");
         addr[nt] = &All.BlackHoleEddingtonFactor;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "SeedBlackHoleMass");
         addr[nt] = &All.SeedBlackHoleMass;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "BlackHoleNgbFactor");
         addr[nt] = &All.BlackHoleNgbFactor;
         id[nt++] = REAL;
@@ -1324,11 +1275,11 @@ void read_parameter_file(char *fname)
         strcpy(tag[nt], "BlackHoleMaxAccretionRadius");
         addr[nt] = &All.BlackHoleMaxAccretionRadius;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "BlackHoleRadiativeEfficiency");
         addr[nt] = &All.BlackHoleRadiativeEfficiency;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "BlackHoleFeedbackFactor");
         addr[nt] = &All.BlackHoleFeedbackFactor;
         id[nt++] = REAL;
@@ -1337,24 +1288,24 @@ void read_parameter_file(char *fname)
         strcpy(tag[nt], "SeedBlackHoleMassSigma");
         addr[nt] = &All.SeedBlackHoleMassSigma;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "SeedBlackHoleMinRedshift");
         addr[nt] = &All.SeedBlackHoleMinRedshift;
         id[nt++] = REAL;
-        
+
 #ifdef BH_SEED_FROM_LOCALGAS
         strcpy(tag[nt], "SeedBlackHolePerUnitMass");
         addr[nt] = &All.SeedBlackHolePerUnitMass;
         id[nt++] = REAL;
 #endif
 #endif
-        
+
 #ifdef BH_ALPHADISK_ACCRETION
         strcpy(tag[nt], "SeedAlphaDiskMass");
         addr[nt] = &All.SeedAlphaDiskMass;
         id[nt++] = REAL;
 #endif
-        
+
 #ifdef BH_SEED_FROM_FOF
         strcpy(tag[nt], "MinFoFMassForNewSeed");
         addr[nt] = &All.MinFoFMassForNewSeed;
@@ -1365,25 +1316,25 @@ void read_parameter_file(char *fname)
         strcpy(tag[nt],"BAL_f_accretion");
         addr[nt] = &All.BAL_f_accretion;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt],"BAL_v_outflow");
         addr[nt] = &All.BAL_v_outflow;
         id[nt++] = REAL;
 #endif
 
-        
+
 #if defined(BH_COSMIC_RAYS)
         strcpy(tag[nt],"BH_CosmicRay_Injection_Efficiency");
         addr[nt] = &All.BH_CosmicRay_Injection_Efficiency;
         id[nt++] = REAL;
 #endif
-        
+
 
 
 
 #endif /* BLACK_HOLES */
 
-        
+
 #ifdef GALSF
 #ifndef GALSF_EFFECTIVE_EQS
       strcpy(tag[nt], "CritPhysDensity");
@@ -1393,12 +1344,12 @@ void read_parameter_file(char *fname)
       strcpy(tag[nt], "SfEffPerFreeFall");
       addr[nt] = &All.MaxSfrTimescale;
       id[nt++] = REAL;
-      /* for historical reasons, we need to convert to "MaxSfrTimescale", 
-            defined as the SF timescale in code units at the critical physical 
+      /* for historical reasons, we need to convert to "MaxSfrTimescale",
+            defined as the SF timescale in code units at the critical physical
             density given above. use the dimensionless SfEffPerFreeFall
             to calculate this */
 #endif
-        
+
 #ifdef GALSF_EFFECTIVE_EQS
       strcpy(tag[nt], "FactorSN");
       addr[nt] = &All.FactorSN;
@@ -1407,7 +1358,7 @@ void read_parameter_file(char *fname)
       strcpy(tag[nt], "MaxSfrTimescale");
       addr[nt] = &All.MaxSfrTimescale;
       id[nt++] = REAL;
-        
+
       strcpy(tag[nt], "FactorEVP");
       addr[nt] = &All.FactorEVP;
       id[nt++] = REAL;
@@ -1420,8 +1371,8 @@ void read_parameter_file(char *fname)
       addr[nt] = &All.TempClouds;
       id[nt++] = REAL;
 #endif
-        
-        
+
+
 #ifdef GALSF_SUBGRID_WINDS
       strcpy(tag[nt], "WindEfficiency");
       addr[nt] = &All.WindEfficiency;
@@ -1550,39 +1501,39 @@ void read_parameter_file(char *fname)
         strcpy(tag[nt], "Tillotson_EOS_params_a");
         addr[nt] = &All.Tillotson_EOS_params[0][0];
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "Tillotson_EOS_params_b");
         addr[nt] = &All.Tillotson_EOS_params[0][1];
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "Tillotson_EOS_params_u_0");
         addr[nt] = &All.Tillotson_EOS_params[0][2];
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "Tillotson_EOS_params_rho_0");
         addr[nt] = &All.Tillotson_EOS_params[0][3];
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "Tillotson_EOS_params_A");
         addr[nt] = &All.Tillotson_EOS_params[0][4];
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "Tillotson_EOS_params_B");
         addr[nt] = &All.Tillotson_EOS_params[0][5];
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "Tillotson_EOS_params_u_s");
         addr[nt] = &All.Tillotson_EOS_params[0][6];
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "Tillotson_EOS_params_u_s_prime");
         addr[nt] = &All.Tillotson_EOS_params[0][7];
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "Tillotson_EOS_params_alpha");
         addr[nt] = &All.Tillotson_EOS_params[0][8];
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "Tillotson_EOS_params_beta");
         addr[nt] = &All.Tillotson_EOS_params[0][9];
         id[nt++] = REAL;
@@ -1592,19 +1543,19 @@ void read_parameter_file(char *fname)
         strcpy(tag[nt], "Tillotson_EOS_params_mu");
         addr[nt] = &All.Tillotson_EOS_params[0][10];
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "Tillotson_EOS_params_Y0");
         addr[nt] = &All.Tillotson_EOS_params[0][11];
         id[nt++] = REAL;
 #endif
-        
-        
+
+
 
 #if defined(RT_CHEM_PHOTOION) && !(defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(GALSF))
         strcpy(tag[nt], "IonizingLuminosityPerSolarMass_cgs");
         addr[nt] = &All.IonizingLuminosityPerSolarMass_cgs;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "star_Teff");
         addr[nt] = &All.star_Teff;
         id[nt++] = REAL;
@@ -1615,7 +1566,7 @@ void read_parameter_file(char *fname)
         strcpy(alternate_tag[nt], "AdaptGravSoft_Effective_NeighborNumber");
         addr[nt] = &All.AGS_DesNumNgb;
         id[nt++] = REAL;
-        
+
 #ifdef DEVELOPER_MODE
         strcpy(tag[nt], "AGS_MaxNumNgbDeviation");
         addr[nt] = &All.AGS_MaxNumNgbDeviation;
@@ -1628,51 +1579,56 @@ void read_parameter_file(char *fname)
         addr[nt] = &All.ScalarField_hbar_over_mass;
         id[nt++] = REAL;
 #endif
-        
+
 #ifdef TURB_DRIVING
-        
+
 #if defined(TURB_DRIVING_SPECTRUMGRID)
         strcpy(tag[nt], "TimeBetTurbSpectrum"); // time (code) between evaluations of turb pwrspec
+        strcpy(alternate_tag[nt], "TurbDrive_TimeBetTurbSpectrum");
         addr[nt] = &All.TimeBetTurbSpectrum;
         id[nt++] = REAL;
 #endif
-        
+
         strcpy(tag[nt], "ST_decay"); // decay time for driving-mode phase correlations
-        addr[nt] = &All.StDecay;
+        strcpy(alternate_tag[nt], "TurbDrive_CoherenceTime");
+        addr[nt] = &All.TurbDriving_Global_DecayTime;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "ST_energy"); // energy of driving-scale modes: sets norm of turb (?)
-        addr[nt] = &All.StEnergy;
+        strcpy(alternate_tag[nt], "TurbDrive_ApproxRMSVturb");
+        addr[nt] = &All.TurbDriving_Global_AccelerationPowerVariable;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "ST_DtFreq"); // time interval for driving updates (set by hand)
-        addr[nt] = &All.StDtFreq;
+        strcpy(alternate_tag[nt], "TurbDrive_TimeBetweenTurbUpdates");
+        addr[nt] = &All.TurbDriving_Global_DtTurbUpdates;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "ST_Kmin"); // minimum driving-k: should be ~2.*M_PI/All.BoxSize
-        addr[nt] = &All.StKmin;
+        strcpy(alternate_tag[nt], "TurbDrive_MaxWavelength"); // should be <= BoxSize
+        addr[nt] = &All.TurbDriving_Global_DrivingScaleKMinVar;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "ST_Kmax"); // maximum driving-k: set to couple times Kmin or more if more cascade desired
-        addr[nt] = &All.StKmax;
+        strcpy(alternate_tag[nt], "TurbDrive_MinWavelength"); // should be < MaxWavelength
+        addr[nt] = &All.TurbDriving_Global_DrivingScaleKMaxVar;
         id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "ST_SolWeight"); // fractional wt of solenoidal modes (wt*curl + (1-wt)*div)
-        addr[nt] = &All.StSolWeight;
+        strcpy(alternate_tag[nt], "TurbDrive_SolenoidalFraction");
+        addr[nt] = &All.TurbDriving_Global_SolenoidalFraction;
         id[nt++] = REAL;
-        
-        strcpy(tag[nt], "ST_AmplFac"); // multiplies turb amplitudes
-        addr[nt] = &All.StAmplFac;
-        id[nt++] = REAL;
-        
+
         strcpy(tag[nt], "ST_SpectForm"); // driving pwr-spec: 0=Ek~const; 1=sharp-peak at kc; 2=Ek~k^(-5/3); 3=Ek~k^-2
-        addr[nt] = &All.StSpectForm;
+        strcpy(alternate_tag[nt], "TurbDrive_DrivingSpectrum");
+        addr[nt] = &All.TurbDriving_Global_DrivingSpectrumKey;
         id[nt++] = INT;
-        
+
         strcpy(tag[nt], "ST_Seed"); // random number seed for modes
-        addr[nt] = &All.StSeed;
-        id[nt++] = REAL;
-        
+        strcpy(alternate_tag[nt], "TurbDrive_RandomNumberSeed");
+        addr[nt] = &All.TurbDriving_Global_DrivingRandomNumberKey;
+        id[nt++] = INT;
+
         /* Andreas Bauer's paper on turbulence:
          // sub-sonic (Mach~0.3) test: //
          ST_decay        1.
@@ -1684,7 +1640,7 @@ void read_parameter_file(char *fname)
          ST_AmplFac      1.
          ST_Seed         42
          ST_SpectForm    2
-         
+
          // trans-sonic (Mach~1.2/3.5) test: //
          ST_decay        0.5
          ST_energy       0.21 (sigma=0.21-3.0)
@@ -1695,7 +1651,7 @@ void read_parameter_file(char *fname)
          ST_AmplFac      1.
          ST_Seed         42
          ST_SpectForm    2
-         
+
          // super-sonic (Mach~8.4) test: //
          ST_decay        0.05
          ST_energy       25.0 (sigma=12.247)
@@ -1723,15 +1679,15 @@ void read_parameter_file(char *fname)
                 printf("Obtaining parameters from file '%s':\n", fname);
                 while(!feof(fd))
                 {
-                    
+
                     *buf = 0;
                     fgets(buf, 200, fd);
                     if(sscanf(buf, "%s%s%s", buf1, buf2, buf3) < 2)
                         continue;
-                    
+
                     if(buf1[0] == '%')
                         continue;
-                    
+
                     for(i = 0, j = -1; i < nt; i++)
                         if((strcmp(buf1, tag[i]) == 0) || (strcmp(buf1, alternate_tag[i]) == 0))
                         {
@@ -1739,7 +1695,7 @@ void read_parameter_file(char *fname)
                             tag[i][0] = 0;
                             break;
                         }
-                    
+
                     if(j >= 0)
                     {
                         switch (id[j])
@@ -1774,10 +1730,10 @@ void read_parameter_file(char *fname)
                 fclose(fd);
                 fclose(fdout);
                 printf("\n");
-                
+
                 i = strlen(All.OutputDir);
                 if(i > 0) {if(All.OutputDir[i - 1] != '/') {strcat(All.OutputDir, "/");}}
-                
+
                 sprintf(buf1, "%s%s", fname, "-usedvalues");
                 sprintf(buf2, "%s%s", All.OutputDir, "parameters-usedvalues");
                 sprintf(buf3, "cp %s %s", buf1, buf2);
@@ -1792,7 +1748,7 @@ void read_parameter_file(char *fname)
             errorFlag = 1;
         }
 
-        
+
         for(i = 0; i < nt; i++)
         {
             if(*tag[i])
@@ -1847,60 +1803,71 @@ void read_parameter_file(char *fname)
 #ifdef TURB_DIFFUSION
                 if(strcmp("TurbDiffusionCoefficient",tag[i])==0) {*((double *)addr[i])=1; printf("Tag %s (%s) not set in parameter file: code was compiled with turbulent diffusion, so will default to calculating the coefficients without arbitrary re-normalization (i.e. user-specified additional coefficient/multipler=%g) \n",tag[i],alternate_tag[i],All.TurbDiffusion_Coefficient); continue;}
 #endif
-#if defined(COOL_METAL_LINES_BY_SPECIES) || defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(GALSF_FB_MECHANICAL) || defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(GALSF_FB_THERMAL)
+#if defined(INIT_STELLAR_METALS_AGES_DEFINED)
                 if(strcmp("InitMetallicity",tag[i])==0) {*((double *)addr[i])=0; printf("Tag %s (%s) not set in parameter file: defaulting to zero (Z=%g) \n",tag[i],alternate_tag[i],All.InitMetallicityinSolar); continue;}
                 if(strcmp("InitStellarAge",tag[i])==0) {*((double *)addr[i])=10.; printf("Tag %s (%s) not set in parameter file: defaulting to very old pre-existing stars [if any exist, otherwise this is irrelevant] (=%g Gyr) \n",tag[i],alternate_tag[i],All.InitStellarAgeinGyr); continue;}
 #endif
 #ifdef RT_LEBRON
                 if(strcmp("PhotonMomentum_Coupled_Fraction",tag[i])==0) {*((double *)addr[i])=1; printf("Tag %s (%s) not set in parameter file: defaulting to use the explicitly-resolved absorption (=%g) \n",tag[i],alternate_tag[i],All.PhotonMomentum_Coupled_Fraction); continue;}
 #endif
+#if defined(TURB_DRIVING)
+                if(strcmp("ST_DtFreq",tag[i])==0) {*((double *)addr[i])=-1; printf("Tag %s (%s) not set in parameter file: defaulting to update turbulent driving fields every 0.01 coherence times (=%g) \n",tag[i],alternate_tag[i],All.TurbDriving_Global_DtTurbUpdates); continue;}
+                if(strcmp("ST_decay",tag[i])==0) {*((double *)addr[i])=-1; printf("Tag %s (%s) not set in parameter file: defaulting to assume driving-scale mode coherence time is given by expected rms eddy turnover time ~ L_drive / rms v_turb (=%g) \n",tag[i],alternate_tag[i],All.TurbDriving_Global_DecayTime); continue;}
+                if(strcmp("ST_SpectForm",tag[i])==0) {*((int *)addr[i])=2; printf("Tag %s (%s) not set in parameter file: defaulting to assume driving follows a Kolmogorov spectrum (=%d) \n",tag[i],alternate_tag[i],All.TurbDriving_Global_DrivingSpectrumKey); continue;}
+                if(strcmp("ST_Seed",tag[i])==0) {*((int *)addr[i])=42; printf("Tag %s (%s) not set in parameter file: defaulting to the answer to everything (=%d) \n",tag[i],alternate_tag[i],All.TurbDriving_Global_DrivingRandomNumberKey); continue;}
+                if(strcmp("ST_SolWeight",tag[i])==0) {*((double *)addr[i])=0.5; printf("Tag %s (%s) not set in parameter file: defaulting to assume the so-called natural mix of modes for pressure-free turbulence (=%g) \n",tag[i],alternate_tag[i],All.TurbDriving_Global_SolenoidalFraction); continue;}
+#endif
                 printf("ERROR. I miss a required value for tag '%s' (or alternate name '%s') in parameter file '%s'.\n", tag[i], alternate_tag[i], fname);
                 errorFlag = 1;
             }
         }
-        
+
+#ifdef GALSF_FB_FIRE_AGE_TRACERS_CUSTOM
+        errorFlag += read_agetracerlist(All.AgeTracerListFilename);
+#endif
+
         if(All.OutputListOn && errorFlag == 0) {errorFlag += read_outputlist(All.OutputListFilename);} else {All.OutputListLength = 0;}
     }
 
     MPI_Bcast(&errorFlag, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    
+
     if(errorFlag)
     {
         MPI_Finalize();
         exit(0);
     }
 
-    
+
     /* now communicate the relevant parameters to the other processes */
     MPI_Bcast(&All, sizeof(struct global_data_all_processes), MPI_BYTE, 0, MPI_COMM_WORLD);
-    
-    
+
+
     /* ok, -NOW- we can properly read the "All" variables; we should do any if/then checks on
      them at this point. if any all variable depends on another, it must be set AFTER this point! */
-    
+
 #ifndef DEVELOPER_MODE
     /*
      %- PFH: these are generally not parameters that should be freely-varied. we're
      %- going to default to hard-coding them, instead, so that only development-level
      %- users are modifying them. However, if you want to set them, here are some
      %- reasonable values that you will need to insert into your parameterfile
-     
+
      %---- Accuracy of time integration
      ErrTolIntAccuracy       0.010   % <0.02
      CourantFac              0.2 	% <0.40
      MaxRMSDisplacementFac   0.125	% <0.25
-     
+
      %---- Tree algorithm, force accuracy, domain update frequency
      ErrTolTheta                 0.7	    % 0.7=standard
      ErrTolForceAcc              0.0025	% 0.0025=standard
      %---- Convergence error for evaluating particle volumes
      MaxNumNgbDeviation      0.05    % <<DesNumNgb (values<1 are fine)
      AGS_MaxNumNgbDeviation  2   % same, for adaptive gravsoft: can be much larger
-     
+
      %--- Dedner Divergence-cleaning Parameters (for MHD)
      DivBcleaningParabolicSigma      0.2  % <1, ~0.2-0.5 needed for stability
      DivBcleaningHyperbolicSigma     1.0  % ~1
-     
+
      %---------- SPH-Specific Parameters ---------------------------------
      %---- Artificial viscosity
      ArtBulkViscConst    1.0     % multiplies 'standard' AV (use 1.0)
@@ -1912,7 +1879,7 @@ void read_parameter_file(char *fname)
      %---- Artificial resistivity (for MHD runs)
      ArtificialResistivityMax    1.  % maximum alpha_B (~1-2) for art. res. (like art. visc)
      */
-    
+
     All.CourantFac = 0.4;
     All.ErrTolIntAccuracy = 0.02;
     All.ErrTolTheta = 0.7;
@@ -1959,7 +1926,7 @@ void read_parameter_file(char *fname)
     if(All.AGS_MaxNumNgbDeviation < 0.05) All.AGS_MaxNumNgbDeviation = 0.05;
 #endif
 #endif // closes DEVELOPER_MODE check //
-    
+
 #ifdef GALSF
     All.CritOverDensity = 1000.0;
     /* this just needs to be some number >> 1, or else we get nonsense.
@@ -1971,13 +1938,13 @@ void read_parameter_file(char *fname)
 #endif
     All.TypeOfOpeningCriterion = 1;
     /* determines tree cell-opening criterion: 0 for Barnes-Hut, 1 for relative criterion: this
-     should only be changed if you -really- know what you're doing! */    
-    
+     should only be changed if you -really- know what you're doing! */
+
 #if defined(MAGNETIC) || defined(HYDRO_MESHLESS_FINITE_VOLUME) || defined(FLAG_NOT_IN_PUBLIC_CODE)
     if(All.CourantFac > 0.2) {All.CourantFac = 0.2;}
     /* (PFH) safety factor needed for MHD calc, because people keep using the same CFac as hydro! */
 #endif
-    
+
 #if defined(PIC_MHD) && !defined(GRAIN_FLUID_AND_PIC_BOTH_DEFINED)
     All.Grain_Internal_Density=1; All.Grain_Size_Min=1; All.Grain_Size_Max=1; All.Grain_Size_Spectrum_Powerlaw=1; /* in this case these are never used, so we treat them as dummy variables */
 #endif
@@ -2094,27 +2061,27 @@ void read_parameter_file(char *fname)
             printf("For the kernel chosen, proper sampling and stability requires AGS_DesNumNgb must be >%d and <%d \n", KERNEL_NMIN,KERNEL_NMAX);
             endrun(1);
         }
-        
+
     }
 #endif
 
-    
+
     for(pnum = 0; All.NumFilesWrittenInParallel > (1 << pnum); pnum++);
-    
+
     if(All.NumFilesWrittenInParallel != (1 << pnum))
     {
         if(ThisTask == 0)
             printf("NumFilesWrittenInParallel MUST be a power of 2\n");
         endrun(0);
     }
-    
+
     if(All.NumFilesWrittenInParallel > NTask)
     {
         if(ThisTask == 0)
             printf("NumFilesWrittenInParallel MUST be smaller than number of processors\n");
         endrun(0);
     }
-    
+
 #if defined(BOX_LONG_X) ||  defined(BOX_LONG_Y) || defined(BOX_LONG_Z)
 #if !defined(SELFGRAVITY_OFF) && !defined(GRAVITY_NOT_PERIODIC) && (defined(BOX_PERIODIC) || defined(PMGRID))
     if(ThisTask == 0)
@@ -2125,8 +2092,8 @@ void read_parameter_file(char *fname)
     endrun(0);
 #endif
 #endif
-    
-    
+
+
 #ifdef GR_TABULATED_COSMOLOGY_W
 #ifndef GR_TABULATED_COSMOLOGY
     if(ThisTask == 0)
@@ -2137,25 +2104,47 @@ void read_parameter_file(char *fname)
     endrun(0);
 #endif
 #endif
-    
-    
-    
-    
-    
+
+
+
+
+
 #ifdef PTHREADS_NUM_THREADS
 #ifdef _OPENMP
     if(ThisTask == 0) {printf("PTHREADS_NUM_THREADS is incompatible with enabling OpenMP in the compiler options \n");}
     endrun(0);
 #endif
 #endif
-    
+
 #undef REAL
 #undef STRING
 #undef INT
 #undef MAXTAGS
-    
+
 }
 
+
+#ifdef GALSF_FB_FIRE_AGE_TRACERS_CUSTOM
+int read_agetracerlist(char *fname)
+{
+    FILE *fd; int count,i=0; char buf[512];
+    if(!(fd = fopen(fname, "r"))) {printf("can't read age tracer list in file '%s'\n", fname); return 1;}
+    while(1)
+    {
+      if(fgets(buf, 500, fd) != buf) {break;}
+      count = sscanf(buf, " %lg", &All.AgeTracerTimeBins[i]);
+      if(count == 1 || count == 2)
+      {
+          if(i >= NUM_AGE_TRACERS+1) {PRINT_WARNING("Too many entries in age tracer list. You should increase NUM_AGE_TRACERS=%d",(int)NUM_AGE_TRACERS); endrun(314);}
+          i++;
+      }
+    }
+    if (i < NUM_AGE_TRACERS+1) {PRINT_WARNING("Not enough entries in age tracer list. Found %d entries, but we need %d\n", i, NUM_AGE_TRACERS+1); endrun(314);}
+    fclose(fd);
+    if(ThisTask==0) {printf("Read age tracer bin set. Found %d age tracer bin edges in age tracer list.\n", i); fflush(stdout);}
+    return 0;
+}
+#endif
 
 
 /*! this function reads a table with a list of desired output times. The table
@@ -2216,41 +2205,28 @@ int read_outputlist(char *fname)
  */
 void readjust_timebase(double TimeMax_old, double TimeMax_new)
 {
-  int i;
-  long long ti_end;
+  int i; long long ti_end;
 
   if(sizeof(long long) != 8)
-    {
-      if(ThisTask == 0)
-	printf("\nType 'long long' is not 64 bit on this platform\n\n");
-      endrun(555);
-    }
+    {if(ThisTask == 0) {printf("\nType 'long long' is not 64 bit on this platform; this will produce segfaults: need to exit.\n\n");} endrun(555);}
 
   if(ThisTask == 0)
     {
-      printf("\nAll.TimeMax has been changed in the parameterfile\n");
-      printf("Need to adjust integer timeline\n\n");
+      printf("\n TimeMax (Time_at_End_of_Simulation) has been augmented to be larger in the parameterfile;\n");
+      printf("  We need to adjust integer timeline, which perturbs all the structure of particle timesteps. Usually this is ok, but with some config flags on, your run will suddently be extremely slow (because the code cannot correctly reorder the timeline). In those cases, restarting from a snapshot is recommended.\n\n");
     }
 
   if(TimeMax_new < TimeMax_old)
-    {
-      if(ThisTask == 0)
-	printf("\nIt is not allowed to reduce All.TimeMax\n\n");
-      endrun(556);
-    }
+    {if(ThisTask == 0) {printf("\n You cannot reduce TimeMax (Time_at_End_of_Simulation) in the parameterfile, in a restart [this breaks the integer timeline]. Simply stop the run when desired, instead. Quitting.\n");} endrun(556);}
 
-  if(All.ComovingIntegrationOn)
-    ti_end = (long long) (log(TimeMax_new / All.TimeBegin) / All.Timebase_interval);
-  else
-    ti_end = (long long) ((TimeMax_new - All.TimeBegin) / All.Timebase_interval);
+  if(All.ComovingIntegrationOn) {ti_end = (long long) (log(TimeMax_new / All.TimeBegin) / All.Timebase_interval);}
+    else {ti_end = (long long) ((TimeMax_new - All.TimeBegin) / All.Timebase_interval);}
 
   while(ti_end > TIMEBASE)
-    {
+  {
       All.Timebase_interval *= 2.0;
-
       ti_end /= 2;
       All.Ti_Current /= 2;
-
 #ifdef PMGRID
       All.PM_Ti_begstep /= 2;
       All.PM_Ti_endstep /= 2;
@@ -2259,24 +2235,17 @@ void readjust_timebase(double TimeMax_old, double TimeMax_new)
       StTPrev /= 2;
 #endif
 
-      for(i = 0; i < NumPart; i++)
+    for(i = 0; i < NumPart; i++)
 	{
-	  P[i].Ti_begstep /= 2;
-	  P[i].Ti_current /= 2;
-
-	  if(P[i].TimeBin > 0)
+        P[i].Ti_begstep /= 2;
+        P[i].Ti_current /= 2;
+        if(P[i].TimeBin > 0)
 	    {
 	      P[i].TimeBin--;
-	      if(P[i].TimeBin <= 0)
-		{
-		  printf("Error in readjust_timebase(). Minimum Timebin for particle %d reached.\n", i);
-		  endrun(8765);
-		}
+	      if(P[i].TimeBin <= 0) {printf("Attempted to restructure integer timeline but ran into an error in readjust_timebase(). The minimum timebin for particle %d has been reached -- need smaller timesteps. Exiting.\n", i); endrun(8765);}
 	    }
 	}
-
-      All.Ti_nextlineofsight /= 2;
-    }
-
+    All.Ti_nextlineofsight /= 2;
+  }
   All.TimeMax = TimeMax_new;
 }

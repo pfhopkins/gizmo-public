@@ -128,6 +128,7 @@ void ags_out2particle_density(struct OUTPUT_STRUCT_NAME *out, int i, int mode, i
  *  target particle may either be local, or reside in the communication
  *  buffer.
  */
+/*!   -- this subroutine writes to shared memory [updating the neighbor values, primarily for wakeup-type updates]: need to protect these writes for openmp below */
 int ags_density_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
 {
     int j, n;
@@ -171,7 +172,7 @@ int ags_density_evaluate(int target, int mode, int *exportflag, int *exportnodec
             
             for(n = 0; n < numngb_inbox; n++)
             {
-                j = ngblist[n];
+                j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */
                 if(P[j].Mass <= 0) continue;
                 
                 kernel.dp[0] = local.Pos[0] - P[j].Pos[0];
@@ -206,13 +207,20 @@ int ags_density_evaluate(int target, int mode, int *exportflag, int *exportnodec
                         if(v_dot_r > 0) {v_dot_r *= 0.333333;} // receding elements don't signal strong change in forces in the same manner as approaching/converging particles
                         double vsig = 0.5 * fabs( fac_mu * v_dot_r / kernel.r );
                         short int TimeBin_j = P[j].TimeBin; if(TimeBin_j < 0) {TimeBin_j = -TimeBin_j - 1;} // need to make sure we correct for the fact that TimeBin is used as a 'switch' here to determine if a particle is active for iteration, otherwise this gives nonsense!
-                        if(TimeBinActive[TimeBin_j]) {if(vsig > PPP[j].AGS_vsig) PPP[j].AGS_vsig = vsig;}
                         if(vsig > out.AGS_vsig) {out.AGS_vsig = vsig;}
 #if defined(WAKEUP) && (defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(DM_FUZZY) || defined(FLAG_NOT_IN_PUBLIC_CODE))
-                        if(!(TimeBinActive[TimeBin_j]) && (All.Time > All.TimeBegin)) {if(vsig > WAKEUP*P[j].AGS_vsig) {P[j].wakeup = 1; NeedToWakeupParticles_local = 1;}}
+                        int wakeup_condition = 0; // determine if wakeup is allowed
+                        if(!(TimeBinActive[TimeBin_j]) && (All.Time > All.TimeBegin) && (vsig > WAKEUP*P[j].AGS_vsig)) {wakeup_condition = 1;}
 #if defined(GALSF)
-                        if((P[j].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[j].Type == 2)||(P[j].Type==3)))) {P[j].wakeup = 0;} // don't wakeup star particles, or risk 2x-counting feedback events! //
+                        if((P[j].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[j].Type == 2)||(P[j].Type==3)))) {wakeup_condition = 0;} // don't wakeup star particles, or risk 2x-counting feedback events! //
 #endif
+                        if(wakeup_condition) // do the wakeup
+                        {
+                                #pragma omp atomic write
+                                P[j].wakeup = 1;
+                                #pragma omp atomic write
+                                NeedToWakeupParticles_local = 1;
+                        }
 #endif
                         out.Particle_DivVel -= kernel.dwk * (kernel.dp[0] * kernel.dv[0] + kernel.dp[1] * kernel.dv[1] + kernel.dp[2] * kernel.dv[2]) / kernel.r;
                         /* this is the -particle- divv estimator, which determines how Hsml will evolve */
@@ -236,17 +244,11 @@ int ags_density_evaluate(int target, int mode, int *exportflag, int *exportnodec
             if(listindex < NODELISTLENGTH)
             {
                 startnode = DATAGET_NAME[target].NodeList[listindex];
-                if(startnode >= 0)
-                    startnode = Nodes[startnode].u.d.nextnode;    /* open it */
+                if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;}    /* open it */
             }
         }
     }
-    
-    if(mode == 0)
-        ags_out2particle_density(&out, target, 0, loop_iteration);
-    else
-        DATARESULT_NAME[target] = out;
-    
+    if(mode == 0) {ags_out2particle_density(&out, target, 0, loop_iteration);} else {DATARESULT_NAME[target] = out;}
     return 0;
 }
 
@@ -673,48 +675,60 @@ double get_particle_volume_ags(int j)
 /* routine to invert the NV_T matrix after neighbor pass */
 double do_cbe_nvt_inversion_for_faces(int i)
 {
-    MyLongDouble NV_T[3][3]; int j,k;
-    for(j=0;j<3;j++) {for(k=0;k<3;k++) {NV_T[j][k]=P[i].NV_T[j][k];}} // initialize matrix to be inverted //
-    double Tinv[3][3], FrobNorm=0, FrobNorm_inv=0, detT=0;
-    for(j=0;j<3;j++) {for(k=0;k<3;k++) {Tinv[j][k]=0;}}
+    /* initialize the matrix to be inverted */
+    MyLongDouble NV_T[3][3], Tinv[3][3]; int j,k; for(j=0;j<3;j++) {for(k=0;k<3;k++) {NV_T[j][k]=P[i].NV_T[j][k];}}
     /* fill in the missing elements of NV_T (it's symmetric, so we saved time not computing these directly) */
     NV_T[1][0]=NV_T[0][1]; NV_T[2][0]=NV_T[0][2]; NV_T[2][1]=NV_T[1][2];
+    /* want to work in dimensionless units for defining certain quantities robustly, so normalize out the units */
+    double dimensional_NV_T_normalizer = pow( PPP[i].Hsml , 2-NUMDIMS ); /* this has the same dimensions as NV_T here */
+    for(j=0;j<3;j++) {for(k=0;k<3;k++) {NV_T[j][k]/=dimensional_NV_T_normalizer;}} /* now NV_T should be dimensionless */
     /* Also, we want to be able to calculate the condition number of the matrix to be inverted, since
-     this will tell us how robust our procedure is (and let us know if we need to expand the neighbor number */
-    for(j=0;j<3;j++) {for(k=0;k<3;k++) {FrobNorm += NV_T[j][k]*NV_T[j][k];}}
+        this will tell us how robust our procedure is (and let us know if we need to improve the conditioning) */
+    double ConditionNumber=0, ConditionNumber_threshold = 10. * CONDITION_NUMBER_DANGER; /* set a threshold condition number - above this we will 'pre-condition' the matrix for better behavior */
+    double trace_initial = NV_T[0][0] + NV_T[1][1] + NV_T[2][2]; /* initial trace of this symmetric, positive-definite matrix; used below as a characteristic value for adding the identity */
+    double conditioning_term_to_add = 1.05 * (trace_initial / NUMDIMS) / ConditionNumber_threshold; /* this will be added as a test value if the code does not reach the desired condition number */
+    /* now enter an iterative loop to arrive at a -well-conditioned- inversion to use */
+    while(1)
+    {
+        /* initialize the matrix this will go into */
+        double FrobNorm=0, FrobNorm_inv=0, detT=0; /* initialize these quantities to null */
+        for(j=0;j<3;j++) {for(k=0;k<3;k++) {Tinv[j][k]=0;}} /* initialize Tinv to null */
+        for(j=0;j<3;j++) {for(k=0;k<3;k++) {FrobNorm += NV_T[j][k]*NV_T[j][k];}} /* calculate first part of condition number, Frobenius norm of NV_T */
 #if (NUMDIMS==1) // 1-D case //
-    detT = NV_T[0][0];
-    if(detT!=0 && !isnan(detT)) {Tinv[0][0] = 1/detT}; /* only one non-trivial element in 1D! */
+        detT = NV_T[0][0]; if((detT!=0) && !isnan(detT)) {Tinv[0][0] = 1/detT}; /* only one non-trivial element in 1D! */
 #endif
 #if (NUMDIMS==2) // 2-D case //
-    detT = NV_T[0][0]*NV_T[1][1] - NV_T[0][1]*NV_T[1][0];
-    if((detT != 0)&&(!isnan(detT)))
-    {
-        Tinv[0][0] = NV_T[1][1] / detT; Tinv[0][1] = -NV_T[0][1] / detT;
-        Tinv[1][0] = -NV_T[1][0] / detT; Tinv[1][1] = NV_T[0][0] / detT;
-    }
+        detT = NV_T[0][0]*NV_T[1][1] - NV_T[0][1]*NV_T[1][0];
+        if((detT != 0)&&(!isnan(detT)))
+        {
+            Tinv[0][0] = NV_T[1][1] / detT; Tinv[0][1] = -NV_T[0][1] / detT;
+            Tinv[1][0] = -NV_T[1][0] / detT; Tinv[1][1] = NV_T[0][0] / detT;
+        }
 #endif
 #if (NUMDIMS==3) // 3-D case //
-    detT = NV_T[0][0] * NV_T[1][1] * NV_T[2][2] + NV_T[0][1] * NV_T[1][2] * NV_T[2][0] +
-    NV_T[0][2] * NV_T[1][0] * NV_T[2][1] - NV_T[0][2] * NV_T[1][1] * NV_T[2][0] -
-    NV_T[0][1] * NV_T[1][0] * NV_T[2][2] - NV_T[0][0] * NV_T[1][2] * NV_T[2][1];
-    /* check for zero determinant */
-    if((detT != 0) && !isnan(detT))
-    {
-        Tinv[0][0] = (NV_T[1][1] * NV_T[2][2] - NV_T[1][2] * NV_T[2][1]) / detT;
-        Tinv[0][1] = (NV_T[0][2] * NV_T[2][1] - NV_T[0][1] * NV_T[2][2]) / detT;
-        Tinv[0][2] = (NV_T[0][1] * NV_T[1][2] - NV_T[0][2] * NV_T[1][1]) / detT;
-        Tinv[1][0] = (NV_T[1][2] * NV_T[2][0] - NV_T[1][0] * NV_T[2][2]) / detT;
-        Tinv[1][1] = (NV_T[0][0] * NV_T[2][2] - NV_T[0][2] * NV_T[2][0]) / detT;
-        Tinv[1][2] = (NV_T[0][2] * NV_T[1][0] - NV_T[0][0] * NV_T[1][2]) / detT;
-        Tinv[2][0] = (NV_T[1][0] * NV_T[2][1] - NV_T[1][1] * NV_T[2][0]) / detT;
-        Tinv[2][1] = (NV_T[0][1] * NV_T[2][0] - NV_T[0][0] * NV_T[2][1]) / detT;
-        Tinv[2][2] = (NV_T[0][0] * NV_T[1][1] - NV_T[0][1] * NV_T[1][0]) / detT;
-    }
+        detT =  NV_T[0][0] * NV_T[1][1] * NV_T[2][2] + NV_T[0][1] * NV_T[1][2] * NV_T[2][0] +
+                NV_T[0][2] * NV_T[1][0] * NV_T[2][1] - NV_T[0][2] * NV_T[1][1] * NV_T[2][0] -
+                NV_T[0][1] * NV_T[1][0] * NV_T[2][2] - NV_T[0][0] * NV_T[1][2] * NV_T[2][1];
+        if((detT != 0) && !isnan(detT)) /* check for zero determinant */
+        {
+            Tinv[0][0] = (NV_T[1][1] * NV_T[2][2] - NV_T[1][2] * NV_T[2][1]) / detT;
+            Tinv[0][1] = (NV_T[0][2] * NV_T[2][1] - NV_T[0][1] * NV_T[2][2]) / detT;
+            Tinv[0][2] = (NV_T[0][1] * NV_T[1][2] - NV_T[0][2] * NV_T[1][1]) / detT;
+            Tinv[1][0] = (NV_T[1][2] * NV_T[2][0] - NV_T[1][0] * NV_T[2][2]) / detT;
+            Tinv[1][1] = (NV_T[0][0] * NV_T[2][2] - NV_T[0][2] * NV_T[2][0]) / detT;
+            Tinv[1][2] = (NV_T[0][2] * NV_T[1][0] - NV_T[0][0] * NV_T[1][2]) / detT;
+            Tinv[2][0] = (NV_T[1][0] * NV_T[2][1] - NV_T[1][1] * NV_T[2][0]) / detT;
+            Tinv[2][1] = (NV_T[0][1] * NV_T[2][0] - NV_T[0][0] * NV_T[2][1]) / detT;
+            Tinv[2][2] = (NV_T[0][0] * NV_T[1][1] - NV_T[0][1] * NV_T[1][0]) / detT;
+        }
 #endif
-    for(j=0;j<3;j++) {for(k=0;k<3;k++) {FrobNorm_inv += Tinv[j][k]*Tinv[j][k];}}
+        for(j=0;j<3;j++) {for(k=0;k<3;k++) {FrobNorm_inv += Tinv[j][k]*Tinv[j][k];}} /* calculate second part of ConditionNumber as Frobenius norm of inverse matrix */
+        ConditionNumber = DMAX( sqrt(FrobNorm*FrobNorm_inv) / NUMDIMS , 1 ); /* this = sqrt( ||NV_T^-1||*||NV_T|| ) :: should be ~1 for a well-conditioned matrix */
+        if(ConditionNumber < ConditionNumber_threshold) {break;}
+        for(j=0;j<NUMDIMS;j++) {SphP[i].NV_T[j][j] += conditioning_term_to_add;} /* add the conditioning term which should make the matrix better-conditioned for subsequent use: this is a normalization times the identity matrix in the relevant number of dimensions */
+        conditioning_term_to_add *= 1.2; /* multiply the conditioning term so it will grow and eventually satisfy our criteria */
+    } // end of loop broken when condition number is sufficiently small
     for(j=0;j<3;j++) {for(k=0;k<3;k++) {P[i].NV_T[j][k]=Tinv[j][k];}} // now P[i].NV_T holds the inverted matrix elements //
-    double ConditionNumber = DMAX(sqrt(FrobNorm * FrobNorm_inv) / NUMDIMS, 1); // = sqrt( ||NV_T^-1||*||NV_T|| ) :: should be ~1 for a well-conditioned matrix //
 #ifdef CBE_DEBUG
     if((ThisTask==0)&&(ConditionNumber>1.0e10)) {printf("Condition number == %g (Task=%d i=%d)\n",ConditionNumber,ThisTask,i);}
 #endif
@@ -749,7 +763,7 @@ struct INPUT_STRUCT_NAME
     double Vel[3];
     int NodeList[NODELISTLENGTH];
     int Type;
-    integertime dt_step;
+    double dtime;
 #if defined(AGS_FACE_CALCULATION_IS_ACTIVE)
     MyLongDouble NV_T[3][3];
     double V_i;
@@ -762,7 +776,7 @@ struct INPUT_STRUCT_NAME
 #endif
 #endif
 #if defined(DM_SIDM)
-    integertime dt_step_sidm;
+    double dtime_sidm;
     MyIDType ID;
 #ifdef GRAIN_COLLISIONS
     double Grain_CrossSection_PerUnitMass;
@@ -777,7 +791,7 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
     in->Mass = PPP[i].Mass;
     in->AGS_Hsml = PPP[i].AGS_Hsml;
     in->Type = P[i].Type;
-    in->dt_step = P[i].dt_step;
+    in->dtime = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i);
     int k,k2; k=0; k2=0;
     for(k=0;k<3;k++) {in->Pos[k] = P[i].Pos[k];}
     for(k=0;k<3;k++) {in->Vel[k] = P[i].Vel[k];}
@@ -799,7 +813,7 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
 #endif
 #endif
 #if defined(DM_SIDM)
-    in->dt_step_sidm = P[i].dt_step_sidm;
+    in->dtime_sidm = P[i].dtime_sidm;
     in->ID = P[i].ID;
 #ifdef GRAIN_COLLISIONS
     in->Grain_CrossSection_PerUnitMass = return_grain_cross_section_per_unit_mass(i);
@@ -812,9 +826,7 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
 struct OUTPUT_STRUCT_NAME
 {
 #if defined(DM_SIDM)
-    double sidm_kick[3];
-    integertime dt_step_sidm;
-    int si_count;
+    double sidm_kick[3], dtime_sidm; int si_count;
 #endif
 #ifdef DM_FUZZY
     double acc[3], AGS_Dt_Numerical_QuantumPotential;
@@ -835,7 +847,7 @@ static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, in
     int k,k2; k=0; k2=0;
 #if defined(DM_SIDM)
     for(k=0;k<3;k++) {P[i].Vel[k] += out->sidm_kick[k];}
-    MIN_ADD(P[i].dt_step_sidm, out->dt_step_sidm, mode);
+    MIN_ADD(P[i].dtime_sidm, out->dtime_sidm, mode);
     P[i].NInteractions += out->si_count;
 #endif
 #ifdef DM_FUZZY
@@ -865,6 +877,7 @@ int AGSForce_isactive(int i)
 }
 
 
+/*!   -- this subroutine writes to shared memory [updating the neighbor values]: need to protect these writes for openmp below. none of the modified values are read, so only the write block is protected. note the writes can occur in the called code-blocks, so need to make sure they are followed so everything can be carefully constructed */
 int AGSForce_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
 {
     /* zero memory and import data for local target */
@@ -877,7 +890,7 @@ int AGSForce_evaluate(int target, int mode, int *exportflag, int *exportnodecoun
     kernel.h_i = local.AGS_Hsml; kernel_hinv(kernel.h_i, &kernel.hinv_i, &kernel.hinv3_i, &kernel.hinv4_i);
     int AGS_kernel_shared_BITFLAG = ags_gravity_kernel_shared_BITFLAG(local.Type); // determine allowed particle types for search for adaptive gravitational softening terms
 #if defined(DM_SIDM)
-    out.dt_step_sidm = local.dt_step_sidm;
+    out.dtime_sidm = local.dtime_sidm;
 #endif
     /* Now start the actual neighbor computation for this particle */
     if(mode == 0) {startnode = All.MaxPart; /* root node */} else {startnode = DATAGET_NAME[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode;    /* open it */}
@@ -894,7 +907,7 @@ int AGSForce_evaluate(int target, int mode, int *exportflag, int *exportnodecoun
             if(numngb_inbox < 0) {return -1;} /* no neighbors! */
             for(n = 0; n < numngb_inbox; n++) /* neighbor loop */
             {
-                j = ngblist[n];
+                j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */
                 if((P[j].Mass <= 0)||(PPP[j].AGS_Hsml <= 0)) continue; /* make sure neighbor is valid */
                 /* calculate position relative to target */
                 kernel.dp[0] = local.Pos[0] - P[j].Pos[0]; kernel.dp[1] = local.Pos[1] - P[j].Pos[1]; kernel.dp[2] = local.Pos[2] - P[j].Pos[2];
@@ -935,13 +948,14 @@ int AGSForce_evaluate(int target, int mode, int *exportflag, int *exportnodecoun
 }
 
 
+
 void AGSForce_calc(void)
 {
     CPU_Step[CPU_MISC] += measure_time(); double t00_truestart = my_second();
     PRINT_STATUS(" ..entering AGS-Force calculation [as hydro loop for non-gas elements]\n");
     /* before doing any operations, need to zero the appropriate memory so we can correctly do pair-wise operations */
 #if defined(DM_SIDM)
-    {int i; for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) {P[i].dt_step_sidm = 10*P[i].dt_step;}}
+    {int i; for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) {P[i].dtime_sidm = 10.*GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i);}}
 #endif
     #include "../system/code_block_xchange_perform_ops_malloc.h" /* this calls the large block of code which contains the memory allocations for the MPI/OPENMP/Pthreads parallelization block which must appear below */
     #include "../system/code_block_xchange_perform_ops.h" /* this calls the large block of code which actually contains all the loops, MPI/OPENMP/Pthreads parallelization */

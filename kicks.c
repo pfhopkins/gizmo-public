@@ -14,12 +14,11 @@
  *  and updates to additional fluid variables as needed)
  */
 
-void apply_long_range_kick(integertime, integertime);
+void apply_long_range_kick(integertime tstart, integertime tend);
 
 void do_first_halfstep_kick(void)
 {
-    int i;
-    integertime ti_step, tstart=0, tend=0;
+    int i; integertime ti_step, tstart=0, tend=0;
     
 #ifdef TURB_DRIVING
     do_turb_driving_step_first_half();
@@ -46,7 +45,7 @@ void do_first_halfstep_kick(void)
         {
             if(P[i].Mass > 0)
             {
-                ti_step = P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0;
+                ti_step = GET_PARTICLE_INTEGERTIME(i);
                 tstart = P[i].Ti_begstep;	/* beginning of step */
                 tend = P[i].Ti_begstep + ti_step / 2;	/* midpoint of step */
                 do_the_kick(i, tstart, tend, P[i].Ti_current, 0);
@@ -57,8 +56,7 @@ void do_first_halfstep_kick(void)
 
 void do_second_halfstep_kick(void)
 {
-    int i;
-    integertime ti_step, tstart=0, tend=0;
+    int i; integertime ti_step, tstart=0, tend=0;
     
 #ifdef PMGRID
     if(All.PM_Ti_endstep == All.Ti_Current)	/* need to do long-range kick */
@@ -80,7 +78,7 @@ void do_second_halfstep_kick(void)
         {
             if(P[i].Mass > 0)
             {
-                ti_step = P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0;
+                ti_step = GET_PARTICLE_INTEGERTIME(i);
                 tstart = P[i].Ti_begstep + ti_step / 2;	/* midpoint of step */
                 tend = P[i].Ti_begstep + ti_step;	/* end of step */
                 do_the_kick(i, tstart, tend, P[i].Ti_current, 1);
@@ -99,7 +97,7 @@ int eligible_for_hermite(int i)
 {
     if(!(HERMITE_INTEGRATION & (1<<P[i].Type))) return 0;
 #if defined(BLACK_HOLES) || defined(GALSF)    
-    if(P[i].StellarAge >= DMAX(All.Time - 2*(P[i].dt_step * All.Timebase_interval), 0)) return 0; // if we were literally born yesterday then let things settle down a bit with the less-accurate, but more-robust regular integration
+    if(P[i].StellarAge >= DMAX(All.Time - 2*(GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i)*All.cf_hubble_a), 0)) return 0; // if we were literally born yesterday then let things settle down a bit with the less-accurate, but more-robust regular integration
     if(P[i].AccretedThisTimestep) return 0;
 #endif
 #if (SINGLE_STAR_TIMESTEPPING > 0)
@@ -116,7 +114,7 @@ void do_hermite_prediction(void)
     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) {
 	if(eligible_for_hermite(i)) { /* check if we're actually eligible */	    
 	    if(P[i].Mass > 0) { /* skip massless particles scheduled for deletion */
-		ti_step = P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0;
+		ti_step = GET_PARTICLE_INTEGERTIME(i);
 		tstart = P[i].Ti_begstep;    /* beginning of step */
 		tend = P[i].Ti_begstep + ti_step;    /* end of step */
 		double dt_grav = (tend - tstart) * All.Timebase_interval;
@@ -132,7 +130,7 @@ void do_hermite_correction(void) // corrector step
     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) {	
 	if(eligible_for_hermite(i)){
                 if(P[i].Mass > 0) {
-                    ti_step = P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0;
+                    ti_step = GET_PARTICLE_INTEGERTIME(i);
                     tstart = P[i].Ti_begstep;    /* beginning of step */
                     tend = P[i].Ti_begstep + ti_step;    /* end of step */
                     double dt_grav = (tend - tstart) * All.Timebase_interval;
@@ -150,10 +148,8 @@ void apply_long_range_kick(integertime tstart, integertime tend)
     int i, j;
     double dt_gravkick, dvel[3];
     
-    if(All.ComovingIntegrationOn)
-        dt_gravkick = get_gravkick_factor(tstart, tend);
-    else
-        dt_gravkick = (tend - tstart) * All.Timebase_interval;
+    if(All.ComovingIntegrationOn) {dt_gravkick = get_gravkick_factor(tstart, tend);}
+        else {dt_gravkick = (tend - tstart) * All.Timebase_interval;}
     
     for(i = 0; i < NumPart; i++)
     {
@@ -188,7 +184,7 @@ void do_the_kick(int i, integertime tstart, integertime tend, integertime tcurre
             double dMass=0; // fraction of delta_conserved to couple per kick step (each 'kick' is 1/2-timestep) // double dv[3], v_old[3], dMass, ent_old=0, d_inc = 0.5;
             if(mode != 0) // update the --conserved-- variables of each particle //
             {
-                dMass = (tend - tstart) * All.Timebase_interval / All.cf_hubble_a * SphP[i].DtMass; if(dMass * SphP[i].dMass < 0) {dMass = 0;} // slope-limit: no opposite reconstruction! //
+                dMass = ((tend - tstart) * UNIT_INTEGERTIME_IN_PHYSICAL) * SphP[i].DtMass; if(dMass * SphP[i].dMass < 0) {dMass = 0;} // slope-limit: no opposite reconstruction! //
                 if((fabs(dMass) > fabs(SphP[i].dMass))) {dMass = SphP[i].dMass;} // try to get close to what the time-integration scheme would give //
                 SphP[i].dMass -= dMass;
             } else {dMass = SphP[i].dMass;}
@@ -215,15 +211,8 @@ void do_the_kick(int i, integertime tstart, integertime tend, integertime tcurre
     if(TimeBinActive[P[i].TimeBin])
     {
         /* get the timestep (physical units for dt_entr and dt_hydrokick) */
-        if(All.ComovingIntegrationOn)
-        {
-            dt_entr = dt_hydrokick = (tend - tstart) * All.Timebase_interval / All.cf_hubble_a;
-            dt_gravkick = get_gravkick_factor(tstart, tend);
-        }
-        else
-        {
-            dt_entr = dt_gravkick = dt_hydrokick = (tend - tstart) * All.Timebase_interval;
-        }
+        dt_entr = dt_hydrokick = (tend - tstart) * UNIT_INTEGERTIME_IN_PHYSICAL;
+        if(All.ComovingIntegrationOn) {dt_gravkick = get_gravkick_factor(tstart, tend);} else {dt_gravkick = dt_hydrokick;}
         
         if(P[i].Type==0)
         {
@@ -289,7 +278,7 @@ void do_the_kick(int i, integertime tstart, integertime tend, integertime tcurre
                 SphP[i].DtPhi = (1./3.) * (SphP[i].Phi*All.cf_a3inv) * P[i].Particle_DivVel*All.cf_a2inv; // cf_a3inv from mass-based phi-fluxes
 #endif
 #endif
-                if(All.ComovingIntegrationOn) SphP[i].DtInternalEnergy -= 3*(GAMMA(i)-1) * SphP[i].InternalEnergyPred * All.cf_hubble_a;
+                if(All.ComovingIntegrationOn) {SphP[i].DtInternalEnergy -= 3*(GAMMA(i)-1) * SphP[i].InternalEnergyPred * All.cf_hubble_a;}
                 dEnt = SphP[i].InternalEnergy + SphP[i].DtInternalEnergy * dt_hydrokick; /* gravity term not included here, as it makes this unstable */
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
                 SphP[i].dMass = SphP[i].DtMass = 0;

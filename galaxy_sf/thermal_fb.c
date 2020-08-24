@@ -95,6 +95,7 @@ int addthermalFB_evaluate_active_check(int i)
 }
 
 
+/*!   -- this subroutine writes to shared memory [updating the neighbor values]: need to protect these writes for openmp below */
 int addthermalFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
 {
     int startnode, numngb_inbox, listindex = 0, j, k, n;
@@ -130,48 +131,91 @@ int addthermalFB_evaluate(int target, int mode, int *exportflag, int *exportnode
             if(numngb_inbox < 0) return -1;
             for(n = 0; n < numngb_inbox; n++)
             {
-                j = ngblist[n];
-                if(P[j].Type != 0) continue; // require a gas particle //
-                if(P[j].Mass <= 0) continue; // require the particle has mass //
+                j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */
+                if(P[j].Type != 0) {continue;} // require a gas particle //
+                double Mass_j, InternalEnergy_j, rho_j; // initialize holders for the local variables that might change below
+                #pragma omp atomic read
+                Mass_j = P[j].Mass; // this can get modified below, so we need to read it thread-safe now
+                #pragma omp atomic read
+                InternalEnergy_j = SphP[j].InternalEnergy; // this can get modified below, so we need to read it thread-safe now
+                #pragma omp atomic read
+                rho_j = SphP[j].Density;
+                double InternalEnergy_j_0 = InternalEnergy_j, Mass_j_0 = Mass_j, rho_j_0 = rho_j; // save initial values to use below
+#ifdef METALS
+                double Metallicity_j[NUM_METAL_SPECIES], Metallicity_j_0[NUM_METAL_SPECIES];
+                for(k=0;k<NUM_METAL_SPECIES;k++) {
+                    #pragma omp atomic read
+                    Metallicity_j[k] = P[j].Metallicity[k]; // this can get modified below, so we need to read it thread-safe now
+                    Metallicity_j_0[k] = Metallicity_j[k]; // save initial values to  use below
+                }
+#endif
+
+                if(Mass_j <= 0) {continue;} // require the particle has mass //
                 for(k=0; k<3; k++) {kernel.dp[k] = local.Pos[k] - P[j].Pos[k];}
                 NEAREST_XYZ(kernel.dp[0],kernel.dp[1],kernel.dp[2],1); // find the closest image in the given box size  //
                 r2=0; for(k=0;k<3;k++) {r2 += kernel.dp[k]*kernel.dp[k];}
-                if(r2<=0) continue; // same particle //
-                if(r2>=h2) continue; // outside kernel //
+                if(r2<=0) {continue;} // same particle //
+                if(r2>=h2) {continue;} // outside kernel //
                 // calculate kernel quantities //
                 kernel.r = sqrt(r2);
-                if(kernel.r <= 0) continue;
+                if(kernel.r <= 0) {continue;}
                 u = kernel.r * kernel.hinv;
                 if(u<1) {kernel_main(u, kernel.hinv3, kernel.hinv4, &kernel.wk, &kernel.dwk, 0);} else {kernel.wk=kernel.dwk=0;}
-                if((kernel.wk <= 0)||(isnan(kernel.wk))) continue;
-                wk = P[j].Mass * kernel.wk / local.wt_sum; // normalized weight function
+                if((kernel.wk <= 0)||(isnan(kernel.wk))) {continue;}
+                wk = Mass_j * kernel.wk / local.wt_sum; // normalized weight function
                 
                 /* inject mass */
                 double dM_ejecta_in = wk * local.Msne;
-                if(P[j].Hsml<=0) {if(SphP[j].Density>0){SphP[j].Density*=(1+dM_ejecta_in/P[j].Mass);} else {SphP[j].Density=dM_ejecta_in*kernel.hinv3;}} else {SphP[j].Density+=kernel_zero*dM_ejecta_in/(P[j].Hsml*P[j].Hsml*P[j].Hsml);}
-                SphP[j].Density *= 1 + dM_ejecta_in/P[j].Mass; // inject mass at constant particle volume //
-                P[j].Mass += dM_ejecta_in;
+                if(P[j].Hsml<=0) {if(rho_j>0){rho_j*=(1+dM_ejecta_in/Mass_j);} else {rho_j=dM_ejecta_in*kernel.hinv3;}} else {rho_j+=kernel_zero*dM_ejecta_in/(P[j].Hsml*P[j].Hsml*P[j].Hsml);}
+                Mass_j += dM_ejecta_in;
                 out.M_coupled += dM_ejecta_in;
-#ifdef HYDRO_MESHLESS_FINITE_VOLUME
-                SphP[j].MassTrue += dM_ejecta_in;
-#endif
 #ifdef METALS
                 /* inject metals */
-                for(k=0;k<NUM_METAL_SPECIES;k++) {P[j].Metallicity[k]=(1-dM_ejecta_in/P[j].Mass)*P[j].Metallicity[k] + dM_ejecta_in/P[j].Mass*local.yields[k];}
+                for(k=0;k<NUM_METAL_SPECIES;k++) {Metallicity_j[k]=(1-dM_ejecta_in/Mass_j)*Metallicity_j[k] + dM_ejecta_in/Mass_j*local.yields[k];}
 #endif
                 /* inject energy */
-                SphP[j].InternalEnergy += wk * local.Esne / P[j].Mass;
-                SphP[j].InternalEnergyPred += wk * local.Esne / P[j].Mass;
+                InternalEnergy_j += wk * local.Esne / Mass_j;
 #ifdef GALSF_FB_TURNOFF_COOLING
                 /* if the sub-grid 'cooling turnoff' model is enabled, turn off cooling for the 'blastwave timescale',
                  which is physically the timescale for the blastwave to be completely stopped by ISM ram-pressure
                  (much longer than the actual cooling time of the blastwave) */
                 double Esne51 = local.Esne * UNIT_ENERGY_IN_CGS/1.e51;
                 double density_to_n = All.cf_a3inv*UNIT_DENSITY_IN_NHCGS;
-                double pressure_to_p4 = (1/All.cf_afac1)*density_to_n*U_TO_TEMP_UNITS / 1.0e4; 
-                double dt_ram = 7.08 * pow(Esne51*SphP[j].Density*density_to_n,0.34) * pow(SphP[j].Pressure*pressure_to_p4,-0.70) / (UNIT_TIME_IN_MYR);
-                if(dt_ram > SphP[j].DelayTimeCoolingSNe) SphP[j].DelayTimeCoolingSNe = dt_ram;
+                double pressure_to_p4 = (1./All.cf_afac1)*density_to_n*U_TO_TEMP_UNITS / 1.0e4; 
+                double dt_ram = 7.08 * pow(Esne51*rho_j*density_to_n,0.34) * pow(SphP[j].Pressure*pressure_to_p4,-0.70) / (UNIT_TIME_IN_MYR);
+                double current_delaytime = 0;
+                #pragma omp atomic read
+                current_delaytime = SphP[j].DelayTimeCoolingSNe; // will modify this immediately below, so need a clean read
+                if(dt_ram > current_delaytime) {
+                    #pragma omp atomic
+                    SphP[j].DelayTimeCoolingSNe += dt_ram - current_delaytime; // clean write to update delaytime
+                }
 #endif
+                
+                /* we updated variables that need to get assigned to element 'j' -- let's do it */
+                #pragma omp atomic
+                P[j].Mass += Mass_j - Mass_j_0; // finite mass update [delta difference added here, allowing for another element to update in the meantime]
+#ifdef HYDRO_MESHLESS_FINITE_VOLUME
+                #pragma omp atomic
+                SphP[j].MassTrue += Mass_j - Mass_j_0; // finite mass update
+#endif
+                if(rho_j_0 > 0) {
+                    #pragma omp atomic
+                    SphP[j].Density *= rho_j / rho_j_0; // inject mass at constant particle volume [no need to be exactly conservative here] //
+                }
+                for(k=0;k<3;k++) {
+                    #pragma omp atomic
+                    P[j].dp[k] *= Mass_j / Mass_j_0; // discrete momentum change -- no velocity change so just rescale by the mass
+                }
+                #pragma omp atomic
+                SphP[j].InternalEnergy += InternalEnergy_j - InternalEnergy_j_0; // delta-update
+                #pragma omp atomic
+                SphP[j].InternalEnergyPred += InternalEnergy_j - InternalEnergy_j_0; // delta-update
+                for(k=0;k<NUM_METAL_SPECIES;k++) {
+                    #pragma omp atomic
+                    P[j].Metallicity[k] += Metallicity_j[k] - Metallicity_j_0[k]; // delta-update
+                }
+                
             } // for(n = 0; n < numngb; n++)
         } // while(startnode >= 0)
         if(mode == 1)

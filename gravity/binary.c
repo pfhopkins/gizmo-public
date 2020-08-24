@@ -219,9 +219,10 @@ void odeint_super_timestep(int i, double dt_super, double kick_dv[3], double dri
 	    vSqr += dv[k]*dv[k];
 	    rSqr += dx[k]*dx[k];
 	}
-	rSqr += All.SofteningTable[5]*All.SofteningTable[5];
+    double r_effective = KERNEL_FAC_FROM_FORCESOFT_TO_PLUMMER * All.ForceSoftening[5];
+    rSqr += r_effective*r_effective;
 	dt = DMIN(0.1/(sqrt(vSqr/rSqr) + sqrt((All.G * total_mass)/sqrt(rSqr*rSqr*rSqr))), dt_super-t); // harmonic mean of approach time and freefall time
-// could swap in any integration scheme you want here; default to Hermite
+    // could swap in any integration scheme you want here; default to Hermite
 	hermite_step(total_mass, dx, dv, dt);
 	t += dt;
     }

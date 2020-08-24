@@ -14,10 +14,6 @@
 
 
 
-    
-    
-    
-/* Routines for simple FIRE local photo-ionization heating feedback model. This file was written by Phil Hopkins (phopkins@caltech.edu) for GIZMO. */
 
 
 

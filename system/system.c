@@ -133,36 +133,18 @@ void terminate_processes(void)
 
 void write_pid_file(void)
 {
-  pid_t my_pid;
-  char mode[8], buf[500];
-  FILE *fd;
-  int i;
-
+  pid_t my_pid; char mode[8], buf[500]; FILE *fd; int i;
   my_pid = getpid();
-
   sprintf(buf, "%s%s", All.OutputDir, "PIDs.txt");
-
-  if(RestartFlag == 0)
-    strcpy(mode, "w");
-  else
-    strcpy(mode, "a");
+  if(RestartFlag == 0) {strcpy(mode, "w");} else {strcpy(mode, "a");}
 
   for(i = 0; i < NTask; i++)
     {
       if(ThisTask == i)
 	{
-	  if(ThisTask == 0)
-	    sprintf(mode, "w");
-	  else
-	    sprintf(mode, "a");
-
-	  if((fd = fopen(buf, mode)))
-	    {
-	      fprintf(fd, "%s %d\n", getenv("HOST"), (int) my_pid);
-	      fclose(fd);
-	    }
+	  if(ThisTask == 0) {sprintf(mode, "w");} else {sprintf(mode, "a");}
+	  if((fd = fopen(buf, mode))) {fprintf(fd, "%s %d\n", getenv("HOST"), (int) my_pid); fclose(fd);}
 	}
-
       MPI_Barrier(MPI_COMM_WORLD);
     }
 }
@@ -187,7 +169,7 @@ void pause_run_to_attach_debugger()
   {
     FILE *fd = fopen("pid_list_for_debugger.txt","w");
     int j;
-    for (j=0; j<NTask; ++j) fprintf(fd, "%i \n", all_pids[j]);
+    for (j=0; j<NTask; ++j) {fprintf(fd, "%i \n", all_pids[j]);}
     fclose(fd);   
     free(all_pids);
     printf("PID file written\n");
@@ -484,3 +466,4 @@ void mpi_report_comittable_memory(long long BaseMem)
 
   fflush(stdout);
 }
+

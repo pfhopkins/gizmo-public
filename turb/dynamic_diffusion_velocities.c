@@ -15,7 +15,7 @@
  */
 /*
  * This file was rewritten by Doug Rennehan (douglas.rennehan@gmail.com) for GIZMO, and was
- * copied with modifications from gradients.c, which was written by Phil Hopkins 
+ * copied with modifications from gradients.c, which was written by Phil Hopkins
  * (phopkins@caltech.edu) for GIZMO.
  */
 
@@ -34,7 +34,7 @@ struct kernel_DiffFilter {
 #define MASTER_FUNCTION_NAME DiffFilter_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
 #define INPUTFUNCTION_NAME particle2in_DiffFilter    /* name of the function which loads the element data needed (for e.g. broadcast to other processors, neighbor search) */
 #define OUTPUTFUNCTION_NAME out2particle_DiffFilter  /* name of the function which takes the data returned from other processors and combines it back to the original elements */
-#define CONDITIONFUNCTION_FOR_EVALUATION if(P[i].Type==0) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
+#define CONDITIONFUNCTION_FOR_EVALUATION if((P[i].Type==0)&&(P[i].TimeBin>=0)&&(P[i].Mass>0)) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
 #include "../system/code_block_xchange_initialize.h" /* pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
 
 struct INPUT_STRUCT_NAME {
@@ -42,12 +42,11 @@ struct INPUT_STRUCT_NAME {
     MyFloat Mass;
     MyFloat Hsml;
     MyDouble Density;
-    integertime Timestep;
 #ifndef DONOTUSENODELIST
     int NodeList[NODELISTLENGTH];
 #endif
 #ifdef GALSF_SUBGRID_WINDS
-    MyFloat DelayTime; 
+    MyFloat DelayTime;
 #endif
     MyDouble VelPred[3];
 }
@@ -61,7 +60,6 @@ static inline void particle2in_DiffFilter(struct INPUT_STRUCT_NAME *in, int i, i
 #ifdef GALSF_SUBGRID_WINDS
     in->DelayTime = SphP[i].DelayTime;
 #endif
-    in->Timestep = (P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0);
 }
 
 
@@ -102,81 +100,50 @@ void dynamic_diff_vel_calc_initial_operations_preloop(void)
 
 /**
  *
- *  Computes the smoothed velocity field Velocity_bar according to eq. 2.17 in 
- *  Monaghan 2011 (turbulence for SPH). 
+ *  Computes the smoothed velocity field Velocity_bar according to eq. 2.17 in
+ *  Monaghan 2011 (turbulence for SPH).
  *  - D. Rennehan
  *
  */
+/*!   -- this subroutine contains no writes to shared memory -- */
 int DiffFilter_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration) {
-    int startnode, numngb, listindex = 0;
-    int j, k, n, swap_to_j;
+    /* initialize and check if we should bother doing a neighbor loop */
+    int startnode, numngb, listindex = 0, j, k, n;
     double hinv, hinv3, hinv4, r2, u;
     struct kernel_DiffFilter kernel;
     struct INPUT_STRUCT_NAME local;
     struct OUTPUT_STRUCT_NAME out;
     memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME));
-
     memset(&kernel, 0, sizeof(struct kernel_DiffFilter));
-    
-    if (mode == 0) {
-        particle2in_DiffFilter(&local, target, loop_iteration);
-    }
-    else {
-        local = DATAGET_NAME[target];
-    }
-  
-    /* check if we should bother doing a neighbor loop */
-    if (local.Hsml <= 0) return 0;
-    if (local.Mass == 0) return 0;
-    if (local.Density <= 0) return 0;
-    
+    if (mode == 0) {particle2in_DiffFilter(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];}
+    if (local.Hsml <= 0) {return 0;}
+    if (local.Mass == 0) {return 0;}
+    if (local.Density <= 0) {return 0;}
+
     /* now set particle-i centric quantities so we don't do it inside the loop */
     kernel.h_i = local.Hsml;
     double h2_i = kernel.h_i * kernel.h_i;
     int kernel_mode_i = 0;
-    int kernel_mode_j = 0;
-
     kernel_hinv(kernel.h_i, &hinv, &hinv3, &hinv4);
-    
-    /* Now start the actual neighbor computation for this particle */ 
-    if (mode == 0) {
-        startnode = All.MaxPart;	/* root node */
-    }
-    else {
-        startnode = DATAGET_NAME[target].NodeList[0];
-        startnode = Nodes[startnode].u.d.nextnode;	/* open it */
-    }
-   
+
+    /* Now start the actual neighbor computation for this particle */
+    if (mode == 0) {startnode = All.MaxPart;}	/* root node */
+        else {startnode = DATAGET_NAME[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode;}	/* open it */
+
     while (startnode >= 0) {
         while (startnode >= 0) {
-          
             numngb = ngb_treefind_pairs_threads(local.Pos, All.TurbDynamicDiffFac * kernel.h_i, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist);
+            if (numngb < 0) {return -1;}
 
-            if (numngb < 0) return -1;
-            
             for (n = 0; n < numngb; n++) {
-                j = ngblist[n];
-                integertime TimeStep_J = (P[j].TimeBin ? (((integertime) 1) << P[j].TimeBin) : 0);
-#ifndef SHEARING_BOX // (shearing box means the fluxes at the boundaries are not actually symmetric, so can't do this) //
-                if (local.Timestep > TimeStep_J) continue; /* compute from particle with smaller timestep */
-                /* use relative positions to break degeneracy */
-                if (local.Timestep == TimeStep_J) {
-                    int n0 = 0; 
-                    if(local.Pos[n0] == P[j].Pos[n0]) {n0++; if(local.Pos[n0] == P[j].Pos[n0]) n0++;}
-                    if(local.Pos[n0] < P[j].Pos[n0]) continue;
-                }
-
-                swap_to_j = TimeBinActive[P[j].TimeBin];
-#else
-                swap_to_j = 0;
-#endif
+                j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */
 #ifdef GALSF_SUBGRID_WINDS
-                if (local.DelayTime == 0 && SphP[j].DelayTime > 0) continue;
-                if (local.DelayTime > 0 && SphP[j].DelayTime == 0) continue;
+                if (local.DelayTime == 0 && SphP[j].DelayTime > 0) {continue;}
+                if (local.DelayTime > 0 && SphP[j].DelayTime == 0) {continue;}
 #endif
-                if (P[j].Mass <= 0) continue;
-                if (SphP[j].Density <= 0) continue;
-                
+                if (P[j].Mass <= 0) {continue;}
+                if (SphP[j].Density <= 0) {continue;}
+
                 kernel.dp[0] = local.Pos[0] - P[j].Pos[0];
                 kernel.dp[1] = local.Pos[1] - P[j].Pos[1];
                 kernel.dp[2] = local.Pos[2] - P[j].Pos[2];
@@ -185,117 +152,50 @@ int DiffFilter_evaluate(int target, int mode, int *exportflag, int *exportnodeco
                 double mean_weight = 0.5 * (local.Density + SphP[j].Density) / (local.Density * SphP[j].Density);
                 double h_j = PPP[j].Hsml;
                 double V_j = P[j].Mass * mean_weight;
-                double V_i = local.Mass * mean_weight;
-                if (r2 <= 0) continue;
+                if (r2 <= 0) {continue;}
 
                 double h_avg = 0.5 * (kernel.h_i + h_j);
                 double hhat = All.TurbDynamicDiffFac * kernel.h_i;
                 double hhat_j = All.TurbDynamicDiffFac * h_j;
                 double hhat2 = hhat * hhat;
                 double hhatj2 = hhat_j * hhat_j;
-
-                if ((r2 >= hhat2) && (r2 >= hhatj2)) continue;
+                if ((r2 >= hhat2) && (r2 >= hhatj2)) {continue;}
 
                 double hhatinv, hhatinv3, hhatinv4, uhat, wkhat, dwkhat, rhat;
-                double hhatinv_j, hhatinv3_j, hhatinv4_j, wkhat_j, dwkhat_j;
-
                 rhat = sqrt(r2);
-
                 if (rhat < hhat) {
                     kernel_hinv(hhat, &hhatinv, &hhatinv3, &hhatinv4);
                     uhat = DMIN(rhat * hhatinv, 1.0);
                     kernel_main(uhat, hhatinv3, hhatinv4, &wkhat, &dwkhat, kernel_mode_i);
-                }
-                else {
-                    wkhat = dwkhat = 0;
-                }
-
-                if (rhat < hhat_j && (swap_to_j)) {
-                    kernel_hinv(hhat_j, &hhatinv_j, &hhatinv3_j, &hhatinv4_j);
-                    uhat = DMIN(rhat * hhatinv_j, 1.0);
-                    kernel_main(uhat, hhatinv3_j, hhatinv4_j, &wkhat_j, &dwkhat_j, kernel_mode_j);
-                }
-                else {
-                    wkhat_j = dwkhat_j = 0;
-                }
-
-                if (rhat < hhat) {
-                    out.Norm_hat += P[j].Mass * wkhat;
-                }
-
-                if (rhat < hhat_j && (swap_to_j)) {
-                    SphP[j].Norm_hat += local.Mass * wkhat_j;
-                }
-
-                if ((r2 >= h2_i) && (r2 >= (h_j * h_j))) continue;
-
+                } else {wkhat = dwkhat = 0;}
+                if (rhat < hhat) {out.Norm_hat += P[j].Mass * wkhat;}
+                if ((r2 >= h2_i) && (r2 >= (h_j * h_j))) {continue;}
                 kernel.r = sqrt(r2);
+                if (kernel.r > out.FilterWidth_bar) {out.FilterWidth_bar = kernel.r;}
 
-                if (kernel.r > out.FilterWidth_bar) {
-                    out.FilterWidth_bar = kernel.r;
-                }
-
-                // This is very, very important for supersonic flows,
-                // or any flow with highly varying smoothing lengths.
-                // The FilterWidth_bar (h_bar) *must* extend out to the
-                // maximum interaction distance. 
-                if (kernel.r > SphP[j].FilterWidth_bar && (swap_to_j)) {
-                    SphP[j].FilterWidth_bar = kernel.r;
-                }
-
-                if (kernel.r > out.MaxDistance_for_grad) {
-                    out.MaxDistance_for_grad = kernel.r;
-                }
-
-                if (kernel.r > SphP[j].MaxDistance_for_grad && (swap_to_j)) {
-                    SphP[j].MaxDistance_for_grad = kernel.r;
-                }
-
+                // This is very, very important for supersonic flows, or any flow with highly varying smoothing lengths. The FilterWidth_bar (h_bar) *must* extend out to the maximum interaction distance.
+                if (kernel.r > out.MaxDistance_for_grad) {out.MaxDistance_for_grad = kernel.r;}
                 kernel_hinv(h_avg, &hinv, &hinv3, &hinv4);
                 u = DMIN(kernel.r * hinv, 1.0);
                 if(u<1) {kernel_main(u, hinv3, hinv4, &kernel.wk_i, &kernel.dwk_i, kernel_mode_i);} else {kernel.wk_i=kernel.dwk_i=0;}
-
                 double weight_i = kernel.wk_i * V_j;
-                double weight_j = kernel.wk_i * V_i;
                 double VelPred_diff[3];
-
                 /* Because we are using the average h value between i,j: W_ij = W_ji */
                 if (kernel.r < h_avg) {
                     for (k = 0; k < 3; k++) {
                         VelPred_diff[k] = SphP[j].VelPred[k] - local.VelPred[k];
                         out.Velocity_bar[k] += VelPred_diff[k] * weight_i;
                     }
-
-                    if (swap_to_j) {
-                        for (k = 0; k < 3; k++) {
-                            SphP[j].Velocity_bar[k] -= VelPred_diff[k] * weight_j;
-                        }
-                    }
                 }
             } // numngb loop
         } // while(startnode)
-        
+
 #ifndef DONOTUSENODELIST
-        if (mode == 1) {
-            listindex++;
-            if (listindex < NODELISTLENGTH) {
-                startnode = DATAGET_NAME[target].NodeList[listindex];
-                if (startnode >= 0) startnode = Nodes[startnode].u.d.nextnode;	/* open it */
-            }
-        }
+        if (mode == 1) {listindex++;
+            if (listindex < NODELISTLENGTH) {startnode = DATAGET_NAME[target].NodeList[listindex]; if (startnode >= 0) startnode = Nodes[startnode].u.d.nextnode;}}	/* open it */
 #endif
     }
-    
-    /* ------------------------------------------------------------------------------------------------ */
-    /* Now collect the result at the right place */
-    if (mode == 0) {
-        out2particle_DiffFilter(&out, target, 0, loop_iteration);
-    }
-    else {
-        DATARESULT_NAME[target] = out;
-    }
-    /* ------------------------------------------------------------------------------------------------ */
-    
+    if(mode == 0) {out2particle_DiffFilter(&out, target, 0, loop_iteration);} else {DATARESULT_NAME[target] = out;} /* Now collect the result at the right place */
     return 0;
 }
 
@@ -319,4 +219,3 @@ void dynamic_diff_vel_calc(void) {
 
 
 #endif /* End TURB_DIFF_DYNAMIC */
-

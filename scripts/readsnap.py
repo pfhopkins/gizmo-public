@@ -169,11 +169,11 @@ def readsnap(sdir,snum,ptype,
         #if (flag_sfr>0): 
         sfr=np.copy(mass)
         metal=np.copy(mass)
-    if (ptype==0 or ptype==4) and (flag_metals > 0):
+    if (ptype == 0 or ptype == 4) and (flag_metals > 0):
         metal=np.zeros([npartTotal[ptype],flag_metals],dtype=np.float64)
-    if (ptype==4) and (flag_sfr>0) and (flag_stellarage>0):
+    if (ptype == 4) and (flag_sfr > 0) and (flag_stellarage > 0):
         stellage=np.copy(mass)
-    if (ptype==5) and (skip_bh==0):
+    if (ptype == 5) and (skip_bh == 0):
         bhmass=np.copy(mass)
         bhmdot=np.copy(mass)
 
@@ -216,7 +216,7 @@ def readsnap(sdir,snum,ptype,
                     numh[nL:nR]=input_struct[bname+"NeutralHydrogenAbundance"]
                 if (flag_sfr > 0):
                     sfr[nL:nR]=input_struct[bname+"StarFormationRate"]
-            if (ptype==0 or ptype==4) and (flag_metals > 0):
+            if (ptype == 0 or ptype == 4) and (flag_metals > 0):
                 metal_t=input_struct[bname+"Metallicity"]
                 if (flag_metals > 1):
                     if (metal_t.shape[0] != npart[ptype]): 
@@ -224,9 +224,9 @@ def readsnap(sdir,snum,ptype,
                 else:
                     metal_t=np.reshape(np.array(metal_t),(np.array(metal_t).size,1))
                 metal[nL:nR,:]=metal_t
-            if (ptype==4) and (flag_sfr>0) and (flag_stellarage>0):
+            if (ptype == 4) and (flag_sfr > 0) and (flag_stellarage > 0):
                 stellage[nL:nR]=input_struct[bname+"StellarFormationTime"]
-            if (ptype==5) and (skip_bh==0):
+            if (ptype == 5) and (skip_bh == 0):
                 bhmass[nL:nR]=input_struct[bname+"BH_Mass"]
                 bhmdot[nL:nR]=input_struct[bname+"BH_Mdot"]
             nL = nR # sets it for the next iteration	
@@ -240,20 +240,20 @@ def readsnap(sdir,snum,ptype,
     pos *= hinv*ascale # snapshot units are comoving
     mass *= hinv
     vel *= np.sqrt(ascale) # remember gizmo's (and gadget's) weird velocity units!
-    if (ptype==0):
+    if (ptype == 0):
         rho *= (hinv/((ascale*hinv)**3))
         hsml *= hinv*ascale
-    if (ptype==4) and (flag_sfr>0) and (flag_stellarage>0) and (cosmological==0):
+    if (ptype == 4) and (flag_sfr > 0) and (flag_stellarage > 0) and (cosmological == 0):
         stellage *= hinv
-    if (ptype==5) and (skip_bh==0):
+    if (ptype == 5) and (skip_bh == 0):
         bhmass *= hinv
 
     file.close();
-    if (ptype==0):
+    if (ptype == 0):
         return {'k':1,'p':pos,'v':vel,'m':mass,'id':ids,'u':ugas,'rho':rho,'h':hsml,'ne':nume,'nh':numh,'sfr':sfr,'z':metal};
-    if (ptype==4):
+    if (ptype == 4):
         return {'k':1,'p':pos,'v':vel,'m':mass,'id':ids,'z':metal,'age':stellage}
-    if (ptype==5) and (skip_bh==0):
+    if (ptype == 5) and (skip_bh == 0):
         return {'k':1,'p':pos,'v':vel,'m':mass,'id':ids,'mbh':bhmass,'mdot':bhmdot}
     return {'k':1,'p':pos,'v':vel,'m':mass,'id':ids}
 
@@ -433,7 +433,7 @@ def load_gadget_format_binary_particledat(f, header, ptype, skip_bh=0):
         Npart_MassCode_Tot = np.cumsum(Npart_MassCode)
         mm = mass[Npart_MassCode_Tot[ptype]-Npart_MassCode[ptype]:Npart_MassCode_Tot[ptype]]
 
-    if ((ptype==0) | (ptype==4) | (ptype==5)):
+    if ((ptype == 0) | (ptype == 4) | (ptype == 5)):
         if (Npart[0]>0):
             ### Internal energy of gas particles ((km/s)^2).
             gas_u = array.array('f')

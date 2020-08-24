@@ -38,6 +38,8 @@ void determine_where_SNe_occur(void)
     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
     {
         P[i].SNe_ThisTimeStep=0;
+
+
 #if defined(SINGLE_STAR_SINK_DYNAMICS)
         if(P[i].Type == 0) {continue;} // any non-gas type is eligible to be a 'star' here
 #else
@@ -45,11 +47,7 @@ void determine_where_SNe_occur(void)
         if(All.ComovingIntegrationOn==0) {if((P[i].Type<2)||(P[i].Type>4)) {continue;}} // in non-cosmological sims, types 2,3,4 are valid 'stars'
 #endif
         if(P[i].Mass<=0) {continue;}
-#ifndef WAKEUP
-        dt = (P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0) * All.Timebase_interval / All.cf_hubble_a; // dloga to dt_physical
-#else
-        dt = P[i].dt_step * All.Timebase_interval / All.cf_hubble_a; // get particle timestep //
-#endif
+        dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i);
         if(dt<=0) {continue;} // no time, no events
         star_age = evaluate_stellar_age_Gyr(P[i].StellarAge);
         if(star_age<=0) {continue;} // unphysical age, no events
@@ -63,25 +61,25 @@ void determine_where_SNe_occur(void)
         if(P[i].SNe_ThisTimeStep>0) {ntotal+=P[i].SNe_ThisTimeStep; nhosttotal++;}
         dtmean += dt;
     } // for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) //
-    
+
     MPI_Reduce(&dtmean, &mpi_dtmean, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(&rmean, &mpi_rmean, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(&ptotal, &mpi_ptotal, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(&nhosttotal, &mpi_nhosttotal, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(&ntotal, &mpi_ntotal, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(&npossible, &mpi_npossible, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    
+
     if(ThisTask == 0)
     {
         if(mpi_ntotal > 0 && mpi_nhosttotal > 0 && mpi_dtmean > 0)
         if(mpi_npossible>0)
         {
             mpi_dtmean /= mpi_npossible; mpi_rmean /= mpi_npossible;
-            fprintf(FdSneIIHeating, "%lg %g %g %g %g %g %g \n", All.Time,mpi_npossible,mpi_nhosttotal,mpi_ntotal,mpi_ptotal,mpi_dtmean,mpi_rmean);
+            fprintf(FdSneIIHeating, "%lg %g %g %g %g %g %g \n", All.Time,mpi_npossible,mpi_nhosttotal,mpi_ntotal,mpi_ptotal,mpi_dtmean,mpi_rmean); fflush(FdSneIIHeating);
         }
         if(All.HighestActiveTimeBin == All.HighestOccupiedTimeBin) {fflush(FdSneIIHeating);}
     } // if(ThisTask == 0) //
-    
+
 } // void determine_where_SNe_occur() //
 
 
@@ -106,14 +104,14 @@ struct OUTPUT_STRUCT_NAME
 void particle2in_addFB(struct addFB_evaluate_data_in_ *in, int i, int loop_iteration)
 {
     // pre-assign various values that will be used regardless of feedback physics //
-    int k; for(k=0;k<3;k++) {in->Pos[k]=P[i].Pos[k]; in->Vel[k]=P[i].Vel[k];}
-    double heff=PPP[i].Hsml / PPP[i].NumNgb; in->V_i=heff*heff*heff; in->Hsml = PPP[i].Hsml;
+    int k; for(k=0;k<3;k++) {in->Pos[k] = P[i].Pos[k]; in->Vel[k] = P[i].Vel[k];}
+    double heff = PPP[i].Hsml / PPP[i].NumNgb; in->V_i = heff*heff*heff; in->Hsml = PPP[i].Hsml;
 #ifdef METALS
     for(k=0;k<NUM_METAL_SPECIES;k++) {in->yields[k]=0.0;}
 #endif
     for(k=0;k<AREA_WEIGHTED_SUM_ELEMENTS;k++) {in->Area_weighted_sum[k] = P[i].Area_weighted_sum[k];}
     in->Msne = 0; in->unit_mom_SNe = 0; in->SNe_v_ejecta = 0;
-    if((P[i].DensAroundStar <= 0)||(P[i].Mass == 0)) {return;} // events not possible
+    if((P[i].DensAroundStar <= 0)||(P[i].Mass == 0)) {return;} // events not possible [catch for mass->0]
     if(loop_iteration < 0) {in->Msne=P[i].Mass; in->unit_mom_SNe=1.e-4; in->SNe_v_ejecta=1.0e-4; return;} // weighting loop
     particle2in_addFB_fromstars(in,i,loop_iteration); // subroutine that actually deals with the assignment of feedback properties
     in->unit_mom_SNe = in->Msne * in->SNe_v_ejecta;
@@ -134,7 +132,9 @@ void out2particle_addFB(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loo
 }
 
 
-
+/* here we have the subroutine that is the work center of this module. does the key calculations over neighbors and actually couples the relevant feedback quantities */
+/*!   -- this subroutine [in all versions] writes important conservative variables to shared memory [updating the neighbor values]:
+        we need to protect these writes for openmp (thread safety) below. the read-in values are themselves modified, so we need to protect -both- the read and write operations in all cases */
 
 #ifdef GALSF_USE_SNE_ONELOOP_SCHEME
 
@@ -145,31 +145,31 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     double u,r2,h2;
     double kernel_zero,wk,dM,dP;
     double E_coupled,dP_sum,dP_boost_sum;
-    
+
     struct kernel_addFB kernel;
     struct addFB_evaluate_data_in_ local;
     struct OUTPUT_STRUCT_NAME out;
     memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME));
-    
+
     kernel_main(0.0,1.0,1.0,&kernel_zero,&wk,-1); wk=0;
-    
+
     /* Load the data for the particle injecting feedback */
     if(mode == 0)
     particle2in_addFB(&local, target, loop_iteration);
     else
     local = DATAGET_NAME[target];
-    
+
     if(local.Msne<=0) return 0; // no SNe for the master particle! nothing to do here //
     if(local.Hsml<=0) return 0; // zero-extent kernel, no particles //
     h2 = local.Hsml*local.Hsml;
     kernel_hinv(local.Hsml, &kernel.hinv, &kernel.hinv3, &kernel.hinv4);
-    
+
     // some units (just used below, but handy to define for clarity) //
     double unitlength_in_kpc=UNIT_LENGTH_IN_KPC * All.cf_atime;
     double density_to_n=All.cf_a3inv*UNIT_DENSITY_IN_NHCGS;
     double unit_egy_SNe = 1.0e51/UNIT_ENERGY_IN_CGS;
-    
-    
+
+
     // now define quantities that will be used below //
     double Esne51;
     Esne51 = 0.5*local.SNe_v_ejecta*local.SNe_v_ejecta*local.Msne / unit_egy_SNe;
@@ -178,9 +178,9 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     RsneKPC_0=(0.0284/unitlength_in_kpc) * pow(1+Esne51,0.286); //Cioffi: weak external pressure
     double r2max_phys = 2.0/unitlength_in_kpc; // no super-long-range effects allowed! (of course this is arbitrary in code units) //
     r2max_phys *= r2max_phys;
-    
-    
-    
+
+
+
     /* Now start the actual FB computation for this particle */
     if(mode == 0)
     {
@@ -191,35 +191,40 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
         startnode = DATAGET_NAME[target].NodeList[0];
         startnode = Nodes[startnode].u.d.nextnode;    /* open it */
     }
-    
     while(startnode >= 0)
     {
         while(startnode >= 0)
         {
             numngb_inbox = ngb_treefind_pairs_threads(local.Pos, local.Hsml, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist);
-            
-            if(numngb_inbox < 0)
-            return -1;
-            
+            if(numngb_inbox < 0) {return -1;}
+
             E_coupled = dP_sum = dP_boost_sum = 0;
             for(n = 0; n < numngb_inbox; n++)
             {
-                j = ngblist[n];
-                if(P[j].Type != 0) continue; // require a gas particle //
-                if(P[j].Mass <= 0) continue; // require the particle has mass //
+                j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */
+                if(P[j].Type != 0) {continue;} // require a gas particle //
                 
+                double Mass_j, InternalEnergy_j, rho_j, Vel_j[3]; // initialize holders for the local variables that might change below
+                #pragma omp atomic read
+                Mass_j = P[j].Mass; // this can get modified below, so we need to read it thread-safe now
+                
+                // quick block of checks to make sure it's actually worth continuing!
+                if(Mass_j <= 0) continue; // require the particle has mass //
                 for(k=0; k<3; k++) {kernel.dp[k] = local.Pos[k] - P[j].Pos[k];}
-                NEAREST_XYZ(kernel.dp[0],kernel.dp[1],kernel.dp[2],1); // find the closest image in the given box size  //
+                NEAREST_XYZ(kernel.dp[0],kernel.dp[1],kernel.dp[2], 1); // find the closest image in the given box size  //
                 r2=0; for(k=0;k<3;k++) {r2 += kernel.dp[k]*kernel.dp[k];}
-                if(r2<=0) continue; // same particle //
+                if(r2<=0) {continue;} // same particle //
                 double h2j = PPP[j].Hsml * PPP[j].Hsml;
-                if((r2>h2)&&(r2>h2j)) continue; // outside kernel (in both 'directions') //
-                if(r2 > r2max_phys) continue; // outside long-range cutoff //
+                if((r2>h2)&&(r2>h2j)) {continue;} // outside kernel (in both 'directions') //
+                if(r2 > r2max_phys) {continue;} // outside long-range cutoff //
+                kernel.r = sqrt(r2); if(kernel.r <= 0) {continue;}
+                
                 // calculate kernel quantities //
-                kernel.r = sqrt(r2); if(kernel.r <= 0) continue;
+                #pragma omp atomic read
+                rho_j = SphP[j].Density;
                 u = kernel.r * kernel.hinv;
                 double hinv_j = 1./PPP[j].Hsml, hinv3_j = hinv_j*hinv_j*hinv_j; /* note these lines and many below assume 3D sims! */
-                double wk_j = 0, dwk_j = 0, u_j = kernel.r * hinv_j, hinv4_j = hinv_j*hinv3_j, V_j = P[j].Mass / SphP[j].Density;
+                double wk_j = 0, dwk_j = 0, u_j = kernel.r * hinv_j, hinv4_j = hinv_j*hinv3_j, V_j = Mass_j / rho_j;
                 if(u<1) {kernel_main(u, kernel.hinv3, kernel.hinv4, &kernel.wk, &kernel.dwk, 1);} else {kernel.dwk=kernel.wk=0;}
                 if(u_j<1) {kernel_main(u_j, hinv3_j, hinv4_j, &wk_j, &dwk_j, 1);} else {wk_j=dwk_j=0;}
                 if(local.V_i<0 || isnan(local.V_i)) {local.V_i=0;}
@@ -232,7 +237,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 if(kernel.dp[0]>0) {wk_vec[1]=wk*kernel.dp[0]/kernel.r; wk_vec[2]=0;} else {wk_vec[1]=0; wk_vec[2]=wk*kernel.dp[0]/kernel.r;}
                 if(kernel.dp[1]>0) {wk_vec[3]=wk*kernel.dp[1]/kernel.r; wk_vec[4]=0;} else {wk_vec[3]=0; wk_vec[4]=wk*kernel.dp[1]/kernel.r;}
                 if(kernel.dp[2]>0) {wk_vec[5]=wk*kernel.dp[2]/kernel.r; wk_vec[6]=0;} else {wk_vec[5]=0; wk_vec[6]=wk*kernel.dp[2]/kernel.r;}
-                
+
                 // if loop_iteration==-1, this is a pre-calc loop to get the relevant weights for coupling //
                 if(loop_iteration < 0)
                 {
@@ -242,8 +247,25 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 // NOW do the actual feedback calculation //
                 double wk_norm = 1. / (MIN_REAL_NUMBER + fabs(local.Area_weighted_sum[0])); // normalization for scalar weight sum
                 wk *= wk_norm; // this way wk matches the value summed above for the weighting //
-                
+
                 if((wk <= 0)||(isnan(wk))) continue;
+
+                // ok worth initializing other variables we will use below
+                #pragma omp atomic read
+                InternalEnergy_j = SphP[j].InternalEnergy; // this can get modified below, so we need to read it thread-safe now
+                for(k=0;k<3;k++) {
+                    #pragma omp atomic read
+                    Vel_j[k] = P[j].Vel[k]; // this can get modified below, so we need to read it thread-safe now
+                }
+                double InternalEnergy_j_0 = InternalEnergy_j, Mass_j_0 = Mass_j, rho_j_0 = rho_j, Vel_j_0[3]; for(k=0;k<3;k++) {Vel_j_0[k]=Vel_j[k];} // save initial values to use below
+#ifdef METALS
+                double Metallicity_j[NUM_METAL_SPECIES], Metallicity_j_0[NUM_METAL_SPECIES];
+                for(k=0;k<NUM_METAL_SPECIES;k++) {
+                    #pragma omp atomic read
+                    Metallicity_j[k] = P[j].Metallicity[k]; // this can get modified below, so we need to read it thread-safe now
+                    Metallicity_j_0[k] = Metallicity_j[k]; // save initial values to  use below
+                }
+#endif
                 
                 /* define initial mass and ejecta velocity in this 'cone' */
                 double v_bw[3]={0}, e_shock=0;
@@ -271,27 +293,27 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                     pnorm += pvec[k]*pvec[k];
                 }
                 pnorm = sqrt(pnorm);
-                
+
                 wk = pnorm; // this (vector norm) is the new 'weight function' for our purposes
                 dM = wk * local.Msne;
-                
+
                 /* now, add contribution from relative star-gas particle motion to shock energy */
                 for(k=0;k<3;k++)
                 {
-                    v_bw[k] = local.SNe_v_ejecta*pvec[k]/pnorm + (local.Vel[k]-P[j].Vel[k])/All.cf_atime;
+                    v_bw[k] = local.SNe_v_ejecta*pvec[k]/pnorm + (local.Vel[k]-Vel_j[k])/All.cf_atime;
                     e_shock += v_bw[k]*v_bw[k];
                 }
                 double mj_preshock, dM_ejecta_in, massratio_ejecta, mu_j;
-                mj_preshock = P[j].Mass;
+                mj_preshock = Mass_j;
                 dM_ejecta_in = dM;
-                massratio_ejecta = dM_ejecta_in / (dM_ejecta_in + P[j].Mass);
-                mu_j = P[j].Mass / (dM + P[j].Mass);
+                massratio_ejecta = dM_ejecta_in / (dM_ejecta_in + Mass_j);
+                mu_j = Mass_j / (dM + Mass_j);
                 e_shock *= pnorm * 0.5*local.Msne * mu_j;
-                
+
                 if((wk <= 0)||(isnan(wk))) continue;
-                
+
                 RsneKPC = RsneKPC_0;
-                double n0 = SphP[j].Density*density_to_n;
+                double n0 = rho_j*density_to_n;
                 /* this is tedious, but is a fast approximation (essentially a lookup table) for the -0.429 power above */
                 if(n0 < 1.e-3) {RsneKPC *= 19.4;} else {
                     if(n0 < 1.e-2) {RsneKPC *= 1.9 + 23./(1.+333.*n0);} else {
@@ -302,10 +324,10 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                                         if(n0 < 1000) {RsneKPC *= 0.017 + 0.154/(1.+0.00333*n0);} else {
                                             if(n0 < 1.e4) {RsneKPC *= 0.006 + 0.057/(1.+0.000333*n0);} else {
                                                 RsneKPC *= pow(n0, -0.429); }}}}}}}}
-                
-                
+
+
                 /* below expression is again just as good a fit to the simulations, and much faster to evaluate */
-                double z0 = P[j].Metallicity[0]/All.SolarAbundances[0];
+                double z0 = Metallicity_j[0]/All.SolarAbundances[0];
                 if(z0 < 0.01)
                 {
                     RsneKPC *= 2.0;
@@ -318,58 +340,86 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                     }
                 }
                 /* calculates cooling radius given density and metallicity in this annulus into which the ejecta propagate */
-                
+
                 /* if coupling radius > R_cooling, account for thermal energy loss in the post-shock medium:
                  from Thornton et al. thermal energy scales as R^(-6.5) for R>R_cool */
                 double r_eff_ij = sqrt(r2) - Get_Particle_Size(j);
                 if(r_eff_ij > RsneKPC) {e_shock *= RsneKPC*RsneKPC*RsneKPC/(r_eff_ij*r_eff_ij*r_eff_ij);}
-                
+
                 /* now we have the proper energy to couple */
                 E_coupled += e_shock;
-                
+
                 /* inject actual mass from mass return */
-                if(P[j].Hsml<=0) {if(SphP[j].Density>0){SphP[j].Density*=(1+dM_ejecta_in/P[j].Mass);} else {SphP[j].Density=dM_ejecta_in*kernel.hinv3;}} else {SphP[j].Density+=kernel_zero*dM_ejecta_in*hinv3_j;}
-                SphP[j].Density *= 1 + dM_ejecta_in/P[j].Mass; // inject mass at constant particle volume //
-                P[j].Mass += dM_ejecta_in;
+                if(P[j].Hsml<=0) {if(rho_j>0){rho_j*=(1+dM_ejecta_in/Mass_j);} else {rho_j=dM_ejecta_in*kernel.hinv3;}} else {rho_j+=kernel_zero*dM_ejecta_in*hinv3_j;}
+                rho_j *= 1 + dM_ejecta_in/Mass_j; // inject mass at constant particle volume //
+                Mass_j += dM_ejecta_in;
                 out.M_coupled += dM_ejecta_in;
-#ifdef HYDRO_MESHLESS_FINITE_VOLUME
-                SphP[j].MassTrue += dM_ejecta_in;
+#if defined(METALS) /* inject metals */
+                for(k=0;k<NUM_METAL_SPECIES-NUM_AGE_TRACERS;k++) {Metallicity_j[k]=(1-massratio_ejecta)*Metallicity_j[k] + massratio_ejecta*local.yields[k];}
+#ifdef GALSF_FB_FIRE_AGE_TRACERS
+                if(loop_iteration == 3) {for(k=NUM_METAL_SPECIES-NUM_AGE_TRACERS;k<NUM_METAL_SPECIES;k++) {Metallicity_j[k] += pnorm*local.yields[k]/Mass_j;}} // add age tracers in taking yields to mean MASS, so we can make it large without actually exchanging large masses
+#ifndef GALSF_FB_FIRE_AGE_TRACERS_DISABLE_SURFACE_YIELDS
+                if(loop_iteration != 3) {for(k=NUM_METAL_SPECIES-NUM_AGE_TRACERS;k<NUM_METAL_SPECIES;k++) {Metallicity_j[k]=(1-massratio_ejecta)*Metallicity_j[k] + massratio_ejecta*local.yields[k];}} // treat like any other yield when doing stellar mass exchange
 #endif
-#if defined(METALS) 
-                /* inject metals */
-                for(k=0;k<NUM_METAL_SPECIES;k++) {P[j].Metallicity[k]=(1-massratio_ejecta)*P[j].Metallicity[k] + massratio_ejecta*local.yields[k];}
+#endif
 #endif
                 /* inject the post-shock energy and momentum (convert to specific units as needed first) */
-                e_shock *= 1 / P[j].Mass;
-                SphP[j].InternalEnergy += e_shock;
-                SphP[j].InternalEnergyPred += e_shock;
+                e_shock *= 1 / Mass_j;
+                InternalEnergy_j += e_shock;
                 /* inject momentum */
                 double m_ej_input = pnorm * local.Msne;
                 /* appropriate factor for the ejecta being energy-conserving inside the cooling radius (or Hsml, if thats smaller) */
-                double m_cooling = 4.18879*pnorm*SphP[j].Density*RsneKPC*RsneKPC*RsneKPC;
+                double m_cooling = 4.18879*pnorm*rho_j*RsneKPC*RsneKPC*RsneKPC;
                 /* apply limiter for energy conservation */
                 double mom_boost_fac = 1 + sqrt(DMIN(mj_preshock , m_cooling) / m_ej_input);
-#if (defined(FLAG_NOT_IN_PUBLIC_CODE) && (FLAG_NOT_IN_PUBLIC_CODE > 2)) || defined(SINGLE_STAR_SINK_DYNAMICS) // ??
+#if (defined(FLAG_NOT_IN_PUBLIC_CODE) && (FLAG_NOT_IN_PUBLIC_CODE > 2)) || defined(SINGLE_STAR_SINK_DYNAMICS) 
                 if(loop_iteration > 0) {mom_boost_fac=1;} /* no unresolved PdV component for winds+r-process */
 #endif
                 /* save summation values for outputs */
-                dP = local.unit_mom_SNe / P[j].Mass * pnorm;
+                dP = local.unit_mom_SNe / Mass_j * pnorm;
                 dP_sum += dP;
                 dP_boost_sum += dP * mom_boost_fac;
-                
+
                 /* actually do the injection */
-                double q0 = All.cf_atime * (pnorm*local.Msne/P[j].Mass) * mom_boost_fac;
+                double q0 = All.cf_atime * (pnorm*local.Msne/Mass_j) * mom_boost_fac;
                 for(k=0; k<3; k++)
                 {
                     double q = q0 * v_bw[k];
-                    P[j].Vel[k] += q;
-                    SphP[j].VelPred[k] += q;
+                    Vel_j[k] += q;
                 }
-                apply_pm_hires_region_clipping_selection(j);
+                
+                /* we updated variables that need to get assigned to element 'j' -- let's do it here in a thread-safe manner */
+                #pragma omp atomic
+                P[j].Mass += Mass_j - Mass_j_0; // finite mass update [delta difference added here, allowing for another element to update in the meantime]. done this way to ensure conservation.
+#ifdef HYDRO_MESHLESS_FINITE_VOLUME
+                #pragma omp atomic
+                SphP[j].MassTrue += Mass_j - Mass_j_0; // finite mass update
+#endif
+                if(rho_j_0 > 0) {
+                    #pragma omp atomic
+                    SphP[j].Density *= rho_j / rho_j_0; // inject mass at constant particle volume [no need to be exactly conservative here] //
+                }
+                for(k=0;k<3;k++) {
+                    #pragma omp atomic
+                    P[j].Vel[k] += Vel_j[k] - Vel_j_0[k]; // delta-update
+                    #pragma omp atomic
+                    SphP[j].VelPred[k] += Vel_j[k] - Vel_j_0[k]; // delta-update
+                    #pragma omp atomic
+                    P[j].dp[k] += Mass_j*Vel_j[k] - Mass_j_0*Vel_j_0[k]; // discrete momentum change
+                }
+                #pragma omp atomic
+                SphP[j].InternalEnergy += InternalEnergy_j - InternalEnergy_j_0; // delta-update
+                #pragma omp atomic
+                SphP[j].InternalEnergyPred += InternalEnergy_j - InternalEnergy_j_0; // delta-update
+                for(k=0;k<NUM_METAL_SPECIES;k++) {
+                    #pragma omp atomic
+                    P[j].Metallicity[k] += Metallicity_j[k] - Metallicity_j_0[k]; // delta-update
+                }
+                
                 
             } // for(n = 0; n < numngb; n++)
         } // while(startnode >= 0)
-        
+
         if(mode == 1)
         {
             listindex++;
@@ -381,13 +431,9 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
             }
         } // if(mode == 1)
     } // while(startnode >= 0)
-    
+
     /* Now collect the result at the right place */
-    if(mode == 0)
-    out2particle_addFB(&out, target, 0, loop_iteration);
-    else
-    DATARESULT_NAME[target] = out;
-    
+    if(mode == 0) {out2particle_addFB(&out, target, 0, loop_iteration);} else {DATARESULT_NAME[target] = out;}
     return 0;
 } // int addFB_evaluate
 
@@ -404,12 +450,12 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     struct addFB_evaluate_data_in_ local;
     struct OUTPUT_STRUCT_NAME out;
     memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME));
-    
+
     /* Load the data for the particle injecting feedback */
     if(mode == 0) {particle2in_addFB(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];}
     if(local.Msne<=0) {return 0;} // no SNe for the master particle! nothing to do here //
     if(local.Hsml<=0) {return 0;} // zero-extent kernel, no particles //
-    
+
     // some units (just used below, but handy to define for clarity) //
     double h2 = local.Hsml*local.Hsml;
     kernel_main(0.0,1.0,1.0,&kernel_zero,&wk,-1); wk=0; // define the kernel zero-point value, needed to prevent some nasty behavior when no neighbors found
@@ -417,7 +463,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     double unitlength_in_kpc= UNIT_LENGTH_IN_KPC * All.cf_atime;
     double density_to_n=All.cf_a3inv*UNIT_DENSITY_IN_NHCGS;
     double unit_egy_SNe = 1.0e51/UNIT_ENERGY_IN_CGS;
-    
+
     // now define quantities that will be used below //
     double psi_cool=1, psi_egycon=1, v_ejecta_eff=local.SNe_v_ejecta;
     double wk_norm = 1. / (MIN_REAL_NUMBER + fabs(local.Area_weighted_sum[0])); // normalization for scalar weight sum
@@ -433,8 +479,8 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
         if(beta_egycon > 20.) {psi_egycon = 1./(2.*beta_egycon);} // replace with series expansion to avoid roundoff error at high beta
         if(beta_cool > 0.5) {psi_cool = 1./(2.*beta_cool);} // for cooling limit, only need upper limit to psi, all else will use less energy
     }
-    
-    
+
+
     double Energy_injected_codeunits = 0.5 * local.Msne * v_ejecta_eff * v_ejecta_eff;
     double Esne51 = Energy_injected_codeunits / unit_egy_SNe;
     double RsneKPC = 0., RsneKPC_3 = 0., m_cooling = 0., v_cooling = 210./UNIT_VEL_IN_KMS;
@@ -450,8 +496,8 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     double r2max_phys = 2.0/unitlength_in_kpc; // no super-long-range effects allowed! (of course this is arbitrary in code units) //
     if(local.Hsml >= r2max_phys) {psi_egycon=DMIN(psi_egycon,1); psi_cool=DMIN(psi_cool,1);}
     r2max_phys *= r2max_phys;
-    
-    
+
+
     /* Now start the actual FB computation for this particle */
     if(mode == 0)
     {
@@ -462,48 +508,73 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
         startnode = DATAGET_NAME[target].NodeList[0];
         startnode = Nodes[startnode].u.d.nextnode;    /* open it */
     }
-    
+
     while(startnode >= 0)
     {
         while(startnode >= 0)
         {
             numngb_inbox = ngb_treefind_pairs_threads(local.Pos, local.Hsml, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist);
             if(numngb_inbox < 0) {return -1;}
-            
+
             E_coupled = dP_sum = dP_boost_sum = 0;
             for(n = 0; n < numngb_inbox; n++)
             {
-                j = ngblist[n];
+                j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */
                 if(P[j].Type != 0) {continue;} // require a gas particle //
-                if(P[j].Mass <= 0) {continue;} // require the particle has mass //
+                
+                double Mass_j, InternalEnergy_j, rho_j, Vel_j[3]; // initialize holders for the local variables that might change below
+                #pragma omp atomic read
+                Mass_j = P[j].Mass; // this can get modified below, so we need to read it thread-safe now
+
+                // now consider a block of conditions we will use to evaluate whether its worth opening this loop at all //
+                if(Mass_j <= 0) {continue;} // require the particle has mass //
                 for(k=0; k<3; k++) {kernel.dp[k] = local.Pos[k] - P[j].Pos[k];}
                 NEAREST_XYZ(kernel.dp[0],kernel.dp[1],kernel.dp[2],1); // find the closest image in the given box size  //
                 r2=0; for(k=0;k<3;k++) {r2 += kernel.dp[k]*kernel.dp[k];}
-                if(r2<=0) continue; // same particle //
-                
+                if(r2<=0) {continue;} // same particle //
                 double h2j = PPP[j].Hsml * PPP[j].Hsml;
-                if((r2>h2)&&(r2>h2j)) continue; // outside kernel (in both 'directions') //
-                if(r2 > r2max_phys) continue; // outside long-range cutoff //
+                if((r2>h2)&&(r2>h2j)) {continue;} // outside kernel (in both 'directions') //
+                if(r2 > r2max_phys) {continue;} // outside long-range cutoff //
+                kernel.r = sqrt(r2); if(kernel.r <= 0) {continue;}
+
+                
                 // calculate kernel quantities //
-                kernel.r = sqrt(r2);
-                if(kernel.r <= 0) continue;
+                #pragma omp atomic read
+                rho_j = SphP[j].Density;
                 u = kernel.r * kernel.hinv;
                 double hinv_j = 1./PPP[j].Hsml, hinv3_j = hinv_j*hinv_j*hinv_j;
-                double wk_j = 0, dwk_j = 0, u_j = kernel.r * hinv_j, hinv4_j = hinv_j*hinv3_j, V_j = P[j].Mass / SphP[j].Density;
+                double wk_j = 0, dwk_j = 0, u_j = kernel.r * hinv_j, hinv4_j = hinv_j*hinv3_j, V_j = Mass_j / rho_j;
                 if(u<1) {kernel_main(u, kernel.hinv3, kernel.hinv4, &kernel.wk, &kernel.dwk, 1);} else {kernel.wk=kernel.dwk=0;}
                 if(u_j<1) {kernel_main(u_j, hinv3_j, hinv4_j, &wk_j, &dwk_j, 1);} else {wk_j=dwk_j=0;}
                 if(local.V_i<0 || isnan(local.V_i)) {local.V_i=0;}
                 if(V_j<0 || isnan(V_j)) {V_j=0;}
                 double sph_area = fabs(local.V_i*local.V_i*kernel.dwk + V_j*V_j*dwk_j); // effective face area //
                 wk = 0.5 * (1 - 1/sqrt(1 + sph_area / (M_PI*kernel.r*kernel.r))); // corresponding geometric weight //
-                
-                if((wk <= 0)||(isnan(wk))) continue; // no point in going further, there's no physical weight here
-                
+
+                if((wk <= 0)||(isnan(wk))) {continue;} // no point in going further, there's no physical weight here
+
                 double wk_vec[AREA_WEIGHTED_SUM_ELEMENTS] = {0};
                 wk_vec[0] = wk;
                 if(kernel.dp[0]>0) {wk_vec[1]=wk*kernel.dp[0]/kernel.r; wk_vec[2]=0;} else {wk_vec[1]=0; wk_vec[2]=wk*kernel.dp[0]/kernel.r;}
                 if(kernel.dp[1]>0) {wk_vec[3]=wk*kernel.dp[1]/kernel.r; wk_vec[4]=0;} else {wk_vec[3]=0; wk_vec[4]=wk*kernel.dp[1]/kernel.r;}
                 if(kernel.dp[2]>0) {wk_vec[5]=wk*kernel.dp[2]/kernel.r; wk_vec[6]=0;} else {wk_vec[5]=0; wk_vec[6]=wk*kernel.dp[2]/kernel.r;}
+
+                // ok worth initializing other variables we will use below
+                #pragma omp atomic read
+                InternalEnergy_j = SphP[j].InternalEnergy; // this can get modified below, so we need to read it thread-safe now
+                for(k=0;k<3;k++) {
+                    #pragma omp atomic read
+                    Vel_j[k] = P[j].Vel[k]; // this can get modified below, so we need to read it thread-safe now
+                }
+                double InternalEnergy_j_0 = InternalEnergy_j, Mass_j_0 = Mass_j, rho_j_0 = rho_j, Vel_j_0[3]; for(k=0;k<3;k++) {Vel_j_0[k]=Vel_j[k];} // save initial values to use below
+#ifdef METALS
+                double Metallicity_j[NUM_METAL_SPECIES], Metallicity_j_0[NUM_METAL_SPECIES];
+                for(k=0;k<NUM_METAL_SPECIES;k++) {
+                    #pragma omp atomic read
+                    Metallicity_j[k] = P[j].Metallicity[k]; // this can get modified below, so we need to read it thread-safe now
+                    Metallicity_j_0[k] = Metallicity_j[k]; // save initial values to  use below
+                }
+#endif
                 
                 RsneKPC = RsneKPC_0;
                 /* calculate cooling radius given density and metallicity in this annulus into which the ejecta propagate */
@@ -511,19 +582,19 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 {
                     double e0 = Esne51;
                     if(loop_iteration < 0) {e0=1;}
-                    if(feedback_type_is_SNe == 1) {e0+=1;}
-                    double n0 = SphP[j].Density*density_to_n;
+                    if(feedback_type_is_SNe == 1) {e0+=1;} else {e0=0.1;} // set to small number for non-SNe feedback
+                    double n0 = rho_j*density_to_n;
                     if(n0 < 0.001) {n0=0.001;}
-                    double z0 = P[j].Metallicity[0]/All.SolarAbundances[0], z0_term = 1.;
+                    double z0 = Metallicity_j[0]/All.SolarAbundances[0];
                     if(z0 < 0.01) {z0 = 0.01;}
+                    double z0_term=1.;
                     if(z0 < 1.) {z0_term = z0*sqrt(z0);} else {z0_term = z0;}
-                    double nz_dep  = pow(n0 * z0_term , 0.14);;
+                    double nz_dep  = pow(n0 * z0_term , 0.14);
                     v_cooling = 210. * DMAX(nz_dep,0.5) / UNIT_VEL_IN_KMS;
                     m_cooling = 4.56e36 * e0 / (nz_dep*nz_dep * UNIT_MASS_IN_CGS);
-                    RsneKPC = pow( 0.238732 * m_cooling/SphP[j].Density , 1./3. );
+                    RsneKPC = pow( 0.238732 * m_cooling/rho_j , 1./3. );
                 }
                 RsneKPC_3 = RsneKPC*RsneKPC*RsneKPC;
-                
                 // if loop_iteration==-1, this is a pre-calc loop to get the relevant weights for coupling //
                 if(loop_iteration < 0)
                 {
@@ -556,12 +627,12 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                         /* now calculate the additional weights that are needed for energy terms */
                         for(k=0;k<3;k++)
                         {
-                            double v_ba = (P[j].Vel[k] - local.Vel[k]) / All.cf_atime; // relative gas-star velocity //
+                            double v_ba = (Vel_j[k] - local.Vel[k]) / All.cf_atime; // relative gas-star velocity //
                             vel_ba_2 += v_ba*v_ba; // magnitude of velocity vector (for corrected post-shock energies to distribute)
                             cos_vel_ba_pcoupled += v_ba * pvec[k]/pnorm; // direction of ejecta [after correction loop]
                         }
                         wk_vec[7] = wk * vel_ba_2; // phi_0 term : residual KE term from mass-coupling for {small, second-order} energy correction
-                        wk_vec[8] = sqrt(pnorm * P[j].Mass) * cos_vel_ba_pcoupled; // beta_0 term : cross-term for momentum coupling effect on energy-coupling
+                        wk_vec[8] = sqrt(pnorm * Mass_j) * cos_vel_ba_pcoupled; // beta_0 term : cross-term for momentum coupling effect on energy-coupling
                         wk_vec[9] = pnorm * cos_vel_ba_pcoupled / v_cooling; // calculate the beta term as if all particles hit terminal: more accurate result in that limit
                         wk_vec[10] = pnorm; // normalization (so that we can divide by its sum to properly normalize the beta_egy and beta_cool quantities)
                     }
@@ -570,9 +641,9 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 }
                 // NOW do the actual feedback calculation //
                 wk *= wk_norm; // this way wk matches the value summed above for the weighting //
-                
+
                 if((wk <= 0)||(isnan(wk))) continue;
-                
+
                 /* define initial mass and ejecta velocity in this 'cone' */
                 double pnorm = 0, pvec[3] = {0};
                 for(k=0; k<3; k++)
@@ -599,20 +670,22 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 pnorm = sqrt(pnorm); // this (vector norm) is the new 'weight function' for our purposes
                 dM_ejecta_in = pnorm * local.Msne;
                 double mj_preshock, massratio_ejecta;
-                mj_preshock = P[j].Mass;
-                massratio_ejecta = dM_ejecta_in / (dM_ejecta_in + P[j].Mass);
-                
+                mj_preshock = Mass_j;
+                massratio_ejecta = dM_ejecta_in / (dM_ejecta_in + Mass_j);
+
                 /* inject actual mass from mass return */
-                if(P[j].Hsml<=0) {if(SphP[j].Density>0){SphP[j].Density*=(1+dM_ejecta_in/P[j].Mass);} else {SphP[j].Density=dM_ejecta_in*kernel.hinv3;}} else {SphP[j].Density+=kernel_zero*dM_ejecta_in*hinv3_j;}
-                SphP[j].Density *= 1 + dM_ejecta_in/P[j].Mass; // inject mass at constant particle volume //
-                P[j].Mass += dM_ejecta_in;
+                if(P[j].Hsml<=0) {if(rho_j>0){rho_j*=(1+dM_ejecta_in/Mass_j);} else {rho_j=dM_ejecta_in*kernel.hinv3;}} else {rho_j+=kernel_zero*dM_ejecta_in*hinv3_j;}
+                rho_j *= 1 + dM_ejecta_in/Mass_j; // inject mass at constant particle volume //
+                Mass_j += dM_ejecta_in;
                 out.M_coupled += dM_ejecta_in;
-#ifdef HYDRO_MESHLESS_FINITE_VOLUME
-                SphP[j].MassTrue += dM_ejecta_in;
+#ifdef METALS   /* inject metals */
+                for(k=0;k<NUM_METAL_SPECIES-NUM_AGE_TRACERS;k++) {Metallicity_j[k]=(1-massratio_ejecta)*Metallicity_j[k] + massratio_ejecta*local.yields[k];}
+#ifdef GALSF_FB_FIRE_AGE_TRACERS
+                if(loop_iteration == 3) {for(k=NUM_METAL_SPECIES-NUM_AGE_TRACERS;k<NUM_METAL_SPECIES;k++) {Metallicity_j[k] += pnorm*local.yields[k]/Mass_j;}} // add age tracers in taking yields to mean MASS, so we can make it large without actually exchanging large masses
+#ifndef GALSF_FB_FIRE_AGE_TRACERS_DISABLE_SURFACE_YIELDS
+                if(loop_iteration != 3) {for(k=NUM_METAL_SPECIES-NUM_AGE_TRACERS;k<NUM_METAL_SPECIES;k++) {Metallicity_j[k]=(1-massratio_ejecta)*Metallicity_j[k] + massratio_ejecta*local.yields[k];}} // treat like any other yield when doing stellar mass exchange
 #endif
-#ifdef METALS
-                /* inject metals */
-                for(k=0;k<NUM_METAL_SPECIES;k++) {P[j].Metallicity[k]=(1-massratio_ejecta)*P[j].Metallicity[k] + massratio_ejecta*local.yields[k];}
+#endif
 #endif
                 /* inject momentum: account for ejecta being energy-conserving inside the cooling radius (or Hsml, if thats smaller) */
                 double wk_m_cooling = pnorm * m_cooling; // effective cooling mass for this particle
@@ -628,53 +701,75 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                     if(mom_boost_fac < 1) {mom_boost_fac=1;} // impose lower limit of initial ejecta momentum
                     // finally account for simple physical limiter: if particle moving away faster than cooling terminal velocity, can't reach that velocity //
                     double vcool = DMIN(v_cooling/psi0 , v_ejecta_eff/mom_boost_fac); // effective velocity at stalling/cooling radius
-                    double dv_dp_phys = 0; for(k=0;k<3;k++) {dv_dp_phys += (1-massratio_ejecta) * (kernel.dp[k]/kernel.r) * ((local.Vel[k] - P[j].Vel[k])/All.cf_atime);} // recession velocity of particle from SNe
+                    double dv_dp_phys = 0; for(k=0;k<3;k++) {dv_dp_phys += (1-massratio_ejecta) * (kernel.dp[k]/kernel.r) * ((local.Vel[k] - Vel_j[k])/All.cf_atime);} // recession velocity of particle from SNe
                     double v_cooling_lim = DMAX( vcool , dv_dp_phys ); // cooling vel can't be smaller than actual vel (note: negative dvdp here automatically returns vcool, as desired)
                     double boostfac_max = DMIN(1000. , v_ejecta_eff/v_cooling_lim); // boost factor cant exceed velocity limiter - if recession vel large, limits boost
                     if(mom_boost_fac > boostfac_max) {mom_boost_fac = boostfac_max;} // apply limiter
-                } else {
-#if !defined(SINGLE_STAR_FB_WINDS)
-                    mom_boost_fac = DMIN(boost_egycon , boost_max); // simply take minimum - nothing fancy for winds
-#endif
                 }
-                
+
                 /* save summation values for outputs */
-                dP = local.unit_mom_SNe / P[j].Mass * pnorm;
+                dP = local.unit_mom_SNe / Mass_j * pnorm;
                 dP_sum += dP; dP_boost_sum += dP * mom_boost_fac;
-                
+
                 /* actually do the injection */
                 double mom_prefactor =  mom_boost_fac * massratio_ejecta * (All.cf_atime*v_ejecta_eff) / pnorm; // this gives the appropriately-normalized tap-able momentum from the energy-conserving solution
                 double KE_initial = 0, KE_final = 0;
                 for(k=0; k<3; k++)
                 {
-                    double d_vel = mom_prefactor * pvec[k] + massratio_ejecta*(local.Vel[k] - P[j].Vel[k]); // local.Vel term from extra momentum of moving star, P[j].Vel term from going from momentum to velocity boost with added mass
-                    KE_initial += P[j].Vel[k]*P[j].Vel[k]; P[j].Vel[k] += d_vel; SphP[j].VelPred[k] += d_vel; KE_final += P[j].Vel[k]*P[j].Vel[k];
+                    double d_vel = mom_prefactor * pvec[k] + massratio_ejecta*(local.Vel[k] - Vel_j[k]); // local.Vel term from extra momentum of moving star, Vel_j term from going from momentum to velocity boost with added mass
+                    KE_initial += Vel_j[k]*Vel_j[k]; Vel_j[k] += d_vel; KE_final += Vel_j[k]*Vel_j[k];
                 }
                 /* now calculate the residual energy and add it as thermal */
                 KE_initial *= 0.5 * mj_preshock * All.cf_a2inv;
-                KE_final *= 0.5 * P[j].Mass * All.cf_a2inv;
+                KE_final *= 0.5 * Mass_j * All.cf_a2inv;
                 double E_sne_initial = pnorm * Energy_injected_codeunits;
                 double d_Egy_internal = KE_initial + E_sne_initial - KE_final;
-#if !defined(SINGLE_STAR_FB_WINDS)
-                /* if coupling radius > R_cooling, account for thermal energy loss in the post-shock medium: from Thornton et al. thermal energy scales as R^(-6.5) for R>R_cool */
-                if(d_Egy_internal < 0.5*E_sne_initial) {d_Egy_internal = 0.5*E_sne_initial;}  /* (for stellar wind module we ignore this b/c assume always trying to resolve R_cool */
-                double r_eff_ij = kernel.r - Get_Particle_Size(j);
-                if(r_eff_ij > RsneKPC) {d_Egy_internal *= RsneKPC_3 / (r_eff_ij*r_eff_ij*r_eff_ij);}
-#endif          
-                d_Egy_internal /= P[j].Mass; // convert to specific internal energy, finally //
+#if !defined(SINGLE_STAR_FB_WINDS) /* (for single-star modules we ignore this b/c assume always trying to resolve R_cool) */
+                //if(feedback_type_is_SNe == 1) /* if coupling radius > R_cooling, account for thermal energy loss in the post-shock medium: from Thornton et al. thermal energy scales as R^(-6.5) for R>R_cool. only use for SNe b/c scalings [like momentum] only apply there. over-cooling if code wants to do it will easily occur next timestep. */
+                {
+                    //if(d_Egy_internal < 0.5*E_sne_initial) {d_Egy_internal = 0.5*E_sne_initial;}
+                    double r_eff_ij = kernel.r - Get_Particle_Size(j); /* get effective distance */
+                    if(r_eff_ij > RsneKPC) {d_Egy_internal *= RsneKPC_3 / (r_eff_ij*r_eff_ij*r_eff_ij);} /* rescale the coupled energy as intended for the feedback mechanism */
+                }
+#endif
+                d_Egy_internal /= Mass_j; // convert to specific internal energy, finally //
 #ifndef MECHANICAL_FB_MOMENTUM_ONLY
                 if(d_Egy_internal > 0)
                 {
-                    SphP[j].InternalEnergy += d_Egy_internal; SphP[j].InternalEnergyPred += d_Egy_internal; E_coupled += d_Egy_internal;
+                    InternalEnergy_j += d_Egy_internal; E_coupled += d_Egy_internal;
                 }
-#endif                 
-                apply_pm_hires_region_clipping_selection(j);
-#ifdef SINGLE_STAR_FB_WINDS
-                SphP[j].wakeup = 1; NeedToWakeupParticles_local = 1;
-#endif          
+#endif                
+                /* we updated variables that need to get assigned to element 'j' -- let's do it here in a thread-safe manner */
+                #pragma omp atomic
+                P[j].Mass += Mass_j - Mass_j_0; // finite mass update [delta difference added here, allowing for another element to update in the meantime]. done this way to ensure conservation.
+#ifdef HYDRO_MESHLESS_FINITE_VOLUME
+                #pragma omp atomic
+                SphP[j].MassTrue += Mass_j - Mass_j_0; // finite mass update
+#endif
+                if(rho_j_0 > 0) {
+                    #pragma omp atomic
+                    SphP[j].Density *= rho_j / rho_j_0; // inject mass at constant particle volume [no need to be exactly conservative here] //
+                }
+                for(k=0;k<3;k++) {
+                    #pragma omp atomic
+                    P[j].Vel[k] += Vel_j[k] - Vel_j_0[k]; // delta-update
+                    #pragma omp atomic
+                    SphP[j].VelPred[k] += Vel_j[k] - Vel_j_0[k]; // delta-update
+                    #pragma omp atomic
+                    P[j].dp[k] += Mass_j*Vel_j[k] - Mass_j_0*Vel_j_0[k]; // discrete momentum change
+                }
+                #pragma omp atomic
+                SphP[j].InternalEnergy += InternalEnergy_j - InternalEnergy_j_0; // delta-update
+                #pragma omp atomic
+                SphP[j].InternalEnergyPred += InternalEnergy_j - InternalEnergy_j_0; // delta-update
+                for(k=0;k<NUM_METAL_SPECIES;k++) {
+                    #pragma omp atomic
+                    P[j].Metallicity[k] += Metallicity_j[k] - Metallicity_j_0[k]; // delta-update
+                }
+                
             } // for(n = 0; n < numngb; n++)
         } // while(startnode >= 0)
-        
+
         if(mode == 1)
         {
             listindex++;
@@ -685,10 +780,10 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
             }
         } // if(mode == 1)
     } // while(startnode >= 0)
-    
+
     /* Now collect the result at the right place */
     if(mode == 0) {out2particle_addFB(&out, target, 0, loop_iteration);} else {DATARESULT_NAME[target] = out;}
-    
+
     return 0;
 } // int addFB_evaluate
 
@@ -709,4 +804,3 @@ void mechanical_fb_calc(int fb_loop_iteration)
 
 
 #endif /* GALSF_FB_MECHANICAL */
-

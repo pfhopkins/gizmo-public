@@ -64,7 +64,7 @@ void twopoint(void)
     double p, rs, vol, scaled_frac, tstart, tend, mass, masstot; long long *countbuf; void *state_buffer;
     PRINT_STATUS("begin two-point correlation function..."); tstart = my_second();
     /* set inner and outer radius for the bins that are used for the correlation function estimate */
-    R0 = All.SofteningTable[1]; R1 = All.BoxSize / 2; /* we assume that type=1 is the primary type */
+    R0 = All.ForceSoftening[1] / 3.; R1 = All.BoxSize / 2; /* we assume that type=1 is the primary type */
     scaled_frac = FRACTION_TP * 1.0e7 / All.TotNumPart; logR0 = log(R0); binfac = BINS_TP / (log(R1) - log(R0));
     for(i = 0, mass = 0; i < NumPart; i++) {mass += P[i].Mass;}
     MPI_Allreduce(&mass, &masstot, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD); PartMass = masstot / All.TotNumPart;
@@ -167,6 +167,7 @@ void twopoint_save(void)
 
 /*! This function counts the pairs in a sphere
  */
+/*!   -- this subroutine is not openmp parallelized at present, so there's not any issue about conflicts over shared memory. if you make it openmp, make sure you protect the writes to shared memory here!!! -- */
 int twopoint_count_local(int target, int mode, int *nexport, int *nsend_local)
 {
   int startnode, listindex = 0;
@@ -233,6 +234,7 @@ int twopoint_count_local(int target, int mode, int *nexport, int *nsend_local)
  *    this is a custom version of "ngb_treefind_variable", hard-coded for a square box (no shearing!) and variable search threshold radii, 
  *    bin-dumping, etc. as a result, updates to the core neighbor search routine will not alter this subroutine
  */
+/*!   -- this subroutine is not openmp parallelized at present, so there's not any issue about conflicts over shared memory. if you make it openmp, make sure you protect the writes to shared memory here!!! -- */
 int twopoint_ngb_treefind_variable(MyDouble searchcenter[3], MyFloat rsearch, int target, int *startnode, int mode, int *nexport, int *nsend_local)
 {
   double r2, r, ri, ro;

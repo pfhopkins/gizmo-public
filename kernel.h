@@ -643,3 +643,6 @@ static inline double kernel_gravity(double u, double hinv, double hinv3, int mod
 }
 
 
+
+#define KERNEL_FAC_FROM_FORCESOFT_TO_PLUMMER ((-1./kernel_gravity(0,1,1,-1))) /* factor which defines the plummer-equivalent radius for any kernel. multiplying ForceSoftening [radius of compact support] by this number gives the standard Plummer-equivalent definition: e.g. for a cubic spline, this returns 1./2.8, which is the desired conversion factor */
+

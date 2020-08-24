@@ -8,7 +8,7 @@ import tempfile
 ## this is the core compression subroutine
 def copy_level0(fs, fd, name, node):
     if isinstance(node, h5py.Dataset):
-        # create the new dataset, defaulting to gzip level 4 compression, 
+        # create the new dataset, defaulting to gzip level 4 compression,
         #  including chunking/shuffle options, which work well.
         dnew = fd.create_dataset(name, data=node, dtype=node.dtype, chunks=True,
             shuffle=True, compression="gzip", compression_opts=4, fletcher32=True);
@@ -41,7 +41,7 @@ def main(filename):
     fd.close(); fs.close(); os.rename(tmpfilename,filename);
     print('  Completed');
     return;
-    
+
 ## this is the parser, meant to be called from the command-line
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(

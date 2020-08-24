@@ -29,10 +29,9 @@
 #ifdef DM_SIDM
 
 
-double prob_of_interaction(double mass, double r, double h_si, double dV[3], integertime dt_step)
+double prob_of_interaction(double mass, double r, double h_si, double dV[3], double dt)
 {
     double dVmag = sqrt(dV[0]*dV[0]+dV[1]*dV[1]+dV[2]*dV[2]) / All.cf_atime; // velocity in physical
-    double dt = dt_step * All.Timebase_interval / All.cf_hubble_a; // time in physical
     double rho_eff = mass / (h_si*h_si*h_si) * All.cf_a3inv; // density in physical
     double cx_eff = All.DM_InteractionCrossSection * g_geo(r/h_si); // effective cross section (physical) scaled to cgs
     double units = UNIT_SURFDEN_IN_CGS; // needed to convert everything to cgs
@@ -110,9 +109,6 @@ double geofactor_angle_integ(double u, void * params)
 }
 
 /*! This function simply initializes some variables to prevent memory errors */
-void init_self_interactions()
-{
-    int i; for(i = 0; i < NumPart; i++) {P[i].dt_step_sidm = 0; P[i].NInteractions = 0;}
-}
+void init_self_interactions() {int i; for(i = 0; i < NumPart; i++) {P[i].dtime_sidm = 0; P[i].NInteractions = 0;}}
 
 #endif

@@ -76,7 +76,15 @@ void GravAccel_RDITestProblem()
     {   /* add the relevant vertical field for non-anchored particles */
         if(P[i].ID > 0 && (P[i].Type==0 || ((1 << P[i].Type) & (GRAIN_PTYPES))))
         {
-            P[i].GravAccel[GRAV_DIRECTION_RDI] = -All.Vertical_Gravity_Strength; /* dust feels radiation acceleration in the direction opposite gravity */
+#if defined(BOX_SHEARING) && (BOX_SHEARING != 4)
+            double mu_g = All.Vertical_Gravity_Strength/(1.+All.Dust_to_Gas_Mass_Ratio); // unstratified box, work in compensated/free-falling frame here, with respect to vertical gravity //
+            if(P[i].Type==0) {P[i].GravAccel[GRAV_DIRECTION_RDI]+=All.Dust_to_Gas_Mass_Ratio*mu_g;} else {P[i].GravAccel[GRAV_DIRECTION_RDI]-=mu_g;}
+#else
+            P[i].GravAccel[GRAV_DIRECTION_RDI] -= All.Vertical_Gravity_Strength; /* everything feels same vertical gravity */
+#endif
+#ifdef BOX_SHEARING
+            if(P[i].Type==0) {P[i].GravAccel[0] += All.Pressure_Gradient_Accel;} /* gas feels pressure gradient force in radial direction as well */
+#endif
             double acc = All.Vertical_Grain_Accel;
 #ifdef RT_OPACITY_FROM_EXPLICIT_GRAINS
             acc = 0; /* this is calculated separately, if this flag is on, from the explicitly-evolved radiation field */

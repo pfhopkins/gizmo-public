@@ -2939,7 +2939,7 @@ void pmtidaltensor_periodic_fourier(int component)
 
 #endif /*COMPUTE_TIDAL_TENSOR_IN_GRAVTREE*/
 
-/*           Here comes code for the power-sepctrum computation.
+/*           Here comes code for the power-spectrum computation.
  */
 #define BINS_PS  2000		/* number of bins for power spectrum computation */
 #define POWERSPEC_FOLDFAC 32
@@ -2980,7 +2980,7 @@ void powerspec(int flag, int *typeflag)
   fac = 1.0 / power_spec_totmass;
 
   K0 = 2 * M_PI / All.BoxSize;	/* minimum k */
-  K1 = K0 * All.BoxSize / All.SofteningTable[1];	/* maximum k */
+  K1 = K0 * All.BoxSize / (All.ForceSoftening[1] / 3.);	/* maximum k */
   binfac = BINS_PS / (log(K1) - log(K0));
 
   if(flag == 0)

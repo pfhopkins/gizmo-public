@@ -11,8 +11,8 @@
  */
 /* --------------------------------------------------------------------------------- */
 {
-    if( (((local.Eta_ShearViscosity>0)&&(SphP[j].Eta_ShearViscosity>0)) ||
-         ((local.Zeta_BulkViscosity>0)&&(SphP[j].Zeta_BulkViscosity>0))) &&
+    if( (((local.Eta_ShearViscosity>MIN_REAL_NUMBER)&&(SphP[j].Eta_ShearViscosity>MIN_REAL_NUMBER)) ||
+         ((local.Zeta_BulkViscosity>MIN_REAL_NUMBER)&&(SphP[j].Zeta_BulkViscosity>MIN_REAL_NUMBER))) &&
        ((local.Mass>0)&&(P[j].Mass>0)) )
     {
         int k_v;

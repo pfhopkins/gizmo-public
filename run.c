@@ -16,7 +16,7 @@
 /*
  * This file was originally part of the GADGET3 code developed by
  * Volker Springel. The code has been modified
- * in part (adding/removing calls, re-ordering some routines, and 
+ * in part (adding/removing calls, re-ordering some routines, and
  * adding hooks to new elements such as particle splitting, as necessary)
  * by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
  */
@@ -30,59 +30,60 @@
 void run(void)
 {
     CPU_Step[CPU_MISC] += measure_time();
-    
+
     if(RestartFlag != 1)		/* need to compute forces at initial synchronization time, unless we restarted from restart files */
     {
         output_log_messages();
-        
+
         domain_Decomposition(0, 0, 0);
-        
+
         set_non_standard_physics_for_current_time();
-        
+
         compute_grav_accelerations();	/* compute gravitational accelerations for synchronous particles */
 
         compute_hydro_densities_and_forces();	/* densities, gradients, & hydro-accels for synchronous particles */
-        
+
         calculate_non_standard_physics();	/* source terms are here treated in a strang-split fashion */
     }
-    
+
     while(1)			/* main timestep iteration loop */
     {
         compute_statistics();	/* regular statistics outputs (like total energy) */
-        
+
         write_cpu_log();		/* output some CPU usage log-info (accounts for everything needed up to the current sync-point) */
-        
+
         if(All.Ti_Current >= TIMEBASE)	/* check whether we reached the final time */
         {
             if(ThisTask == 0)
                 printf("\nFinal time=%g reached. Simulation ends.\n", All.TimeMax);
-            
+
             restart(0);		/* write a restart file to allow continuation of the run for a larger value of TimeMax */
-            
+
             if(All.Ti_lastoutput != All.Ti_Current)	/* make a snapshot at the final time in case none has produced at this time */
                 savepositions(All.SnapshotFileCount++);	/* this will be overwritten if All.TimeMax is increased and the run is continued */
-            
+
             break;
         }
-	
+
         find_timesteps();		/* find-timesteps */
         int TreeReconstructFlag_local = TreeReconstructFlag;
-#ifdef HERMITE_INTEGRATION 
+#ifdef HERMITE_INTEGRATION
         HermiteOnlyFlag = 1;
         gravity_tree();	/* re-compute gravitational accelerations for synchronous particles */
         HermiteOnlyFlag = 0;
-#endif        
+#endif
         do_first_halfstep_kick();	/* half-step kick at beginning of timestep for synchronous particles */
-        
+
         find_next_sync_point_and_drift();	/* find next synchronization point and drift particles to this time.
                                              * If needed, this function will also write an output file
                                              * at the desired time.
                                              */
-        
+
         output_log_messages();	/* write some info to log-files */
-        
+
         set_non_standard_physics_for_current_time();	/* update auxiliary physics for current time */
 
+        int reconstructed_tree = 0;
 #if defined(SINGLE_STAR_SINK_DYNAMICS)
         if(All.NumForcesSinceLastDomainDecomp > All.TreeDomainUpdateFrequency * All.TotNumPart) {TreeReconstructFlag_local = 1;}
 #endif
@@ -90,16 +91,17 @@ void run(void)
         if(GlobNumForceUpdate > All.TreeDomainUpdateFrequency * All.TotNumPart)	/* check whether we have a big step */
         {
             domain_Decomposition(0, 0, 1);      /* do domain decomposition if step is big enough, and set new list of active particles  */
+            reconstructed_tree = 1;
         }
-        else if(TreeReconstructFlag) {domain_Decomposition(0, 0, 1);}
+        else if(TreeReconstructFlag) {domain_Decomposition(0, 0, 1); reconstructed_tree = 1;}
         else
         {
             force_update_tree();	/* update tree dynamically with kicks of last step so that it can be reused */
             make_list_of_active_particles();	/* now we can set the new chain list of active particles */
         }
-        
+
         compute_grav_accelerations();	/* compute gravitational accelerations for synchronous particles */
-	
+
 #ifdef GALSF_SUBGRID_WINDS
 #if (GALSF_SUBGRID_WIND_SCALING==2)
         // Need to figure out how frequently we calculate this; below is pretty rough //
@@ -121,20 +123,28 @@ void run(void)
 #ifdef GALSF_FB_THERMAL
         determine_where_addthermalFB_events_occur(); // (same, but for simple thermal feedback models)
 #endif
-        
+
         compute_hydro_densities_and_forces();	/* densities, gradients, & hydro-accels for synchronous particles */
         
+#ifdef PARTICLE_MERGE_SPLIT_EVERY_TIMESTEP // do merge/split routines every single timestep - need to do it here if we didn't do it during domain decomp on a coarse timestep
+        if(!reconstructed_tree)
+        {
+            merge_and_split_particles();
+            rearrange_particle_sequence();
+        }
+#endif
+        
         do_second_halfstep_kick();	/* this does the half-step kick at the end of the timestep */
-        
+
         calculate_non_standard_physics();	/* source terms are here treated in a strang-split fashion */
-        
+
 #ifdef HERMITE_INTEGRATION // we do a prediction step using the saved "old" pos, accel and jerk from the beginning of the timestep. Then we recompute accel and jerk and do the correction
         do_hermite_prediction();
         HermiteOnlyFlag = 2;
         gravity_tree();	/* re-compute gravitational accelerations for synchronous particles */
         HermiteOnlyFlag = 0;
         do_hermite_correction();
-#endif                		                         	
+#endif
         /* Check whether we need to interrupt the run */
         int stopflag = 0;
         if(ThisTask == 0)
@@ -148,21 +158,21 @@ void run(void)
                 stopflag = 1;
                 unlink(stopfname);
             }
-            
+
             if(CPUThisRun > 0.85 * All.TimeLimitCPU)	/* are we running out of CPU-time ? If yes, interrupt run. */
             {
                 printf("reaching time-limit. stopping.\n");
                 stopflag = 2;
             }
         }
-        
+
         MPI_Bcast(&stopflag, 1, MPI_INT, 0, MPI_COMM_WORLD);
-        
+
         if(stopflag)
         {
             restart(0);		/* write restart file */
             MPI_Barrier(MPI_COMM_WORLD);
-            
+
             if(stopflag == 2 && ThisTask == 0)
             {
                 FILE *fd;
@@ -170,13 +180,13 @@ void run(void)
                 sprintf(contfname, "%scont", All.OutputDir);
                 if((fd = fopen(contfname, "w")))
                     fclose(fd);
-                
+
                 if(All.ResubmitOn)
                     execute_resubmit_command();
             }
             return;
         }
-        
+
         if(ThisTask == 0)
         {
             /* is it time to write one of the regularly space restart-files? */
@@ -188,37 +198,37 @@ void run(void)
             else
                 stopflag = 0;
         }
-        
+
         MPI_Bcast(&stopflag, 1, MPI_INT, 0, MPI_COMM_WORLD);
-        
+
         if(stopflag == 3)
         {
             restart(0);		/* write an occasional restart file */
             stopflag = 0;
             All.TimeLastRestartFile += report_time();
         }
-        
+
         set_random_numbers();	/* draw a new list of random numbers */
-        
+
         report_memory_usage(&HighMark_run, "RUN");
     }
-    
+
 }
 
 
 
 void set_non_standard_physics_for_current_time(void)
 {
-#if defined(COOLING) && !defined(FLAG_NOT_IN_PUBLIC_CODE) 
+#if defined(COOLING) && !defined(FLAG_NOT_IN_PUBLIC_CODE)
     /* set UV background for the current time */
     IonizeParams();
 #endif
-    
-#if defined(COOL_METAL_LINES_BY_SPECIES) && !defined(FLAG_NOT_IN_PUBLIC_CODE) 
+
+#if defined(COOL_METAL_LINES_BY_SPECIES) && !defined(FLAG_NOT_IN_PUBLIC_CODE)
     /* load the metal-line cooling tables appropriate for the UV background */
-    if(All.ComovingIntegrationOn) LoadMultiSpeciesTables();
+    if(All.ComovingIntegrationOn) {LoadMultiSpeciesTables();}
 #endif
-    
+
 }
 
 
@@ -228,75 +238,60 @@ void calculate_non_standard_physics(void)
 #ifdef PARTICLE_EXCISION
     apply_excision();
 #endif
-    
-#ifdef GALSF
-    /* PFH set of feedback routines */
+
+#ifdef GALSF /* PFH set of feedback routines */
     compute_stellar_feedback();
 #endif
-    
-#if defined(TURB_DRIVING)
-#if defined(TURB_DRIVING_SPECTRUMGRID)
-    if(All.Time >= All.TimeNextTurbSpectrum)
-    {
-        powerspec_turb(All.FileNumberTurbSpectrum++);
-        All.TimeNextTurbSpectrum += All.TimeBetTurbSpectrum;
-    }
+
+#if defined(TURB_DRIVING) && defined(TURB_DRIVING_SPECTRUMGRID)
+    if(All.Time >= All.TimeNextTurbSpectrum) {powerspec_turb(All.FileNumberTurbSpectrum++); All.TimeNextTurbSpectrum += All.TimeBetTurbSpectrum;}
 #endif
+
+
+#ifdef BLACK_HOLES /***** black hole accretion and feedback *****/
+    CPU_Step[CPU_MISC] += measure_time();
+    blackhole_accretion();
+    MPI_Barrier(MPI_COMM_WORLD); CPU_Step[CPU_BLACKHOLES] += measure_time();
 #endif
-    
-    
+
+
+#if (defined(BLACK_HOLES) || defined(GALSF_SUBGRID_WINDS)) && defined(FOF)
+    if(All.Time >= All.TimeNextOnTheFlyFoF) {fof_fof(-1); /* this will find new black hole seed halos and/or assign host halo masses for the variable wind model */
+        if(All.ComovingIntegrationOn) {All.TimeNextOnTheFlyFoF *= All.TimeBetOnTheFlyFoF;} else {All.TimeNextOnTheFlyFoF += All.TimeBetOnTheFlyFoF;}}
+#endif
+
 #ifdef RADTRANSFER
     CPU_Step[CPU_MISC] += measure_time();
-
 #if defined(RT_SOURCE_INJECTION)
+    int flag; flag=1;
 #if !defined(RT_INJECT_PHOTONS_DISCRETELY)
-    if(Flag_FullStep) /* for continous injection, requires all sources and gas be active synchronously or else 2x-counts */
+    flag = Flag_FullStep; /* for continous injection, requires all sources and gas be active synchronously or else 2x-counts */
 #endif
-        {rt_source_injection();} /* source injection into neighbor gas particles (only on full timesteps) */
+    if(flag) {rt_source_injection();} /* source injection into neighbor gas particles (only on full timesteps) */
 #endif
-    
-#if defined(RT_DIFFUSION_CG)
-    /* use the CG method to solve the RT diffusion equation implicitly for all particles */
-    if(Flag_FullStep) /* only on full timesteps, requires synchronous timestepping right now */
-        {All.Radiation_Ti_endstep = All.Ti_Current; rt_diffusion_cg_solve(); All.Radiation_Ti_begstep = All.Radiation_Ti_endstep;}
+#if defined(RT_DIFFUSION_CG) /* use the CG method to solve the RT diffusion equation implicitly for all particles; do only on full timesteps, requires synchronous timestepping right now */
+    if(Flag_FullStep) {All.Radiation_Ti_endstep = All.Ti_Current; rt_diffusion_cg_solve(); All.Radiation_Ti_begstep = All.Radiation_Ti_endstep;}
 #endif
-
 #if defined(RT_CHEM_PHOTOION) && (!defined(COOLING) || defined(RT_COOLING_PHOTOHEATING_OLDFORMAT))
     rt_update_chemistry(); /* chemistry updated at sub-stepping as well */
 #ifndef IO_REDUCED_MODE
     if(Flag_FullStep) {rt_write_chemistry_stats();}
 #endif
 #endif
-    
-    CPU_Step[CPU_RTNONFLUXOPS] += measure_time();
+    MPI_Barrier(MPI_COMM_WORLD); CPU_Step[CPU_RTNONFLUXOPS] += measure_time();
 #endif // RADTRANSFER block
-    
-    
-#ifdef BLACK_HOLES
-    /***** black hole accretion and feedback *****/
-    CPU_Step[CPU_MISC] += measure_time();
-    blackhole_accretion();
-    
-    CPU_Step[CPU_BLACKHOLES] += measure_time();    
+
+#ifdef COOLING	/**** radiative cooling and chemistry  *****/
+    cooling_parent_routine(); // master cooling and chemistry subroutine //
+    MPI_Barrier(MPI_COMM_WORLD); CPU_Step[CPU_COOLINGSFR] += measure_time(); // finish time calc for SFR+cooling
 #endif
-    
-    
-#if (defined(BLACK_HOLES) || defined(GALSF_SUBGRID_WINDS)) && defined(FOF)
-    if(All.Time >= All.TimeNextOnTheFlyFoF) {
-        fof_fof(-1); /* this will find new black hole seed halos and/or assign host halo masses for the variable wind model */
-        if(All.ComovingIntegrationOn) {All.TimeNextOnTheFlyFoF *= All.TimeBetOnTheFlyFoF;} else {All.TimeNextOnTheFlyFoF += All.TimeBetOnTheFlyFoF;}}
-#endif
-    
-    
-#ifdef COOLING	/**** radiative cooling and star formation *****/
-    cooling_parent_routine(); // master cooling subroutine //
-    CPU_Step[CPU_COOLINGSFR] += measure_time(); // finish time calc for SFR+cooling
-#endif
-#ifdef GALSF
+
+
+#ifdef GALSF /**** star/sink particle formation *****/
     star_formation_parent_routine(); // master star formation routine (because this involves common particle conversions, want to keep this at end of this subroutine) //
-    CPU_Step[CPU_COOLINGSFR] += measure_time(); // finish time calc for SFR+cooling
+    MPI_Barrier(MPI_COMM_WORLD); CPU_Step[CPU_COOLINGSFR] += measure_time(); // finish time calc for SFR+cooling
 #endif
-        
+
 }
 
 
@@ -354,7 +349,7 @@ void find_next_sync_point_and_drift(void)
 	  if(n > 0)
 	    {
 	      highest_occupied_bin = n;
-	      dt_bin = (((integertime) 1) << n);
+	      dt_bin = GET_INTEGERTIME_FROM_TIMEBIN(n);;
 	      ti_next_for_bin = (All.Ti_Current / dt_bin) * dt_bin + dt_bin;	/* next kick time for this timebin */
 	    }
 	  else
@@ -372,42 +367,33 @@ void find_next_sync_point_and_drift(void)
 
   while(ti_next_kick_global >= All.Ti_nextoutput && All.Ti_nextoutput >= 0)
     {
-      All.Ti_Current = All.Ti_nextoutput;
+        All.Ti_Current = All.Ti_nextoutput;
 
-      if(All.ComovingIntegrationOn)
-          All.Time = All.TimeBegin * exp(All.Ti_Current * All.Timebase_interval);
-      else
-          All.Time = All.TimeBegin + All.Ti_Current * All.Timebase_interval;
+        if(All.ComovingIntegrationOn) {All.Time = All.TimeBegin * exp(All.Ti_Current * All.Timebase_interval);}
+            else {All.Time = All.TimeBegin + All.Ti_Current * All.Timebase_interval;}
 
-      set_cosmo_factors_for_current_time();
+        set_cosmo_factors_for_current_time();
 
-#ifdef GR_TABULATED_COSMOLOGY_G
-      All.G = All.Gini * dGfak(All.Time);
-#endif
-
-      move_particles(All.Ti_nextoutput);
-
-      CPU_Step[CPU_DRIFT] += measure_time();
+        move_particles(All.Ti_nextoutput);
+        MPI_Barrier(MPI_COMM_WORLD); CPU_Step[CPU_DRIFT] += measure_time();
 
 #ifdef OUTPUT_POTENTIAL
 #if !defined(EVALPOTENTIAL) || (defined(EVALPOTENTIAL) && defined(OUTPUT_RECOMPUTE_POTENTIAL))
-      domain_Decomposition(0, 0, 0);
-      compute_potential();
+        domain_Decomposition(0, 0, 0);
+        compute_potential();
 #endif
 #endif
 
         savepositions(All.SnapshotFileCount++);	/* write snapshot file */
-      All.Ti_nextoutput = find_next_outputtime(All.Ti_nextoutput + 1);
+        All.Ti_nextoutput = find_next_outputtime(All.Ti_nextoutput + 1);
     }
 
 
   All.Previous_Ti_Current = All.Ti_Current;
   All.Ti_Current = ti_next_kick_global;
 
-  if(All.ComovingIntegrationOn)
-    All.Time = All.TimeBegin * exp(All.Ti_Current * All.Timebase_interval);
-  else
-    All.Time = All.TimeBegin + All.Ti_Current * All.Timebase_interval;
+  if(All.ComovingIntegrationOn) {All.Time = All.TimeBegin * exp(All.Ti_Current * All.Timebase_interval);}
+    else {All.Time = All.TimeBegin + All.Ti_Current * All.Timebase_interval;}
 
   set_cosmo_factors_for_current_time();
 #ifdef BOX_SHEARING
@@ -424,7 +410,7 @@ void find_next_sync_point_and_drift(void)
   for(n = 1, TimeBinActive[0] = 1, NumForceUpdate = TimeBinCount[0], highest_active_bin = 0; n < TIMEBINS;
       n++)
     {
-      dt_bin = (((integertime) 1) << n);
+      dt_bin = GET_INTEGERTIME_FROM_TIMEBIN(n);
       if((ti_next_kick_global % dt_bin) == 0)
 	{
 	  TimeBinActive[n] = 1;
@@ -453,20 +439,10 @@ void find_next_sync_point_and_drift(void)
 
 
 
-  /* move the new set of active/synchronized particles */
-  /* Note: We do not yet call make_list_of_active_particles(), since we
-   * may still need to old list in the dynamic tree update
-   */
+  /* move the new set of active/synchronized particles. Note: We do not yet call make_list_of_active_particles(), since we
+   * may still need to old list in the dynamic tree update */
   for(n = 0, prev = -1; n < TIMEBINS; n++)
-    {
-      if(TimeBinActive[n])
-	{
-	  for(i = FirstInTimeBin[n]; i >= 0; i = NextInTimeBin[i])
-	    {
-	      drift_particle(i, All.Ti_Current);
-	    }
-	}
-    }
+    {if(TimeBinActive[n]) {for(i = FirstInTimeBin[n]; i >= 0; i = NextInTimeBin[i]) {drift_particle(i, All.Ti_Current);}}}
 
 }
 
@@ -490,7 +466,7 @@ void make_list_of_active_particles(void)
             }
         }
     }
-    
+
     if(prev >= 0) {NextActiveParticle[prev] = -1;}
 }
 
@@ -519,10 +495,8 @@ integertime find_next_outputtime(integertime ti_curr)
 
 	  if(time >= All.TimeBegin && time <= All.TimeMax)
 	    {
-	      if(All.ComovingIntegrationOn)
-		ti = (integertime) (log(time / All.TimeBegin) / All.Timebase_interval);
-	      else
-		ti = (integertime) ((time - All.TimeBegin) / All.Timebase_interval);
+	      if(All.ComovingIntegrationOn) {ti = (integertime) (log(time / All.TimeBegin) / All.Timebase_interval);}
+          else {ti = (integertime) ((time - All.TimeBegin) / All.Timebase_interval);}
 
 	      if(ti >= ti_curr)
 		{
@@ -530,16 +504,14 @@ integertime find_next_outputtime(integertime ti_curr)
 		    {
 		      ti_next = ti;
 		      DumpFlag = All.OutputListFlag[i];
-		      if(i > All.SnapshotFileCount)
-			All.SnapshotFileCount = i;
+		      if(i > All.SnapshotFileCount) {All.SnapshotFileCount = i;}
 		    }
 
 		  if(ti_next > ti)
 		    {
 		      ti_next = ti;
 		      DumpFlag = All.OutputListFlag[i];
-		      if(i > All.SnapshotFileCount)
-			All.SnapshotFileCount = i;
+		      if(i > All.SnapshotFileCount) {All.SnapshotFileCount = i;}
 		    }
 		}
 	    }
@@ -584,10 +556,8 @@ integertime find_next_outputtime(integertime ti_curr)
 	}
       while(time <= All.TimeMax)
 	{
-	  if(All.ComovingIntegrationOn)
-	    ti = (integertime) (log(time / All.TimeBegin) / All.Timebase_interval);
-	  else
-	    ti = (integertime) ((time - All.TimeBegin) / All.Timebase_interval);
+	  if(All.ComovingIntegrationOn) {ti = (integertime) (log(time / All.TimeBegin) / All.Timebase_interval);}
+        else {ti = (integertime) ((time - All.TimeBegin) / All.Timebase_interval);}
 
 	  if(ti >= ti_curr)
 	    {
@@ -620,10 +590,8 @@ integertime find_next_outputtime(integertime ti_curr)
     }
   else
     {
-      if(All.ComovingIntegrationOn)
-	next = All.TimeBegin * exp(ti_next * All.Timebase_interval);
-      else
-	next = All.TimeBegin + ti_next * All.Timebase_interval;
+      if(All.ComovingIntegrationOn) {next = All.TimeBegin * exp(ti_next * All.Timebase_interval);}
+      else {next = All.TimeBegin + ti_next * All.Timebase_interval;}
 
       if(ThisTask == 0)
 	printf("\nSetting next time for snapshot file to Time_next= %g  (DumpFlag=%d)\n", next, DumpFlag);
@@ -660,7 +628,7 @@ void output_log_messages(void)
 #else
     if(ThisTask == 0)
 #endif
-    {       
+    {
         if(All.ComovingIntegrationOn)
         {
             z = 1.0 / (All.Time) - 1;
@@ -709,21 +677,13 @@ void output_log_messages(void)
         for(i = TIMEBINS - 1, tot = tot_sph = 0; i >= 0; i--)
             if(tot_count_sph[i] > 0 || tot_count[i] > 0)
             {
-                printf(" %c  bin=%2d      %10llu  %10llu   %16.12f       %10llu %c %c  %10.2f    %5.1f%%\n",
-                       TimeBinActive[i] ? 'X' : ' ',
-                       i, tot_count[i] - tot_count_sph[i], tot_count_sph[i],
-                       i > 0 ? (((integertime) 1) << i) * All.Timebase_interval : 0.0, tot_cumulative[i],
-                       (i == All.HighestActiveTimeBin) ? '<' : ' ',
-                       (tot_cumulative[i] > All.TreeDomainUpdateFrequency * All.TotNumPart) ? '*' : ' ',
-                       avg_CPU_TimeBin[i], 100.0 * frac_CPU_TimeBin[i]);
+                printf(" %c  bin=%2d      %10llu  %10llu   %16.12f       %10llu %c %c  %10.2f    %5.1f%%\n", TimeBinActive[i] ? 'X' : ' ', i, tot_count[i] - tot_count_sph[i], tot_count_sph[i],
+                       GET_INTEGERTIME_FROM_TIMEBIN(i) * All.Timebase_interval, tot_cumulative[i], (i == All.HighestActiveTimeBin) ? '<' : ' ',
+                       (tot_cumulative[i] > All.TreeDomainUpdateFrequency * All.TotNumPart) ? '*' : ' ', avg_CPU_TimeBin[i], 100.0 * frac_CPU_TimeBin[i]);
 #ifndef IO_REDUCED_MODE
-                fprintf(FdTimebin,
-                        " %c  bin=%2d      %10llu  %10llu   %16.12f       %10llu %c %c  %10.2f    %5.1f%%\n",
-                        TimeBinActive[i] ? 'X' : ' ', i, tot_count[i] - tot_count_sph[i], tot_count_sph[i],
-                        i > 0 ? (((integertime) 1) << i) * All.Timebase_interval : 0.0, tot_cumulative[i],
-                        (i == All.HighestActiveTimeBin) ? '<' : ' ',
-                        (tot_cumulative[i] > All.TreeDomainUpdateFrequency * All.TotNumPart) ? '*' : ' ',
-                        avg_CPU_TimeBin[i], 100.0 * frac_CPU_TimeBin[i]);
+                fprintf(FdTimebin," %c  bin=%2d      %10llu  %10llu   %16.12f       %10llu %c %c  %10.2f    %5.1f%%\n", TimeBinActive[i] ? 'X' : ' ', i, tot_count[i] - tot_count_sph[i], tot_count_sph[i],
+                        GET_INTEGERTIME_FROM_TIMEBIN(i) * All.Timebase_interval, tot_cumulative[i], (i == All.HighestActiveTimeBin) ? '<' : ' ',
+                        (tot_cumulative[i] > All.TreeDomainUpdateFrequency * All.TotNumPart) ? '*' : ' ', avg_CPU_TimeBin[i], 100.0 * frac_CPU_TimeBin[i]);
 #endif
                 if(TimeBinActive[i])
                 {
@@ -756,7 +716,7 @@ void output_log_messages(void)
         fflush(FdTimebin);
 #endif
     }
-    
+
   output_extra_log_messages();
 }
 
@@ -812,7 +772,7 @@ void write_cpu_log(void)
     {
         for(i = 0; i < CPU_PARTS; i++) {All.CPU_Sum[i] += avg_CPU_Step[i];}
     }
-        
+
 #ifdef IO_REDUCED_MODE
     if(All.HighestActiveTimeBin == All.HighestOccupiedTimeBin) // only do the actual -print- operation on global timesteps
 #endif
@@ -866,11 +826,11 @@ void write_cpu_log(void)
 #ifdef FOF
           "fof/subfind   %10.2f  %5.1f%%\n"
 #endif
-          "predict       %10.2f  %5.1f%%\n"
+          "drift/splitmg %10.2f  %5.1f%%\n"
 	      "kicks         %10.2f  %5.1f%%\n"
-	      "i/o           %10.2f  %5.1f%%\n"
+	      "io/snapshots  %10.2f  %5.1f%%\n"
 #ifdef COOLING
-	      "cooling+sfr   %10.2f  %5.1f%%\n"
+	      "cooling+chem  %10.2f  %5.1f%%\n"
 #endif
 #ifdef BLACK_HOLES
 	      "blackholes    %10.2f  %5.1f%%\n"
@@ -885,7 +845,7 @@ void write_cpu_log(void)
           "rt_nonfluxops %10.2f  %5.1f%%\n"
 #endif
           "misc          %10.2f  %5.1f%%\n",
-              
+
     All.CPU_Sum[CPU_ALL], 100.0,
     All.CPU_Sum[CPU_TREEWALK1] + All.CPU_Sum[CPU_TREEWALK2] + All.CPU_Sum[CPU_TREESEND] + All.CPU_Sum[CPU_TREERECV]
               + All.CPU_Sum[CPU_TREEWAIT1] + All.CPU_Sum[CPU_TREEWAIT2] + All.CPU_Sum[CPU_TREEBUILD] + All.CPU_Sum[CPU_TREEMISC],
@@ -959,7 +919,7 @@ void write_cpu_log(void)
     All.CPU_Sum[CPU_RTNONFLUXOPS], (All.CPU_Sum[CPU_RTNONFLUXOPS]) / All.CPU_Sum[CPU_ALL] * 100,
 #endif
     All.CPU_Sum[CPU_MISC], (All.CPU_Sum[CPU_MISC]) / All.CPU_Sum[CPU_ALL] * 100);
-        
+
     fprintf(FdCPU, "\n");
     fflush(FdCPU);
     }
@@ -1019,12 +979,12 @@ void output_extra_log_messages(void)
 #if defined(TURB_DRIVING) && !defined(IO_REDUCED_MODE)
     log_turb_temp();
 #endif
-    
+
 #if defined(GR_TABULATED_COSMOLOGY) && !defined(IO_REDUCED_MODE)
     if((ThisTask == 0) && (All.ComovingIntegrationOn == 1)
     {
         double hubble_a;
-        
+
         hubble_a = hubble_function(All.Time);
         fprintf(FdDE, "%lld %g %e ", (long long) All.NumCurrentTiStep, All.Time, hubble_a);
 #ifndef GR_TABULATED_COSMOLOGY_W
@@ -1040,6 +1000,3 @@ void output_extra_log_messages(void)
     }
 #endif
 }
-
-
-

@@ -16,7 +16,7 @@
     double kappa_i = local.Kappa_Conduction; // physical units
     double kappa_j = SphP[j].Kappa_Conduction; // physical units
     
-    if((kappa_i>0)&&(kappa_j>0)&&(local.Mass>0)&&(P[j].Mass>0))
+    if((kappa_i>MIN_REAL_NUMBER)&&(kappa_j>MIN_REAL_NUMBER)&&(local.Mass>0)&&(P[j].Mass>0))
     {
         double d_scalar = scalar_i - scalar_j;
         double rho_i, rho_j, rho_ij;

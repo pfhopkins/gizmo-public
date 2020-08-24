@@ -56,22 +56,23 @@ void gravity_tree(void)
     double timecommsumm1 = 0, timecommsumm2 = 0, timewait1 = 0, timewait2 = 0, sum_costtotal, ewaldtot;
     double maxt, sumt, maxt1, sumt1, maxt2, sumt2, sumcommall, sumwaitall, plb, plb_max;
     CPU_Step[CPU_MISC] += measure_time();
-    
+
     /* set new softening lengths */
     if(All.ComovingIntegrationOn) {set_softenings();}
-    
+
     /* construct tree if needed */
 #ifdef HERMITE_INTEGRATION
     if(!HermiteOnlyFlag)
-#endif    
+#endif
     if(TreeReconstructFlag)
     {
         PRINT_STATUS("Tree construction initiated (presently allocated=%g MB)", AllocatedBytes / (1024.0 * 1024.0));
         CPU_Step[CPU_MISC] += measure_time();
         move_particles(All.Ti_Current);
         rearrange_particle_sequence();
+        MPI_Barrier(MPI_COMM_WORLD); CPU_Step[CPU_DRIFT] += measure_time(); /* sync before we do the treebuild */
         force_treebuild(NumPart, NULL);
-        CPU_Step[CPU_TREEBUILD] += measure_time();
+        MPI_Barrier(MPI_COMM_WORLD); CPU_Step[CPU_TREEBUILD] += measure_time(); /* and sync after treebuild as well */
         TreeReconstructFlag = 0;
         PRINT_STATUS(" ..Tree construction done.");
     }
@@ -132,7 +133,7 @@ void gravity_tree(void)
         TakeLevel = -1;
     }
     if(TakeLevel >= 0) {for(i = 0; i < NumPart; i++) {P[i].GravCost[TakeLevel] = 0;}} /* re-zero the cost [will be re-summed] */
-        
+
     /* begin main communication and tree-walk loop. note the ewald-iter terms here allow for multiple iterations for periodic-tree corrections if needed */
     for(Ewald_iter = 0; Ewald_iter <= ewald_max; Ewald_iter++)
     {
@@ -169,7 +170,7 @@ void gravity_tree(void)
             for(j = 0; j < PTHREADS_NUM_THREADS - 1; j++) pthread_join(mythreads[j], NULL);
 #endif
             tend = my_second(); timetree1 += timediff(tstart, tend);
-            
+
             if(BufferFullFlag) /* we've filled the buffer or reached the end of the list, prepare for communications */
             {
                 int last_nextparticle = NextParticle; NextParticle = save_NextParticle;
@@ -180,7 +181,7 @@ void gravity_tree(void)
                     ProcessedFlag[NextParticle] = 2; NextParticle = NextActiveParticle[NextParticle];
                 }
                 if(NextParticle == save_NextParticle) {endrun(114408);} /* in this case, the buffer is too small to process even a single particle */
-            
+
                 int new_export = 0; /* actually calculate exports [so we can tell other tasks] */
                 for(j = 0, k = 0; j < Nexport; j++)
                 {
@@ -214,7 +215,7 @@ void gravity_tree(void)
             for(j = 0; j < Nexport; j++) /* prepare particle data for export [fill in the structures to be passed] */
             {
                 place = DataIndexTable[j].Index;
-                    
+
                 /* assign values (input-function to pass in memory) */
                 GravDataIn[j].Type = P[place].Type;
                 GravDataIn[j].OldAcc = P[place].OldAcc;
@@ -226,7 +227,7 @@ void gravity_tree(void)
                 for(k = 0; k < 3; k++) {GravDataIn[j].Vel[k] = P[place].Vel[k];}
 #endif
 #ifdef SINGLE_STAR_FIND_BINARIES
-                if (P[place].Type==5)
+                if(P[place].Type == 5)
                 {
                     GravDataIn[j].min_bh_t_orbital = P[place].min_bh_t_orbital; //orbital time for binary
                     GravDataIn[j].comp_Mass = P[place].comp_Mass; //mass of binary companion
@@ -334,9 +335,9 @@ void gravity_tree(void)
                 }
                 tend = my_second(); timecommsumm2 += timediff(tstart, tend);
                 myfree(GravDataResult); myfree(GravDataGet); /* free the structures used to send data back to tasks, its sent */
-                
+
             } /* close the sub-chunking loop: for(ngrp_initial = 1; ngrp_initial < (1 << PTask); ngrp_initial += N_chunks_for_import) */
-            
+
             /* we have all our results back from the elements we exported: add the result to the local elements */
             tstart = my_second();
             for(j = 0; j < Nexport; j++)
@@ -350,7 +351,7 @@ void gravity_tree(void)
 #endif
 #ifdef COUNT_MASS_IN_GRAVTREE
                 P[place].TreeMass += GravDataOut[j].TreeMass;
-#endif                
+#endif
 #ifdef BH_CALC_DISTANCES /* GravDataOut[j].min_dist_to_bh contains the min dist to particle "P[place]" on another task.  We now check if it is smaller than the current value */
                 if(GravDataOut[j].min_dist_to_bh < P[place].min_dist_to_bh)
                 {
@@ -362,9 +363,8 @@ void gravity_tree(void)
 #ifdef SINGLE_STAR_TIMESTEPPING
                 if(GravDataOut[j].min_bh_approach_time < P[place].min_bh_approach_time) {P[place].min_bh_approach_time = GravDataOut[j].min_bh_approach_time;}
                 if(GravDataOut[j].min_bh_freefall_time < P[place].min_bh_freefall_time) {P[place].min_bh_freefall_time = GravDataOut[j].min_bh_freefall_time;}
-                if(GravDataOut[j].min_bh_periastron < P[place].min_bh_periastron) {P[place].min_bh_periastron = GravDataOut[j].min_bh_periastron;}
 #ifdef SINGLE_STAR_FIND_BINARIES
-                if ((P[place].Type==5) && (GravDataOut[j].min_bh_t_orbital < P[place].min_bh_t_orbital))
+                if((P[place].Type == 5) && (GravDataOut[j].min_bh_t_orbital < P[place].min_bh_t_orbital))
                 {
                     P[place].min_bh_t_orbital = GravDataOut[j].min_bh_t_orbital;
                     P[place].comp_Mass = GravDataOut[j].comp_Mass;
@@ -372,12 +372,15 @@ void gravity_tree(void)
                     for(k=0;k<3;k++) {P[place].comp_dx[k]=GravDataOut[j].comp_dx[k]; P[place].comp_dv[k]=GravDataOut[j].comp_dv[k];}
                 }
 #endif
+#ifdef SINGLE_STAR_FB
+                if(GravDataOut[j].min_bh_fb_time < P[place].min_bh_fb_time) {P[place].min_bh_fb_time = GravDataOut[j].min_bh_fb_time;}
+#endif                
 #endif
 #endif // BH_CALC_DISTANCES
 
 #ifdef RT_USE_TREECOL_FOR_NH
                 int kbin=0; for(kbin=0; kbin < RT_USE_TREECOL_FOR_NH; kbin++) {P[place].ColumnDensityBins[kbin] += GravDataOut[j].ColumnDensityBins[kbin];}
-#endif                
+#endif
 #ifdef BH_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
                 P[place].MencInRcrit += GravDataOut[j].MencInRcrit;
 #endif
@@ -394,12 +397,12 @@ void gravity_tree(void)
                 {int i1tt,i2tt; for(i1tt=0;i1tt<3;i1tt++) {for(i2tt=0;i2tt<3;i2tt++) {P[place].tidal_tensorps[i1tt][i2tt] += GravDataOut[j].tidal_tensorps[i1tt][i2tt];}}}
 #ifdef COMPUTE_JERK_IN_GRAVTREE
                 {int i1tt; for(i1tt=0; i1tt<3; i1tt++) P[place].GravJerk[i1tt] += GravDataOut[j].GravJerk[i1tt];}
-#endif		    		    
+#endif
 #endif
             }
             tend = my_second(); timetree1 += timediff(tstart, tend);
             myfree(GravDataOut); myfree(GravDataIn);
-            
+
             if(NextParticle < 0) {ndone_flag = 1;} else {ndone_flag = 0;} /* figure out if we are done with the particular active set here */
             tstart = my_second();
             MPI_Allreduce(&ndone_flag, &ndone, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD); /* call an allreduce to figure out if all tasks are also done here, otherwise we need to iterate */
@@ -408,7 +411,7 @@ void gravity_tree(void)
         while(ndone < NTask);
     } /* Ewald_iter */
     myfree(DataNodeList); myfree(DataIndexTable);
-        
+
     /* assign node cost to particles */
     if(TakeLevel >= 0) {
         sum_top_level_node_costfactors();
@@ -422,8 +425,8 @@ void gravity_tree(void)
             }
         }
     }
-    
-    
+
+
     /* now perform final operations on results [communication loop is done] */
 #ifndef GRAVITY_HYBRID_OPENING_CRIT  // in collisional systems we don't want to rely on the relative opening criterion alone, because aold can be dominated by a binary companion but we still want accurate contributions from distant nodes. Thus we combine BH and relative criteria. - MYG
     if(header.flag_ic_info == FLAG_SECOND_ORDER_ICS) {if(!(All.Ti_Current == 0 && RestartFlag == 0)) {if(All.TypeOfOpeningCriterion == 1) {All.ErrTolTheta = 0;}}} else {if(All.TypeOfOpeningCriterion == 1) {All.ErrTolTheta = 0;}} /* This will switch to the relative opening criterion for the following force computations */
@@ -441,7 +444,6 @@ void gravity_tree(void)
 #endif
 #ifdef EVALPOTENTIAL
         P[i].Potential *= All.G;
-        // P[i].Potential += All.G * P[i].Mass / All.SofteningTable[P[i].Type]; /* remove self-potential -- no longer done here since we want to include it for ags-type runs */
 #ifdef BOX_PERIODIC
         if(All.ComovingIntegrationOn) {P[i].Potential -= All.G * 2.8372975 * pow(P[i].Mass, 2.0 / 3) * pow(All.Omega0 * 3 * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits / (8 * M_PI * All.G), 1.0 / 3);} else {if(All.OmegaLambda>0) {P[i].Potential -= 0.5*All.OmegaLambda*All.Hubble_H0_CodeUnits*All.Hubble_H0_CodeUnits * (P[i].Pos[0]*P[i].Pos[0]+P[i].Pos[1]*P[i].Pos[1]+P[i].Pos[2]*P[i].Pos[2]);}}
 #endif
@@ -452,8 +454,8 @@ void gravity_tree(void)
 #ifdef COUNT_MASS_IN_GRAVTREE
         P[i].TreeMass += P[i].Mass;
         if(P[i].Type == 5) printf("Particle %d sees mass %g in the gravity tree\n", P[i].ID, P[i].TreeMass);
-#endif        
-        
+#endif
+
         /* calculate 'old acceleration' for use in the relative tree-opening criterion */
         if(!(header.flag_ic_info == FLAG_SECOND_ORDER_ICS && All.Ti_Current == 0 && RestartFlag == 0)) /* to prevent that we overwrite OldAcc in the first evaluation for 2lpt ICs */
             {
@@ -467,7 +469,7 @@ void gravity_tree(void)
 #if (SINGLE_STAR_TIMESTEPPING > 0) /* Subtract component of force from companion if in binary, because we will operator-split this */
         if((P[i].Type == 5) && (P[i].is_in_a_binary == 1)) {subtract_companion_gravity(i);}
 #endif
-        
+
 #ifdef COMPUTE_TIDAL_TENSOR_IN_GRAVTREE /* final operations to compute the diagonalized tidal tensor and related quantities */
 #if (defined(TIDAL_TIMESTEP_CRITERION) || defined(GALSF_SFR_TIDAL_HILL_CRITERION)) // diagonalize the tidal tensor so we can use its invariants, which don't change with rotation
         double tt[9]; for(j=0; j<3; j++) {for (k=0; k<3; k++) tt[3*j+k] = P[i].tidal_tensorps[j][k];}
@@ -494,7 +496,7 @@ void gravity_tree(void)
         for(j=0;j<3;j++) P[i].GravJerk[j] *= All.G;
 #endif
 #endif /* COMPUTE_TIDAL_TENSOR_IN_GRAVTREE */
-                
+
 #if defined(RT_OTVET) /* normalize the Eddington tensors we just calculated by walking the tree (normalize to trace=1) */
         if(P[i].Type == 0) {
             int k_freq; for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++)
@@ -505,17 +507,37 @@ void gravity_tree(void)
         if(P[i].Type==0) {int kf; for(kf=0;kf<N_RT_FREQ_BINS;kf++) {SphP[i].Rad_E_gamma[kf] *= P[i].Mass/(SphP[i].Density*All.cf_a3inv * C_LIGHT_CODE);}}
 #endif
 #if defined(RT_USE_GRAVTREE_SAVE_RAD_FLUX) /* multiply by volume to use standard 'finite volume-like' quantity as elsewhere in-code */
-        if(P[i].Type==0) {int kf,k2; for(kf=0;kf<N_RT_FREQ_BINS;kf++) {for(k2=0;k2<3;k2++) {SphP[i].Rad_Flux[kf][k2] *= P[i].Mass/(SphP[i].Density*All.cf_a3inv);}}}
+        if(P[i].Type==0) {int kf,k2; for(kf=0;kf<N_RT_FREQ_BINS;kf++) {for(k2=0;k2<3;k2++) {SphP[i].Rad_Flux[kf][k2] *= P[i].Mass/(SphP[i].Density*All.cf_a3inv);}}} // convert to standard finite-volume-like units //
+#if !defined(RT_DISABLE_RAD_PRESSURE) // if we save the fluxes, we didnt apply forces on-the-spot, which means we appky them here //
+        if((P[i].Type==0) && (P[i].Mass>0))
+        {
+            int k,kfreq; double vol_inv=SphP[i].Density*All.cf_a3inv/P[i].Mass, radacc[3]={0}, h_i=Get_Particle_Size(i)*All.cf_atime, sigma_eff_i=P[i].Mass/(h_i*h_i);
+            for(kfreq=0; kfreq<N_RT_FREQ_BINS; kfreq++)
+            {
+                double f_slab=1, erad_i=0, vel_i[3]={0}, vdot_h[3]={0}, flux_i[3]={0}, flux_mag2=MIN_REAL_NUMBER, vdotflux=0, kappa_rad=rt_kappa(i,kfreq), tau_eff=kappa_rad*sigma_eff_i; if(tau_eff > 1.e-4) {f_slab = (1.-exp(-tau_eff)) / tau_eff;} // account for optically thick local 'slabs' self-shielding themselves
+                double acc_norm = kappa_rad * f_slab / C_LIGHT_CODE; // pre-factor for radiation pressure acceleration
+#if defined(RT_LEBRON)
+                acc_norm *= All.PhotonMomentum_Coupled_Fraction; // allow user to arbitrarily increase/decrease strength of RP forces for testing
+#endif
+#if defined(RT_USE_GRAVTREE_SAVE_RAD_ENERGY)
+                erad_i = SphP[i].Rad_E_gamma_Pred[kfreq]*vol_inv; // if can, include the O[v/c] terms
+#endif
+                for(k=0;k<3;k++) {flux_i[k]=SphP[i].Rad_Flux_Pred[kfreq][k]*vol_inv; flux_mag2+=flux_i[k]*flux_i[k]; vel_i[k]=SphP[i].VelPred[k]/All.cf_atime; vdotflux+=vel_i[k]*flux_i[k];} // initialize a bunch of variables we will need
+                for(k=0;k<3;k++) {vdot_h[k] = erad_i * (vel_i[k] + vdotflux*flux_i[k]/flux_mag2);} // calculate volume integral of scattering coefficient t_inv * (gas_vel . [e_rad*I + P_rad_tensor]), which gives an additional time-derivative term. this is the P term //
+                for(k=0;k<3;k++) {radacc[k] += acc_norm * (flux_i[k] - vdot_h[k]);} // note these 'vdoth' terms shouldn't be included in FLD, since its really assuming the entire right-hand-side of the flux equation reaches equilibrium with the pressure tensor, which gives the expression in rt_utilities
+            }
+            for(k=0;k<3;k++) {P[i].GravAccel[k] += radacc[k] / All.cf_a2inv;} // convert into our code units for GravAccel, which are comoving gm/r^2 units //
+        }
+#endif
 #endif
 
-        
 #ifdef RT_USE_TREECOL_FOR_NH  /* compute the effective column density that gives equivalent attenuation of a uniform background: -log(avg(exp(-sigma))) */
         double sigma_eff=0, sigma_sum=0; int kbin; // first do a sum of the columns and express columns in units of that sum, so that we're plugging O(1) values into exp and avoid overflow when we have unfortunate units. Then we just multiply by the sum at the end.
         for(kbin=0; kbin<RT_USE_TREECOL_FOR_NH; kbin++) {sigma_sum += P[i].ColumnDensityBins[kbin];}
         for(kbin=0; kbin<RT_USE_TREECOL_FOR_NH; kbin++) {sigma_eff += exp(-P[i].ColumnDensityBins[kbin]/sigma_sum);}
         P[i].SigmaEff = -log(sigma_eff/RT_USE_TREECOL_FOR_NH) * sigma_sum;
-#endif        
-        
+#endif
+
 #if !defined(BOX_PERIODIC) && !defined(PMGRID) /* some factors here in case we are trying to do comoving simulations in a non-periodic box (special use cases) */
         if(All.ComovingIntegrationOn) {for(j=0;j<3;j++) {P[i].GravAccel[j] += 0.5*All.Omega0 *All.Hubble_H0_CodeUnits*All.Hubble_H0_CodeUnits * P[i].Pos[j];}}
         if(All.ComovingIntegrationOn==0) {for(j=0;j<3;j++) {P[i].GravAccel[j] += All.OmegaLambda*All.Hubble_H0_CodeUnits*All.Hubble_H0_CodeUnits * P[i].Pos[j];}}
@@ -525,13 +547,13 @@ void gravity_tree(void)
 #endif
 
     } /* end of loop over active particles*/
-    
-    
+
+
 #endif /* end SELFGRAVITY operations (check if SELFGRAVITY_OFF not enabled) */
-    
-    
+
+
     add_analytic_gravitational_forces(); /* add analytic terms, which -CAN- be enabled even if self-gravity is not */
-    
+
 
     /* Now the force computation is finished: gather timing and diagnostic information */
     t1 = WallclockTime = my_second(); timeall = timediff(t0, t1);
@@ -586,7 +608,7 @@ void *gravity_primary_loop(void *p)
     int i, j, ret, thread_id = *(int *) p, *exportflag, *exportnodecount, *exportindex;
     exportflag = Exportflag + thread_id * NTask; exportnodecount = Exportnodecount + thread_id * NTask; exportindex = Exportindex + thread_id * NTask;
     for(j = 0; j < NTask; j++) {exportflag[j] = -1;} /* Note: exportflag is local to each thread */
-    
+
     while(1)
     {
         int exitFlag = 0;
@@ -598,7 +620,7 @@ void *gravity_primary_loop(void *p)
             else {i=NextParticle; ProcessedFlag[i]=0; NextParticle=NextActiveParticle[NextParticle];}
         UNLOCK_NEXPORT;
         if(exitFlag) {break;}
-		 
+
 #ifdef HERMITE_INTEGRATION /* if we are in the Hermite extra loops and a particle is not flagged for this, simply mark it done and move on */
         if(HermiteOnlyFlag && !eligible_for_hermite(i)) {ProcessedFlag[i]=1; continue;}
 #endif
@@ -688,7 +710,7 @@ void set_softenings(void)
         All.SofteningTable[4] = All.SofteningStars;
         All.SofteningTable[5] = All.SofteningBndry;
     }
-    int i; for(i = 0; i < 6; i++) {All.ForceSoftening[i] = 2.8 * All.SofteningTable[i];}
+    int i; for(i = 0; i < 6; i++) {All.ForceSoftening[i] = 2.8 * All.SofteningTable[i];} 
     /* set the minimum gas kernel length to be used this timestep */
     All.MinHsml = All.MinGasHsmlFractional * All.ForceSoftening[0];
 #ifndef SELFGRAVITY_OFF
@@ -751,7 +773,7 @@ void mysort_dataindex(void *b, size_t n, size_t s, int (*cmp) (const void *, con
 }
 
 
-#if (SINGLE_STAR_TIMESTEPPING > 0) 
+#if (SINGLE_STAR_TIMESTEPPING > 0)
 void subtract_companion_gravity(int i)
 {
     /* Remove contribution to gravitational field and tidal tensor from the stars in the binary to the center of mass */
@@ -765,7 +787,7 @@ void subtract_companion_gravity(int i)
         fac2 = P[i].comp_Mass * kernel_gravity(u, h_inv, h3_inv, 2);
     }
     for(i1=0;i1<3;i1++) {P[i].COM_GravAccel[i1] = P[i].GravAccel[i1] - P[i].comp_dx[i1] * fac * All.G;} /* this assumes the 'G' has been put into the units for the grav accel */
-    
+
     /* Adjusting tidal tensor according to terms above */
     tidal_tensorps[0][0] = P[i].tidal_tensorps[0][0] - (-fac + P[i].comp_dx[0] * P[i].comp_dx[0] * fac2);
     tidal_tensorps[0][1] = P[i].tidal_tensorps[0][1] - (P[i].comp_dx[0] * P[i].comp_dx[1] * fac2);

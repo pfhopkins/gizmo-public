@@ -254,7 +254,7 @@ void find_particles_and_save_them(int num)
 void add_along_lines_of_sight(void)
 {
   int n, bin, i, iz0, iz1, iz;
-  double dx, dy, dz, r, r2, ne, nh0, nHeII, utherm, temp;
+  double dx, dy, dz, r, r2, ne=1, nh0=0, nHeII=0, utherm=1, temp=1e4;
   double u, wk, dwk, weight, h3inv;
   double z0, z1;
 

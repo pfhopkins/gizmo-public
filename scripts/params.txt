@@ -1,9 +1,9 @@
 %-------------------------------------------------------------------------
-%----  This file contains the input parameters needed at run-time for 
+%----  This file contains the input parameters needed at run-time for
 %       simulations. It is based on and (intentionally) closely resembles
 %       the GADGET-2/3 and AREPO parameterfile formats (format and parsing
 %       routines written by Volker Springel). It has been updated
-%       with new naming conventions and additional variables as needed by 
+%       with new naming conventions and additional variables as needed by
 %       Phil Hopkins [phopkins@caltech.edu] for GIZMO. This is a template:
 %       please see the GIZMO User Guide for documentation which explains
 %       the actual meaning and function of every variable here.
@@ -17,7 +17,7 @@ OutputDir                   output     % name (full path or sub-folder name) for
 ICFormat                    3   % format of IC file: 1=unformatted (gadget) binary, 3=hdf5, 4=cluster
 SnapFormat                  3   % format of snapshots: 1=unformatted (gadget) binary, 3=hdf5 [Default=3]
 
-%---- Output parameters 
+%---- Output parameters
 RestartFile                 restart    % base name for restartfiles [Default='restart']
 SnapshotFileBase            snapshot   % base name for snapshot files [Default='snapshot']
 OutputListOn                0   % =1 to use list in "OutputListFilename", =0 to specify
@@ -25,7 +25,7 @@ OutputListFilename          output_times.txt   % list of times (in code units) f
 NumFilesPerSnapshot         1   % number of sub-files to break each snapshot into [Default=1]
 NumFilesWrittenInParallel   1   % must be < N_processors & power of 2 [Default=1]
 
-%---- Output frequency 
+%---- Output frequency
 TimeOfFirstSnapshot         0.1   % time (code units) of first snapshot
 TimeBetSnapshot             1.1   % time between snapshot writes (if OutputListOn=0), code units
 TimeBetStatistics           0.05  % code time between additional statistics (e.g. energy) [Default=infinity]
@@ -165,7 +165,7 @@ InitMetallicity              1e-5   % initial gas+stellar metallicity [for all p
 InitStellarAge               1      % initial mean age (in Gyr; for pre-existing stars in sim ICs)
 
 
-%---- sub-grid (Springel+Hernquist/GADGET/AREPO) "effective equation of state" 
+%---- sub-grid (Springel+Hernquist/GADGET/AREPO) "effective equation of state"
 %------- star formation+feedback model (GALSF_EFFECTIVE_EQS on)
 MaxSfrTimescale              4.0     % code units (SF timescale at 2-phase threshold)
 TempSupernova                3e8     % in Kelvin (temp of hot gas in 2-phase model)
@@ -188,11 +188,11 @@ VariableWindSpecMomentum     5000   % wind momentum per unit stellar mass (code 
 %-------------- FIRE (PFH) explicit star formation & feedback model (FIRE on; all have 'alt name' alternative name options and defaults)
 %--- local coupling from LEBRON-first-stage of radiation-pressure photon momentum flux (GALSF_FB_FIRE_RT_LOCALRP)
 RP_Local_Momentum_Renormalization       1   % fraction of absorbed physical photon momentum to couple (alt name: 'WindMomentumLoading')
-%--- SneII Heating Model (GALSF_FB_MECHANICAL) 
+%--- SneII Heating Model (GALSF_FB_MECHANICAL)
 SNe_Energy_Renormalization              1   % fraction of physical SNe energy to inject -before- cooling (alt name: 'SNeIIEnergyFrac')
-%--- HII region photo-heating model (GALSF_FB_FIRE_RT_HIIHEATING)  
+%--- HII region photo-heating model (GALSF_FB_FIRE_RT_HIIHEATING)
 HIIRegion_fLum_Coupled                  1   % fraction of ionizing photons allowed to see gas (alt name: 'HIIRegion_fLum_Coupled')
-%--- long-range radiation pressure acceleration (GALSF_FB_FIRE_RT_LONGRANGE) 
+%--- long-range radiation pressure acceleration (GALSF_FB_FIRE_RT_LONGRANGE)
 PhotonMomentum_Coupled_Fraction         1   % fraction of L to allow incident (alt name: 'PhotonMomentum_Coupled_Fraction')
 PhotonMomentum_fUV                      0   % minimum local-escape fraction in UV from incident SED, to propagate to long-range LEBRON component
 PhotonMomentum_fOPT                     0   % minimum local-escape fraction in optical from incident SED, to propagate to long-range LEBRON component
@@ -204,7 +204,7 @@ CosmicRay_SNeFraction                   0.1 % fraction of SNe ejecta kinetic ene
 
 
 %-------------- Black Hole accretion & formation (BLACK_HOLES on)
-%--- formation/seeding  
+%--- formation/seeding
 SeedBlackHoleMass            1.0e-7 	% initial mass (on-the-fly or single galaxy)
 SeedAlphaDiskMass            0.0        % initial mass in the alpha disk (BH_ALPHADISK_ACCRETION)
 SeedBlackHoleMinRedshift     2.0        % minimum redshift where new BH particles are seeded (lower-z ceases seeding)
@@ -215,13 +215,13 @@ MinFoFMassForNewSeed         10.	    % minimum mass of FOF group (stars or DM) t
 TimeBetOnTheFlyFoF           1.01       % time (in code units, e.g. scale-factor) between on-the-fly FOF searches
 %--- accretion
 BlackHoleAccretionFactor     1.0	    % multiplier for mdot (relative to model)
-BlackHoleEddingtonFactor     1.0	    % fraction of eddington to cap (can be >1) 
-BlackHoleNgbFactor           3.0	    % multiplier for kernel neighbors for BH 
+BlackHoleEddingtonFactor     1.0	    % fraction of eddington to cap (can be >1)
+BlackHoleNgbFactor           3.0	    % multiplier for kernel neighbors for BH
 BlackHoleMaxAccretionRadius  0.02	    % max radius for BH neighbor search/accretion (code units)
 BlackHoleRadiativeEfficiency 0.1        % radiative efficiency (for accretion and feedback)
-%--- feedback 
-BlackHoleFeedbackFactor      1.0	    % generic feedback strength multiplier 
-BH_Rad_MomentumFactor        1.0	    % multiply radiation pressure (BH_PHOTONMOMENTUM) 
+%--- feedback
+BlackHoleFeedbackFactor      1.0	    % generic feedback strength multiplier
+BH_Rad_MomentumFactor        1.0	    % multiply radiation pressure (BH_PHOTONMOMENTUM)
 BAL_f_accretion              0.5        % fraction of gas swallowed by BH (BH_WIND options)
 BAL_v_outflow                30000	    % velocity (code units) of BAL outflow (BH_WIND options)
 BAL_internal_temperature     1.0e4      % internal temperature (K) of BAL outflow (BH_WIND_SPAWN)
@@ -243,16 +243,15 @@ GrackleDataFile              CloudyData_UVB=HM2012.h5    % filename for UV backg
 %-------------------------------------------------------------------------
 
 %-------------- Turbulent stirring parameters (TURB_DRIVING on)
-ST_decay       1.	    % decay time for driving-mode phase correlations
-ST_energy      0.0002   % energy of driving-scale modes: sets norm of turb
-ST_DtFreq      0.005    % time interval for driving updates (set by hand)
-ST_Kmin        6.27     % minimum driving-k: should be >=2.*M_PI/All.BoxSize
-ST_Kmax        12.57    % maximum driving-k: set to couple times Kmin or more if cascade desired
-ST_SolWeight   1.0      % fractional wt of solenoidal modes (wt*curl + (1-wt)*div)
-ST_AmplFac     1.0      % multiplies turb amplitudes
-ST_SpectForm   2        % driving pwr-spec: 0=Ek~const; 1=sharp-peak at kc; 2=Ek~k^(-5/3); 3=Ek~k^-2
-ST_Seed        42       % random number seed for modes (so you can reproduce it)
-TimeBetTurbSpectrum 0.5 % time (code units) between evaluations of turb pwrspec
+TurbDrive_ApproxRMSVturb            1.0     % driving strength: set to approximate rms turbulent velocity desired (code units)
+TurbDrive_MinWavelength             0.5     % minimum driving wavelength (code units): must be < MaxWavelength
+TurbDrive_MaxWavelength             1.0     % maximum driving wavelength (code units): must be <= BoxSize
+TurbDrive_SolenoidalFraction        1       % fraction in solenoidal modes (projection ~wt*curl + (1-wt)*div; default = 0.5)
+TurbDrive_CoherenceTime             1       % coherence/correlation time of driving (code units; default = MaxWavelength / RMSVturb)
+TurbDrive_DrivingSpectrum           2       % driving spectrum: 0=equal power all modes, 1=strongly-peaked between Max/Min, 2=Kolmogorov, 3=Burgers (default = 2)
+TurbDrive_RandomNumberSeed          42      % random integer seed for stochastic driver, for reproducibility (default = 42)
+TurbDrive_TimeBetweenTurbUpdates    0.01    % time interval (code units) for driving updates (default = 0.01*coherence time)
+TurbDrive_TimeBetTurbSpectrum       0.5     % time interval (code units) for outputting power spectra, if TURB_DRIVING_SPECTRUMGRID is on
 
 
 %-------------------------------------------------------------------------------------------------
@@ -293,6 +292,3 @@ Tillotson_EOS_params_alpha      5.0       % alpha parameter [dimensionless]
 Tillotson_EOS_params_beta       5.0       % beta parameter [dimensionless]
 Tillotson_EOS_params_mu         7.75e11   % elastic shear modulus in [erg/cm^3]   (used if EOS_ELASTIC is on)
 Tillotson_EOS_params_Y0         8.5e10    % hugoniot elastic limit in [erg/cm^3]  (used if EOS_ELASTIC is on)
-
-
-

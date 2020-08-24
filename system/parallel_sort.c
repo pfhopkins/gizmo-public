@@ -414,8 +414,7 @@ static void serial_sort(char *base, size_t nmemb, size_t size, int (*compar) (co
 }
 
 
-static void msort_serial_with_tmp(char *base, size_t n, size_t s, int (*compar) (const void *, const void *),
-				  char *t)
+static void msort_serial_with_tmp(char *base, size_t n, size_t s, int (*compar) (const void *, const void *), char *t)
 {
   char *tmp;
   char *b1, *b2;
@@ -468,4 +467,32 @@ int compare_densities_for_sort(const void *a, const void *b)
     double y = SphP[ *(int *) b].Density;
     if (x < y) {return -1;} else if(x > y) {return 1;}
     return 0;
+}
+
+
+
+
+
+/* simple recursive function to efficiently find index in arbitrarily spaced bin-list */
+int binarySearch(const double * arr, const double x, const int l, const int r, const int total)
+{
+  if(r<l){ endrun(7777);}
+  const int w     = r-l;
+  const int mid   = l + w/2;
+  if (w  <= 1){
+    if (mid < total-1)
+      if (x >= arr[mid] && x < arr[mid+1])
+        return mid;
+    if (mid >0)
+      if(x >= arr[mid-1] && x < arr[mid])
+        return mid-1;
+  } // endif w < 1
+  if (arr[mid] > x){
+     return binarySearch(arr,x,l,mid-1,total);
+  } else if (arr[mid]<x){
+    return binarySearch(arr,x,mid+1,r,total);
+  } else {
+    return mid;
+  }
+  return -1;
 }

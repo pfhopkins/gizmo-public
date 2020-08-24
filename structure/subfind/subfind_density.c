@@ -373,6 +373,7 @@ void subfind_density(int j_in)
  *  target particle may either be local, or reside in the communication
  *  buffer.
  */
+/*!   -- this subroutine is not openmp parallelized at present, so there's not any issue about conflicts over shared memory. if you make it openmp, make sure you protect the writes to shared memory here!!! -- */
 int subfind_density_evaluate(int target, int mode, int *nexport, int *nsend_local, int tp)
 {
   int j, n;

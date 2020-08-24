@@ -582,6 +582,7 @@ PRINT_STATUS("Local groups found.");
 }
 
 
+/*!   -- this subroutine is not openmp parallelized at present, so there's not any issue about conflicts over shared memory. if you make it openmp, make sure you protect the writes to shared memory here!!! -- */
 int fof_find_dmparticles_evaluate(int target, int mode, int *nexport, int *nsend_local)
 {
   int j, n, links, p, s, ss, listindex = 0;
@@ -1602,15 +1603,9 @@ void fof_find_nearest_dmparticle(void)
 		      fof_nearest_hsml[i] *= 2.0;
 		      if(iter >= MAXITER - 10)
 			{
-#ifndef LONGIDS
-			  printf("i=%d task=%d ID=%u Hsml=%g  pos=(%g|%g|%g)\n",
-				 i, ThisTask, P[i].ID, fof_nearest_hsml[i],
-				 P[i].Pos[0], P[i].Pos[1], P[i].Pos[2]);
-#else
 			  printf("i=%d task=%d ID=%llu Hsml=%g  pos=(%g|%g|%g)\n",
-				 i, ThisTask, P[i].ID, fof_nearest_hsml[i],
+				 i, ThisTask, (unsigned long long) P[i].ID, fof_nearest_hsml[i],
 				 P[i].Pos[0], P[i].Pos[1], P[i].Pos[2]);
-#endif
 			  fflush(stdout);
 			}
 		    }
@@ -1643,6 +1638,7 @@ void fof_find_nearest_dmparticle(void)
 }
 
 
+/*!   -- this subroutine is not openmp parallelized at present, so there's not any issue about conflicts over shared memory. if you make it openmp, make sure you protect the writes to shared memory here!!! -- */
 int fof_find_nearest_dmparticle_evaluate(int target, int mode, int *nexport, int *nsend_local)
 {
   int j, n, index, listindex = 0;

@@ -28,7 +28,7 @@ if((local.Mass > 0) && (P[j].Mass > 0))
     // only go further if these are non-zero //
     double eta_max = DMAX(eta_ohmic , DMAX(eta_hall, eta_ad));
     int k_xyz_A=0, k_xyz_B=0;
-    if(eta_max > 0)
+    if(eta_max > MIN_REAL_NUMBER)
     {
         // define the current J //
         double J_current[3], d_scalar[3], rinv2 = rinv*rinv;

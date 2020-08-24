@@ -34,7 +34,7 @@ if((local.Type==1) && (P[j].Type==1)) // only acts between DM particles of type 
     }
     
 #if (DM_FUZZY == 0)
-    double prev_acc = All.G*All.cf_a2inv * P[j].Mass * P[j].OldAcc, flux[3]={0}, dt_egy_Numerical_QuantumPotential=0, m_mean = 0.5*(local.Mass+P[j].Mass), rho_i=local.Mass/V_i*All.cf_a3inv, rho_j=P[j].Mass/V_j*All.cf_a3inv, dt = local.dt_step * All.Timebase_interval/All.cf_hubble_a, AGS_Numerical_QuantumPotential = 0.5*(local.AGS_Numerical_QuantumPotential/V_i + P[j].AGS_Numerical_QuantumPotential/V_j)*All.cf_a3inv;
+    double prev_acc = All.G*All.cf_a2inv * P[j].Mass * P[j].OldAcc, flux[3]={0}, dt_egy_Numerical_QuantumPotential=0, m_mean = 0.5*(local.Mass+P[j].Mass), rho_i=local.Mass/V_i*All.cf_a3inv, rho_j=P[j].Mass/V_j*All.cf_a3inv, dt = local.dtime, AGS_Numerical_QuantumPotential = 0.5*(local.AGS_Numerical_QuantumPotential/V_i + P[j].AGS_Numerical_QuantumPotential/V_j)*All.cf_a3inv;
     double HLLwt = (0.5*(kernel.wk_i/kernel.hinv3_i + kernel.wk_j/kernel.hinv3_j)) * (0.5*(kernel.h_i+kernel.h_j)/kernel.r); HLLwt = 10.*HLLwt*HLLwt; // strong dissipation terms allowed for very-close particles, where second-derivative diverges, otherwise weak (no diffusion) //
     // actually compute the fluxes now, this is the key routine, below //
 

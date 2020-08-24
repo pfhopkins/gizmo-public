@@ -47,217 +47,72 @@ extern pthread_mutex_t mutex_partnodedrift;
 
 #if defined(RADTRANSFER) || defined(RT_USE_GRAVTREE)
 
+#define SET_ACTIVE_RT_CHECK() if(mode<0) {return 1;} else {active_check=1;}
+
+
 /***********************************************************************************************************/
 /* routine which returns the luminosity [total volume/mass integrated] for the desired source particles in physical code units (energy/time),
     as a function of whatever the user desires, in the relevant bands. inpute here:
     'i' = index of target particle/cell for which the luminosity should be computed
     'mode' = flag for special behaviors. if <0 (e.g. -1), just returns whether or not a particle is 'active' (eligible as an RT source). if =0, normal behavior. if =1, then some bands have special behavior, for example self-shielding estimated -at the source-
-    'lum' = pointer to vector of length N_RT_FREQ_BINS to hold luminosities for all bands
+    'lum' = pointer to vector of length N_RT_FREQ_BINS to hold luminosities for all bands.
+    Note that for a number of the bands below where 'sources' are stars or star-like objects,
+        there are two default 'versions' implemented: one assuming the sources are -individual- stars/protostars/compact objects, the other
+        assuming the sources represent stellar -populations-. Make sure you implement the correct assumptions with appropriate flags for the simulations you wish to run.
  */
 /***********************************************************************************************************/
-#ifdef CHIMES_STELLAR_FLUXES  
-int rt_get_source_luminosity(int i, int mode, double *lum, double *chimes_lum_G0, double *chimes_lum_ion)
-#else 
 int rt_get_source_luminosity(int i, int mode, double *lum)
-#endif 
 {
-    int active_check = 0;
+    if(!((1 << P[i].Type) & (RT_SOURCES))) {return 0;}; // boolean test of whether i is a source or not - end if not a valid source particle
+    if(P[i].Mass <= 0) {return 0;} // reject invalid particles scheduled for deletion
+    int active_check = 0; // default to inactive //
     
-
-
-    
-
-    
-#if defined(RT_INFRARED) /* can add direct infrared sources, but default to no direct IR (just re-emitted light) */
-    if((1 << P[i].Type) & (RT_SOURCES))
-    {
-        lum[RT_FREQ_BIN_INFRARED] = 0.0; //default to no direct IR (just re-emitted light)
-    }
-#endif
-
-    
-#if defined(RT_NUV)
-    /* Near-UV approximate spectra (UV/optical spectra, sub-photo-electric, but high-opacity) for stars as used in the FIRE (Hopkins et al.) models */
-    if((1 << P[i].Type) & (RT_SOURCES)) // check if the particle falls into one of the allowed source types
-    {
-        if( ((P[i].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[i].Type == 2)||(P[i].Type==3)))) && P[i].Mass>0 && PPP[i].Hsml>0 )
-        {
-            if(mode<0) {return 1;} active_check = 1;
-            double star_age = evaluate_stellar_age_Gyr(P[i].StellarAge), f_op=0;
-            if(star_age <= 0.0025) {f_op=0.09;} else {
-                if(star_age <= 0.006) {f_op=0.09*(1+((star_age-0.0025)/0.004)*((star_age-0.0025)/0.004));
-                } else {f_op=1-0.8410937/(1+sqrt((star_age-0.006)/0.3));}}
-            double fac = P[i].Mass * UNIT_MASS_IN_SOLAR / UNIT_LUM_IN_SOLAR; // converts to code units
-            lum[RT_FREQ_BIN_NUV] = (1-f_op) * fac * evaluate_light_to_mass_ratio(star_age, i);
-        }
-    }
-#endif
-
-    
-#if defined(RT_OPTICAL_NIR)
-    /* Optical-NIR approximate spectra for stars as used in the FIRE (Hopkins et al.) models */
-    if((1 << P[i].Type) & (RT_SOURCES)) // check if the particle falls into one of the allowed source types
-    {
-        if( ((P[i].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[i].Type == 2)||(P[i].Type==3)))) && P[i].Mass>0 && PPP[i].Hsml>0 )
-        {
-            if(mode<0) {return 1;} active_check = 1;
-            double star_age = evaluate_stellar_age_Gyr(P[i].StellarAge), f_op=0;
-            if(star_age <= 0.0025) {f_op=0.09;} else {
-                if(star_age <= 0.006) {f_op=0.09*(1+((star_age-0.0025)/0.004)*((star_age-0.0025)/0.004));
-                } else {f_op=1-0.8410937/(1+sqrt((star_age-0.006)/0.3));}}
-            double fac = P[i].Mass * UNIT_MASS_IN_SOLAR / UNIT_LUM_IN_SOLAR; // converts to code units
-            lum[RT_FREQ_BIN_OPTICAL_NIR] = f_op * fac * evaluate_light_to_mass_ratio(star_age, i);
-        }
-    }
-#endif
-
-    
-#ifdef RT_PHOTOELECTRIC
-    /* photo-electric bands (8-13.6 eV, specifically): below is from integrating the spectra from STARBURST99 with the Geneva40 solar-metallicity + lower tracks */
-    if((1 << P[i].Type) & (RT_SOURCES)) // check if the particle falls into one of the allowed source types
-    {
-        if( ((P[i].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[i].Type == 2)||(P[i].Type==3)))) && P[i].Mass>0 && PPP[i].Hsml>0 )
-        {
-            if(mode<0) {return 1;} active_check = 1;
-            double fac = (P[i].Mass * UNIT_MASS_IN_SOLAR) / UNIT_LUM_IN_CGS; // converts to code units
-            //double star_age = evaluate_stellar_age_Gyr(P[i].StellarAge); 
-            //double l_band = 2.14e36 / sqrt(1. + pow(star_age/4.e-3,3.6)) * fac; // solar tracks, no nebular
-            double l_band, x_age = evaluate_stellar_age_Gyr(P[i].StellarAge) / 3.4e-3;
-            if(x_age <= 1) 
-            { 
-                l_band = 1.07e36 * (1.+x_age*x_age) * fac;
-            } else {
-                l_band = 2.14e36 / (x_age * sqrt(x_age)) * fac;
-            } // 0.1 solar, with nebular. very weak metallicity dependence, with slightly slower decay in time for lower-metallicity pops; effect smaller than binaries
-            lum[RT_FREQ_BIN_PHOTOELECTRIC] = l_band; // band luminosity //
-        }
-    }
-#endif
-    
-
-#ifdef RT_LYMAN_WERNER
-    /* lyman-werner bands (11.2-13.6 eV, specifically): below is from integrating the spectra from STARBURST99 with the Geneva40 solar-metallicity + lower tracks */
-    if((1 << P[i].Type) & (RT_SOURCES)) // check if the particle falls into one of the allowed source types
-    {
-        if( ((P[i].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[i].Type == 2)||(P[i].Type==3)))) && P[i].Mass>0 && PPP[i].Hsml>0 )
-        {
-            if(mode<0) {return 1;} active_check = 1;
-            double fac = (P[i].Mass * UNIT_MASS_IN_SOLAR) / UNIT_LUM_IN_CGS; // converts to code units
-            double l_band, x_age = evaluate_stellar_age_Gyr(P[i].StellarAge) / 3.4e-3;
-            if(x_age <= 1) 
-            { 
-                l_band = 0.429e36 * (1.+x_age*x_age) * fac;
-            } else {
-                l_band = 0.962e36 * pow(x_age,-1.6) * exp(-x_age/117.6) * fac;
-            } // 0.1 solar, with nebular. very weak metallicity dependence, with slightly slower decay in time for lower-metallicity pops; effect smaller than binaries
-            lum[RT_FREQ_BIN_LYMAN_WERNER] = l_band; // band luminosity //
-        }
-    }
-#endif
-        
-    
-#if defined(RT_CHEM_PHOTOION)
-    /* Hydrogen and Helium ionizing bands */
-    if((1 << P[i].Type) & (RT_SOURCES)) // check if the particle falls into one of the allowed source types
-    {
-        lum[RT_FREQ_BIN_H0] = 0; // begin from zero //
-        double fac = 0;
-#if defined(GALSF) || defined(FLAG_NOT_IN_PUBLIC_CODE)
-        /* calculate ionizing flux based on actual stellar or BH physics */
-        if( ((P[i].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[i].Type == 2)||(P[i].Type==3)))) && P[i].Mass>0 && PPP[i].Hsml>0 )
-        {
-            if(mode<0) {return 1;} active_check=1;
-            fac += particle_ionizing_luminosity_in_cgs(i) / UNIT_LUM_IN_CGS;
-        }
+#if defined(GALSF)
+#if defined(SINGLE_STAR_SINK_DYNAMICS)
+    active_check += rt_get_lum_band_singlestar(i,mode,lum); // get luminosities for individual star/sink particles assuming they are protostars or stars
 #else
-#ifdef RT_ILIEV_TEST1
-        if(P[i].Type==4) {if(mode<0) {return 1;} active_check=1; fac += 5.0e48 * (13.6*ELECTRONVOLT_IN_ERGS) / UNIT_LUM_IN_CGS;} // 5e48 in ionizing photons per second //
-#else
-        if(P[i].Type==4) {if(mode<0) {return 1;} active_check=1; fac += All.IonizingLuminosityPerSolarMass_cgs * (P[i].Mass * UNIT_MASS_IN_SOLAR) / UNIT_LUM_IN_CGS;} // flux from star particles according to mass
-#endif
-#endif // GALSF else
-#if defined(RT_PHOTOION_MULTIFREQUENCY)
-        // we should have pre-tabulated how much luminosity gets assigned to each different waveband according to the following function //
-        lum[RT_FREQ_BIN_He0]=lum[RT_FREQ_BIN_He1]=lum[RT_FREQ_BIN_He2]=0;
-        int k; for(k=0;k<N_RT_FREQ_BINS;k++) {lum[k] += fac * precalc_stellar_luminosity_fraction[k];}
-#else
-        lum[RT_FREQ_BIN_H0] += fac;
-#endif
-    }
-#endif // RT_CHEM_PHOTOION
-
-
-#if defined(RT_HARD_XRAY) || defined(RT_SOFT_XRAY)
-    if((1 << P[i].Type) & (RT_SOURCES)) // check if the particle falls into one of the allowed source types
-    {
-#if defined(RT_HARD_XRAY) 
-            lum[RT_FREQ_BIN_HARD_XRAY] = 0; // LMXBs+HMXBs
-#endif
-#if defined(RT_SOFT_XRAY) 
-            lum[RT_FREQ_BIN_SOFT_XRAY] = 0; // LMXBs+HMXBs
-#endif
+    active_check += rt_get_lum_band_stellarpopulation(i,mode,lum); // get luminosities for star particles assuming they represent IMF-averaged populations
 #if defined(BLACK_HOLES)
-        if(P[i].Type == 5) 
-        {
-            if(mode<0) {return 1;} active_check=1;
-            double lbol = bh_lum_bol(P[i].BH_Mdot,P[i].Mass,i); // luminosity in physical code units // 
-            double lbol_lsun = lbol * UNIT_LUM_IN_SOLAR;
-            double bol_corr = 0;
-#if defined(RT_HARD_XRAY) 
-            bol_corr = 0.43 * (10.83 * pow(lbol_lsun/1.e10,0.28) + 6.08 * pow(lbol_lsun/1.e10,-0.02)); // 0.5 for -ALL- hard-x-ray, 1.0 prefactor for just 2-10 keV
-            lum[RT_FREQ_BIN_HARD_XRAY] = lbol / bol_corr; // typical bolometric correction from Hopkins, Richards, & Hernquist 2007 
+    active_check += rt_get_lum_band_agn(i,mode,lum); // get luminosities for BH/sink particles assuming they represent AGN
 #endif
-#if defined(RT_SOFT_XRAY) 
-            bol_corr = 17.87 * pow(lbol_lsun/1.e10,0.28) + 10.0 * pow(lbol_lsun/1.e10,-0.02);
-            lum[RT_FREQ_BIN_SOFT_XRAY] = lbol / bol_corr; // typical bolometric correction from Hopkins, Richards, & Hernquist 2007 
 #endif
-        }
 #endif
-        if(P[i].Type == 4) 
-        {
-            if(mode<0) {return 1;} active_check=1;
-            double fac = (P[i].Mass * UNIT_MASS_IN_SOLAR) / UNIT_LUM_IN_CGS; // converts to code units
-            double L_HMXBs = 0.0; 
-#ifdef GALSF
-            double star_age = evaluate_stellar_age_Gyr(P[i].StellarAge);
-            if(star_age > 0.01) {L_HMXBs = 1.0e29 / (star_age*star_age);}
-#endif
-#if defined(RT_HARD_XRAY) 
-            lum[RT_FREQ_BIN_HARD_XRAY] = (6.3e27 + 0.6*L_HMXBs) * fac; // LMXBs+HMXBs
-#endif
-#if defined(RT_SOFT_XRAY) 
-            lum[RT_FREQ_BIN_SOFT_XRAY] = (8.2e27 + 0.4*L_HMXBs) * fac; // LMXBs+HMXBs
-#endif
-        }
-    }
-#endif // RT_HARD_XRAY
+    if(mode < 0 && active_check) {return 1;} // if got a positive answer already, that's all we are checking here, we are done
 
     
-#if defined(RT_GENERIC_USER_FREQ)
-    if((1 << P[i].Type) & (RT_SOURCES)) // check if the particle falls into one of the allowed source types
+#if defined(RT_CHEM_PHOTOION) && !defined(GALSF) /* Hydrogen and Helium ionizing bands; this is an idealized test-problem version implementation */
+    if(P[i].Type==4)
     {
-        if(P[i].Type == 4)
-        {
-            if(mode<0) {return 1;} active_check=1;
-            lum[RT_FREQ_BIN_GENERIC_USER_FREQ] = 0;
-#ifdef GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION /* assume special units for this problem, and that total mass of 'sources' is 1 */
-            lum[RT_FREQ_BIN_GENERIC_USER_FREQ] = P[i].Mass * All.Vertical_Grain_Accel * C_LIGHT_CODE / (0.75*GRAIN_RDI_TESTPROBLEM_Q_AT_GRAIN_MAX/All.Grain_Size_Max); // special behavior for particular test of stratified boxes compared to explicit dust opacities
+        SET_ACTIVE_RT_CHECK(); double l_ion=All.IonizingLuminosityPerSolarMass_cgs * (P[i].Mass * UNIT_MASS_IN_SOLAR) / UNIT_LUM_IN_CGS; // flux from star particles according to mass
+#ifdef RT_ILIEV_TEST1
+        l_ion = 5.0e48 * (13.6*ELECTRONVOLT_IN_ERGS) / UNIT_LUM_IN_CGS; // 5e48 in ionizing photons per second -- constant for idealized test problem //
 #endif
-        }
+        lum[RT_FREQ_BIN_H0] = l_ion; // default to all flux into single-band
+#if defined(RT_PHOTOION_MULTIFREQUENCY)
+        int i_vec[4] = {RT_FREQ_BIN_H0, RT_FREQ_BIN_He0, RT_FREQ_BIN_He1, RT_FREQ_BIN_He2}; // these will all be the same if not using multi-frequency module //
+        int k; for(k=0;k<4;k++) {lum[i_vec[k]] = l_ion * rt_ion_precalc_stellar_luminosity_fraction[i_vec[k]];} // assign flux appropriately according to pre-tabulated result //
+#endif
+    }
+#endif
+
+    
+#if defined(RT_GENERIC_USER_FREQ)   /* example code to be modified as-needed for custom RT problems */
+    if(P[i].Type == 4) // set this to whichever type you want to use for the specific sources in this band
+    {
+        SET_ACTIVE_RT_CHECK(); // flag that tells the code that indeed this particle should be active!
+        lum[RT_FREQ_BIN_GENERIC_USER_FREQ] = 0; // set the actual luminosity here for your test problem!
+#ifdef GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION /* assume special units for this problem, and that total mass of 'sources' is 1 */
+        lum[RT_FREQ_BIN_GENERIC_USER_FREQ] = P[i].Mass * All.Vertical_Grain_Accel * C_LIGHT_CODE / (0.75*GRAIN_RDI_TESTPROBLEM_Q_AT_GRAIN_MAX/All.Grain_Size_Max); // special behavior for particular test of stratified boxes compared to explicit dust opacities
+#endif
     }
 #endif
     
     
 #ifdef RADTRANSFER
-    /* generic sub routines for gas as a source term */
-    if((1 << P[i].Type) & (RT_SOURCES)) // check if the particle falls into one of the allowed source types
+    if(P[i].Type == 0) /* generic sub routines for gas as a source term, should go at the very end of this routine */
     {
-        if(P[i].Type == 0)
-        {
-            if(mode<0) {return 1;} active_check=1; // active //
-            rt_get_lum_gas(i,lum); /* optionally re-distributes cooling flux as a blackbody */
-            int k; for(k=0;k<N_RT_FREQ_BINS;k++) {lum[k] += SphP[i].Rad_Je[k];}        
-        }
+        SET_ACTIVE_RT_CHECK(); rt_get_lum_gas(i,lum); // optionally re-distributes cooling flux as a blackbody; but also where bands like free-free reside //
+        int k; for(k=0;k<N_RT_FREQ_BINS;k++) {lum[k] += SphP[i].Rad_Je[k];}
     }
 #endif
     
@@ -287,9 +142,9 @@ double rt_kappa(int i, int k_freq)
 #ifdef RT_CHEM_PHOTOION
     /* opacity to ionizing radiation for Petkova & Springel bands. note rt_update_chemistry is where ionization is actually calculated */
     double nH_over_Density = HYDROGEN_MASSFRAC / PROTONMASS * UNIT_MASS_IN_CGS;
-    double kappa = nH_over_Density * (SphP[i].HI + MIN_REAL_NUMBER) * rt_sigma_HI[k_freq];
+    double kappa = nH_over_Density * (SphP[i].HI + MIN_REAL_NUMBER) * rt_ion_sigma_HI[k_freq];
 #if defined(RT_CHEM_PHOTOION_HE) && defined(RT_PHOTOION_MULTIFREQUENCY)
-    kappa += nH_over_Density * ((SphP[i].HeI + MIN_REAL_NUMBER) * rt_sigma_HeI[k_freq] + (SphP[i].HeII + MIN_REAL_NUMBER) * rt_sigma_HeII[k_freq]);
+    kappa += nH_over_Density * ((SphP[i].HeI + MIN_REAL_NUMBER) * rt_ion_sigma_HeI[k_freq] + (SphP[i].HeII + MIN_REAL_NUMBER) * rt_ion_sigma_HeII[k_freq]);
     if(k_freq==RT_FREQ_BIN_He0)  {return kappa;}
     if(k_freq==RT_FREQ_BIN_He1)  {return kappa;}
     if(k_freq==RT_FREQ_BIN_He2)  {return kappa;}
@@ -298,11 +153,17 @@ double rt_kappa(int i, int k_freq)
 #endif
 
 #if defined(RT_HARD_XRAY) || defined(RT_SOFT_XRAY) || defined(RT_PHOTOELECTRIC) || defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(RT_NUV) || defined(RT_OPTICAL_NIR) || defined(RT_LYMAN_WERNER) || defined(RT_INFRARED) || defined(RT_FREEFREE)
-    double fac = UNIT_SURFDEN_IN_CGS, Zfac; /* units */
+    double fac = UNIT_SURFDEN_IN_CGS, Zfac, dust_to_metals_vs_standard; /* units */
     Zfac = 1.0; // assume solar metallicity 
 #ifdef METALS
-    Zfac = P[i].Metallicity[0]/All.SolarAbundances[0];
+    if(i>=0) {Zfac = P[i].Metallicity[0]/All.SolarAbundances[0];}
 #endif
+    dust_to_metals_vs_standard = 1.0; // default to assume a 'normal' dust-to-metal ratio (1 here is rho_dust=0.5*rho_metal). Can be up to ~2 in dense regions with more depletion, or <1 in regions with strong sputtering or sublimation. for now leave simple assumption in place, but note detailed dust chemistry modules give much more detailed scalings
+#if defined(RT_INFRARED) && (defined(RT_LYMAN_WERNER) || defined(RT_PHOTOELECTRIC) || defined(RT_OPTICAL_NIR) || defined(RT_NUV)) // any RT bands that care about dust opacity  (except IR, handled separately with detailed fits)
+    double Tdust = get_equilibrium_dust_temperature_estimate(i,0); dust_to_metals_vs_standard = exp(-DMIN(Tdust/1500.,40.)); // crudely don't both accounting for size spectrum, just adopt an exponential cutoff above the sublimation temperature //
+#endif
+
+    
 #ifdef RT_FREEFREE /* pure (grey, non-relativistic) Thompson scattering opacity + free-free absorption opacity */
     if(k_freq==RT_FREQ_BIN_FREEFREE)
     {
@@ -321,19 +182,19 @@ double rt_kappa(int i, int k_freq)
 #endif
 #ifdef RT_PHOTOELECTRIC
     /* opacity comes primarily from dust (ignoring H2 molecular opacities here) */
-    if(k_freq==RT_FREQ_BIN_PHOTOELECTRIC) {return 2000. * DMAX(1.e-4,Zfac) * fac;}
+    if(k_freq==RT_FREQ_BIN_PHOTOELECTRIC) {return 2000. * DMAX(1.e-4,Zfac * dust_to_metals_vs_standard) * fac;}
 #endif
 #ifdef RT_LYMAN_WERNER
     /* opacity from molecular H2 and dust (dominant at higher-metallicity) should be included */
-    if(k_freq==RT_FREQ_BIN_LYMAN_WERNER) {return 2400.*Zfac * fac;} // just dust term for now
+    if(k_freq==RT_FREQ_BIN_LYMAN_WERNER) {return 2400.*Zfac * fac * dust_to_metals_vs_standard;} // just dust term for now
 #endif
 #ifdef RT_NUV
     /* opacity comes primarily from dust */
-    if(k_freq==RT_FREQ_BIN_NUV) {return 1800.*Zfac * fac;}
+    if(k_freq==RT_FREQ_BIN_NUV) {return 1800.*Zfac * fac * dust_to_metals_vs_standard;}
 #endif
 #ifdef RT_OPTICAL_NIR
     /* opacity comes primarily from dust */
-    if(k_freq==RT_FREQ_BIN_OPTICAL_NIR) {return 180.*Zfac * fac;}
+    if(k_freq==RT_FREQ_BIN_OPTICAL_NIR) {return 180.*Zfac * fac * dust_to_metals_vs_standard;}
 #endif
 #ifdef RT_INFRARED
     /* IR with dust opacity */
@@ -447,6 +308,183 @@ double rt_absorb_frac_albedo(int i, int k_freq)
 
 
 
+
+/* subroutine for 'rt_get_source_luminosity', with identical variables, for cases where the radiation
+    represents IMF-averaged stellar populations, i.e. the sort of thing which would be used in galaxy simulations.
+ */
+int rt_get_lum_band_stellarpopulation(int i, int mode, double *lum)
+{
+    if(!((P[i].Type == 4) || ((All.ComovingIntegrationOn==0)&&((P[i].Type==2)||(P[i].Type==3))))) {return 0;} // only star-type particles act in this subroutine //
+    int active_check = 0; // default to inactive //
+#if defined(GALSF) /* basically none of these modules make sense without the GALSF module active */
+    double star_age = evaluate_stellar_age_Gyr(P[i].StellarAge), m_sol = P[i].Mass * UNIT_MASS_IN_SOLAR;
+    if((star_age<=0) || isnan(star_age)) {return 0;} // calculate stellar age, will be used below, and catch for bad values
+
+    
+    
+#if defined(RT_INFRARED) /* can add direct infrared sources, but default to no direct IR (just re-emitted light) */
+    lum[RT_FREQ_BIN_INFRARED] = 0; //default to no direct IR (just re-emitted light)
+#endif
+
+#if defined(RT_OPTICAL_NIR) /* Optical-NIR approximate spectra for stars as used in the FIRE (Hopkins et al.) models */
+    SET_ACTIVE_RT_CHECK();
+    double f_op=0; if(star_age <= 0.0025) {f_op=0.09;} else {
+        if(star_age <= 0.006) {f_op=0.09*(1+((star_age-0.0025)/0.004)*((star_age-0.0025)/0.004));} else {f_op=1-0.8410937/(1+sqrt((star_age-0.006)/0.3));}}
+    lum[RT_FREQ_BIN_OPTICAL_NIR] = f_op * evaluate_light_to_mass_ratio(star_age, i) * m_sol / UNIT_LUM_IN_SOLAR;
+#endif
+
+#if defined(RT_NUV) /* Near-UV approximate spectra (UV/optical spectra, sub-photo-electric, but high-opacity) for stars as used in the FIRE (Hopkins et al.) models */
+    SET_ACTIVE_RT_CHECK();
+#if !defined(RT_OPTICAL_NIR)
+    double f_op=0; if(star_age <= 0.0025) {f_op=0.09;} else {
+        if(star_age <= 0.006) {f_op=0.09*(1+((star_age-0.0025)/0.004)*((star_age-0.0025)/0.004));} else {f_op=1-0.8410937/(1+sqrt((star_age-0.006)/0.3));}}
+#endif
+    lum[RT_FREQ_BIN_NUV] = (1-f_op) * evaluate_light_to_mass_ratio(star_age, i) * m_sol / UNIT_LUM_IN_SOLAR;
+#endif
+
+#if defined(RT_PHOTOELECTRIC) /* photo-electric bands (8-13.6 eV, specifically): below is from integrating the spectra from STARBURST99 with the Geneva40 solar-metallicity + lower tracks */
+    SET_ACTIVE_RT_CHECK();
+    double l_band_pe, x_age_pe = star_age / 3.4e-3; // converts to code units, and defines age relative to convenient break time
+    if(x_age_pe <= 1) {l_band_pe = 1.07e36 * (1.+x_age_pe*x_age_pe) * m_sol / UNIT_LUM_IN_CGS;}
+        else {l_band_pe = 2.14e36 / (x_age_pe * sqrt(x_age_pe)) * m_sol / UNIT_LUM_IN_CGS;} // 0.1 solar, with nebular. very weak metallicity dependence, with slightly slower decay in time for lower-metallicity pops; effect smaller than binaries
+    lum[RT_FREQ_BIN_PHOTOELECTRIC] = l_band_pe; // band luminosity //
+#endif
+    
+#if defined(RT_LYMAN_WERNER)  /* lyman-werner bands (11.2-13.6 eV, specifically): below is from integrating the spectra from STARBURST99 with the Geneva40 solar-metallicity + lower tracks */
+    SET_ACTIVE_RT_CHECK();
+    double l_band_lw, x_age_lw = star_age / 3.4e-3; // converts to code units, and defines age relative to convenient break time
+    if(x_age_lw <= 1) {l_band_lw = 0.429e36 * (1.+x_age_lw*x_age_lw) * m_sol / UNIT_LUM_IN_CGS;}
+        else {l_band_lw = 0.962e36 * pow(x_age_lw,-1.6) * exp(-x_age_lw/117.6) * m_sol / UNIT_LUM_IN_CGS;} // 0.1 solar, with nebular. very weak metallicity dependence, with slightly slower decay in time for lower-metallicity pops; effect smaller than binaries
+    lum[RT_FREQ_BIN_LYMAN_WERNER] = l_band_lw; // band luminosity //
+#endif
+
+#if defined(RT_CHEM_PHOTOION)   /* Hydrogen and Helium ionizing bands */
+    SET_ACTIVE_RT_CHECK();
+    double l_ion = particle_ionizing_luminosity_in_cgs(i) / UNIT_LUM_IN_CGS; /* calculate ionizing flux based on actual stellar or BH physics */
+    lum[RT_FREQ_BIN_H0] = l_ion; // default to putting everything into a single band //
+#if defined(RT_PHOTOION_MULTIFREQUENCY)
+    int i_vec[4] = {RT_FREQ_BIN_H0, RT_FREQ_BIN_He0, RT_FREQ_BIN_He1, RT_FREQ_BIN_He2}; // these will all be the same if not using multi-frequency module //
+    int k; for(k=0;k<4;k++) {lum[i_vec[k]] = l_ion * rt_ion_precalc_stellar_luminosity_fraction[i_vec[k]];} // assign flux appropriately according to pre-tabulated result //
+#endif
+#endif
+
+#if defined(RT_HARD_XRAY) || defined(RT_SOFT_XRAY) /* soft and hard X-rays for e.g. Compton heating by X-ray binaries */
+    SET_ACTIVE_RT_CHECK();
+    double L_HMXBs=0; if(star_age > 0.01) {L_HMXBs = 1.0e29 / (star_age*star_age);}
+#if defined(RT_SOFT_XRAY)
+    lum[RT_FREQ_BIN_SOFT_XRAY] = (8.2e27 + 0.4*L_HMXBs) * m_sol / UNIT_LUM_IN_CGS; // LMXBs+HMXBs
+#endif
+#if defined(RT_HARD_XRAY)
+    lum[RT_FREQ_BIN_HARD_XRAY] = (6.3e27 + 0.6*L_HMXBs) * m_sol / UNIT_LUM_IN_CGS; // LMXBs+HMXBs
+#endif
+#endif
+    
+#endif
+    return active_check;
+}
+
+
+
+/* subroutine for 'rt_get_source_luminosity', with identical variables, for cases where the radiation
+   represents flux from sink particles representing AGN, i.e. the sort of thing which would be used in galaxy simulations.
+*/
+int rt_get_lum_band_agn(int i, int mode, double *lum)
+{
+    if(P[i].Type != 5) {return 0;} // only go forward for BH-type particles
+    int active_check = 0; // default to inactive //
+#if defined(BLACK_HOLES)
+    double l_bol = bh_lum_bol(P[i].BH_Mdot,P[i].Mass,i); if(l_bol <= 0) {return 0;} // no accretion luminosity -- no point in going further!
+    // corrections below follow  Shen, PFH, et al. 2020 to account for alpha-ox and template spectrum to get AGN set in different bands as a function of bolometric luminosity. functional form very similar to Hopkins, Richards, & Hernquist 2007, but updated values. //
+    double lbol_lsun = l_bol * UNIT_LUM_IN_SOLAR, R_opt_xr; // luminosity in physical code units //
+    double f_xr_0=0.0461795, R_xr_opt = pow(lbol_lsun/1.e10,0.026) / (0.0455713 + 0.140974*pow(lbol_lsun/1.e10,0.304)), Rfxr=R_xr_opt*f_xr_0; // x-ray to optical ratio normalized to its value at Lbol=1e13 solar
+    if(Rfxr > 0.5) {R_xr_opt /= pow(1.+Rfxr*Rfxr*Rfxr*Rfxr, 0.25);} // this just prevents unphysical divergences
+    R_opt_xr = (1.-R_xr_opt*f_xr_0) / (1.-f_xr_0); // this corrects the IR/optical/UV portion of the spectrum
+    
+#if defined(RT_INFRARED) /* special mid-through-far infrared band, which includes IR radiation temperature evolution */
+    SET_ACTIVE_RT_CHECK(); lum[RT_FREQ_BIN_INFRARED] = 0.273 * R_opt_xr * l_bol;
+#endif
+#if defined(RT_OPTICAL_NIR) /* Optical-NIR approximate spectra for stars as used in the FIRE (Hopkins et al.) models; from 0.41-3.4 eV */
+    SET_ACTIVE_RT_CHECK(); lum[RT_FREQ_BIN_OPTICAL_NIR] = 0.181 * R_opt_xr * l_bol;
+#endif
+#if defined(RT_NUV) /* Near-UV approximate spectra (UV/optical spectra, sub-photo-electric, but high-opacity) for stars as used in the FIRE (Hopkins et al.) models; from 3.4-8 eV */
+    SET_ACTIVE_RT_CHECK(); lum[RT_FREQ_BIN_NUV] = 0.141 * R_opt_xr * l_bol;
+#endif
+#ifdef RT_PHOTOELECTRIC /* photo-electric bands (8-13.6 eV, specifically): below is from integrating the spectra from STARBURST99 with the Geneva40 solar-metallicity + lower tracks */
+    SET_ACTIVE_RT_CHECK(); lum[RT_FREQ_BIN_PHOTOELECTRIC] = 0.117 * R_opt_xr * l_bol; // broad band here [note can 2x-count with LW because that is a sub-band, but include it b/c need to total for dust PE heating
+#endif
+#ifdef RT_LYMAN_WERNER  /* lyman-werner bands (11.2-13.6 eV, specifically): below is from integrating the spectra from STARBURST99 with the Geneva40 solar-metallicity + lower tracks */
+    SET_ACTIVE_RT_CHECK(); lum[RT_FREQ_BIN_LYMAN_WERNER] = 0.0443 * R_opt_xr * l_bol;
+#endif
+#if defined(RT_CHEM_PHOTOION)   /* Hydrogen and Helium ionizing bands */
+    SET_ACTIVE_RT_CHECK();
+#if defined(RT_PHOTOION_MULTIFREQUENCY)
+    lum[RT_FREQ_BIN_H0]  = 0.1130 * R_opt_xr * l_bol; // total ionizing flux: 13.6-24.6
+    lum[RT_FREQ_BIN_He0] = 0.0820 * R_opt_xr * l_bol; // total ionizing flux: 24.6-54.5
+    lum[RT_FREQ_BIN_He1] = 0.0111 * R_opt_xr * l_bol; // total ionizing flux: 54.5-70
+    lum[RT_FREQ_BIN_He2] = 0.0243 * R_opt_xr * l_bol; // total ionizing flux: 70-500
+#else
+    lum[RT_FREQ_BIN_H0] = 0.230 * R_opt_xr * l_bol; // total ionizing flux
+#endif
+#endif
+#if defined(RT_SOFT_XRAY) /* soft x-ray 0.5-2 keV band, for compton heating */
+    SET_ACTIVE_RT_CHECK(); lum[RT_FREQ_BIN_SOFT_XRAY] = 0.00803 * R_xr_opt * l_bol;
+#endif
+#if defined(RT_HARD_XRAY) /* hard x-ray 2-10+ keV band, for compton heating; since used for that we include some higher-frequence radiation as well */
+    SET_ACTIVE_RT_CHECK(); lum[RT_FREQ_BIN_HARD_XRAY] = 2.33 * 0.0113 * R_xr_opt * l_bol; // [2.33 factor is extrapolating to include -ultra-hard- X-rays beyond 10keV, useful for some Compton heating estimates]
+#endif
+    /* note: once account for 2x-counting of LW and PE bands above, this adds up to almost the entire Lbol, but fraction ~ 0.0236 * R_xr_opt * l_bol remains, divided between radio [radio-quiet agn here] and gamma-rays */
+
+
+#endif
+    return active_check;
+}
+
+
+
+/* subroutine for 'rt_get_source_luminosity', with identical variables, for cases where the radiation
+   represents flux from individual sink or star particles representing individual stars or protostars,
+   i.e. the sort of thing which would be used in star or planet formation simulations.
+*/
+int rt_get_lum_band_singlestar(int i, int mode, double *lum)
+{
+    if(P[i].Type < 4) {return 0;} // only go forward with star or sink-type particles
+    int active_check = 0; // default to inactive //
+    
+#if defined(RT_INFRARED) /* special mid-through-far infrared band, which includes IR radiation temperature evolution */
+    SET_ACTIVE_RT_CHECK(); lum[RT_FREQ_BIN_INFRARED] = stellar_lum_in_band(i, 0, 0.4133);
+#endif
+#if defined(RT_OPTICAL_NIR) /* Optical-NIR approximate spectra for stars as used in the FIRE (Hopkins et al.) models; from 0.41-3.4 eV */
+    SET_ACTIVE_RT_CHECK(); lum[RT_FREQ_BIN_OPTICAL_NIR] = stellar_lum_in_band(i, 0.4133, 3.444);
+#endif
+#if defined(RT_NUV) /* Near-UV approximate spectra (UV/optical spectra, sub-photo-electric, but high-opacity) for stars as used in the FIRE (Hopkins et al.) models; from 3.4-8 eV */
+    SET_ACTIVE_RT_CHECK(); lum[RT_FREQ_BIN_NUV] = stellar_lum_in_band(i, 3.444, 8.);
+#endif
+#ifdef RT_PHOTOELECTRIC /* photo-electric bands (8-13.6 eV, specifically): below is from integrating the spectra from STARBURST99 with the Geneva40 solar-metallicity + lower tracks */
+    SET_ACTIVE_RT_CHECK(); lum[RT_FREQ_BIN_PHOTOELECTRIC] = stellar_lum_in_band(i, 8, 13.6); // broad band here [note can 2x-count with LW because that is a sub-band, but include it b/c need to total for dust PE heating
+#endif
+#ifdef RT_LYMAN_WERNER  /* lyman-werner bands (11.2-13.6 eV, specifically): below is from integrating the spectra from STARBURST99 with the Geneva40 solar-metallicity + lower tracks */
+    SET_ACTIVE_RT_CHECK(); lum[RT_FREQ_BIN_LYMAN_WERNER] = stellar_lum_in_band(i, 11.2, 13.6);
+#endif
+#if defined(RT_CHEM_PHOTOION)   /* Hydrogen and Helium ionizing bands */
+    SET_ACTIVE_RT_CHECK();
+#if defined(RT_PHOTOION_MULTIFREQUENCY)
+    int i_vec[4] = {RT_FREQ_BIN_H0, RT_FREQ_BIN_He0, RT_FREQ_BIN_He1, RT_FREQ_BIN_He2}; // these will all be the same if not using multi-frequency module //    
+    int k; for(k=0;k<3;k++) {lum[i_vec[k]] = stellar_lum_in_band(i, rt_ion_nu_min[i_vec[k]], rt_ion_nu_min[i_vec[k+1]]);} // integrate between band boundaries, defined in global 'nu' in eV
+    lum[i_vec[3]] = stellar_lum_in_band(i, rt_ion_nu_min[i_vec[3]], 500.); // integrate to end of spectrum for the last band
+#else
+    lum[RT_FREQ_BIN_H0] = stellar_lum_in_band(i, 13.6, 500.); // total ionizing flux
+#ifdef RT_STARBENCH_TEST
+    lum[RT_FREQ_BIN_H0] = 1e49 * (rt_nu_eff_eV[RT_FREQ_BIN_H0]*ELECTRONVOLT_IN_ERGS) / UNIT_LUM_IN_CGS;
+#endif    
+#endif
+#endif
+
+    return active_check;
+}
+
+
+
+
 #endif // #if defined(RADTRANSFER) || defined(RT_USE_GRAVTREE)
 
 
@@ -473,7 +511,7 @@ double rt_absorb_frac_albedo(int i, int k_freq)
 double rt_absorption_rate(int i, int k_freq)
 {
     /* should be equal to (c * Kappa_opacity * rho) */
-    return C_LIGHT_CODE_REDUCED * rt_absorb_frac_albedo(i, k_freq) * rt_kappa(i, k_freq) * SphP[i].Density*All.cf_a3inv;
+    return C_LIGHT_CODE_REDUCED * rt_absorb_frac_albedo(i, k_freq) * rt_kappa(i,k_freq) * SphP[i].Density*All.cf_a3inv;
 }
 #endif 
 
@@ -719,32 +757,14 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
             }
 #endif
             
-            int donation_target_bin = -1; // frequency into which the photons will be deposited, if any //
-#if defined(RT_CHEM_PHOTOION) && defined(RT_OPTICAL_NIR)
-            /* assume absorbed ionizing photons are re-emitted via recombination into optical-NIR bins. valid if recombination time is fast.
-             more accurately, this should be separately calculated in the cooling rates, and gas treated as a source */
-            if(kf==RT_FREQ_BIN_H0) {donation_target_bin=RT_FREQ_BIN_OPTICAL_NIR;}
-#ifdef RT_PHOTOION_MULTIFREQUENCY
-            if(kf==RT_FREQ_BIN_He0) {donation_target_bin=RT_FREQ_BIN_OPTICAL_NIR;}
-            if(kf==RT_FREQ_BIN_He1) {donation_target_bin=RT_FREQ_BIN_OPTICAL_NIR;}
-            if(kf==RT_FREQ_BIN_He2) {donation_target_bin=RT_FREQ_BIN_OPTICAL_NIR;}
-#endif
-#endif
-#if defined(RT_PHOTOELECTRIC) && defined(RT_INFRARED)
-            if(kf==RT_FREQ_BIN_PHOTOELECTRIC) {donation_target_bin=RT_FREQ_BIN_INFRARED;} /* this is direct dust absorption, re-radiated in IR */
-#endif
-#if defined(RT_NUV) && defined(RT_INFRARED)
-            if(kf==RT_FREQ_BIN_NUV) {donation_target_bin=RT_FREQ_BIN_INFRARED;} /* this is direct dust absorption, re-radiated in IR */
-#endif
-#if defined(RT_OPTICAL_NIR) && defined(RT_INFRARED)
-            if(kf==RT_FREQ_BIN_OPTICAL_NIR) {donation_target_bin=RT_FREQ_BIN_INFRARED;} /* this is direct dust absorption, re-radiated in IR */
-#endif
+	        int donation_target_bin = rt_get_donation_target_bin(kf); // frequency into which the photons will be deposited, if any //
 #ifdef RT_INFRARED
             if(donation_target_bin==RT_FREQ_BIN_INFRARED) {E_abs_tot += de_abs/(MIN_REAL_NUMBER + dt_entr);} /* donor bin is yourself in the IR - all self-absorption is re-emitted */
             if(kf==RT_FREQ_BIN_INFRARED) {ef = e0 + total_de_dt * dt_entr;} /* donor bin is yourself in the IR - all self-absorption is re-emitted */
 #endif
             // isotropically re-emit the donated radiation into the target bin[s] //
 #if defined(RT_EVOLVE_INTENSITIES)
+            // this is the leading-order (isotropic) emission-absorption step, i.e. the psi_a * (j_e - I) term in the intensity equation. solved by the methods above to deal generically with stiff emission-absorption problems, re-used below if needed //
             if(donation_target_bin >= 0) {int k_q; for(k_q=0;k_q<N_RT_INTENSITY_BINS;k_q++) {if(mode==0) {SphP[i].Rad_Intensity[donation_target_bin][k_q] += de_abs/RT_INTENSITY_BINS_DOMEGA;} else {SphP[i].Rad_Intensity_Pred[donation_target_bin][k_q] += de_abs/RT_INTENSITY_BINS_DOMEGA;}}}
             if((ef < 0)||(isnan(ef))) {ef=0;}
             if(mode==0) {SphP[i].Rad_Intensity[kf][k_angle] = ef/RT_INTENSITY_BINS_DOMEGA;} else {SphP[i].Rad_Intensity_Pred[kf][k_angle] = ef/RT_INTENSITY_BINS_DOMEGA;}
@@ -776,7 +796,7 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
                 for(k_dir=0;k_dir<3;k_dir++)
                 {
                     double flux_0; if(mode==0) {flux_0 = SphP[i].Rad_Flux[kf][k_dir];} else {flux_0 = SphP[i].Rad_Flux_Pred[kf][k_dir];}
-                    flux_0 += vel_i[k_dir] * de_emission_minus_absorption; // add Lorentz term from net energy injected by absorption and re-emission (effectively, we operator-split this term and solve it -BEFORE- going to the next step)
+                    flux_0 += vel_i[k_dir] * de_emission_minus_absorption * CRSOL_OVER_CTRUE_SQUARED_FOR_BEAMING; // add Lorentz term from net energy injected by absorption and re-emission (effectively, we operator-split this term and solve it -BEFORE- going to the next step)
                     double flux_f = flux_0 * f00 + DeltaFluxEff[k_dir] * f11; // exact solution for dE/dt = -E*abs + de , the 'reduction factor' appropriately suppresses the source term //
                     if(mode==0) {SphP[i].Rad_Flux[kf][k_dir] = flux_f;} else {SphP[i].Rad_Flux_Pred[kf][k_dir] = flux_f;}
                     f_mag += flux_f*flux_f; // magnitude of flux vector
@@ -796,6 +816,7 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
     } // loop over frequencies
     
 #if defined(RT_EVOLVE_INTENSITIES)
+    if(dt_entr > 0) { // none of this is worth doing if we don't have a finite timestep here
     for(kf=0;kf<N_RT_FREQ_BINS;kf++)
     {
         int k,k_om; double rho=SphP[i].Density*All.cf_a3inv, ceff=C_LIGHT_CODE_REDUCED, teq_inv=SphP[i].Rad_Kappa[kf]*rho*ceff, beta[3], f_a=rt_absorb_frac_albedo(i,kf), f_s=1.-f_a, b_dot_n[N_RT_INTENSITY_BINS]={0}, beta_2=0.;
@@ -810,23 +831,25 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
             for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {b_dot_n[k_om]=0; for(k=0;k<3;k++) {b_dot_n[k_om]+=All.Rad_Intensity_Direction[k_om][k]*beta[k];}}
             beta_2=0; for(k=0;k<3;k++) {beta_2+=beta[k]*beta[k];}
             for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {egy_0+=i0[k_om]; for(k=0;k<3;k++) {flux_0[k]+=All.Rad_Intensity_Direction[k_om][k]*i0[k_om];}}
-            J=0,b_dot_H=0,b2_dot_K=0; for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {J+=i0[k_om]*invfourpi; b_dot_H=b_dot_n[k_om]*i0[k_om]*invfourpi; b2_dot_K=b_dot_n[k_om]*b_dot_n[k_om]*i0[k_om]*invfourpi;}
+            J=0,b_dot_H=0,b2_dot_K=0; for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {J+=i0[k_om]*invfourpi; b_dot_H+=b_dot_n[k_om]*i0[k_om]*invfourpi; b2_dot_K+=b_dot_n[k_om]*b_dot_n[k_om]*i0[k_om]*invfourpi;}
 
-            // isotropic terms that change total energy in bin (part of the 'work term' for the photon momentum)
-            double work = ((f_s-f_a)*(beta_2*J + b2_dot_K) - 2.*f_s*b_dot_H) * tau; // will be shared isotropically.
+            // isotropic terms that change total energy in bin (part of the 'work term' for the photon momentum), and beaming terms representing flux becoming anisotropic in the lab frame
+            double work = (CRSOL_OVER_CTRUE_SQUARED_FOR_BEAMING * (f_s-f_a)*(beta_2*J + b2_dot_K) - 2.*f_s*b_dot_H) * tau; // will be shared isotropically.
             for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {if((work>0) || (i0[k_om]<=0)) {i0[k_om]+=work;} else {i0[k_om]/=(1-work/i0[k_om]);}} // gaurantees linearized sum is still correct, and symmetric with positive changes, but can't get negative energies. shared isotropically.
             
+            // isotropic scattering term [scattering * (J - I) term in the intensity equation]
             J=0; for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {J+=i0[k_om]*invfourpi;} // prepare to calculate isotropic scattering term
             for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {i0[k_om] = J + (i0[k_om]-J)*exp(-f_s*tau);} // isotropic scattering conserving total energy over step
             
+            // flux 'boost' terms (go as n.beta). note we replace je -> je-I + I, and use the fact that we have solved already for the time-integral of (psi_a*(je-I)*dt) = de_emission_minus_absorption_saved, which can be re-used here, in average form <psi_a*(je-I)> = dE/dt --> just make sure the units are correct! because we're working in dimensionless units below, we should divide by tau, to be working in the same delta-units here //
             double fboost[N_RT_INTENSITY_BINS], fboost_avg=0, fboost_avg_p=0, fboost_avg_m=0; // calculate flux 'boost' terms
-            for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {fboost[k_om] = 3.*b_dot_n[k_om] * ((de_emission_minus_absorption_saved[kf][k_om]/dt_entr) + (f_s*J + f_a*i0[k_om])); fboost_avg += fboost[k_om]/N_RT_INTENSITY_BINS;} // pre-calculate to get mean value, will divide out
+            for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {fboost[k_om] = 3.*b_dot_n[k_om] * ((de_emission_minus_absorption_saved[kf][k_om]/tau) + (f_s*J + f_a*i0[k_om])); fboost_avg += fboost[k_om]/N_RT_INTENSITY_BINS;} // pre-calculate to get mean value, will divide out
             for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {work=(fboost[k_om]-fboost_avg)*tau; if((work>0) || (i0[k_om]<=0)) {fboost[k_om]=work; fboost_avg_p+=fboost[k_om];} else {fboost[k_om]=work/(1.-work/i0[k_om]); fboost_avg_m+=fboost[k_om];}} // zero total energy change at linear order ensured by subtracting out sum here; non-linearization ensures i0 cannot be negative, but does allow second-order dt work term to appear, that's ok for now
             if(fboost_avg_p>0 && fboost_avg_m<0) {double fc=-fboost_avg_m/fboost_avg_p; fboost_avg_m=(1.+fc)/(1.+fc*fc); fboost_avg_p=fc*fboost_avg_m;} else {fboost_avg_m=fboost_avg_p=0;} // // these re-weight to gaurantee the non-linear sum is identically zero while preserving positive-definite behavior
             for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {if(fboost[k_om]>0) {i0[k_om]+=fboost_avg_p*fboost[k_om];} else {i0[k_om]+=fboost_avg_m*fboost[k_om];}} // alright done!
             
             // flux work term, allowed to both do work and be asymmetric so just need to ensure it retains positive-definite intensities
-            for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {work=b_dot_n[k_om]*(f_a+f_s)*i0[k_om]; if((work>0) || (i0[k_om]<=0)) {i0[k_om]+=work;} else {i0[k_om]/=(1-work/i0[k_om]);}}
+            for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {work=b_dot_n[k_om]*(f_a+f_s)*i0[k_om] * tau; if((work>0) || (i0[k_om]<=0)) {i0[k_om]+=work;} else {i0[k_om]/=(1-work/i0[k_om]);}}
 
             // ok -now- calculate the net change in momentum and energy, for updating the gas quantities
             for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {egy_f+=i0[k_om]; for(k=0;k<3;k++) {flux_f[k]+=All.Rad_Intensity_Direction[k_om][k]*i0[k_om];}}
@@ -843,8 +866,9 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
             SphP[i].Rad_E_gamma[kf]=egy_f; // set this every time this subroutine is called, so it is accessible everywhere else //
         } // loop over iterations
     } // loop over frequencies
+    } // finite timestep requirement
 #else
-    double mom_fac = 1. - total_erad_emission_minus_absorption / (P[i].Mass * C_LIGHT_CODE_REDUCED*C_LIGHT_CODE_REDUCED); // back-reaction on gas from emission
+    double mom_fac = 1. - CRSOL_OVER_CTRUE_SQUARED_FOR_BEAMING * total_erad_emission_minus_absorption / (P[i].Mass * C_LIGHT_CODE_REDUCED*C_LIGHT_CODE_REDUCED); // back-reaction on gas from emission, which is isotropic in the fluid frame but anisotropic in the lab frame. this effect is only important in actually semi-relativistic problems so we use "real" C here, not a RSOL, and match the corresponding term above in the radiation flux equation (if that is evolved explicitly).
     {int k_dir; for(k_dir=0;k_dir<3;k_dir++) {if(mode==0) {P[i].Vel[k_dir] *= mom_fac;} else {SphP[i].VelPred[k_dir] *= mom_fac;}}}
 #endif
 
@@ -1000,6 +1024,41 @@ void rt_get_lum_gas(int target, double *je)
 
 
 
+
+/***********************************************************************************************************/
+/* subroutine specific to some bands where, rather than modeling absorption and emission explicitly (with some emissivity
+    associated with e.g. gas or dust), we assume an instantaneous exact local radiative equilibrium re-emission from
+    band A into band B, in the absorption step essentially transferring photon energy instantly between bins */
+/***********************************************************************************************************/
+int rt_get_donation_target_bin(int bin)
+{
+    int donation_target_bin = -1; // default here is to assume no 'target bin' -- meaning the absorbed radiation does not get 'transferred' but simply absorbed (emission handled separately)
+#if defined(RT_CHEM_PHOTOION) && defined(RT_OPTICAL_NIR)
+    /* in these modules, as typically applied to galaxy and star-formation simulations, we will
+       assume absorbed ionizing photons are instantly re-emitted via recombination into optical-NIR bins. valid if recombination time is
+       fast compared to all our timesteps. more accurately, this should be separately calculated in the cooling rates, and gas treated as a source, but for now we use this module */
+    if(bin==RT_FREQ_BIN_H0) {donation_target_bin=RT_FREQ_BIN_OPTICAL_NIR;}
+#ifdef RT_PHOTOION_MULTIFREQUENCY
+    if(bin==RT_FREQ_BIN_He0) {donation_target_bin=RT_FREQ_BIN_OPTICAL_NIR;}
+    if(bin==RT_FREQ_BIN_He1) {donation_target_bin=RT_FREQ_BIN_OPTICAL_NIR;}
+    if(bin==RT_FREQ_BIN_He2) {donation_target_bin=RT_FREQ_BIN_OPTICAL_NIR;}
+#endif
+#endif
+#if defined(RT_PHOTOELECTRIC) && defined(RT_INFRARED)
+    if(bin==RT_FREQ_BIN_PHOTOELECTRIC) {donation_target_bin=RT_FREQ_BIN_INFRARED;} /* this is direct dust absorption, re-radiated in IR if we aren't explicitly modeling dust thermal physics (module here) */
+#endif
+#if defined(RT_NUV) && defined(RT_INFRARED)
+    if(bin==RT_FREQ_BIN_NUV) {donation_target_bin=RT_FREQ_BIN_INFRARED;} /* this is direct dust absorption, re-radiated in IR if we aren't explicitly modeling dust thermal physics (module here) */
+#endif
+#if defined(RT_OPTICAL_NIR) && defined(RT_INFRARED)
+    if(bin==RT_FREQ_BIN_OPTICAL_NIR) {donation_target_bin=RT_FREQ_BIN_INFRARED;} /* this is direct dust absorption, re-radiated in IR if we aren't explicitly modeling dust thermal physics (module here) */
+#endif
+    return donation_target_bin;
+}
+
+
+
+
 /***********************************************************************************************************/
 /* below returns (1-exp(-x))/x , which is needed for averages through slabs and over time for radiative quantities. here for convenience */
 /***********************************************************************************************************/
@@ -1048,7 +1107,7 @@ double get_rt_ir_lambdadust_effective(double T, double rho, double *nH0_guess, d
     double efinal_minus_einitial = egy_tot*xf - egy_therm; // change in energy if we went all the way to equilibrium
     double t_cooling_eff = fabs(efinal_minus_einitial) / Edot0; // effective cooling time at the initially-estimated rate here
     double sign_term=1.; if(efinal_minus_einitial < 0.) {sign_term=-1.;} // sign of the cooling/heating (to keep for below)
-    double dt = (P[target].TimeBin ? (((integertime) 1) << P[target].TimeBin) : 0) * All.Timebase_interval / All.cf_hubble_a; // timestep being taken [code units]
+    double dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(target); // timestep being taken [code units]
     double tau = dt/t_cooling_eff, xfac=(1.-exp(-tau))/tau; if(tau<0.05) {xfac=1.-0.5*tau+tau*tau/6.;} else {if(tau>20.) {xfac=1./tau;}} // correct rate to asymptote to equilibrium
     double lambda_eff = sign_term * L0_abs * xfac; // final effective cooling/heating rate
 
@@ -1062,38 +1121,86 @@ double get_rt_ir_lambdadust_effective(double T, double rho, double *nH0_guess, d
 
 
 
-
-#if defined(RADTRANSFER) || defined(RT_USE_GRAVTREE)
-#ifdef CHIMES_STELLAR_FLUXES
-/* The following routines are fitting functions that are used to
- * obtain the luminosities in the 6-13.6 eV energy band (i.e. G0)
- * and the >13.6 eV band (i.e. H-ionising), which will be used
- * by CHIMES. These functions were fit to Starburst99 models
- * that used the Geneva 2012/13 tracks with v=0.4 rotation
- * and Z=0.014 metallicity. */
-
-double chimes_G0_luminosity(double stellar_age, double stellar_mass)
+/***********************************************************************************************************/
+/* returns the fraction of a blackbody SED in a given photon energy band - accurate to <1% over all wavelengths
+   E_lower - lower end of the energy band in eV
+   E_upper - upper end of the energy band in eV
+   T_eff - effective blackbody temperature of the SED, in K
+*/
+/***********************************************************************************************************/
+double blackbody_lum_frac(double E_lower, double E_upper, double T_eff)
 {
-  // stellar_age in Myr.
-  // stellar_mass (current, not initial) in Msol.
-  // return value in Habing units * cm^2.
-  double zeta = 6.5006802e29;
-  if (stellar_age < 4.07)
-    return stellar_mass * exp(89.67 + (0.172 * pow(stellar_age, 0.916)));
-  else
-    return stellar_mass * zeta * pow(1773082.52 / stellar_age, 1.667) * pow(1.0 + pow(stellar_age / 1773082.52, 28.164), 1.64824);
+    double k_B = 8.617e-5; // Boltzmann constant in eV/K
+    double x1 = E_lower / (k_B * T_eff), x2 = E_upper / (k_B * T_eff), f_lower, f_upper;
+    if(x1 < 3.40309){
+      f_lower = (131.4045728599595*x1*x1*x1)/(2560. + x1*(960. + x1*(232. + 39.*x1))); // approximation of integral of Planck function from 0 to x1, valid for x1 << 1
+    } else {
+      f_lower = 1 - (0.15398973382026504*(6. + x1*(6. + x1*(3. + x1))))*exp(-x1); // approximation of Planck integral for large x
+    }
+    if(x2 < 3.40309){
+      f_upper = (131.4045728599595*x2*x2*x2)/(2560. + x2*(960. + x2*(232. + 39.*x2))); // approximation of integral of Planck function from 0 to x2, valid for x2 << 1
+    } else {
+      f_upper = 1 - (0.15398973382026504*(6. + x2*(6. + x2*(3. + x2))))*exp(-x2); // approximation of Planck integral for large x
+    }
+    return DMAX(f_upper - f_lower, 0);
 }
 
-double chimes_ion_luminosity(double stellar_age, double stellar_mass)
+/***********************************************************************************************************/
+/* returns the fraction of a star's SED (approximated as a blackbody) in a given photon energy band - accurate to <1% over all wavelengths
+   i - index of star particle
+   E_lower - lower end of the energy band in eV
+   E_upper - upper end of the energy band in eV
+*/
+/***********************************************************************************************************/
+double stellar_lum_in_band(int i, double E_lower, double E_upper)
 {
-  // stellar_age in Myr.
-  // stellar_mass (current, not initial) in Msol.
-  // return value in s^-1.
-  double zeta = 3.2758118e21;
-  if (stellar_age < 3.71)
-    return stellar_mass * exp(107.21 + (0.111 * pow(stellar_age, 0.974)));
-  else
-    return stellar_mass * zeta * pow(688952.27 / stellar_age, 4.788) * pow(1.0 + pow(stellar_age / 688952.27, 1.124), -17017.50356);
-}
+#if   defined(SINGLE_STAR_SINK_DYNAMICS) // use generic fits based on mass
+    double l_sol=bh_lum_bol(0,P[i].Mass,i)*UNIT_LUM_IN_SOLAR, m_sol=P[i].Mass*UNIT_MASS_IN_SOLAR, r_sol=pow(m_sol,0.738); // L/Lsun, M/Msun, R/Rsun
+#else
+    double l_sol=1., r_sol=1.; // nothing usefully defined for the above - default to solar-type stars //
 #endif
+    double T_eff = 5780. * pow(l_sol/(r_sol*r_sol), 0.25);
+    double f = blackbody_lum_frac(E_lower, E_upper, T_eff);
+    return f * l_sol / UNIT_LUM_IN_SOLAR;
+}
+
+
+
+
+#if defined(FLAG_NOT_IN_PUBLIC_CODE_STELLAR_FLUXES) && (defined(RADTRANSFER) || defined(RT_USE_GRAVTREE))
+/* The following routines are fitting functions that are used to obtain the luminosities in the 6-13.6 eV energy band (i.e. G0)
+ * and the >13.6 eV band (i.e. H-ionising), which will be used by CHIMES. These functions were fit to Starburst99 models
+ * that used the Geneva 2012/13 tracks with v=0.4 rotation and Z=0.014 metallicity. These are separated because CHIMES uses its special age-bins isntead of freq-bins */
+
+double chimes_G0_luminosity(double stellar_age, double stellar_mass) // age in Myr, mass in Msol, return value in Habing units * cm^2
+{
+  double zeta = 6.5006802e29;
+  if (stellar_age < 4.07) {return stellar_mass * exp(89.67 + (0.172 * pow(stellar_age, 0.916)));}
+    else {return stellar_mass * zeta * pow(1773082.52 / stellar_age, 1.667) * pow(1.0 + pow(stellar_age / 1773082.52, 28.164), 1.64824);}
+}
+
+double chimes_ion_luminosity(double stellar_age, double stellar_mass) // age in Myr, mass in Msol, return value in s^-1
+{
+  double zeta = 3.2758118e21;
+  if (stellar_age < 3.71) {return stellar_mass * exp(107.21 + (0.111 * pow(stellar_age, 0.974)));}
+    else {return stellar_mass * zeta * pow(688952.27 / stellar_age, 4.788) * pow(1.0 + pow(stellar_age / 688952.27, 1.124), -17017.50356);}
+}
+
+int rt_get_source_luminosity_chimes(int i, int mode, double *lum, double *chimes_lum_G0, double *chimes_lum_ion)
+{
+    int value_to_return = 0;
+    value_to_return = rt_get_source_luminosity(i, mode, lum); // call routine as normal for all bands, before adding chimes-specific details
+    if( ((P[i].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[i].Type == 2)||(P[i].Type==3)))) && (P[i].Mass>0) && (PPP[i].Hsml>0) )
+    {
+        int age_bin, j; double age_Myr=1000.*evaluate_stellar_age_Gyr(P[i].StellarAge), log_age_Myr=log10(age_Myr), stellar_mass=P[i].Mass*UNIT_MASS_IN_SOLAR;
+        if(log_age_Myr < CHIMES_LOCAL_UV_AGE_LOW) {age_bin = 0;} else if (log_age_Myr < CHIMES_LOCAL_UV_AGE_MID) {age_bin = (int) floor(((log_age_Myr - CHIMES_LOCAL_UV_AGE_LOW) / CHIMES_LOCAL_UV_DELTA_AGE_LOW) + 1);} else {
+            age_bin = (int) floor((((log_age_Myr - CHIMES_LOCAL_UV_AGE_MID) / CHIMES_LOCAL_UV_DELTA_AGE_HI) + ((CHIMES_LOCAL_UV_AGE_MID - CHIMES_LOCAL_UV_AGE_LOW) / CHIMES_LOCAL_UV_DELTA_AGE_LOW)) + 1);
+            if (age_bin > CHIMES_LOCAL_UV_NBINS - 1) {age_bin = CHIMES_LOCAL_UV_NBINS - 1;}}
+    
+        for(j=0;j<CHIMES_LOCAL_UV_NBINS;j++) {chimes_lum_G0[j]=0; chimes_lum_ion[j]=0;}
+        chimes_lum_G0[age_bin] = chimes_G0_luminosity(age_Myr,stellar_mass) * All.Chimes_f_esc_G0;
+        chimes_lum_ion[age_bin] = chimes_ion_luminosity(age_Myr,stellar_mass) * All.Chimes_f_esc_ion;
+    }
+    return value_to_return;
+}
 #endif

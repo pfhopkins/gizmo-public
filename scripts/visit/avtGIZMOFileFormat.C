@@ -460,7 +460,7 @@ avtGIZMOFileFormat::GetMesh(const char *meshname)
   sscanf(meshname, "PartType%d", &ptype);
   if(ptype < 0 || ptype >= GIZMO_N_PTYPE) {
     char errmsg[GIZMO_STRLEN];
-    snprintf(errmsg, GIZMO_STRLEN, "Unkown particle type: \"PartType%d\"",
+    snprintf(errmsg, GIZMO_STRLEN, "Unknown particle type: \"PartType%d\"",
         ptype);
     EXCEPTION1(InvalidDBTypeException, errmsg);
   }

@@ -63,7 +63,6 @@ struct DynamicDiffdata_in {
     MyFloat Mass;
     MyFloat Hsml;
     MyDouble Density;
-    integertime Timestep;
 #ifndef DONOTUSENODELIST
     int NodeList[NODELISTLENGTH];
 #endif
@@ -148,11 +147,7 @@ static inline void particle2in_DynamicDiff(struct DynamicDiffdata_in *in, int i,
     in->DelayTime = SphP[i].DelayTime;
 #endif
 
-    if (SHOULD_I_USE_SPH_GRADIENTS(SphP[i].ConditionNumber)) {
-        in->Mass *= -1;
-    }
-
-    in->Timestep = (P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0);
+    if (SHOULD_I_USE_SPH_GRADIENTS(SphP[i].ConditionNumber)) {in->Mass *= -1;}
 }
 
 
@@ -754,9 +749,10 @@ void dynamic_diff_calc(void) {
  *  - D. Rennehan
  *
  */
+/*!   -- this subroutine contains no writes to shared memory -- */
 int DynamicDiff_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int dynamic_iteration) {
     int startnode, numngb, listindex = 0;
-    int j, k, v, n, swap_to_j;
+    int j, k, v, n;
     double hinv, hinv3, hinv4, r2, u;
     struct kernel_DynamicDiff kernel;
     struct DynamicDiffdata_in local;
@@ -770,14 +766,10 @@ int DynamicDiff_evaluate(int target, int mode, int *exportflag, int *exportnodec
 
     struct DynamicDiffdata_out out;
     struct DynamicDiffdata_out_iter out_iter;
-
     memset(&out, 0, sizeof(struct DynamicDiffdata_out));
     memset(&out_iter, 0, sizeof(struct DynamicDiffdata_out_iter));
     memset(&kernel, 0, sizeof(struct kernel_DynamicDiff));
-    
     int sph_gradients_flag_i = 0;
-    int sph_gradients_flag_j = 0;
- 
     /* check if we should bother doing a neighbor loop */
     if (local.Hsml <= 0) return 0;
     if (local.Mass == 0) return 0;
@@ -796,9 +788,8 @@ int DynamicDiff_evaluate(int target, int mode, int *exportflag, int *exportnodec
     }
 
     /* Just always return wk and dwk */
-    int kernel_mode_i = 0;     
-    int kernel_mode_j = 0;
- 
+    int kernel_mode_i = 0;
+    
     /* This is a bit of optimization to save calculating this 9 times for each neighbor */
     //double prefactor_i = local.Density_bar * local.Hsml * local.Hsml * local.TD_DynDiffCoeff * local.MagShear_bar;
     double prefactor_i = local.FilterWidth_bar * local.FilterWidth_bar * local.TD_DynDiffCoeff * local.MagShear_bar;
@@ -824,22 +815,7 @@ int DynamicDiff_evaluate(int target, int mode, int *exportflag, int *exportnodec
             if (numngb < 0) return -1;
             
             for (n = 0; n < numngb; n++) {
-                j = ngblist[n];
-                integertime TimeStep_J = (P[j].TimeBin ? (((integertime) 1) << P[j].TimeBin) : 0);
-#ifndef SHEARING_BOX // (shearing box means the fluxes at the boundaries are not actually symmetric, so can't do this) //
-                if (local.Timestep > TimeStep_J) continue; /* compute from particle with smaller timestep */
-                /* use relative positions to break degeneracy */
-                if (local.Timestep == TimeStep_J) {
-                    int n0 = 0; 
-                    if(local.Pos[n0] == P[j].Pos[n0]) {n0++; if(local.Pos[n0] == P[j].Pos[n0]) n0++;}
-                    if(local.Pos[n0] < P[j].Pos[n0]) continue;
-                }
-
-                swap_to_j = TimeBinActive[P[j].TimeBin];
-#else
-                swap_to_j = 0;
-#endif
-
+                j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */
 #ifdef GALSF_SUBGRID_WINDS
                 if (local.DelayTime == 0 && SphP[j].DelayTime > 0) continue;
                 if (local.DelayTime > 0 && SphP[j].DelayTime == 0) continue;
@@ -856,77 +832,34 @@ int DynamicDiff_evaluate(int target, int mode, int *exportflag, int *exportnodec
                 double h_avg = 0.5 * (kernel.h_i + h_j);
                 double mean_weight = 0.5 * (SphP[j].Norm_hat + local.Norm_hat) / (local.Norm_hat * SphP[j].Norm_hat);
                 double V_j = P[j].Mass * mean_weight;
-                double V_i = local.Mass * mean_weight;
-
-                if (r2 <= 0) continue;
-
-                if ((r2 >= h2_i) && (r2 >= (h_j * h_j))) continue;
-
+                if (r2 <= 0) {continue;}
+                if ((r2 >= h2_i) && (r2 >= (h_j * h_j))) {continue;}
                 kernel.r = sqrt(r2);
-
-                if (kernel.r > out.FilterWidth_hat) {
-                    out.FilterWidth_hat = kernel.r;
-                }
-
-                if (kernel.r > DynamicDiffDataPasser[j].FilterWidth_hat && (swap_to_j)) {
-                    DynamicDiffDataPasser[j].FilterWidth_hat = kernel.r;
-                }
+                if (kernel.r > out.FilterWidth_hat) {out.FilterWidth_hat = kernel.r;}
 
                 /* In this case, W_ij = W_ji, so we only need wk_i and dwk_i */
                 kernel_hinv(h_avg, &hinv, &hinv3, &hinv4);
                 u = DMIN(kernel.r * hinv, 1.0);
                 if(u<1) {kernel_main(u, hinv3, hinv4, &kernel.wk_i, &kernel.dwk_i, kernel_mode_i);} else {kernel.wk_i=kernel.dwk_i=0;}
 
-                double weight_j = kernel.wk_i * V_i;
                 double weight_i = kernel.wk_i * V_j;
-
                 if (dynamic_iteration == 0) {
                     /* Need to calculate the filtered velocity gradient for the filtered shear */
                     double dv_hat[3]; for (k=0;k<3;k++) {dv_hat[k] = SphP[j].Velocity_hat[k] - local.Velocity_hat[k];}
                     NGB_SHEARBOX_BOUNDARY_VELCORR_(local.Pos,P[j].Pos,dv_hat,-1); /* wrap velocities for shearing boxes if needed */
-                    for (k=0;k<3;k++) {
-                        MINMAX_CHECK(dv_hat[k], out.Minima.Velocity_hat[k], out.Maxima.Velocity_hat[k]);
-                        if (swap_to_j) {MINMAX_CHECK(-dv_hat[k], DynamicDiffDataPasser[j].Minima.Velocity_hat[k], DynamicDiffDataPasser[j].Maxima.Velocity_hat[k]);}
-                    }
+                    for (k=0;k<3;k++) {MINMAX_CHECK(dv_hat[k], out.Minima.Velocity_hat[k], out.Maxima.Velocity_hat[k]);}
 
                     double hinv_forgrad, hinv3_forgrad, hinv4_forgrad, u_forgrad, wk_i_forgrad, dwk_i_forgrad;
-                    double hinvj_forgrad, hinv3j_forgrad, hinv4j_forgrad, wk_j_forgrad, dwk_j_forgrad;
-          
                     if (kernel.r < local.Hsml) {
                         kernel_hinv(local.Hsml, &hinv_forgrad, &hinv3_forgrad, &hinv4_forgrad);
                         u_forgrad = DMIN(kernel.r * hinv_forgrad, 1.0);
                         kernel_main(u_forgrad, hinv3_forgrad, hinv4_forgrad, &wk_i_forgrad, &dwk_i_forgrad, kernel_mode_i);
 
-                        if (sph_gradients_flag_i) {
-                            wk_i_forgrad = -dwk_i_forgrad * P[j].Mass / kernel.r;
-                        }
+                        if(sph_gradients_flag_i) {wk_i_forgrad = -dwk_i_forgrad * P[j].Mass / kernel.r;}
 
                         for (k = 0; k < 3; k++) {
                             double grad_prefactor_i = -wk_i_forgrad * kernel.dp[k];
-
-                            for (v = 0; v < 3; v++) {
-                               out.Gradients[k].Velocity_hat[v] += grad_prefactor_i * dv_hat[v];
-                            }
-                        }
-                    }
-
-                    if (kernel.r < PPP[j].Hsml && (swap_to_j)) {
-                        sph_gradients_flag_j = SHOULD_I_USE_SPH_GRADIENTS(SphP[j].ConditionNumber);
-
-                        kernel_hinv(PPP[j].Hsml, &hinvj_forgrad, &hinv3j_forgrad, &hinv4j_forgrad);
-                        u_forgrad = DMIN(kernel.r * hinvj_forgrad, 1.0);
-                        kernel_main(u_forgrad, hinv3j_forgrad, hinv4j_forgrad, &wk_j_forgrad, &dwk_j_forgrad, kernel_mode_j);
-
-                        if (sph_gradients_flag_j) {
-                            wk_j_forgrad = -kernel.dwk_j * local.Mass / kernel.r; 
-                        }
-
-                        for (k = 0; k < 3; k++) {
-                            double grad_prefactor_j = -wk_j_forgrad * kernel.dp[k];
-
-                            for (v = 0; v < 3; v++) {
-                                DynamicDiffDataPasser[j].GradVelocity_hat[v][k] += grad_prefactor_j * dv_hat[v];
-                            }
+                            for (v = 0; v < 3; v++) {out.Gradients[k].Velocity_hat[v] += grad_prefactor_i * dv_hat[v];}
                         }
                     }
                 } /* dynamic_iteration == 0 */
@@ -965,26 +898,6 @@ int DynamicDiff_evaluate(int target, int mode, int *exportflag, int *exportnodec
                             if (dynamic_iteration == 0) {
                                 ProductVelocity_diff[k][v] = SphP[j].Velocity_bar[k] * SphP[j].Velocity_bar[v] - local.Velocity_bar[k] * local.Velocity_bar[v];
                                 out.ProductVelocity_hat[k][v] += ProductVelocity_diff[k][v] * weight_i;
-                            }
-                        }
-                    }
-
-                    if (swap_to_j) {
-                        if (dynamic_iteration == 0) {
-                            DynamicDiffDataPasser[j].Dynamic_numerator_hat -= Dynamic_numerator_diff * weight_j;
-                            DynamicDiffDataPasser[j].Dynamic_denominator_hat -= Dynamic_denominator_diff * weight_j;
-                        }
-
-                        for (k = 0; k < 3; k++) {
-                            for (v = 0; v < 3; v++) {
-                                DynamicDiffDataPasser[j].dynamic_fac[k][v] -= dynamic_fac_diff[k][v] * weight_j;
-#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
-                                DynamicDiffDataPasser[j].dynamic_fac_const[k][v] -= dynamic_fac_const_diff[k][v] * weight_j;
-#endif
-
-                                if (dynamic_iteration == 0) {
-                                    DynamicDiffDataPasser[j].ProductVelocity_hat[k][v] -= ProductVelocity_diff[k][v] * weight_j;
-                                }
                             }
                         }
                     }

@@ -96,24 +96,16 @@ void reconstruct_timebins(void)
 
 void drift_particle(int i, integertime time1)
 {
-    int j;
-    double dt_drift;
-    
-    integertime time0 = P[i].Ti_current;
-    
+    int j; double dt_drift; integertime time0 = P[i].Ti_current;
     if(time1 < time0)
     {
         printf("i=%d time0=%lld time1=%lld\n", i, (long long)time0, (long long)time1);
         terminate("no prediction into past allowed");
     }
+    if(time1 == time0) {return;}
     
-    if(time1 == time0)
-        return;
-    
-    if(All.ComovingIntegrationOn)
-        dt_drift = get_drift_factor(time0, time1);
-    else
-        dt_drift = (time1 - time0) * All.Timebase_interval;
+    if(All.ComovingIntegrationOn) {dt_drift = get_drift_factor(time0, time1);}
+        else {dt_drift = (time1 - time0) * All.Timebase_interval;}
     
     
 #if !defined(FREEZE_HYDRO)
@@ -188,37 +180,23 @@ void drift_particle(int i, integertime time1)
     if((P[i].Type == 0) && (P[i].Mass > 0))
         {
             double dt_gravkick, dt_hydrokick, dt_entr;
-            
-            if(All.ComovingIntegrationOn)
-            {
-                dt_entr = dt_hydrokick = (time1 - time0) * All.Timebase_interval / All.cf_hubble_a;
-                dt_gravkick = get_gravkick_factor(time0, time1);
-            }
-            else
-            {
-                dt_entr = dt_gravkick = dt_hydrokick = (time1 - time0) * All.Timebase_interval;
-            }
+            dt_entr = dt_hydrokick = (time1 - time0) * UNIT_INTEGERTIME_IN_PHYSICAL;
+            if(All.ComovingIntegrationOn) {dt_gravkick = get_gravkick_factor(time0, time1);} else {dt_gravkick = dt_hydrokick;}
             
 #ifdef PMGRID
-            for(j = 0; j < 3; j++)
-                SphP[i].VelPred[j] += (P[i].GravAccel[j] + P[i].GravPM[j]) * dt_gravkick +
-                    SphP[i].HydroAccel[j]*All.cf_atime * dt_hydrokick; /* make sure v is in code units */
+            for(j = 0; j < 3; j++) {SphP[i].VelPred[j] += (P[i].GravAccel[j] + P[i].GravPM[j]) * dt_gravkick + (SphP[i].HydroAccel[j] * dt_hydrokick)*All.cf_atime;} /* make sure v is in code units */
 #else
-            for(j = 0; j < 3; j++)
-                SphP[i].VelPred[j] += P[i].GravAccel[j] * dt_gravkick +
-                    SphP[i].HydroAccel[j]*All.cf_atime * dt_hydrokick; /* make sure v is in code units */
+            for(j = 0; j < 3; j++) {SphP[i].VelPred[j] += (P[i].GravAccel[j]) * dt_gravkick + (SphP[i].HydroAccel[j] * dt_hydrokick)*All.cf_atime;} /* make sure v is in code units */
 #endif
 #if (SINGLE_STAR_TIMESTEPPING > 0)
-	        if((P[i].Type==5) && (P[i].SuperTimestepFlag>=2)) {for(j=0;j<3;j++)	{SphP[i].VelPred[j] += fewbody_kick_dv[j];}}
+	        if((P[i].Type == 5) && (P[i].SuperTimestepFlag>=2)) {for(j=0;j<3;j++) {SphP[i].VelPred[j] += fewbody_kick_dv[j];}}
 #endif	    
             
 #if defined(TURB_DRIVING)
-            for(j = 0; j < 3; j++)
-                SphP[i].VelPred[j] += SphP[i].TurbAccel[j] * dt_gravkick;
+            for(j = 0; j < 3; j++) {SphP[i].VelPred[j] += SphP[i].TurbAccel[j] * dt_gravkick;}
 #endif
 #ifdef RT_RAD_PRESSURE_OUTPUT
-            for(j = 0; j < 3; j++)
-                SphP[i].VelPred[j] += SphP[i].Rad_Accel[j] * All.cf_atime * dt_hydrokick;
+            for(j = 0; j < 3; j++) {SphP[i].VelPred[j] += SphP[i].Rad_Accel[j] * All.cf_atime * dt_hydrokick;}
 #endif
             
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
@@ -427,7 +405,7 @@ double INLINE_FUNC Get_Particle_Expected_Area(double h)
 /* return the estimated local column (physical units) from a local Sobolev approximation, or using the 'treecol' approximation from the gravity tree if the relevant config flag options are enabled */
 double evaluate_NH_from_GradRho(MyFloat gradrho[3], double hsml, double rho, double numngb_ndim, double include_h, int target)
 {
-    double gradrho_mag=0; //double* gradrho = SphP[i].Gradients.Density; double rho=P[i].DensAroundStar, numngb_ndim = P[i].NumNgb, hsml = P[i].Hsml; if(P[i].Type==0) {rho=SphP[i].Density;}
+    double gradrho_mag=0;
     if(rho>0)
     {
 #ifdef RT_USE_TREECOL_FOR_NH
@@ -436,8 +414,6 @@ double evaluate_NH_from_GradRho(MyFloat gradrho[3], double hsml, double rho, dou
         gradrho_mag = sqrt(gradrho[0]*gradrho[0]+gradrho[1]*gradrho[1]+gradrho[2]*gradrho[2]);
         if(gradrho_mag > 0) {gradrho_mag = rho*rho/gradrho_mag;} else {gradrho_mag=0;}
         if(include_h > 0) if(numngb_ndim > 0) gradrho_mag += include_h * rho * hsml / numngb_ndim; // quick-and-dirty approximation to the effective neighbor number needed here
-        //if(include_h > 0) gradrho_mag += include_h * rho * (hsml * (0.124 + 11.45 / (26.55 + All.DesNumNgb))); // quick-and-dirty approximation to the effective neighbor number needed here
-        // account for the fact that 'h' is much larger than the inter-particle separation //
 #endif        
     }
     return gradrho_mag * All.cf_a2inv; // (physical units) // *(Z/Zsolar) add metallicity dependence
@@ -459,7 +435,7 @@ double Get_DtB_FaceArea_Limiter(int i)
     return 1;
 #else
     /* define some variables */
-    double dt_entr = (P[i].TimeBin ? (((integertime) 1) << P[i].TimeBin) : 0) * All.Timebase_interval / All.cf_hubble_a;
+    double dt_entr = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i);
     int j; double dB[3],dBmag=0,Bmag=0;
     /* check the magnitude of the predicted change in B-fields, vs. B-magnitude */
     for(j=0;j<3;j++)

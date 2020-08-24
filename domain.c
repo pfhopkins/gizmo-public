@@ -114,17 +114,11 @@ static long long totpartcount;
 
 static int UseAllParticles;
 
-/*! This is the main routine for the domain decomposition.  It acts as a
- *  driver routine that allocates various temporary buffers, maps the
- *  particles back onto the periodic box if needed, and then does the
- *  domain decomposition, and a final Peano-Hilbert order of all particles
- *  as a tuning measure.
- */
+/*! This is the main routine for the domain decomposition.  It acts as a driver routine that allocates various temporary buffers, maps the
+ *  particles back onto the periodic box if needed, and then does the domain decomposition, and a final Peano-Hilbert order of all particles as a tuning measure. */
 void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_mergesplit_key)
 {
-    int i, ret, retsum, diff, highest_bin_to_include;
-    size_t bytes, all_bytes;
-    double t0, t1;
+    int i, ret, retsum, diff, highest_bin_to_include; size_t bytes, all_bytes; double t0, t1;
     
     /* call first -before- a merge-split, to be sure particles are in the correct order in the tree */
     // TO: we don't have to call this before merge_and_split particles() 
@@ -132,62 +126,37 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
     //rearrange_particle_sequence(); 
     if((All.Ti_Current > All.TimeBegin)&&(do_particle_mergesplit_key==1))
     {
-        merge_and_split_particles();
-        /* do the particle split/merge operations: only do this on tree-building super-steps */
+        merge_and_split_particles(); /* do the particle split/merge operations: only do this on tree-building super-steps */
     }
-    rearrange_particle_sequence();
-    /* must be called after merge_and_split_particles, and should always be called before new domains are built */
+    rearrange_particle_sequence(); /* must be called after merge_and_split_particles, and should always be called before new domains are built */
 
     UseAllParticles = UseAllTimeBins;
     
-    CPU_Step[CPU_MISC] += measure_time();
-    
-    for(i = 0; i < NumPart; i++)
-        if(P[i].Ti_current != All.Ti_Current)
-            drift_particle(i, All.Ti_Current);
+    for(i = 0; i < NumPart; i++) {if(P[i].Ti_current != All.Ti_Current) {drift_particle(i, All.Ti_Current);}}
     
     force_treefree();
     domain_free();
     
-    if(old_MaxPart)
-    {
-        All.MaxPart = new_MaxPart;
-        old_MaxPart = 0;
-    }
+    if(old_MaxPart) {All.MaxPart = new_MaxPart; old_MaxPart = 0;}
     
 #ifdef BOX_PERIODIC
     do_box_wrapping();		/* map the particles back onto the box */
 #endif
     
-    for(i = 0; i < NumPart; i++)
-    {
-        if(P[i].Type > 5 || P[i].Type < 0)
-        {
-            printf("task=%d:  P[i=%d].Type=%d\n", ThisTask, i, P[i].Type);
-            endrun(112411);
-        }
-    }
+    //for(i = 0; i < NumPart; i++) {if(P[i].Type > 5 || P[i].Type < 0) {printf("task=%d:  P[i=%d].Type=%d\n", ThisTask, i, P[i].Type); endrun(112411);}} // this is pure de-bugging, doesn't need to be active in normal circumstances //
 
+    MPI_Barrier(MPI_COMM_WORLD); CPU_Step[CPU_DRIFT] += measure_time(); // sync everything after merge-split and rearrange //
+    
     TreeReconstructFlag = 1;	/* ensures that new tree will be constructed */
 #ifdef SINGLE_STAR_SINK_DYNAMICS
     All.NumForcesSinceLastDomainDecomp = 0;
 #endif
     
     /* we take the closest cost factor */
-    if(UseAllParticles)
-        highest_bin_to_include = All.HighestOccupiedTimeBin;
-    else
-        highest_bin_to_include = All.HighestActiveTimeBin;
+    if(UseAllParticles) {highest_bin_to_include = All.HighestOccupiedTimeBin;} else {highest_bin_to_include = All.HighestActiveTimeBin;}
     
-    for(i = 1, TakeLevel = 0, diff = abs(All.LevelToTimeBin[0] - highest_bin_to_include); i < GRAVCOSTLEVELS;
-        i++)
-    {
-        if(diff > abs(All.LevelToTimeBin[i] - highest_bin_to_include))
-        {
-            TakeLevel = i;
-            diff = abs(All.LevelToTimeBin[i] - highest_bin_to_include);
-        }
-    }
+    for(i = 1, TakeLevel = 0, diff = abs(All.LevelToTimeBin[0] - highest_bin_to_include); i < GRAVCOSTLEVELS; i++)
+        {if(diff > abs(All.LevelToTimeBin[i] - highest_bin_to_include)) {TakeLevel = i; diff = abs(All.LevelToTimeBin[i] - highest_bin_to_include);}}
     
     PRINT_STATUS("Domain decomposition building... LevelToTimeBin[TakeLevel=%d]=%d  (presently allocated=%g MB)", TakeLevel, All.LevelToTimeBin[TakeLevel], AllocatedBytes / (1024.0 * 1024.0));
     t0 = my_second();

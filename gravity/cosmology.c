@@ -16,6 +16,41 @@
  */
 
 
+
+/* These are critical factors used throughout for co-moving integrations. Set them here and
+   call THESE, rather than trying to come up with the factors throughout, since that makes debugging a nightmare */
+void set_cosmo_factors_for_current_time(void)
+{
+    if(All.ComovingIntegrationOn)
+    {
+        /* All.cf_atime = a = 1/(1+z), the cosmological scale factor */
+        All.cf_atime = All.Time;
+        /* All.cf_a2inv is just handy */
+        All.cf_a2inv = 1 / (All.Time * All.Time);
+        /* All.cf_a3inv * Density_code = Density_physical */
+        All.cf_a3inv = 1 / (All.Time * All.Time * All.Time);
+        /* Pressure_code/Density_code = All.cf_afac1 * Pressure_physical/Density_physical */
+        All.cf_afac1 = 1;
+        /* All.cf_afac2 * Pressure_code/Density_code * 1/r_code = Pressure_physical/Density_physical * 1/r_physical */
+        All.cf_afac2 = 1 / (All.Time * All.cf_afac1);
+        /* All.cf_afac3 * sqrt(Pressure_code/Density_code) = sqrt(Pressure_phys/Density_phys) = cs_physical */
+        All.cf_afac3 = 1 / sqrt(All.cf_afac1);
+        /* time units: proper time dt_phys = 1/hubble_function(a) * dz/(1+z) = dlna / hubble_function(a)
+            code time unit in comoving is dlna, so dt_phys = dt_code / All.cf_hubble_a   */
+        All.cf_hubble_a = hubble_function(All.Time); /* hubble_function(a) = H(a) = H(z) */
+        /* dt_code * v_code/r_code = All.cf_hubble_a2 * dt_phys * v_phys/r_phys */
+        All.cf_hubble_a2 = All.Time * All.Time * hubble_function(All.Time);
+        /* set custom tabulated values */
+#ifdef GR_TABULATED_COSMOLOGY_G
+        All.G = All.Gini * dGfak(All.Time);
+#endif
+    }
+    else {All.cf_atime = All.cf_a2inv = All.cf_a3inv = All.cf_afac1 = All.cf_afac2 = All.cf_afac3 = All.cf_hubble_a = All.cf_hubble_a2 = 1;}
+}
+
+
+
+
 /* this function gets called regardless of the cosmology choices: 
     anything which modifies the growth history should live here. 
     This is the usual hubble function H0 * E(z); so for example 

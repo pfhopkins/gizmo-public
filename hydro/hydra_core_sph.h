@@ -10,7 +10,7 @@
     kernel.dwk_ij = 0.5 * (kernel.dwk_i + kernel.dwk_j);
     cnumcrit2 *= 1.0;
     double vdotr2_phys = kernel.vdotr2;
-    if(All.ComovingIntegrationOn) vdotr2_phys -= All.cf_hubble_a2 * r2;
+    if(All.ComovingIntegrationOn) {vdotr2_phys -= All.cf_hubble_a2 * r2;}
     V_j = P[j].Mass / SphP[j].Density;
     
     /* --------------------------------------------------------------------------------- */
@@ -197,9 +197,7 @@
         double visc = -BulkVisc_ij * mu_ij * (c_ij - 2*mu_ij) * kernel.rho_ij_inv; /* this method should use beta/alpha=2 */
 #endif
 #ifndef NOVISCOSITYLIMITER
-        double dt = 2 * TIMAX(local.Timestep, (P[j].TimeBin ? (((integertime) 1) << P[j].TimeBin) : 0)) * All.Timebase_interval;
-        if(dt > 0 && kernel.dwk_ij < 0)
-            visc = DMIN(visc, 0.5 * fac_vsic_fix * kernel.vdotr2 / ((local.Mass + P[j].Mass) * kernel.dwk_ij * kernel.r * dt));
+        if(dt_hydrostep > 0 && kernel.dwk_ij < 0) {visc = DMIN(visc, 0.5 * fac_vsic_fix * kernel.vdotr2 / ((local.Mass + P[j].Mass) * kernel.dwk_ij * kernel.r * (2.*dt_hydrostep)));}
 #endif
         hfc_visc = -local.Mass * P[j].Mass * visc * kernel.dwk_ij / kernel.r;
         Fluxes.v[0] += hfc_visc * kernel.dp[0]; /* this is momentum */

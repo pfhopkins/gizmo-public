@@ -9,14 +9,19 @@
 %        ADAPTIVE_GRAVSOFT_FORGAS
 %        METALS
 %        GALSF
+%
+%        and e.g. flags like:
 %        GALSF_SFR_MOLECULAR_CRITERION
 %        GALSF_SFR_VIRIAL_SF_CRITERION=0
+%
+%        and/or:
+%        GALSF_EFFECTIVE_EQS
 %        GALSF_SUBGRID_WINDS
 %
 % you should see the users guide - there are many combinations of 
-%   parameters (of varying degrees of complexity) you can enable. 
-%   the above corresponds to running with the full set of FIRE 
-%   physics turned on
+%   parameters (of varying degrees of complexity) you can enable.
+%   These are just examples, not even necessarily intended to be
+%   run together, just given for examples.
 %
 % for the version of this problem with MHD, additionally enable:
 %        MAGNETIC

@@ -29,6 +29,7 @@ struct Subfind_DensityOtherPropsEval_data_out *Subfind_DensityOtherPropsEval_Dat
  To add similar computations, follow their template (e.g. the "SUBFIND_ADDIO_..." options). This first subroutine is the core computation of the relevant properties
  in the group. compute them/add them into the "out" structure and the code here and other two scripts below should take care of the rest
 */
+/*!   -- this subroutine is not openmp parallelized at present, so there's not any issue about conflicts over shared memory. if you make it openmp, make sure you protect the writes to shared memory here!!! -- */
 /*! first define a short structure needed to pass in the group info here */
 static struct Subfind_DensityOtherPropsEval_data_in {MyDouble Pos[3]; MyOutputFloat R200; int NodeList[NODELISTLENGTH]; /* all needed for any version */} *Subfind_DensityOtherPropsEval_DataIn, *Subfind_DensityOtherPropsEval_DataGet;
 /*! now the main routine */

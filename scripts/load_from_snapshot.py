@@ -108,7 +108,7 @@ def load_from_snapshot(value,ptype,sdir,snum,particle_mask=numpy.zeros(0),axis_m
         file.close()
         return 0
     # check if desired value is contained in header -- if so just return it and exit
-    if(value=='header_keys')|(value=='Header_Keys')|(value=='HEADER_KEYS')|(value=='headerkeys')|(value=='HeaderKeys')|(value=='HEADERKEYS')|((value=='keys' and not (ptype==0 or ptype==1 or ptype==2 or ptype==3 or ptype==4 or ptype==5))):
+    if(value=='header_keys')|(value=='Header_Keys')|(value=='HEADER_KEYS')|(value=='headerkeys')|(value=='HeaderKeys')|(value=='HEADERKEYS')|((value=='keys' and not (ptype == 0 or ptype == 1 or ptype == 2 or ptype == 3 or ptype == 4 or ptype == 5))):
         q = header_toparse.keys()
         print('Returning list of keys from header, includes: ',q)
         file.close()
@@ -121,7 +121,7 @@ def load_from_snapshot(value,ptype,sdir,snum,particle_mask=numpy.zeros(0),axis_m
     # ok desired quantity is not in the header, so we need to go into the particle data
 
     # check that a valid particle type is specified
-    if not (ptype==0 or ptype==1 or ptype==2 or ptype==3 or ptype==4 or ptype==5):
+    if not (ptype == 0 or ptype == 1 or ptype == 2 or ptype == 3 or ptype == 4 or ptype == 5):
         print('Particle type needs to be an integer = 0,1,2,3,4,5. Returning 0')
         file.close()
         return 0

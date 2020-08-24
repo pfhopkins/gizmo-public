@@ -11,7 +11,7 @@
 #include <pthread.h>
 #endif
 
-/* Routines for models that require stellar evolution: luminosities, mass loss, SNe rates, etc. 
+/* Routines for models that require stellar evolution: luminosities, mass loss, SNe rates, etc.
  * This file was written by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
  */
 #ifdef GALSF
@@ -32,7 +32,7 @@ double evaluate_light_to_mass_ratio(double stellar_age_in_gyr, int i)
 }
 
 
-/* subroutine to calculate luminosity of an individual star, according to accretion rate, 
+/* subroutine to calculate luminosity of an individual star, according to accretion rate,
     mass, age, etc. Modify your assumptions about main-sequence evolution here. ONLY relevant for SINGLE-STAR inputs. */
 double calculate_individual_stellar_luminosity(double mdot, double mass, long i)
 {
@@ -60,7 +60,7 @@ double calculate_individual_stellar_luminosity(double mdot, double mass, long i)
     ONLY relevant for STELLAR POPULATION integrated inputs. */
 double calculate_relative_light_to_mass_ratio_from_imf(double stellar_age_in_gyr, int i)
 {
-#ifdef GALSF_SFR_IMF_VARIATION // fitting function from David Guszejnov's IMF calculations (ok for Mturnover in range 0.01-100) for how mass-to-light ratio varies with IMF shape/effective turnover mass 
+#ifdef GALSF_SFR_IMF_VARIATION // fitting function from David Guszejnov's IMF calculations (ok for Mturnover in range 0.01-100) for how mass-to-light ratio varies with IMF shape/effective turnover mass
     double log_mimf = log10(P[i].IMF_Mturnover);
     return (0.051+0.042*(log_mimf+2)+0.031*(log_mimf+2)*(log_mimf+2)) / 0.31;
 #endif
@@ -84,7 +84,7 @@ double particle_ionizing_luminosity_in_cgs(long i)
     return fion * l_sol * SOLAR_LUM; // return value in cgs, as desired for this routine [l_sol is in L_sun, by definition above] //
 
 #else /* STELLAR POPULATION VERSION: use updated SB99 tracks: including rotation, new mass-loss tracks, etc. */
-    
+
     if(P[i].Type != 5)
     {
         double lm_ssp=0, star_age=evaluate_stellar_age_Gyr(P[i].StellarAge), t0=0.0035, tmax=0.02;
@@ -120,7 +120,7 @@ void particle2in_addFB_fromstars(struct addFB_evaluate_data_in_ *in, int i, int 
 #endif
 #ifdef METALS
     int k; for(k=0;k<NUM_METAL_SPECIES;k++) {in->yields[k]=0.178*All.SolarAbundances[k]/All.SolarAbundances[0];} // assume a universal solar-type yield with ~2.63 Msun of metals
-    if(NUM_METAL_SPECIES>=10) {in->yields[1] = 0.4;} // (catch for Helium, which the above scaling would give bad values for)
+    if(NUM_LIVE_SPECIES_FOR_COOLTABLES>=10) {in->yields[1] = 0.4;} // (catch for Helium, which the above scaling would give bad values for)
 #endif
 #endif
 }
@@ -132,7 +132,7 @@ void particle2in_addFB_fromstars(struct addFB_evaluate_data_in_ *in, int i, int 
     quantities from stars. */
 double mechanical_fb_calculate_eventrates(int i, double dt)
 {
-    
+
 #if defined(SINGLE_STAR_SINK_DYNAMICS) && !defined(FLAG_NOT_IN_PUBLIC_CODE) /* SINGLE-STAR version: simple implementation of single-star wind mass-loss and SNe rates */
     double m_sol,l_sol; m_sol=P[i].Mass*UNIT_MASS_IN_SOLAR; l_sol=bh_lum_bol(0,P[i].Mass,i)*UNIT_LUM_IN_SOLAR;
 #ifdef SINGLE_STAR_FB_WINDS
@@ -145,24 +145,24 @@ double mechanical_fb_calculate_eventrates(int i, double dt)
 #endif
     return 1;
 #endif
-    
+
 #ifdef GALSF_FB_THERMAL /* STELLAR-POPULATION version: pure thermal feedback: assumes AGORA model (Kim et al., 2016 ApJ, 833, 202) where everything occurs at 5Myr exactly */
     if(P[i].SNe_ThisTimeStep != 0) {P[i].SNe_ThisTimeStep=-1; return 0;} // already had an event, so this particle is "done"
     if(evaluate_stellar_age_Gyr(P[i].StellarAge) < 0.005) {return 0;} // enforce age limit of 5 Myr
     P[i].SNe_ThisTimeStep = P[i].Mass*UNIT_MASS_IN_SOLAR / 91.; // 1 event per 91 solar masses
     return 1;
 #endif
-    
+
 #ifdef GALSF_FB_MECHANICAL /* STELLAR-POPULATION version: mechanical feedback: 'dummy' example model below assumes a constant SNe rate for t < 30 Myr, then nothing. experiment! */
-    double RSNe=0, star_age = evaluate_stellar_age_Gyr(P[i].StellarAge);
+    double star_age = evaluate_stellar_age_Gyr(P[i].StellarAge);
     if(star_age < 0.03)
     {
-        RSNe = 3.e-4; // assume a constant rate ~ 3e-4 SNe/Myr/solar mass for t = 0-30 Myr //
+        double RSNe = 3.e-4; // assume a constant rate ~ 3e-4 SNe/Myr/solar mass for t = 0-30 Myr //
         double p = RSNe * (P[i].Mass*UNIT_MASS_IN_SOLAR) * (dt*UNIT_TIME_IN_MYR); // unit conversion factor
         double n_sn_0=(float)floor(p); p-=n_sn_0; if(get_random_number(P[i].ID+6) < p) {n_sn_0++;} // determine if SNe occurs
         P[i].SNe_ThisTimeStep = n_sn_0; // assign to particle
+        return RSNe;
     }
-    return RSNe;
 #endif
 
     return 0;
@@ -171,7 +171,7 @@ double mechanical_fb_calculate_eventrates(int i, double dt)
 
 
 
-    
+
 
 
 
