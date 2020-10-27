@@ -351,6 +351,49 @@ size_t sizemax(size_t a, size_t b)
 }
 
 
+/* routine to invert square matrices of side Ndims x Ndims, used in a number of places in code for e.g. gradients, etc. */
+double matrix_invert_ndims(double T[3][3], double Tinv[3][3])
+{
+    int j, k; double ConditionNumber=0, FrobNorm=0, FrobNorm_inv=0, detT=0; /* initialize these quantities to null */
+    for(j=0;j<3;j++) {for(k=0;k<3;k++) {Tinv[j][k]=0;}} /* initialize Tinv to null */
+    for(j=0;j<3;j++) {for(k=0;k<3;k++) {FrobNorm += T[j][k]*T[j][k];}} /* calculate first part of condition number, Frobenius norm of T */
+#if (NUMDIMS==1) /* one-dimensional case */
+    detT = T[0][0]; if((detT != 0) && !isnan(detT)) {Tinv[0][0] = 1./detT;} else {Tinv[0][0]=1;} /* only one non-trivial element in 1D! */
+#endif
+#if (NUMDIMS==2) /* two-dimensional case */
+    detT = T[0][0]*T[1][1] - T[0][1]*T[1][0];
+    if((detT != 0) && !isnan(detT))
+    {
+        Tinv[0][0] =  T[1][1] / detT; Tinv[0][1] = -T[0][1] / detT;
+        Tinv[1][0] = -T[1][0] / detT; Tinv[1][1] =  T[0][0] / detT;
+    }
+#endif
+#if (NUMDIMS==3) /* three-dimensional case */
+    detT = T[0][0] * T[1][1] * T[2][2]
+         + T[0][1] * T[1][2] * T[2][0]
+         + T[0][2] * T[1][0] * T[2][1]
+         - T[0][2] * T[1][1] * T[2][0]
+         - T[0][1] * T[1][0] * T[2][2]
+         - T[0][0] * T[1][2] * T[2][1];
+    if((detT != 0) && !isnan(detT)) /* check for zero determinant */
+    {
+        Tinv[0][0] = (T[1][1] * T[2][2] - T[1][2] * T[2][1]) / detT;
+        Tinv[0][1] = (T[0][2] * T[2][1] - T[0][1] * T[2][2]) / detT;
+        Tinv[0][2] = (T[0][1] * T[1][2] - T[0][2] * T[1][1]) / detT;
+        Tinv[1][0] = (T[1][2] * T[2][0] - T[1][0] * T[2][2]) / detT;
+        Tinv[1][1] = (T[0][0] * T[2][2] - T[0][2] * T[2][0]) / detT;
+        Tinv[1][2] = (T[0][2] * T[1][0] - T[0][0] * T[1][2]) / detT;
+        Tinv[2][0] = (T[1][0] * T[2][1] - T[1][1] * T[2][0]) / detT;
+        Tinv[2][1] = (T[0][1] * T[2][0] - T[0][0] * T[2][1]) / detT;
+        Tinv[2][2] = (T[0][0] * T[1][1] - T[0][1] * T[1][0]) / detT;
+    }
+#endif
+    for(j=0;j<3;j++) {for(k=0;k<3;k++) {FrobNorm_inv += Tinv[j][k]*Tinv[j][k];}} /* calculate second part of ConditionNumber as Frobenius norm of inverse matrix */
+    ConditionNumber = DMAX( sqrt(FrobNorm*FrobNorm_inv) / NUMDIMS , 1 ); /* this = sqrt( ||T^-1||*||T|| ) :: should be ~1 for a well-conditioned matrix */
+    return ConditionNumber;
+}
+
+
 
 long long report_comittable_memory(long long *MemTotal,
 				   long long *Committed_AS, long long *SwapTotal, long long *SwapFree)

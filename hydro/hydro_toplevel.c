@@ -9,8 +9,8 @@
 #include "../kernel.h"
 #define NDEBUG
 
-/*! \file hydra_master.c
- *  \brief This contains the "second hydro loop", where the hydro fluxes are computed.
+/*! \file hydro_toplevel.c
+ *  \brief This contains the "primary" hydro loop, where the hydro fluxes are computed.
  */
 /*
  * This file was written by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
@@ -150,7 +150,7 @@ struct kernel_hydra
 /* ok here we define some important variables for our generic communication
     and flux-exchange structures. these can be changed, and vary across the code, but need to be set! */
 
-#define MASTER_FUNCTION_NAME hydro_force_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define CORE_FUNCTION_NAME hydro_force_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int CORE_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
 #define INPUTFUNCTION_NAME particle2in_hydra    /* name of the function which loads the element data needed (for e.g. broadcast to other processors, neighbor search) */
 #define OUTPUTFUNCTION_NAME out2particle_hydra  /* name of the function which takes the data returned from other processors and combines it back to the original elements */
 #define CONDITIONFUNCTION_FOR_EVALUATION if((P[i].Type==0)&&(P[i].Mass>0)) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
@@ -175,6 +175,7 @@ struct INPUT_STRUCT_NAME
     MyFloat Density;
     MyFloat Pressure;
     MyFloat ConditionNumber;
+    MyFloat FaceClosureError;
     MyFloat InternalEnergyPred;
     MyFloat SoundSpeed;
     integertime Timestep;
@@ -213,6 +214,9 @@ struct INPUT_STRUCT_NAME
 
 #if defined(KERNEL_CRK_FACES)
     MyFloat Tensor_CRK_Face_Corrections[16];
+#endif
+#if defined(HYDRO_TENSOR_FACE_CORRECTIONS)
+    MyFloat Tensor_MFM_Face_Corrections[9];
 #endif
 #ifdef HYDRO_PRESSURE_SPH
     MyFloat EgyWtRho;
@@ -375,6 +379,7 @@ static inline void particle2in_hydra(struct INPUT_STRUCT_NAME *in, int i, int lo
     in->SoundSpeed = Get_Gas_effective_soundspeed_i(i);
     in->Timestep = GET_PARTICLE_INTEGERTIME(i);
     in->ConditionNumber = SphP[i].ConditionNumber;
+    in->FaceClosureError = SphP[i].FaceClosureError;
 #ifdef MHD_CONSTRAINED_GRADIENT
     /* since it is not used elsewhere, we can use the sign of the condition number as a bit
         to conveniently indicate the status of the parent particle flag, for the constrained gradients */
@@ -395,6 +400,9 @@ static inline void particle2in_hydra(struct INPUT_STRUCT_NAME *in, int i, int lo
 #endif
 #if defined(KERNEL_CRK_FACES)
     for(k=0;k<16;k++) {in->Tensor_CRK_Face_Corrections[k] = SphP[i].Tensor_CRK_Face_Corrections[k];}
+#endif
+#if defined(HYDRO_TENSOR_FACE_CORRECTIONS)
+    for(k=0;k<9;k++) {in->Tensor_MFM_Face_Corrections[k] = SphP[i].Tensor_MFM_Face_Corrections[k];}
 #endif
 
     int j;
@@ -565,9 +573,9 @@ static inline void out2particle_hydra(struct OUTPUT_STRUCT_NAME *out, int i, int
 
 
 /* --------------------------------------------------------------------------------- */
-/* need to link to the file "hydra_evaluate" which actually contains the computation part of the loop! */
+/* need to link to the file "hydro_evaluate" which actually contains the computation part of the loop! */
 /* --------------------------------------------------------------------------------- */
-#include "hydra_evaluate.h"
+#include "hydro_evaluate.h"
 
 /* --------------------------------------------------------------------------------- */
 /* --------------------------------------------------------------------------------- */
@@ -671,9 +679,6 @@ void hydro_final_operations_and_cleanup(void)
 #endif
                 SphP[i].HydroAccel[k] /= P[i].Mass; /* we solved for momentum flux */
             }
-
-
-
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
             SphP[i].DtInternalEnergy -= SphP[i].InternalEnergyPred * SphP[i].DtMass;
 #endif
@@ -743,6 +748,10 @@ void hydro_final_operations_and_cleanup(void)
 #if defined(TURB_DIFF_METALS) || (defined(METALS) && defined(HYDRO_MESHLESS_FINITE_VOLUME)) /* update the metal masses from exchange */
             for(k=0;k<NUM_METAL_SPECIES;k++) {P[i].Metallicity[k] = DMAX(P[i].Metallicity[k] + SphP[i].Dyield[k] / P[i].Mass , 0.01*P[i].Metallicity[k]);}
 #endif
+            
+            
+
+
 
 
 #ifdef GALSF_SUBGRID_WINDS

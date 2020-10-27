@@ -262,12 +262,12 @@ void begrun(void)
         /* allow softenings to be modified during the run */
         if(All.ComovingIntegrationOn)
         {
-        All.SofteningGasMaxPhys = all.SofteningGasMaxPhys;
-        All.SofteningHaloMaxPhys = all.SofteningHaloMaxPhys;
-        All.SofteningDiskMaxPhys = all.SofteningDiskMaxPhys;
-        All.SofteningBulgeMaxPhys = all.SofteningBulgeMaxPhys;
-        All.SofteningStarsMaxPhys = all.SofteningStarsMaxPhys;
-        All.SofteningBndryMaxPhys = all.SofteningBndryMaxPhys;
+            All.SofteningGasMaxPhys = all.SofteningGasMaxPhys;
+            All.SofteningHaloMaxPhys = all.SofteningHaloMaxPhys;
+            All.SofteningDiskMaxPhys = all.SofteningDiskMaxPhys;
+            All.SofteningBulgeMaxPhys = all.SofteningBulgeMaxPhys;
+            All.SofteningStarsMaxPhys = all.SofteningStarsMaxPhys;
+            All.SofteningBndryMaxPhys = all.SofteningBndryMaxPhys;
         }
         All.SofteningGas = all.SofteningGas;
         All.SofteningHalo = all.SofteningHalo;
@@ -276,52 +276,73 @@ void begrun(void)
         All.SofteningStars = all.SofteningStars;
         All.SofteningBndry = all.SofteningBndry;
 
-      All.MaxHsml = all.MaxHsml;
-      All.MaxRMSDisplacementFac = all.MaxRMSDisplacementFac;
+        All.MaxHsml = all.MaxHsml;
+        All.MaxRMSDisplacementFac = all.MaxRMSDisplacementFac;
 
-      All.ErrTolForceAcc = all.ErrTolForceAcc;
-      All.NumFilesPerSnapshot = all.NumFilesPerSnapshot;
-      All.NumFilesWrittenInParallel = all.NumFilesWrittenInParallel;
-      All.TreeDomainUpdateFrequency = all.TreeDomainUpdateFrequency;
+        All.ErrTolForceAcc = all.ErrTolForceAcc;
+        All.NumFilesPerSnapshot = all.NumFilesPerSnapshot;
+        All.NumFilesWrittenInParallel = all.NumFilesWrittenInParallel;
+        All.TreeDomainUpdateFrequency = all.TreeDomainUpdateFrequency;
 
-      All.OutputListOn = all.OutputListOn;
-      All.CourantFac = all.CourantFac;
-
-      All.OutputListLength = all.OutputListLength;
-      memcpy(All.OutputListTimes, all.OutputListTimes, sizeof(double) * All.OutputListLength);
-      memcpy(All.OutputListFlag, all.OutputListFlag, sizeof(char) * All.OutputListLength);
+        All.OutputListOn = all.OutputListOn;
+        All.CourantFac = all.CourantFac;
+        
+        All.OutputListLength = all.OutputListLength;
+        memcpy(All.OutputListTimes, all.OutputListTimes, sizeof(double) * All.OutputListLength);
+        memcpy(All.OutputListFlag, all.OutputListFlag, sizeof(char) * All.OutputListLength);
 
 #ifdef GALSF
-      All.CritPhysDensity = all.CritPhysDensity;
-      All.MaxSfrTimescale = all.MaxSfrTimescale;
+        All.CritPhysDensity = all.CritPhysDensity;
+        All.MaxSfrTimescale = all.MaxSfrTimescale;
 #endif
-
-
 #ifdef SPHAV_CD10_VISCOSITY_SWITCH
-      All.ArtBulkViscConst = all.ArtBulkViscConst;
-      All.ViscosityAMin = all.ViscosityAMin;
-      All.ViscosityAMax = all.ViscosityAMax;
+        All.ArtBulkViscConst = all.ArtBulkViscConst;
+        All.ViscosityAMin = all.ViscosityAMin;
+        All.ViscosityAMax = all.ViscosityAMax;
 #endif
 #ifdef TURB_DIFFUSION
-      All.TurbDiffusion_Coefficient = all.TurbDiffusion_Coefficient;
+        All.TurbDiffusion_Coefficient = all.TurbDiffusion_Coefficient;
 #endif
 #ifdef SPHAV_ARTIFICIAL_CONDUCTIVITY
-      All.ArtCondConstant = all.ArtCondConstant;
+        All.ArtCondConstant = all.ArtCondConstant;
 #endif
-
 #if defined(SPH_TP12_ARTIFICIAL_RESISTIVITY)
-      All.ArtMagDispConst = all.ArtMagDispConst;
+        All.ArtMagDispConst = all.ArtMagDispConst;
 #endif
-
 #ifdef DIVBCLEANING_DEDNER
-      All.DivBcleanParabolicSigma = all.DivBcleanParabolicSigma;
-      All.DivBcleanHyperbolicSigma = all.DivBcleanHyperbolicSigma;
-      All.FastestWaveSpeed = 0.0;
-      All.FastestWaveDecay = 0.0;
+        All.DivBcleanParabolicSigma = all.DivBcleanParabolicSigma;
+        All.DivBcleanHyperbolicSigma = all.DivBcleanHyperbolicSigma;
+        All.FastestWaveSpeed = 0.0;
+        All.FastestWaveDecay = 0.0;
 #endif
 #ifdef BLACK_HOLES
-      All.BlackHoleMaxAccretionRadius = all.BlackHoleMaxAccretionRadius;
+        All.BlackHoleEddingtonFactor = all.BlackHoleEddingtonFactor;
+        All.SeedBlackHoleMass = all.SeedBlackHoleMass;
+        All.BlackHoleNgbFactor = all.BlackHoleNgbFactor;
+        All.BlackHoleMaxAccretionRadius = all.BlackHoleMaxAccretionRadius;
+        All.BlackHoleRadiativeEfficiency = all.BlackHoleRadiativeEfficiency;
+        All.BlackHoleFeedbackFactor = all.BlackHoleFeedbackFactor;
+#if defined(BH_SEED_FROM_FOF) || defined(BH_SEED_FROM_LOCALGAS)
+        All.SeedBlackHoleMassSigma = all.SeedBlackHoleMassSigma;
+        All.SeedBlackHoleMinRedshift = all.SeedBlackHoleMinRedshift;
+#ifdef BH_SEED_FROM_LOCALGAS
+        All.SeedBlackHolePerUnitMass = all.SeedBlackHolePerUnitMass;
 #endif
+#endif
+#ifdef BH_ALPHADISK_ACCRETION
+        All.SeedAlphaDiskMass = all.SeedAlphaDiskMass;
+#endif
+#ifdef BH_SEED_FROM_FOF
+        All.MinFoFMassForNewSeed = all.MinFoFMassForNewSeed;
+#endif
+#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+        All.BAL_f_accretion = all.BAL_f_accretion;
+        All.BAL_v_outflow = all.BAL_v_outflow;
+#endif
+#if defined(BH_COSMIC_RAYS)
+        All.BH_CosmicRay_Injection_Efficiency = all.BH_CosmicRay_Injection_Efficiency;
+#endif
+#endif // blackholes
 #ifdef RT_LEBRON
         All.PhotonMomentum_Coupled_Fraction = all.PhotonMomentum_Coupled_Fraction;
 #endif
@@ -343,7 +364,7 @@ void begrun(void)
       All.MaxNumNgbDeviation = all.MaxNumNgbDeviation;
 #ifdef AGS_HSML_CALCULATION_IS_ACTIVE
       /* Allow the tolerance over the number of neighbours to vary during the run:
-       * If it was initially set to a very strict value, convergence in ngb-iteration may at some point fail */
+        If it was initially set to a very strict value, convergence in ngb-iteration may at some point fail */
       All.AGS_MaxNumNgbDeviation = all.AGS_MaxNumNgbDeviation;
 #endif
 
@@ -369,8 +390,7 @@ void begrun(void)
 #endif
 
 
-      if(All.TimeMax != all.TimeMax)
-	readjust_timebase(All.TimeMax, all.TimeMax);
+      if(All.TimeMax != all.TimeMax) {readjust_timebase(All.TimeMax, all.TimeMax);}
     }
 
 #ifdef GALSF_EFFECTIVE_EQS
@@ -380,7 +400,6 @@ void begrun(void)
   char contfname[1000];
   sprintf(contfname, "%scont", All.OutputDir);
   unlink(contfname);
-
   open_outputfiles();
 
 #ifdef PMGRID
@@ -391,20 +410,11 @@ void begrun(void)
 
 #ifndef BOX_SHEARING
 #if (NUMDIMS==2)
-  int i;
-
-  for(i = 0; i < NumPart; i++)
+    int i;
+    for(i = 0; i < NumPart; i++)
     {
-      P[i].Pos[2] = 0;
-      P[i].Vel[2] = 0;
-
-      P[i].GravAccel[2] = 0;
-
-      if(P[i].Type == 0)
-	{
-	  SphP[i].VelPred[2] = 0;
-	  SphP[i].HydroAccel[2] = 0;
-	}
+      P[i].Pos[2] = P[i].Vel[2] = P[i].GravAccel[2] = 0;
+      if(P[i].Type == 0) {SphP[i].VelPred[2] = SphP[i].HydroAccel[2] = 0;}
     }
 #endif
 #endif
@@ -426,15 +436,14 @@ void begrun(void)
 #endif
 
 
-  if(All.ComovingIntegrationOn)
-    init_drift_table();
+  if(All.ComovingIntegrationOn) {init_drift_table();}
 
   if(RestartFlag == 2)
-    All.Ti_nextoutput = find_next_outputtime(All.Ti_Current + 100);
+    {All.Ti_nextoutput = find_next_outputtime(All.Ti_Current + 100);}
   else if(RestartFlag == 1)
-    All.Ti_nextoutput = find_next_outputtime(All.Ti_Current + 1);
+    {All.Ti_nextoutput = find_next_outputtime(All.Ti_Current + 1);}
   else
-    All.Ti_nextoutput = find_next_outputtime(All.Ti_Current);
+    {All.Ti_nextoutput = find_next_outputtime(All.Ti_Current);}
 
   All.TimeLastRestartFile = CPUThisRun;
 }
@@ -779,7 +788,7 @@ void read_parameter_file(char *fname)
 
       strcpy(tag[nt], "Omega0");
       strcpy(alternate_tag[nt], "Omega_Matter");
-      addr[nt] = &All.Omega0;
+      addr[nt] = &All.OmegaMatter;
       id[nt++] = REAL;
 
       strcpy(tag[nt], "OmegaBaryon");
@@ -792,6 +801,11 @@ void read_parameter_file(char *fname)
       addr[nt] = &All.OmegaLambda;
       id[nt++] = REAL;
 
+      strcpy(tag[nt], "OmegaRadiation");
+      strcpy(alternate_tag[nt], "Omega_Radiation");
+      addr[nt] = &All.OmegaRadiation;
+      id[nt++] = REAL;
+        
       strcpy(tag[nt], "HubbleParam");
       strcpy(alternate_tag[nt], "Hubble_Param_Little_h");
       addr[nt] = &All.HubbleParam;
@@ -994,8 +1008,8 @@ void read_parameter_file(char *fname)
 
 
 #ifdef GALSF_FB_FIRE_AGE_TRACERS
-        strcpy(tag[nt], "AgeTracerActiveTimestepFraction");
-        strcpy(alternate_tag[nt], "AgeTracerEventsPerTimeBin");
+        strcpy(tag[nt], "AgeTracerEventsPerTimeBin");
+        strcpy(alternate_tag[nt], "AgeTracerActiveTimestepFraction");
         addr[nt] = &All.AgeTracerRateNormalization;
         id[nt++] = REAL;
 
@@ -1757,16 +1771,19 @@ void read_parameter_file(char *fname)
                 if(strcmp("SnapshotFileBase",tag[i])==0) {strcpy((char *)addr[i],"snapshot"); printf("Tag %s (%s) not set in parameter file: defaulting to value = 'snapshot' \n",tag[i],alternate_tag[i]); continue;}
                 if(All.ComovingIntegrationOn==0)
                 {
-                    if(strcmp("Omega0",tag[i])==0) {*((double *)addr[i])=0; printf("Tag %s (%s) not set in parameter file: defaulting to [non-cosmological] value (assuming integration in flat non-expanding space with physical units) = %g \n",tag[i],alternate_tag[i],All.Omega0); continue;}
+                    if(strcmp("Omega0",tag[i])==0) {*((double *)addr[i])=1; printf("Tag %s (%s) not set in parameter file: defaulting to [non-cosmological] value (assuming integration in flat non-expanding space with physical units) = %g \n",tag[i],alternate_tag[i],All.OmegaMatter); continue;}
                     if(strcmp("OmegaLambda",tag[i])==0) {*((double *)addr[i])=0; printf("Tag %s (%s) not set in parameter file: defaulting to [non-cosmological] value (assuming integration in flat non-expanding space with physical units) = %g \n",tag[i],alternate_tag[i],All.OmegaLambda); continue;}
-                    if(strcmp("OmegaBaryon",tag[i])==0) {*((double *)addr[i])=0; printf("Tag %s (%s) not set in parameter file: defaulting to [non-cosmological] value (assuming integration in flat non-expanding space with physical units) = %g \n",tag[i],alternate_tag[i],All.OmegaBaryon); continue;}
                     if(strcmp("HubbleParam",tag[i])==0) {*((double *)addr[i])=1; printf("Tag %s (%s) not set in parameter file: defaulting to [non-cosmological] value (assuming integration in flat non-expanding space with physical units) = %g \n",tag[i],alternate_tag[i],All.HubbleParam); continue;}
+                    if(strcmp("OmegaRadiation",tag[i])==0) {*((double *)addr[i])=0; continue;}
+                    if(strcmp("OmegaBaryon",tag[i])==0) {*((double *)addr[i])=0; continue;}
                     if(strcmp("SofteningGasMaxPhys",tag[i])==0) {*((double *)addr[i])=0; continue;}
                     if(strcmp("SofteningHaloMaxPhys",tag[i])==0) {*((double *)addr[i])=0; continue;}
                     if(strcmp("SofteningDiskMaxPhys",tag[i])==0) {*((double *)addr[i])=0; continue;}
                     if(strcmp("SofteningBulgeMaxPhys",tag[i])==0) {*((double *)addr[i])=0; continue;}
                     if(strcmp("SofteningStarsMaxPhys",tag[i])==0) {*((double *)addr[i])=0; continue;}
                     if(strcmp("SofteningBndryMaxPhys",tag[i])==0) {*((double *)addr[i])=0; continue;}
+                } else {
+                    if(strcmp("OmegaRadiation",tag[i])==0) {*((double *)addr[i])=0; printf("Tag %s (%s) not set in parameter file: defaulting to ignore radiation in expansion (Omega_r = %g) \n",tag[i],alternate_tag[i],All.OmegaRadiation); continue;}
                 }
                 if(All.OutputListOn==0) {
                     if(strcmp("OutputListFilename",tag[i])==0) {strcpy((char *)addr[i],"output_times_dummy.txt"); continue;}
@@ -1816,6 +1833,13 @@ void read_parameter_file(char *fname)
                 if(strcmp("ST_SpectForm",tag[i])==0) {*((int *)addr[i])=2; printf("Tag %s (%s) not set in parameter file: defaulting to assume driving follows a Kolmogorov spectrum (=%d) \n",tag[i],alternate_tag[i],All.TurbDriving_Global_DrivingSpectrumKey); continue;}
                 if(strcmp("ST_Seed",tag[i])==0) {*((int *)addr[i])=42; printf("Tag %s (%s) not set in parameter file: defaulting to the answer to everything (=%d) \n",tag[i],alternate_tag[i],All.TurbDriving_Global_DrivingRandomNumberKey); continue;}
                 if(strcmp("ST_SolWeight",tag[i])==0) {*((double *)addr[i])=0.5; printf("Tag %s (%s) not set in parameter file: defaulting to assume the so-called natural mix of modes for pressure-free turbulence (=%g) \n",tag[i],alternate_tag[i],All.TurbDriving_Global_SolenoidalFraction); continue;}
+#endif
+#ifdef GALSF_FB_FIRE_AGE_TRACERS
+                if(strcmp("AgeTracerEventsPerTimeBin",tag[i])==0) {*((double *)addr[i])=10; printf("Tag %s (%s) not set in parameter file: defaulting to aim for ~10 age-tracer deposition events per timebin (=%g) \n",tag[i],alternate_tag[i],All.AgeTracerRateNormalization); continue;}
+#if !defined(GALSF_FB_FIRE_AGE_TRACERS_CUSTOM)
+                if(strcmp("AgeTracerBinStart",tag[i])==0) {*((double *)addr[i])=1.; printf("Tag %s (%s) not set in parameter file: left-edge of first age-tracer bin is early in stellar evolution (=%g Myr) \n",tag[i],alternate_tag[i],All.AgeTracerBinStart); continue;}
+                if(strcmp("AgeTracerBinEnd",tag[i])==0) {*((double *)addr[i])=14000.; printf("Tag %s (%s) not set in parameter file: right-edge of last age-tracer bin is at ~t_Hubble (=%g Myr) \n",tag[i],alternate_tag[i],All.AgeTracerBinEnd); continue;}
+#endif
 #endif
                 printf("ERROR. I miss a required value for tag '%s' (or alternate name '%s') in parameter file '%s'.\n", tag[i], alternate_tag[i], fname);
                 errorFlag = 1;

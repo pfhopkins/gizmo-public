@@ -70,7 +70,7 @@ else
                     }
                 }
                 UNLOCK_NEXPORT;
-                if(exitFlag) return -1;
+                if(exitFlag) {return -1;} /* buffer has filled -- important that only this and other buffer-full conditions return the negative condition for the routine */
                 
                 exportnodecount[task] = 0;
                 exportindex[task] = nexp;

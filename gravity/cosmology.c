@@ -64,7 +64,7 @@ double INLINE_FUNC hubble_function(double a)
 #ifdef GR_TABULATED_COSMOLOGY_H
     hubble_a = All.Hubble_H0_CodeUnits * hubble_function_external(a);
 #else
-    hubble_a = All.Omega0 / (a * a * a) + (1 - All.Omega0 - All.OmegaLambda) / (a * a)
+    hubble_a = All.OmegaRadiation / (a*a*a*a) + All.OmegaMatter / (a*a*a) + (1 - All.OmegaMatter - All.OmegaLambda - All.OmegaRadiation) / (a*a)
 #ifdef GR_TABULATED_COSMOLOGY
     + DarkEnergy_a(a);
 #else

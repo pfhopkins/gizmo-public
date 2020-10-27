@@ -13,7 +13,7 @@
 */
 
 
-#ifdef BLACK_HOLES // master flag [needs to be here to prevent compiler breaking when this is not active] //
+#ifdef BLACK_HOLES // top-level flag [needs to be here to prevent compiler breaking when this is not active] //
 
 
 static int N_gas_swallowed, N_star_swallowed, N_dm_swallowed, N_BH_swallowed;
@@ -25,7 +25,7 @@ static int N_gas_swallowed, N_star_swallowed, N_dm_swallowed, N_BH_swallowed;
 #endif
 
 
-#define MASTER_FUNCTION_NAME blackhole_swallow_and_kick_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define CORE_FUNCTION_NAME blackhole_swallow_and_kick_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int CORE_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
 #define CONDITIONFUNCTION_FOR_EVALUATION if(bhsink_isactive(i) && P[i].SwallowID==0) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
 #include "../../system/code_block_xchange_initialize.h" /* pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
 
@@ -188,7 +188,7 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
     while(startnode >= 0) {
         while(startnode >= 0) {
             numngb = ngb_treefind_pairs_threads_targeted(local.Pos, h_i, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist, BH_NEIGHBOR_BITFLAG);
-            if(numngb < 0) {return -1;}
+            if(numngb < 0) {return -2;}
             for(n = 0; n < numngb; n++)
             {
                 j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */
@@ -385,7 +385,7 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 #endif
 #ifdef BH_OUTPUT_MOREINFO
                         printf(" ..BAL kick: P[j].ID %llu ID %llu Type(j) %d f_acc %g M(j) %g V(j).xyz %g/%g/%g P(j).xyz %g/%g/%g p(i).xyz %g/%g/%g v_out %g \n",(unsigned long long) P[j].ID, (unsigned long long) P[j].SwallowID,P[j].Type, All.BAL_f_accretion,Mass_j,Vel_j[0],Vel_j[1],Vel_j[2],P[j].Pos[0],P[j].Pos[1],P[j].Pos[2],local.Pos[0],local.Pos[1],local.Pos[2],v_kick);
-                        fprintf(FdBhWindDetails,"%g  %llu %g  %2.7f %2.7f %2.7f  %2.7f %2.7f %2.7f %g %g %g %llu  %2.7f %2.7f %2.7f\n",All.Time, P[j].ID, Mass_j, P[j].Pos[0],P[j].Pos[1],P[j].Pos[2],  Vel_j[0],Vel_j[1],Vel_j[2],dir[0]/norm,dir[1]/norm,dir[2]/norm, local.ID, local.Pos[0],local.Pos[1],local.Pos[2]); fflush(FdBhWindDetails);
+                        fprintf(FdBhWindDetails,"%g  %llu %g  %2.7f %2.7f %2.7f  %2.7f %2.7f %2.7f %g %g %g %llu  %2.7f %2.7f %2.7f\n",All.Time, (unsigned long long)P[j].ID, Mass_j, P[j].Pos[0],P[j].Pos[1],P[j].Pos[2],  Vel_j[0],Vel_j[1],Vel_j[2],dir[0]/norm,dir[1]/norm,dir[2]/norm, (unsigned long long)local.ID, local.Pos[0],local.Pos[1],local.Pos[2]); fflush(FdBhWindDetails);
 #endif
 #endif // #ifdef BH_WIND_KICK
                         #pragma omp atomic
@@ -395,7 +395,7 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 #ifdef MAGNETIC
                         for(k=0;k<3;k++) {tempB[k]=Get_Gas_BField(j,k);} //use particle magnetic field
 #endif
-                        fprintf(FdBhSwallowDetails,"%g %llu %g %2.7f %2.7f %2.7f %llu %g %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f\n", All.Time, local.ID,local.Mass,local.Pos[0],local.Pos[1],local.Pos[2],  P[j].ID, Mass_j, (P[j].Pos[0]-local.Pos[0]),(P[j].Pos[1]-local.Pos[1]),(P[j].Pos[2]-local.Pos[2]), (Vel_j[0]-local.Vel[0]),(Vel_j[1]-local.Vel[1]),(Vel_j[2]-local.Vel[2]), SphP[j].InternalEnergy, tempB[0], tempB[1], tempB[2], SphP[j].Density); fflush(FdBhSwallowDetails);
+                        fprintf(FdBhSwallowDetails,"%g %llu %g %2.7f %2.7f %2.7f %llu %g %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f\n", All.Time, (unsigned long long)local.ID,local.Mass,local.Pos[0],local.Pos[1],local.Pos[2],  (unsigned long long)P[j].ID, Mass_j, (P[j].Pos[0]-local.Pos[0]),(P[j].Pos[1]-local.Pos[1]),(P[j].Pos[2]-local.Pos[2]), (Vel_j[0]-local.Vel[0]),(Vel_j[1]-local.Vel[1]),(Vel_j[2]-local.Vel[2]), SphP[j].InternalEnergy, tempB[0], tempB[1], tempB[2], SphP[j].Density); fflush(FdBhSwallowDetails);
 #endif
                     }  // if(P[j].Type == 0)
                     //P[j].SwallowID = 0; /* DAA: make sure it is not accreted (or ejected) by the same BH again if inactive in the next timestep [PFH: no longer necessary with the new way we re-initialize the SwallowIDs] */
@@ -540,4 +540,4 @@ void blackhole_swallow_and_kick_loop(void)
 
 
 
-#endif // master flag
+#endif // top-level flag

@@ -1,7 +1,7 @@
 /* This is a generic code block designed for simple neighbor loops, so that they don't have to
 be copy-pasted and can be generically optimized in a single place */
 {
-    int j, k, ndone, ndone_flag, recvTask, place, save_NextParticle; long long n_exported = 0; double tstart, tend, tstart_loop; /* define some variables used only below */
+    int j, k, ndone=0, ndone_flag=0, recvTask, place, save_NextParticle; long long n_exported = 0; double tstart, tend, tstart_loop; /* define some variables used only below */
     NextParticle = FirstActiveParticle;    /* begin the main loop; start with this index */
     tstart_loop = my_second();
     do /* primary point-element loop */
@@ -31,7 +31,7 @@ be copy-pasted and can be generically optimized in a single place */
             }
             if(NextParticle == save_NextParticle)
             {
-                PRINT_WARNING("NextParticle == save_NextParticle condition: NextParticle=%d save_NextParticle=%d last_nextparticle=%d ProcessedFlag[NextParticle]=%d NextActiveParticle[NextParticle]=%d NumPart=%d N_gas=%d NTaskTimesNumPart=%llu maxThreads=%d All.BunchSize=%d All.BufferSize=%llu Nexport=%ld",NextParticle,save_NextParticle,last_nextparticle,ProcessedFlag[NextParticle],NextActiveParticle[NextParticle],NumPart,N_gas,(unsigned long long)NTaskTimesNumPart,maxThreads,All.BunchSize,(unsigned long long)All.BufferSize,Nexport);
+                PRINT_WARNING("NextParticle == save_NextParticle condition (the buffer appears too small to hold a single particle): NextParticle=%d save_NextParticle=%d last_nextparticle=%d ProcessedFlag[NextParticle]=%d NextActiveParticle[NextParticle]=%d NumPart=%d N_gas=%d NTaskTimesNumPart=%llu maxThreads=%d All.BunchSize=%ld All.BufferSize=%llu Nexport=%ld ndone=%d ndone_flag=%d NTask=%d",NextParticle,save_NextParticle,last_nextparticle,ProcessedFlag[NextParticle],NextActiveParticle[NextParticle],NumPart,N_gas,(unsigned long long)NTaskTimesNumPart,maxThreads,All.BunchSize,(unsigned long long)All.BufferSize,Nexport,ndone,ndone_flag,NTask);
                 if(NextParticle >= 0) {PRINT_WARNING("This is a live particle: NextParticle=%d ID=%llu Mass=%g Type=%d",NextParticle,(unsigned long long)P[NextParticle].ID,P[NextParticle].Mass,P[NextParticle].Type);}
                 endrun(113312);
             } /* in this case, the buffer is too small to process even a single particle */

@@ -6,7 +6,7 @@
 static inline void *PRIMARY_SUBFUN_NAME(void *p, int loop_iteration)
 {
 #define CONDITION_FOR_EVALUATION CONDITIONFUNCTION_FOR_EVALUATION
-#define EVALUATION_CALL MASTER_FUNCTION_NAME(i, 0, exportflag, exportnodecount, exportindex, ngblist, loop_iteration)
+#define EVALUATION_CALL CORE_FUNCTION_NAME(i, 0, exportflag, exportnodecount, exportindex, ngblist, loop_iteration)
 #include "../system/code_block_primary_loop_evaluation.h"
 #undef CONDITION_FOR_EVALUATION
 #undef EVALUATION_CALL
@@ -14,7 +14,7 @@ static inline void *PRIMARY_SUBFUN_NAME(void *p, int loop_iteration)
 
 static inline void *SECONDARY_SUBFUN_NAME(void *p, int loop_iteration)
 {
-#define EVALUATION_CALL MASTER_FUNCTION_NAME(j, 1, &dummy, &dummy, &dummy, ngblist, loop_iteration);
+#define EVALUATION_CALL CORE_FUNCTION_NAME(j, 1, &dummy, &dummy, &dummy, ngblist, loop_iteration);
 #include "../system/code_block_secondary_loop_evaluation.h"
 #undef EVALUATION_CALL
 }
@@ -30,4 +30,4 @@ static inline void *SECONDARY_SUBFUN_NAME(void *p, int loop_iteration)
 #undef DATAGET_NAME
 #undef DATAIN_NAME
 #undef INPUT_STRUCT_NAME
-#undef MASTER_FUNCTION_NAME
+#undef CORE_FUNCTION_NAME

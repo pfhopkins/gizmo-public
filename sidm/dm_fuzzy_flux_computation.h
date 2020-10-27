@@ -91,7 +91,7 @@ if((local.Type==1) && (P[j].Type==1)) // only acts between DM particles of type 
     out.AGS_Dt_Psi_Mass += Flux_M;
 #endif
 
-} // master bracket (for variable protection)
+} // total bracket (for variable protection)
 #endif
 
 

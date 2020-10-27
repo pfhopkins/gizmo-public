@@ -24,7 +24,7 @@
 #ifdef RT_SOURCE_INJECTION
 
 
-#define MASTER_FUNCTION_NAME rt_sourceinjection_evaluate /*! name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define CORE_FUNCTION_NAME rt_sourceinjection_evaluate /*! name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int CORE_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
 #define CONDITIONFUNCTION_FOR_EVALUATION if(rt_sourceinjection_active_check(i)) /*! function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
 #include "../system/code_block_xchange_initialize.h" /*! pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
 
@@ -132,13 +132,13 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
     {
         while(startnode >= 0)
         {
-#ifdef BH_ANGLEWEIGHT_PHOTON_INJECTION // we want the 2-way search to ensure overlapping diffuse gas gets radiation
+#ifdef RT_BH_ANGLEWEIGHT_PHOTON_INJECTION // we want the 2-way search to ensure overlapping diffuse gas gets radiation
             if(All.TimeStep > 0) {numngb_inbox = ngb_treefind_pairs_threads(local.Pos, local.Hsml, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist);}
             else {numngb_inbox = ngb_treefind_variable_threads(local.Pos, local.Hsml, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist);}// we don't have the necessary weights yet on timestep 0, so we will proceed with normal injection weighting and neighbor searching
 #else            
             numngb_inbox = ngb_treefind_variable_threads(local.Pos, local.Hsml, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist);
 #endif            
-            if(numngb_inbox < 0) {return -1;}
+            if(numngb_inbox < 0) {return -2;}
             for(n = 0; n < numngb_inbox; n++)
             {
                 /* figure out if the neighbor is eligible to receive photons, calculate some useful quantities ahead of time */
@@ -149,7 +149,7 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
                 NEAREST_XYZ(dp[0],dp[1],dp[2],1); /* find the closest image in the given box size  */
                 double r2=0, r, c_light_eff, wk; for(k=0;k<3;k++) {r2 += dp[k]*dp[k];}
                 if(r2<=0) {continue;} // same particle //
-#ifdef BH_ANGLEWEIGHT_PHOTON_INJECTION
+#ifdef RT_BH_ANGLEWEIGHT_PHOTON_INJECTION
                 if((All.TimeStep > 0) && (r2>=h2) && (r2 >= PPP[j].Hsml*PPP[j].Hsml)) {continue;} // outside kernel //
 #else
                 if(r2>=h2) {continue;} // outside kernel //
@@ -157,7 +157,7 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
                 r = sqrt(r2); c_light_eff = C_LIGHT_CODE_REDUCED; // useful variables for below
                 
                 /* calculate the kernel weight used to apply photons to the neighbor */
-#ifdef BH_ANGLEWEIGHT_PHOTON_INJECTION // use the angle-weighted coupling
+#ifdef RT_BH_ANGLEWEIGHT_PHOTON_INJECTION // use the angle-weighted coupling
                 if(All.TimeStep > 0) {wk = bh_angleweight_localcoupling(j,0,r,local.Hsml) / local.KernelSum_Around_RT_Source;} else {wk = (1 - r2*hinv*hinv) / local.KernelSum_Around_RT_Source;}
 #else
                 wk = (1 - r2*hinv*hinv) / local.KernelSum_Around_RT_Source;
@@ -292,7 +292,7 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
 
 
 
-/*! routine to do the master loop over particles, for the source injection (photons put into surrounding gas) */
+/*! routine to do the top-level loop over particles, for the source injection (photons put into surrounding gas) */
 void rt_source_injection(void)
 {
     PRINT_STATUS(" ..injecting radiation onto grid for RHD steps");

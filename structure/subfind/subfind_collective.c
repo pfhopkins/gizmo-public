@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include "../../allvars.h"
 #include "../../proto.h"
+#include "../../kernel.h"
 #include "../../domain.h"
 /*
 * This file was originally part of the GADGET3 code developed by Volker Springel.
@@ -164,27 +165,13 @@ void subfind_unbind_independent_ones(int count_cand)
 
 void subfind_process_group_collectively(int num)
 {
-  long long p;
-    int len, len_non_gas, LocalNonGasLen, totgrouplen1, totgrouplen2; len_non_gas=0;
-  int ncand, parent, totcand, nremaining;
-  int max_loc_length, max_length;
-  int count, countall, *countlist, *offset;
-  int i, j, k, nr, grindex = 0, nsubs, subnr;
-  int count_leaves, tot_count_leaves;
-  int master;
-  double SubMass, SubPos[3], SubVel[3], SubCM[3], SubVelDisp, SubVmax, SubVmaxRad, SubSpin[3], SubHalfMass,
-    SubMassTab[6];
-  struct cand_dat *tmp_candidates = 0;
-  MyIDType SubMostBoundID;
-  double t0, t1, tt0, tt1;
+  long long p; int len, len_non_gas, LocalNonGasLen, totgrouplen1, totgrouplen2; len_non_gas=0, ncand, parent, totcand, nremaining;
+  int max_loc_length, max_length, count, countall, *countlist, *offset, i, j, k, nr, grindex = 0, nsubs, subnr, count_leaves, tot_count_leaves, TaskID;
+  double SubMass, SubPos[3], SubVel[3], SubCM[3], SubVelDisp, SubVmax, SubVmaxRad, SubSpin[3], SubHalfMass, SubMassTab[6];
+  struct cand_dat *tmp_candidates = 0; MyIDType SubMostBoundID; double t0, t1, tt0, tt1;
 
-
-  if(ThisTask == 0)
-    printf("\ncollectively doing halo %d, num=%d\n", GrNr, num);
-
-  for(i = 0, NumPartGroup = 0; i < NumPart; i++)
-    if(P[i].GrNr == GrNr)
-      NumPartGroup++;
+  if(ThisTask == 0) {printf("\ncollectively doing halo %d, num=%d\n", GrNr, num);}
+  for(i = 0, NumPartGroup = 0; i < NumPart; i++) {if(P[i].GrNr == GrNr) {NumPartGroup++;}}
 
   MPI_Allreduce(&NumPartGroup, &totgrouplen1, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
 
@@ -439,33 +426,33 @@ void subfind_process_group_collectively(int num)
       /* we now mark the particles that are in subhalo candidates that can be processed independently in parallel */
       nsubs = 0;
       t0 = my_second();
-      for(master = 0; master < NTask; master++)
+      for(TaskID = 0; TaskID < NTask; TaskID++)
 	{
 	  ncand = count_cand;
 
-	  MPI_Bcast(&ncand, sizeof(ncand), MPI_BYTE, master, MPI_COMM_WORLD);
+	  MPI_Bcast(&ncand, sizeof(ncand), MPI_BYTE, TaskID, MPI_COMM_WORLD);
 
 	  for(k = 0; k < ncand; k++)
 	    {
-	      if(ThisTask == master)
+	      if(ThisTask == TaskID)
 		{
 		  len = candidates[k].len;
 		  parent = candidates[k].parent;	/* this is here actually the daughter count */
 		}
 
-	      MPI_Bcast(&len, sizeof(len), MPI_BYTE, master, MPI_COMM_WORLD);
-	      MPI_Bcast(&parent, sizeof(parent), MPI_BYTE, master, MPI_COMM_WORLD);
+	      MPI_Bcast(&len, sizeof(len), MPI_BYTE, TaskID, MPI_COMM_WORLD);
+	      MPI_Bcast(&parent, sizeof(parent), MPI_BYTE, TaskID, MPI_COMM_WORLD);
 	      MPI_Barrier(MPI_COMM_WORLD);
 
 	      if(parent == 0)
 		{
-		  if(ThisTask != master)
+		  if(ThisTask != TaskID)
 		    subfind_poll_for_requests();
 		  else
 		    {
 		      for(i = 0, p = candidates[k].head; i < candidates[k].len; i++)
 			{
-			  subfind_distlinklist_mark_particle(p, master, nsubs);
+			  subfind_distlinklist_mark_particle(p, TaskID, nsubs);
 
 			  if(p < 0)
 			    {
@@ -559,28 +546,28 @@ void subfind_process_group_collectively(int num)
   ud = (struct unbind_data *)mymalloc("ud", NumPartGroup * sizeof(struct unbind_data));
 
   t0 = my_second();
-  for(master = 0, nr = 0; master < NTask; master++)
+  for(TaskID = 0, nr = 0; TaskID < NTask; TaskID++)
     {
       ncand = count_cand;
 
-      MPI_Bcast(&ncand, sizeof(ncand), MPI_BYTE, master, MPI_COMM_WORLD);
+      MPI_Bcast(&ncand, sizeof(ncand), MPI_BYTE, TaskID, MPI_COMM_WORLD);
 
       for(k = 0; k < ncand; k++)
 	{
-	  if(ThisTask == master)
+	  if(ThisTask == TaskID)
 	    {
 	      len = candidates[k].len;
 	      nsubs = candidates[k].nsub;
 	      parent = candidates[k].parent;	/* this is here actually the daughter count */
 	    }
 
-	  MPI_Bcast(&parent, sizeof(parent), MPI_BYTE, master, MPI_COMM_WORLD);
+	  MPI_Bcast(&parent, sizeof(parent), MPI_BYTE, TaskID, MPI_COMM_WORLD);
 	  MPI_Barrier(MPI_COMM_WORLD);
 
 	  if(parent >= 0)
 	    {
-	      MPI_Bcast(&len, sizeof(len), MPI_BYTE, master, MPI_COMM_WORLD);
-	      MPI_Bcast(&nsubs, sizeof(nsubs), MPI_BYTE, master, MPI_COMM_WORLD);
+	      MPI_Bcast(&len, sizeof(len), MPI_BYTE, TaskID, MPI_COMM_WORLD);
+	      MPI_Bcast(&nsubs, sizeof(nsubs), MPI_BYTE, TaskID, MPI_COMM_WORLD);
 
 	      if(ThisTask == 0)
 		{
@@ -594,7 +581,7 @@ void subfind_process_group_collectively(int num)
 
 	      tt0 = my_second();
 
-	      if(ThisTask != master)
+	      if(ThisTask != TaskID)
 		subfind_poll_for_requests();
 	      else
 		{
@@ -639,14 +626,14 @@ void subfind_process_group_collectively(int num)
 		  for(i = 0; i < LocalLen; i++)
 		    Tail[ud[i].index] = nsubs;	/* we use this to flag the substructures */
 
-		  if(ThisTask == master)
+		  if(ThisTask == TaskID)
 		    {
 		      candidates[k].bound_length = len;
 		    }
 		}
 	      else
 		{
-		  if(ThisTask == master)
+		  if(ThisTask == TaskID)
 		    {
 		      candidates[k].bound_length = 0;
 		    }
@@ -760,31 +747,31 @@ void subfind_process_group_collectively(int num)
     }
 
   t0 = my_second();
-  for(master = 0, subnr = 0; master < NTask; master++)
+  for(TaskID = 0, subnr = 0; TaskID < NTask; TaskID++)
     {
       ncand = count_cand;
-      MPI_Bcast(&ncand, sizeof(int), MPI_INT, master, MPI_COMM_WORLD);
+      MPI_Bcast(&ncand, sizeof(int), MPI_INT, TaskID, MPI_COMM_WORLD);
 
       for(k = 0; k < ncand; k++)
 	{
-	  if(ThisTask == master)
+	  if(ThisTask == TaskID)
 	    {
 	      len = candidates[k].bound_length;
 	      nsubs = candidates[k].nsub;
 	      parent = candidates[k].parent;
 	    }
 
-	  MPI_Bcast(&len, sizeof(len), MPI_BYTE, master, MPI_COMM_WORLD);
+	  MPI_Bcast(&len, sizeof(len), MPI_BYTE, TaskID, MPI_COMM_WORLD);
 	  MPI_Barrier(MPI_COMM_WORLD);
 
 	  if(len > 0)
 	    {
-	      MPI_Bcast(&nsubs, sizeof(nsubs), MPI_BYTE, master, MPI_COMM_WORLD);
-	      MPI_Bcast(&parent, sizeof(parent), MPI_BYTE, master, MPI_COMM_WORLD);
+	      MPI_Bcast(&nsubs, sizeof(nsubs), MPI_BYTE, TaskID, MPI_COMM_WORLD);
+	      MPI_Bcast(&parent, sizeof(parent), MPI_BYTE, TaskID, MPI_COMM_WORLD);
 
 	      LocalLen = 0;
 
-	      if(ThisTask != master)
+	      if(ThisTask != TaskID)
 		subfind_poll_for_requests();
 	      else
 		{
@@ -897,7 +884,7 @@ void subfind_process_group_collectively(int num)
 void subfind_col_find_candidates(int totgrouplen)
 {
   int ngbcount, retcode, len_attach;
-  int i, k, len, master;
+  int i, k, len, TaskID;
   long long prev, tail, tail_attach, tmp, next, index;
   long long p, ss, head, head_attach, ngb_index1, ngb_index2, rank;
   double t0, t1, tt0, tt1;
@@ -911,10 +898,10 @@ void subfind_col_find_candidates(int totgrouplen)
 
   /* now find the subhalo candidates by building up link lists from high density to low density */
   t0 = my_second();
-  for(master = 0; master < NTask; master++)
+  for(TaskID = 0; TaskID < NTask; TaskID++)
     {
       tt0 = my_second();
-      if(ThisTask != master)
+      if(ThisTask != TaskID)
 	subfind_poll_for_requests();
       else
 	{
@@ -1040,7 +1027,7 @@ void subfind_col_find_candidates(int totgrouplen)
       tt1 = my_second();
       if(ThisTask == 0)
 	{
-	  printf("  ma=%d/%d took %g sec\n", master, NTask, timediff(tt0, tt1));
+	  printf("  ma=%d/%d took %g sec\n", TaskID, NTask, timediff(tt0, tt1));
 	  fflush(stdout);
 	}
     }
@@ -1050,9 +1037,9 @@ void subfind_col_find_candidates(int totgrouplen)
 
   /* add the full thing as a subhalo candidate */
   t0 = my_second();
-  for(master = 0, head = -1, prev = -1; master < NTask; master++)
+  for(TaskID = 0, head = -1, prev = -1; TaskID < NTask; TaskID++)
     {
-      if(ThisTask != master)
+      if(ThisTask != TaskID)
 	subfind_poll_for_requests();
       else
 	{
@@ -1084,8 +1071,8 @@ void subfind_col_find_candidates(int totgrouplen)
 	}
 
       MPI_Barrier(MPI_COMM_WORLD);
-      MPI_Bcast(&head, sizeof(head), MPI_BYTE, master, MPI_COMM_WORLD);
-      MPI_Bcast(&prev, sizeof(prev), MPI_BYTE, master, MPI_COMM_WORLD);
+      MPI_Bcast(&head, sizeof(head), MPI_BYTE, TaskID, MPI_COMM_WORLD);
+      MPI_Bcast(&prev, sizeof(prev), MPI_BYTE, TaskID, MPI_COMM_WORLD);
     }
 
   if(ThisTask == NTask - 1)
@@ -1106,9 +1093,9 @@ void subfind_col_find_candidates(int totgrouplen)
   /* go through the whole chain once to establish a rank order. For the rank we use Len[] */
   t0 = my_second();
 
-  master = (head >> 32);
+  TaskID = (head >> 32);
 
-  if(ThisTask != master)
+  if(ThisTask != TaskID)
     subfind_poll_for_requests();
   else
     {
@@ -1122,18 +1109,18 @@ void subfind_col_find_candidates(int totgrouplen)
 
       /* now tell the others to stop polling */
       for(i = 0; i < NTask; i++)
-	if(i != master)
+	if(i != TaskID)
 	  MPI_Send(&i, 1, MPI_INT, i, TAG_POLLING_DONE, MPI_COMM_WORLD);
     }
 
   MPI_Barrier(MPI_COMM_WORLD);
-  MPI_Bcast(&rank, sizeof(rank), MPI_BYTE, master, MPI_COMM_WORLD);	/* just for testing */
+  MPI_Bcast(&rank, sizeof(rank), MPI_BYTE, TaskID, MPI_COMM_WORLD);	/* just for testing */
 
   /* for each candidate, we now pull out the rank of its head */
-  for(master = 0; master < NTask; master++)
+  for(TaskID = 0; TaskID < NTask; TaskID++)
     {
-      if(ThisTask != master)
-	subfind_poll_for_requests();
+      if(ThisTask != TaskID)
+      {subfind_poll_for_requests();}
       else
 	{
 	  for(k = 0; k < count_cand; k++)
@@ -2023,86 +2010,50 @@ void subfind_distlinklist_set_all(long long index, long long head, long long tai
 
 int subfind_compare_P_GrNrGrNr(const void *a, const void *b)
 {
-  if(abs(((struct particle_data *) a)->GrNr - GrNr) < abs(((struct particle_data *) b)->GrNr - GrNr))
-    return -1;
-
-  if(abs(((struct particle_data *) a)->GrNr - GrNr) > abs(((struct particle_data *) b)->GrNr - GrNr))
-    return +1;
-
-  if(((struct particle_data *) a)->ID < ((struct particle_data *) b)->ID)
-    return -1;
-
-  if(((struct particle_data *) a)->ID > ((struct particle_data *) b)->ID)
-    return +1;
-
+  if(abs(((struct particle_data *) a)->GrNr - GrNr) < abs(((struct particle_data *) b)->GrNr - GrNr)) {return -1;}
+  if(abs(((struct particle_data *) a)->GrNr - GrNr) > abs(((struct particle_data *) b)->GrNr - GrNr)) {return +1;}
+  if(((struct particle_data *) a)->ID < ((struct particle_data *) b)->ID) {return -1;}
+  if(((struct particle_data *) a)->ID > ((struct particle_data *) b)->ID) {return +1;}
   return 0;
 }
 
 int subfind_compare_P_submark(const void *a, const void *b)
 {
-  if(((struct particle_data *) a)->submark < ((struct particle_data *) b)->submark)
-    return -1;
-
-  if(((struct particle_data *) a)->submark > ((struct particle_data *) b)->submark)
-    return +1;
-
+  if(((struct particle_data *) a)->submark < ((struct particle_data *) b)->submark) {return -1;}
+  if(((struct particle_data *) a)->submark > ((struct particle_data *) b)->submark) {return +1;}
   return 0;
 }
 
 
 int subfind_compare_candidates_subnr(const void *a, const void *b)
 {
-  if(((struct cand_dat *) a)->subnr < ((struct cand_dat *) b)->subnr)
-    return -1;
-
-  if(((struct cand_dat *) a)->subnr > ((struct cand_dat *) b)->subnr)
-    return +1;
-
+  if(((struct cand_dat *) a)->subnr < ((struct cand_dat *) b)->subnr) {return -1;}
+  if(((struct cand_dat *) a)->subnr > ((struct cand_dat *) b)->subnr) {return +1;}
   return 0;
 }
 
 int subfind_compare_candidates_nsubs(const void *a, const void *b)
 {
-  if(((struct cand_dat *) a)->nsub < ((struct cand_dat *) b)->nsub)
-    return -1;
-
-  if(((struct cand_dat *) a)->nsub > ((struct cand_dat *) b)->nsub)
-    return +1;
-
+  if(((struct cand_dat *) a)->nsub < ((struct cand_dat *) b)->nsub) {return -1;}
+  if(((struct cand_dat *) a)->nsub > ((struct cand_dat *) b)->nsub) {return +1;}
   return 0;
 }
 
 int subfind_compare_candidates_boundlength(const void *a, const void *b)
 {
-  if(((struct cand_dat *) a)->bound_length > ((struct cand_dat *) b)->bound_length)
-    return -1;
-
-  if(((struct cand_dat *) a)->bound_length < ((struct cand_dat *) b)->bound_length)
-    return +1;
-
-  if(((struct cand_dat *) a)->rank < ((struct cand_dat *) b)->rank)
-    return -1;
-
-  if(((struct cand_dat *) a)->rank > ((struct cand_dat *) b)->rank)
-    return +1;
-
+  if(((struct cand_dat *) a)->bound_length > ((struct cand_dat *) b)->bound_length) {return -1;}
+  if(((struct cand_dat *) a)->bound_length < ((struct cand_dat *) b)->bound_length) {return +1;}
+  if(((struct cand_dat *) a)->rank < ((struct cand_dat *) b)->rank) {return -1;}
+  if(((struct cand_dat *) a)->rank > ((struct cand_dat *) b)->rank) {return +1;}
   return 0;
 }
 
 int subfind_compare_candidates_rank(const void *a, const void *b)
 {
-  if(((struct cand_dat *) a)->rank < ((struct cand_dat *) b)->rank)
-    return -1;
-
-  if(((struct cand_dat *) a)->rank > ((struct cand_dat *) b)->rank)
-    return +1;
-
-  if(((struct cand_dat *) a)->len > ((struct cand_dat *) b)->len)
-    return -1;
-
-  if(((struct cand_dat *) a)->len < ((struct cand_dat *) b)->len)
-    return +1;
-
+  if(((struct cand_dat *) a)->rank < ((struct cand_dat *) b)->rank) {return -1;}
+  if(((struct cand_dat *) a)->rank > ((struct cand_dat *) b)->rank) {return +1;}
+  if(((struct cand_dat *) a)->len > ((struct cand_dat *) b)->len) {return -1;}
+  if(((struct cand_dat *) a)->len < ((struct cand_dat *) b)->len) {return +1;}
   return 0;
 }
 
@@ -2111,35 +2062,23 @@ int subfind_compare_candidates_rank(const void *a, const void *b)
 
 int subfind_compare_dist_rotcurve(const void *a, const void *b)
 {
-  if(((sort_r2list *) a)->r < ((sort_r2list *) b)->r)
-    return -1;
-
-  if(((sort_r2list *) a)->r > ((sort_r2list *) b)->r)
-    return +1;
-
+  if(((sort_r2list *) a)->r < ((sort_r2list *) b)->r) {return -1;}
+  if(((sort_r2list *) a)->r > ((sort_r2list *) b)->r) {return +1;}
   return 0;
 }
 
 int subfind_compare_binding_energy(const void *a, const void *b)
 {
-  if(*((double *) a) > *((double *) b))
-    return -1;
-
-  if(*((double *) a) < *((double *) b))
-    return +1;
-
+  if(*((double *) a) > *((double *) b)) {return -1;}
+  if(*((double *) a) < *((double *) b)) {return +1;}
   return 0;
 }
 
 
 int subfind_compare_densities(const void *a, const void *b)	/* largest density first */
 {
-  if(((struct sort_density_data *) a)->density > (((struct sort_density_data *) b)->density))
-    return -1;
-
-  if(((struct sort_density_data *) a)->density < (((struct sort_density_data *) b)->density))
-    return +1;
-
+  if(((struct sort_density_data *) a)->density > (((struct sort_density_data *) b)->density)) {return -1;}
+  if(((struct sort_density_data *) a)->density < (((struct sort_density_data *) b)->density)) {return +1;}
   return 0;
 }
 

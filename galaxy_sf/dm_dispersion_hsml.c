@@ -28,7 +28,7 @@
 #ifdef GALSF_SUBGRID_WINDS
 #if (GALSF_SUBGRID_WIND_SCALING==2)
 
-#define MASTER_FUNCTION_NAME disp_density_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define CORE_FUNCTION_NAME disp_density_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int CORE_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
 #define INPUTFUNCTION_NAME disp_particle2in_density    /* name of the function which loads the element data needed (for e.g. broadcast to other processors, neighbor search) */
 #define OUTPUTFUNCTION_NAME disp_out2particle_density  /* name of the function which takes the data returned from other processors and combines it back to the original elements */
 #define CONDITIONFUNCTION_FOR_EVALUATION if(disp_density_isactive(i)) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
@@ -91,7 +91,7 @@ int disp_density_evaluate(int target, int mode, int *exportflag, int *exportnode
     while(startnode >= 0) {
         while(startnode >= 0) {
             numngb_inbox = ngb_treefind_variable_threads_targeted(local.Pos, local.HsmlDM, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist, 2); // search for high-res DM particles only: 2^1 = 2
-            if(numngb_inbox < 0) return -1;
+            if(numngb_inbox < 0) {return -2;}
             for(n = 0; n < numngb_inbox; n++)
             {
                 j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */

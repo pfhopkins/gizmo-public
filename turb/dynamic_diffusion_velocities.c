@@ -31,7 +31,7 @@ struct kernel_DiffFilter {
 };
 
 
-#define MASTER_FUNCTION_NAME DiffFilter_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define CORE_FUNCTION_NAME DiffFilter_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int CORE_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
 #define INPUTFUNCTION_NAME particle2in_DiffFilter    /* name of the function which loads the element data needed (for e.g. broadcast to other processors, neighbor search) */
 #define OUTPUTFUNCTION_NAME out2particle_DiffFilter  /* name of the function which takes the data returned from other processors and combines it back to the original elements */
 #define CONDITIONFUNCTION_FOR_EVALUATION if((P[i].Type==0)&&(P[i].TimeBin>=0)&&(P[i].Mass>0)) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
@@ -133,7 +133,7 @@ int DiffFilter_evaluate(int target, int mode, int *exportflag, int *exportnodeco
     while (startnode >= 0) {
         while (startnode >= 0) {
             numngb = ngb_treefind_pairs_threads(local.Pos, All.TurbDynamicDiffFac * kernel.h_i, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist);
-            if (numngb < 0) {return -1;}
+            if(numngb < 0) {return -2;}
 
             for (n = 0; n < numngb; n++) {
                 j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */

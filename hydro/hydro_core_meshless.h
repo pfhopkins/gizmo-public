@@ -16,8 +16,8 @@
 //#define HYDRO_FACE_VOLUME_RECONSTRUCTION_CORRECTION
 #endif
     
-    double s_star_ij,s_i,s_j,v_frame[3],n_unit[3],dummy_pressure;
-    double distance_from_i[3],distance_from_j[3];
+    double s_star_ij,s_i,s_j,v_frame[3],dummy_pressure,distance_from_i[3],distance_from_j[3];
+    double leak_vs_tol = 0.5 * (local.FaceClosureError+SphP[j].FaceClosureError);
     dummy_pressure=face_area_dot_vel=face_vel_i=face_vel_j=Face_Area_Norm=0;
     double Pressure_i = local.Pressure, Pressure_j = SphP[j].Pressure;
 #if defined(EOS_TILLOTSON) || defined(EOS_ELASTIC)
@@ -53,78 +53,8 @@
     /* ------------------------------------------------------------------------------------------------------------------- */
     /* now we're ready to compute the volume integral of the fluxes (or equivalently an 'effective area'/face orientation) */
     /* ------------------------------------------------------------------------------------------------------------------- */
-    double wt_i,wt_j; wt_i=V_i; wt_j=V_j;
-#if (SLOPE_LIMITER_TOLERANCE != 2) && !((defined(HYDRO_FACE_AREA_LIMITER) || !defined(PROTECT_FROZEN_FIRE)) && (HYDRO_FIX_MESH_MOTION >= 5)) // unless using the most aggressive reconstruction, we will limit face-area disparity here //
-#if defined(COOLING) || (SLOPE_LIMITER_TOLERANCE==0)
-    if((fabs(V_i-V_j)/DMIN(V_i,V_j))/NUMDIMS > 1.25) {wt_i=wt_j=2.*V_i*V_j/(V_i+V_j);} else {wt_i=V_i; wt_j=V_j;} //wt_i=wt_j = 2.*V_i*V_j / (V_i + V_j); // more conservatively, could use DMIN(V_i,V_j), but that is less accurate
-#else
-    if((fabs(V_i-V_j)/DMIN(V_i,V_j))/NUMDIMS > 1.50) {wt_i=wt_j=(V_i*Particle_Size_j+V_j*Particle_Size_i)/(Particle_Size_i+Particle_Size_j);} else {wt_i=V_i; wt_j=V_j;} //wt_i=wt_j = (V_i*PPP[j].Hsml + V_j*local.Hsml) / (local.Hsml+PPP[j].Hsml); // should these be H, or be -effective sizes- //
-#endif
-#elif defined(GALSF)
-    if( (fabs(log(V_i/V_j)/NUMDIMS) > 1.25) && (kernel.r > local.Hsml || kernel.r > PPP[j].Hsml) ) {wt_i=wt_j=(V_i*Particle_Size_j+V_j*Particle_Size_i)/(Particle_Size_i+Particle_Size_j);}
-#endif
-    /* the effective gradient matrix is well-conditioned: we can safely use the consistent EOM */
-    // note the 'default' formulation from Lanson and Vila takes wt_i=V_i, wt_j=V_j; but this assumes negligible variation in h between particles;
-    //      it is more accurate to use a centered wt (centered face area), which we get by linear interpolation //
-    double facenormal_dot_dp = 0;
-    for(k=0;k<3;k++)
-    {
-        Face_Area_Vec[k] = kernel.wk_i * wt_i * (local.NV_T[k][0]*kernel.dp[0] + local.NV_T[k][1]*kernel.dp[1] + local.NV_T[k][2]*kernel.dp[2])
-                         + kernel.wk_j * wt_j * (SphP[j].NV_T[k][0]*kernel.dp[0] + SphP[j].NV_T[k][1]*kernel.dp[1] + SphP[j].NV_T[k][2]*kernel.dp[2]);
-        Face_Area_Vec[k] *= All.cf_atime*All.cf_atime; /* Face_Area_Norm has units of area, need to convert to physical */
-        Face_Area_Norm += Face_Area_Vec[k]*Face_Area_Vec[k];
-        facenormal_dot_dp += Face_Area_Vec[k] * kernel.dp[k]; /* check that face points same direction as vector normal: should be true for positive-definite (well-conditioned) NV_T */
-    }
-    
-#if defined(KERNEL_CRK_FACES)
-    {
-        // order of Tensor_CRK_Face_Corrections: A, B[3], (dA+A*B)[3], (dA.B+A.dB)[3][3] //
-        double wk_ij = 0.5*(kernel.wk_i+kernel.wk_j), dwk_ij = 0.5*(kernel.dwk_i+kernel.dwk_j) / (MIN_REAL_NUMBER + kernel.r);
-        double Bi_dot_dx = 0, Bj_dot_dx = 0, dAi_etc_dot_dx[3]={0}, dAj_etc_dot_dx[3]={0};
-        for(k=0;k<3;k++)
-        {
-            Bi_dot_dx +=   local.Tensor_CRK_Face_Corrections[k+1] * kernel.dp[k];
-            Bj_dot_dx -= SphP[j].Tensor_CRK_Face_Corrections[k+1] * kernel.dp[k];
-            int k_x;
-            for(k_x=0;k_x<3;k_x++)
-            {
-                dAi_etc_dot_dx[k_x] +=   local.Tensor_CRK_Face_Corrections[7+3*k+k_x] * kernel.dp[k];
-                dAj_etc_dot_dx[k_x] -= SphP[j].Tensor_CRK_Face_Corrections[7+3*k+k_x] * kernel.dp[k];
-            }
-        }
-        Face_Area_Norm = 0; facenormal_dot_dp = 0;
-        for(k=0;k<3;k++)
-        {
-            double Ai = -V_i*V_j*(    local.Tensor_CRK_Face_Corrections[0] * (1. + Bi_dot_dx) * dwk_ij * (+kernel.dp[k])
-                                 + (  local.Tensor_CRK_Face_Corrections[4+k] + dAi_etc_dot_dx[k]) * wk_ij);
-            double Aj = -V_i*V_j*(  SphP[j].Tensor_CRK_Face_Corrections[0] * (1. + Bj_dot_dx) * dwk_ij * (-kernel.dp[k])
-                                 + (SphP[j].Tensor_CRK_Face_Corrections[4+k] + dAj_etc_dot_dx[k]) * wk_ij);
-            Face_Area_Vec[k] = (Ai - Aj) * All.cf_atime*All.cf_atime;
-            Face_Area_Norm += Face_Area_Vec[k]*Face_Area_Vec[k];
-            facenormal_dot_dp += Face_Area_Vec[k] * kernel.dp[k]; /* check that face points same direction as vector normal: should be true for positive-definite (well-conditioned) NV_T */
-        }
-    }
-#endif
+#include "compute_finitevol_faces.h" /* insert code block for computing Face_Area_Vec, Face_Area_Norm, etc. */
 
-#if defined(HYDRO_FACE_VOLUME_RECONSTRUCTION_CORRECTION)
-    double Vi_phys=V_i/All.cf_a3inv, Vj_phys=V_j/All.cf_a3inv, Vi_inv_corr=1., Vj_inv_corr=1., Vol_min = fabs(0.5*facenormal_dot_dp) * All.cf_atime / 3.; // area of an oblique pyramid, origin at one origin point, face at midpoint
-    if(Vol_min > DMIN(Vi_phys,Vj_phys)) // minimum volume extrapolated to face is larger than one of the particle volumes, so we will apply a correction to avoid too-large a flux
-    {
-        if(Vol_min > Vi_phys) {Vi_inv_corr = Vi_phys/Vol_min;}
-        if(Vol_min > Vj_phys) {Vj_inv_corr = Vj_phys/Vol_min;}
-    }
-#endif
-
-    if((SphP[j].ConditionNumber*SphP[j].ConditionNumber > 1.0e12 + cnumcrit2) || (facenormal_dot_dp < 0))
-    {
-        /* the effective gradient matrix is ill-conditioned (or not positive-definite!): for stability, we revert to the "RSPH" EOM */
-        Face_Area_Norm = -(wt_i*V_i*kernel.dwk_i + wt_j*V_j*kernel.dwk_j) / kernel.r;
-        Face_Area_Norm *= All.cf_atime*All.cf_atime; /* Face_Area_Norm has units of area, need to convert to physical */
-        Face_Area_Vec[0] = Face_Area_Norm * kernel.dp[0];
-        Face_Area_Vec[1] = Face_Area_Norm * kernel.dp[1];
-        Face_Area_Vec[2] = Face_Area_Norm * kernel.dp[2];
-        Face_Area_Norm = Face_Area_Norm * Face_Area_Norm * r2;
-    }
     if(Face_Area_Norm == 0)
     {
         memset(&Fluxes, 0, sizeof(struct Conserved_var_Riemann));
@@ -132,27 +62,8 @@
         Riemann_out.phi_normal_mean=Riemann_out.phi_normal_db=0;
 #endif
     } else {
-        
-        if((Face_Area_Norm<=0)||(isnan(Face_Area_Norm)))
-        {
-            printf("PANIC! Face_Area_Norm=%g Mij=%g/%g wk_ij=%g/%g Vij=%g/%g dx/dy/dz=%g/%g/%g NVT=%g/%g/%g NVT_j=%g/%g/%g \n",Face_Area_Norm,local.Mass,P[j].Mass,kernel.wk_i,
-                   kernel.wk_j,V_i,V_j,kernel.dp[0],kernel.dp[1],kernel.dp[2],local.NV_T[0][0],local.NV_T[0][1],local.NV_T[0][2],SphP[j].NV_T[0][0],SphP[j].NV_T[0][1],
-                   SphP[j].NV_T[0][2]);
-            fflush(stdout);
-        }
-        Face_Area_Norm = sqrt(Face_Area_Norm);
-        
-        /* below, if we are using fixed-grid mode for the code, we manually set the areas to the correct geometric areas */
-#ifdef HYDRO_REGULAR_GRID
-        Face_Area_Norm = calculate_face_area_for_cartesian_mesh(kernel.dp, rinv, Particle_Size_i, Face_Area_Vec);
-#endif
-        
-        for(k=0;k<3;k++) {n_unit[k] = Face_Area_Vec[k] / Face_Area_Norm;} /* define useful unit vector for below */
-#if (defined(HYDRO_FACE_AREA_LIMITER) || !defined(PROTECT_FROZEN_FIRE)) && (HYDRO_FIX_MESH_MOTION >= 5)
-        /* check if face area exceeds maximum geometric allowed limit (can occur when particles with -very- different Hsml interact at the edge of the kernel, limited to geometric max to prevent numerical instability */
-        double Amax = DMIN(Get_Particle_Expected_Area(Particle_Size_i) , Get_Particle_Expected_Area(Particle_Size_j)); // minimum of area "i" or area "j": this subroutine takes care of dimensionality, etc. note inputs are all in -physical- units here
-        if(Face_Area_Norm > Amax) {Face_Area_Norm = Amax; for(k=0;k<3;k++) {Face_Area_Vec[k] = n_unit[k] * Face_Area_Norm;}} /* set the face area to the maximum limit, and reset the face vector as well [ direction is preserved, just area changes] */
-#endif
+        if((Face_Area_Norm<=0)||(isnan(Face_Area_Norm))) {PRINT_WARNING("PANIC! Face_Area_Norm=%g Mij=%g/%g wk_ij=%g/%g Vij=%g/%g dx/dy/dz=%g/%g/%g NVT=%g/%g/%g NVT_j=%g/%g/%g \n",Face_Area_Norm,local.Mass,P[j].Mass,kernel.wk_i,kernel.wk_j,V_i,V_j,kernel.dp[0],kernel.dp[1],kernel.dp[2],local.NV_T[0][0],local.NV_T[0][1],local.NV_T[0][2],SphP[j].NV_T[0][0],SphP[j].NV_T[0][1],SphP[j].NV_T[0][2]); fflush(stdout);}
+        double n_unit[3]; for(k=0;k<3;k++) {n_unit[k] = Face_Area_Vec[k] / Face_Area_Norm;} /* define useful unit vector for below */
 
         /* --------------------------------------------------------------------------------- */
         /* extrapolate the conserved quantities to the interaction face between the particles */
@@ -208,6 +119,7 @@
         if(fabs(vdotr2_phys)*UNIT_VEL_IN_KMS > 1000.) {recon_mode = 0;} // particle approach/recession velocity > 1000 km/s: be extra careful here!
 #endif
         //if(kernel.r > local.Hsml || kernel.r > PPP[j].Hsml) {recon_mode = 0;} // some extrapolation: this is more conservative but does help preserve contact discontinuities (perhaps too well?)
+        if(leak_vs_tol > 1) {recon_mode = 0;}
         
         double rho_i=local.Density, rho_j=SphP[j].Density, P_i=Pressure_i, P_j=Pressure_j; // initialize for below
 #if defined(HYDRO_FACE_VOLUME_RECONSTRUCTION_CORRECTION)
@@ -375,7 +287,7 @@
             int use_entropic_energy_equation = 0;
             double du_new = 0;
             double SM_over_ceff = fabs(Riemann_out.S_M) / DMIN(kernel.sound_i,kernel.sound_j);
-            if(SM_over_ceff < epsilon_entropic_eos_big && All.ComovingIntegrationOn == 1)
+            if((SM_over_ceff < epsilon_entropic_eos_big && All.ComovingIntegrationOn == 1) || (leak_vs_tol > 1))
             {
                 use_entropic_energy_equation = 1;
                 double PdV_fac = Riemann_out.P_M * vdotr2_phys / All.cf_a2inv;
@@ -448,7 +360,7 @@
             /* for MFM, do the face correction for adiabatic flows here */
             double SM_over_ceff = fabs(Riemann_out.S_M) / DMIN(kernel.sound_i,kernel.sound_j); // for now use sound speed here (more conservative) vs magnetosonic speed //
             /* if SM is sufficiently large, we do nothing to the equations */
-            if(SM_over_ceff < epsilon_entropic_eos_big && All.ComovingIntegrationOn == 1)
+            if((SM_over_ceff < epsilon_entropic_eos_big && All.ComovingIntegrationOn == 1) || (leak_vs_tol>1))
             {
                 /* ok SM is small, we should use adiabatic equations instead */
 #ifdef MAGNETIC

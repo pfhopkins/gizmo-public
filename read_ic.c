@@ -32,10 +32,8 @@
 
 void read_ic(char *fname)
 {
-    long i;
-    int num_files, rest_files, ngroups, gr, filenr, masterTask, lastTask, groupMaster;
-    double u_init, molecular_weight;
-    char buf[500];
+    long i; int num_files, rest_files, ngroups, gr, filenr, primaryTask, lastTask, groupTaskIterator;
+    double u_init, molecular_weight; char buf[500];
 
     CPU_Step[CPU_MISC] += measure_time();
 
@@ -57,23 +55,21 @@ void read_ic(char *fname)
         if(All.ICFormat == 3) {sprintf(buf, "%s.%d.hdf5", fname, ThisTask + (rest_files - NTask));}
 
         ngroups = NTask / All.NumFilesWrittenInParallel;
-        if((NTask % All.NumFilesWrittenInParallel))
-            ngroups++;
-        groupMaster = (ThisTask / ngroups) * ngroups;
+        if((NTask % All.NumFilesWrittenInParallel)) {ngroups++;}
+        groupTaskIterator = (ThisTask / ngroups) * ngroups;
 
         for(gr = 0; gr < ngroups; gr++)
         {
-            if(ThisTask == (groupMaster + gr)) {read_file(buf, ThisTask, ThisTask);}	/* ok, it's this processor's turn */
+            if(ThisTask == (groupTaskIterator + gr)) {read_file(buf, ThisTask, ThisTask);}	/* ok, it's this processor's turn */
             MPI_Barrier(MPI_COMM_WORLD);
         }
-
         rest_files -= NTask;
     }
 
 
     if(rest_files > 0)
     {
-        distribute_file(rest_files, 0, 0, NTask - 1, &filenr, &masterTask, &lastTask);
+        distribute_file(rest_files, 0, 0, NTask - 1, &filenr, &primaryTask, &lastTask);
 
         if(num_files > 1)
         {
@@ -94,7 +90,7 @@ void read_ic(char *fname)
 
         for(gr = 0; gr < ngroups; gr++)
         {
-            if((filenr / All.NumFilesWrittenInParallel) == gr) {read_file(buf, masterTask, lastTask);}	/* ok, it's this processor's turn */
+            if((filenr / All.NumFilesWrittenInParallel) == gr) {read_file(buf, primaryTask, lastTask);}	/* ok, it's this processor's turn */
             MPI_Barrier(MPI_COMM_WORLD);
         }
     }
@@ -105,13 +101,8 @@ void read_ic(char *fname)
 
     if(header.flag_ic_info != FLAG_SECOND_ORDER_ICS)
     {
-        /* this makes sure that masses are initialized in the case that the mass-block
-         is empty for this particle type */
-        for(i = 0; i < NumPart; i++)
-        {
-            if(All.MassTable[P[i].Type] != 0)
-                P[i].Mass = All.MassTable[P[i].Type];
-        }
+        /* this makes sure that masses are initialized in the case that the mass-block is empty for this particle type */
+        for(i = 0; i < NumPart; i++) {if(All.MassTable[P[i].Type] != 0) {P[i].Mass = All.MassTable[P[i].Type];}}
     }
 
     /* zero this out, since various operations in the code will want to change particle
@@ -184,20 +175,14 @@ void read_ic(char *fname)
  */
 void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
 {
-    long n, k;
-    MyInputFloat *fp;
-    MyInputPosFloat *fp_pos;
-    MyIDType *ip;
-    int *ip_int;
-    float *fp_single;
-
+    long n, k; MyInputFloat *fp; MyInputPosFloat *fp_pos; MyIDType *ip; int *ip_int; float *fp_single;
     fp = (MyInputFloat *) CommBuffer;
     fp_pos = (MyInputPosFloat *) CommBuffer;
     fp_single = (float *) CommBuffer;
     ip = (MyIDType *) CommBuffer;
     ip_int = (int *) CommBuffer;
 
-    switch (blocknr)
+    switch(blocknr)
     {
         case IO_POS:		/* positions */
             for(n = 0; n < pc; n++)
@@ -216,7 +201,7 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
                 for(k = 0; k < 3; k++)
                 {
 #ifdef RESCALEVINI
-                /* scaling v to use same IC's for different cosmologies */
+                    /* scaling v to use same IC's for different cosmologies */
                     if(RestartFlag == 0) {P[offset + n].Vel[k] = (*fp++) * All.VelIniScale;} else {P[offset + n].Vel[k] = *fp++;}
 #else
                     P[offset + n].Vel[k] = *fp++;
@@ -226,16 +211,14 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
             break;
 
         case IO_ID:		/* particle ID */
-            for(n = 0; n < pc; n++)
-	      P[offset + n].ID = *ip++;
+            for(n = 0; n < pc; n++) {P[offset + n].ID = *ip++;}
             break;
 
 
         case IO_CHILD_ID:		// particle child ID //
             if(RestartFlag == 2)
             {
-                for(n = 0; n < pc; n++)
-		  P[offset + n].ID_child_number = *ip++;
+                for(n = 0; n < pc; n++) {P[offset + n].ID_child_number = *ip++;}
             }
             break;
 
@@ -389,6 +372,9 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
 
         case IO_STAGE_PROTOSTAR:
             break;
+            
+        case IO_AGE_PROTOSTAR:
+            break;
 
         case IO_LUM_SINGLESTAR:
             break;
@@ -480,7 +466,7 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
             break;
             
         case IO_MOLECULARFRACTION:
-#if defined(COOL_MOLECFRAC_NONEQM)
+#if defined(COOL_MOLECFRAC_NONEQM) & !defined(IO_MOLECFRAC_NOT_IN_ICFILE)
             for (n = 0; n < pc; n++) {SphP[offset + n].MolecularMassFraction_perNeutralH = *fp++;}
 #endif
             break;
@@ -606,8 +592,7 @@ void read_file(char *fname, int readTask, int lastTask)
                 SKIP;
                 my_fread(&label, sizeof(char), 4, fd);
                 my_fread(&nextblock, sizeof(int), 1, fd);
-                printf("Reading header => '%c%c%c%c' (%d byte)\n", label[0], label[1], label[2], label[3],
-                       nextblock);
+                printf("Reading header => '%c%c%c%c' (%d byte)\n", label[0], label[1], label[2], label[3], nextblock);
                 SKIP2;
             }
 
@@ -655,17 +640,13 @@ void read_file(char *fname, int readTask, int lastTask)
 #ifdef INPUT_IN_DOUBLEPRECISION
     if(header.flag_doubleprecision == 0)
     {
-        if(ThisTask == 0)
-            printf
-            ("\nProblem: Code compiled with INPUT_IN_DOUBLEPRECISION, but input files are in single precision!\n");
+        if(ThisTask == 0) {printf("\nProblem: Code compiled with INPUT_IN_DOUBLEPRECISION, but input files are in single precision!\n");}
         endrun(11);
     }
 #else
     if(header.flag_doubleprecision)
     {
-        if(ThisTask == 0)
-            printf
-            ("\nProblem: Code not compiled with INPUT_IN_DOUBLEPRECISION, but input files are in double precision!\n");
+        if(ThisTask == 0) {printf("\nProblem: Code not compiled with INPUT_IN_DOUBLEPRECISION, but input files are in double precision!\n");}
         endrun(10);
     }
 #endif
@@ -720,8 +701,7 @@ void read_file(char *fname, int readTask, int lastTask)
 
     if(ThisTask == readTask)
     {
-        for(i = 0, n_in_file = 0; i < 6; i++)
-            n_in_file += header.npart[i];
+        for(i = 0, n_in_file = 0; i < 6; i++) {n_in_file += header.npart[i];}
 
         printf("\nReading file `%s' on task=%d (contains %lld particles.)\n"
                " ..distributing this file to tasks %d-%d\n"
@@ -755,18 +735,15 @@ void read_file(char *fname, int readTask, int lastTask)
     for(type = 0, nall = 0; type < 6; type++)
     {
         n_in_file = header.npart[type];
-
         n_for_this_task = n_in_file / ntask;
-        if((ThisTask - readTask) < (n_in_file % ntask))
-            n_for_this_task++;
+        if((ThisTask - readTask) < (n_in_file % ntask)) {n_for_this_task++;}
 
 
         if(type == 0)
         {
             if(N_gas + n_for_this_task > All.MaxPartSph)
             {
-                printf("Not enough space on task=%d for SPH particles (space for %d, need at least %lld)\n",
-                       ThisTask, All.MaxPartSph, N_gas + n_for_this_task);
+                printf("Not enough space on task=%d for SPH particles (space for %d, need at least %lld)\n", ThisTask, All.MaxPartSph, N_gas + n_for_this_task);
                 fflush(stdout);
                 endrun(172);
             }
@@ -777,8 +754,7 @@ void read_file(char *fname, int readTask, int lastTask)
 
     if(NumPart + nall > All.MaxPart)
     {
-        printf("Not enough space on task=%d (space for %d, need at least %lld)\n",
-               ThisTask, All.MaxPart, NumPart + nall);
+        printf("Not enough space on task=%d (space for %d, need at least %lld)\n", ThisTask, All.MaxPart, NumPart + nall);
         fflush(stdout);
         endrun(173);
     }
@@ -791,13 +767,8 @@ void read_file(char *fname, int readTask, int lastTask)
     for(bnr = 0; bnr < 1000; bnr++)
     {
         blocknr = (enum iofields) bnr;
-
-        if(blocknr == IO_LASTENTRY)
-            break;
-
-        if(RestartFlag == 5 && blocknr > IO_MASS)	/* if we only do power spectra, we don't need to read other blocks beyond the mass */
-            continue;
-
+        if(blocknr == IO_LASTENTRY) {break;}
+        if(RestartFlag == 5 && blocknr > IO_MASS) {continue;}	/* if we only do power spectra, we don't need to read other blocks beyond the mass */
 
         if(blockpresent(blocknr))
         {
@@ -837,42 +808,50 @@ void read_file(char *fname, int readTask, int lastTask)
                                 continue;	/* ignore all other blocks in initial conditions */
 
 
-            if(RestartFlag == 0 && (blocknr == IO_GENERATION_ID || blocknr == IO_CHILD_ID)) continue;
+            if(RestartFlag == 0 && (blocknr == IO_GENERATION_ID || blocknr == IO_CHILD_ID)) {continue;}
 #if defined(NO_CHILD_IDS_IN_ICS) || defined(ASSIGN_NEW_IDS)
-            if(blocknr == IO_GENERATION_ID || blocknr == IO_CHILD_ID) continue;
+            if(blocknr == IO_GENERATION_ID || blocknr == IO_CHILD_ID) {continue;}
 #endif
-            if((RestartFlag == 0) && (All.InitGasTemp > 0) && (blocknr == IO_U)) continue;
+            if((RestartFlag == 0) && (All.InitGasTemp > 0) && (blocknr == IO_U)) {continue;}
 
 
 #ifdef MHD_B_SET_IN_PARAMS
-            if(RestartFlag == 0 && blocknr == IO_BFLD)
-                continue;
+            if(RestartFlag == 0 && blocknr == IO_BFLD) {continue;}
 #endif
 
 #ifdef SUBFIND
-            if(RestartFlag == 2 && blocknr == IO_HSMS)
-                continue;
+            if(RestartFlag == 2 && blocknr == IO_HSMS) {continue;}
 #endif
 
 #ifdef AGS_HSML_CALCULATION_IS_ACTIVE
 #ifndef AGS_OUTPUTGRAVSOFT
-            if(blocknr == IO_AGS_SOFT)
-                continue;
+            if(blocknr == IO_AGS_SOFT) {continue;}
 #endif
 #ifndef AGS_OUTPUTZETA
-            if(blocknr == IO_AGS_ZETA)
-                continue;
+            if(blocknr == IO_AGS_ZETA) {continue;}
+#endif
+#endif
+            
+#ifdef COSMIC_RAYS_EVOLVE_SPECTRUM_SPECIAL_SNAPSHOTRESTART
+            if(RestartFlag == 2 && blocknr == IO_COSMICRAY_SLOPES) {continue;}
+#if (COSMIC_RAYS_EVOLVE_SPECTRUM_SPECIAL_SNAPSHOTRESTART==2)
+            if(RestartFlag == 2 && blocknr == IO_COSMICRAY_ENERGY) {continue;}
 #endif
 #endif
 
+#if !defined(RADTRANSFER)
+            if(RestartFlag == 2 && blocknr == IO_RADGAMMA) {continue;}
+#endif
 
-            if(blocknr == IO_HSMS)
-                continue;
+#if defined(IO_MOLECFRAC_NOT_IN_ICFILE)
+            if(RestartFlag == 2 && blocknr == IO_MOLECULARFRACTION) {continue;}
+#endif
+
+            
+            if(blocknr == IO_HSMS) {continue;}
 
 #ifdef TURB_DIFF_DYNAMIC
-            if (RestartFlag == 0 && blocknr == IO_TURB_DYNAMIC_COEFF) {
-                continue;
-            }
+            if (RestartFlag == 0 && blocknr == IO_TURB_DYNAMIC_COEFF) {continue;}
 #endif
 
             if(ThisTask == readTask)
@@ -882,6 +861,10 @@ void read_file(char *fname, int readTask, int lastTask)
             }
 
             bytes_per_blockelement = get_bytes_per_blockelement(blocknr, 1);
+            
+#if (COSMIC_RAYS_EVOLVE_SPECTRUM_SPECIAL_SNAPSHOTRESTART==1)
+            if(RestartFlag == 2 && blocknr == IO_COSMICRAY_ENERGY) {bytes_per_blockelement = (1) * sizeof(MyInputFloat);}
+#endif
 
             size_t MyBufferSize = All.BufferSize;
             blockmaxlen = (size_t) ((MyBufferSize * 1024 * 1024) / bytes_per_blockelement);
@@ -960,11 +943,10 @@ void read_file(char *fname, int readTask, int lastTask)
 
                                         dims[0] = header.npart[type];
                                         dims[1] = get_values_per_blockelement(blocknr);
-                                        if(dims[1] == 1)
-                                            rank = 1;
-                                        else
-                                            rank = 2;
-
+#if (COSMIC_RAYS_EVOLVE_SPECTRUM_SPECIAL_SNAPSHOTRESTART==1)
+                                        if(RestartFlag == 2 && blocknr == IO_COSMICRAY_ENERGY) {dims[1] = 1;}
+#endif
+                                        if(dims[1] == 1) {rank = 1;} else {rank = 2;}
                                         hdf5_dataspace_in_file = H5Screate_simple(rank, dims, NULL);
 
                                         dims[0] = pc;
@@ -975,16 +957,20 @@ void read_file(char *fname, int readTask, int lastTask)
 
                                         count[0] = pc;
                                         count[1] = get_values_per_blockelement(blocknr);
+#if (COSMIC_RAYS_EVOLVE_SPECTRUM_SPECIAL_SNAPSHOTRESTART==1)
+                                        if(RestartFlag == 2 && blocknr == IO_COSMICRAY_ENERGY) {count[1] = 1;}
+#endif
                                         pcsum += pc;
 
                                         H5Sselect_hyperslab(hdf5_dataspace_in_file, H5S_SELECT_SET,
                                                             start, NULL, count, NULL);
 
-                                        switch (get_datatype_in_block(blocknr))
+                                        switch(get_datatype_in_block(blocknr))
                                         {
                                             case 0:
                                                 hdf5_datatype = H5Tcopy(H5T_NATIVE_UINT);
                                                 break;
+                                                
                                             case 1:
 #ifdef INPUT_IN_DOUBLEPRECISION
                                                 hdf5_datatype = H5Tcopy(H5T_NATIVE_DOUBLE);
@@ -992,6 +978,7 @@ void read_file(char *fname, int readTask, int lastTask)
                                                 hdf5_datatype = H5Tcopy(H5T_NATIVE_FLOAT);
 #endif
                                                 break;
+                                                
                                             case 2:
                                                 hdf5_datatype = H5Tcopy(H5T_NATIVE_UINT64);
                                                 break;
@@ -1208,8 +1195,7 @@ int find_files(char *fname)
  *  file is as homogenous as possible. The number of files may at most be
  *  equal to the number of processors.
  */
-void distribute_file(int nfiles, int firstfile, int firsttask, int lasttask, int *filenr, int *master,
-                     int *last)
+void distribute_file(int nfiles, int firstfile, int firsttask, int lasttask, int *filenr, int *primary_taskID, int *last)
 {
     int ntask, filesleft, filesright, tasksleft;
 
@@ -1227,16 +1213,15 @@ void distribute_file(int nfiles, int firstfile, int firsttask, int lasttask, int
 
         tasksleft = ntask / 2;
 
-        distribute_file(filesleft, firstfile, firsttask, firsttask + tasksleft - 1, filenr, master, last);
-        distribute_file(filesright, firstfile + filesleft, firsttask + tasksleft, lasttask, filenr, master,
-                        last);
+        distribute_file(filesleft, firstfile, firsttask, firsttask + tasksleft - 1, filenr, primary_taskID, last);
+        distribute_file(filesright, firstfile + filesleft, firsttask + tasksleft, lasttask, filenr, primary_taskID, last);
     }
     else
     {
         if(ThisTask >= firsttask && ThisTask <= lasttask)
         {
             *filenr = firstfile;
-            *master = firsttask;
+            *primary_taskID = firsttask;
             *last = lasttask;
         }
     }

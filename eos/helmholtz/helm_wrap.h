@@ -7,7 +7,7 @@
     Helmholtz EOS if you want to run on things like the new KNL on Stampede2
  */
 
-#ifdef EOS_HELMHOLTZ // master flag [needs to be here to prevent compiler breaking when this is not active] //
+#ifdef EOS_HELMHOLTZ // top-level flag [needs to be here to prevent compiler breaking when this is not active] //
 
 #ifndef EOS_HELM_WRAP_H
 #define EOS_HELM_WRAP_H
@@ -59,4 +59,4 @@ void helm_eos_e_c(
 
 #endif
 
-#endif // master flag
+#endif // top-level flag

@@ -6,6 +6,7 @@
 #include <gsl/gsl_math.h>
 #include "../../allvars.h"
 #include "../../proto.h"
+#include "../../kernel.h"
 /*
 * This file was originally part of the GADGET3 code developed by Volker Springel.
 * It has been updated significantly by PFH for basic compatibility with GIZMO,
@@ -351,13 +352,9 @@ int subfind_linkngb_evaluate(int target, int mode, int *nexport, int *nsend_loca
       while(startnode >= 0)
 	{
 	  ngbs = subfind_ngb_treefind_linkngb(pos, h, target, &startnode, mode, &hmax, nexport, nsend_local);
+	  if(ngbs < 0) {return -2;}
 
-	  if(ngbs < 0)
-	    return -1;
-
-	  if(mode == 0 && hmax > 0)
-	    P[target].DM_Hsml = hmax;
-
+	  if(mode == 0 && hmax > 0) {P[target].DM_Hsml = hmax;}
 	  numngb += ngbs;
 	}
 
@@ -454,13 +451,10 @@ int subfind_ngb_treefind_linkngb(MyDouble searchcenter[3], double hsml, int targ
 		      if(*nexport >= All.BunchSize)
 			{
 			  *nexport = nexport_save;
-			  if(nexport_save == 0)
-			    endrun(13004);	/* in this case, the buffer is too small to process even a single particle */
-			  for(task = 0; task < NTask; task++)
-			    nsend_local[task] = 0;
-			  for(no = 0; no < nexport_save; no++)
-			    nsend_local[DataIndexTable[no].Task]++;
-			  return -1;
+			  if(nexport_save == 0) {endrun(13004);} /* in this case, the buffer is too small to process even a single particle */
+			  for(task = 0; task < NTask; task++) {nsend_local[task] = 0;}
+			  for(no = 0; no < nexport_save; no++) {nsend_local[DataIndexTable[no].Task]++;}
+			  return -1; /* buffer has filled -- important that only this and other buffer-full conditions return the negative condition for the routine */
 			}
 		      Exportnodecount[task] = 0;
 		      Exportindex[task] = *nexport;
@@ -615,13 +609,10 @@ int subfind_ngb_treefind_linkpairs(MyDouble searchcenter[3], double hsml, int ta
 		      if(*nexport >= All.BunchSize)
 			{
 			  *nexport = nexport_save;
-			  if(nexport_save == 0)
-			    endrun(13004);	/* in this case, the buffer is too small to process even a single particle */
-			  for(task = 0; task < NTask; task++)
-			    nsend_local[task] = 0;
-			  for(no = 0; no < nexport_save; no++)
-			    nsend_local[DataIndexTable[no].Task]++;
-			  return -1;
+			  if(nexport_save == 0) {endrun(13004);} /* in this case, the buffer is too small to process even a single particle */
+			  for(task = 0; task < NTask; task++) {nsend_local[task] = 0;}
+			  for(no = 0; no < nexport_save; no++) {nsend_local[DataIndexTable[no].Task]++;}
+			  return -1; /* buffer has filled -- important that only this and other buffer-full conditions return the negative condition for the routine */
 			}
 		      Exportnodecount[task] = 0;
 		      Exportindex[task] = *nexport;
@@ -708,12 +699,8 @@ int subfind_ngb_treefind_linkpairs(MyDouble searchcenter[3], double hsml, int ta
 
 int subfind_ngb_compare_dist(const void *a, const void *b)
 {
-  if(((struct r2data *) a)->r2 < (((struct r2data *) b)->r2))
-    return -1;
-
-  if(((struct r2data *) a)->r2 > (((struct r2data *) b)->r2))
-    return +1;
-
+  if(((struct r2data *) a)->r2 < (((struct r2data *) b)->r2)) {return -1;}
+  if(((struct r2data *) a)->r2 > (((struct r2data *) b)->r2)) {return +1;}
   return 0;
 }
 

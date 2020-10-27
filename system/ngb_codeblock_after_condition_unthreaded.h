@@ -36,13 +36,10 @@ else
                 if(*nexport >= bunchSize)
                 {
                     *nexport = nexport_save;
-                    if(nexport_save == 0)
-                        endrun(13004);	/* in this case, the buffer is too small to process even a single particle */
-                        for(task = 0; task < NTask; task++)
-                            nsend_local[task] = 0;
-                            for(no = 0; no < nexport_save; no++)
-                                nsend_local[DataIndexTable[no].Task]++;
-                    return -1;
+                    if(nexport_save == 0) {endrun(13004);} /* in this case, the buffer is too small to process even a single particle */
+                    for(task = 0; task < NTask; task++) {nsend_local[task] = 0;}
+                    for(no = 0; no < nexport_save; no++) {nsend_local[DataIndexTable[no].Task]++;}
+                    return -1; /* buffer has filled -- important that only this and other buffer-full conditions return the negative condition for the routine */
                 }
                 Exportnodecount[task] = 0;
                 Exportindex[task] = *nexport;

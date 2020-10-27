@@ -32,35 +32,19 @@ static struct aux_data
 
 static int compare_Aux_GrNr_ID(const void *a, const void *b)
 {
-  if(((struct aux_data *) a)->GrNr < (((struct aux_data *) b)->GrNr))
-    return -1;
-
-  if(((struct aux_data *) a)->GrNr > (((struct aux_data *) b)->GrNr))
-    return +1;
-
-  if(((struct aux_data *) a)->ID < (((struct aux_data *) b)->ID))
-    return -1;
-
-  if(((struct aux_data *) a)->ID > (((struct aux_data *) b)->ID))
-    return +1;
-
+  if(((struct aux_data *) a)->GrNr < (((struct aux_data *) b)->GrNr)) {return -1;}
+  if(((struct aux_data *) a)->GrNr > (((struct aux_data *) b)->GrNr)) {return +1;}
+  if(((struct aux_data *) a)->ID < (((struct aux_data *) b)->ID)) {return -1;}
+  if(((struct aux_data *) a)->ID > (((struct aux_data *) b)->ID)) {return +1;}
   return 0;
 }
 
 static int compare_Aux_OriginTask_OriginIndex(const void *a, const void *b)
 {
-  if(((struct aux_data *) a)->OriginTask < (((struct aux_data *) b)->OriginTask))
-    return -1;
-
-  if(((struct aux_data *) a)->OriginTask > (((struct aux_data *) b)->OriginTask))
-    return +1;
-
-  if(((struct aux_data *) a)->OriginIndex < (((struct aux_data *) b)->OriginIndex))
-    return -1;
-
-  if(((struct aux_data *) a)->OriginIndex > (((struct aux_data *) b)->OriginIndex))
-    return +1;
-
+  if(((struct aux_data *) a)->OriginTask < (((struct aux_data *) b)->OriginTask)) {return -1;}
+  if(((struct aux_data *) a)->OriginTask > (((struct aux_data *) b)->OriginTask)) {return +1;}
+  if(((struct aux_data *) a)->OriginIndex < (((struct aux_data *) b)->OriginIndex)) {return -1;}
+  if(((struct aux_data *) a)->OriginIndex > (((struct aux_data *) b)->OriginIndex)) {return +1;}
   return 0;
 }
 

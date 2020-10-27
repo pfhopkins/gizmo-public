@@ -479,17 +479,13 @@ int binarySearch(const double * arr, const double x, const int l, const int r, c
   if(r<l){ endrun(7777);}
   const int w     = r-l;
   const int mid   = l + w/2;
-  if (w  <= 1){
-    if (mid < total-1)
-      if (x >= arr[mid] && x < arr[mid+1])
-        return mid;
-    if (mid >0)
-      if(x >= arr[mid-1] && x < arr[mid])
-        return mid-1;
+  if(w <= 1) {
+    if(mid < total-1) {if(x >= arr[mid] && x < arr[mid+1]) {return mid;}}
+    if(mid >0) {if(x >= arr[mid-1] && x < arr[mid]) {return mid-1;}}
   } // endif w < 1
-  if (arr[mid] > x){
+  if(arr[mid] > x) {
      return binarySearch(arr,x,l,mid-1,total);
-  } else if (arr[mid]<x){
+  } else if(arr[mid]<x) {
     return binarySearch(arr,x,mid+1,r,total);
   } else {
     return mid;

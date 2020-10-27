@@ -170,9 +170,6 @@ void init(void)
     init_self_interactions();
 #endif
 
-#if defined(FLAG_NOT_IN_PUBLIC_CODE_EVOLVE_SPECTRUM)
-    CR_initialize_multibin_quantities(); // initialize the global variables and look-up tables //
-#endif
 
     for(i = 0; i < NumPart; i++)	/*  start-up initialization */
     {
@@ -210,10 +207,10 @@ void init(void)
             P[i].a0 = All.TimeBegin; /* Lagrange time of particle */
             /* approximation: perfect Hubble Flow -> peculiar sheet orientation is exactly zero */
             for(i1 = 0; i1 < 3; i1++) {for(i2 = 0; i2 < 3; i2++) {GDE_VMATRIX(i,i1,i2) = 0.0;}}
-            /* approximation: initial sream density equals background density */
-            P[i].init_density = All.Omega0 * 3 * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits / (8 * M_PI * All.G);
+            /* approximation: initial stream density equals background density */
+            P[i].init_density = All.OmegaMatter * 3 * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits / (8 * M_PI * All.G);
 #else
-            All.GDEInitStreamDensity = All.Omega0 * 3 * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits / (8 * M_PI * All.G);
+            All.GDEInitStreamDensity = All.OmegaMatter * 3 * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits / (8 * M_PI * All.G);
 #endif
 #endif
         }
@@ -226,6 +223,11 @@ void init(void)
         if(All.ComovingIntegrationOn) {P[i].stream_density = GDE_INITDENSITY(i) / (All.TimeBegin * All.TimeBegin * All.TimeBegin);} else {P[i].stream_density = GDE_INITDENSITY(i);}
 #endif /* GDE_DISTORTIONTENSOR */
 
+#ifdef ADAPTIVE_TREEFORCE_UPDATE
+        P[i].time_since_last_treeforce = 0;
+        P[i].tdyn_step_for_treeforce = 0;
+#endif        
+        
 
 #ifdef KEEP_DM_HSML_AS_GUESS
         if(RestartFlag != 1)
@@ -316,7 +318,9 @@ void init(void)
 #endif
                 w0 /= sqrt((1.+tau2)*(1.+tau2*ct2)); // ensures normalization to unity with convention below //
                 A_cross_B[0]=A[1]*B[2]-A[2]*B[1]; A_cross_B[1]=A[2]*B[0]-A[0]*B[2]; A_cross_B[2]=A[0]*B[1]-A[1]*B[0];
+#if !defined(RT_OPACITY_FROM_EXPLICIT_GRAINS)
                 for(k=0;k<3;k++) {P[i].Vel[k]=w0*(A[k] + sqrt(tau2)*A_cross_B[k] + tau2*ct*B[k]);}
+#endif
 #ifdef BOX_SHEARING
                 // now add linearly the NHS drift solution for our shearing box setup
                 double v00 = -All.Pressure_Gradient_Accel / (2. * BOX_SHEARING_OMEGA_BOX_CENTER);
@@ -445,6 +449,7 @@ void init(void)
         P[i].Particle_DivVel = 0;
         SphP[i].ConditionNumber = 1;
         SphP[i].DtInternalEnergy = 0;
+        SphP[i].FaceClosureError = 0;
 #ifdef ENERGY_ENTROPY_SWITCH_IS_ACTIVE
         SphP[i].MaxKineticEnergyNgb = 0;
 #endif
@@ -754,8 +759,10 @@ void init(void)
     {
         double mass_min = MAX_REAL_NUMBER;
         double mass_max = -MAX_REAL_NUMBER;
+        double mass_tot = 0;
         for(i = 0; i < N_gas; i++)	/* initialize sph_properties */
         {
+            mass_tot += P[i].Mass;
             if(P[i].Mass > mass_max) mass_max = P[i].Mass;
             if(P[i].Mass < mass_min) mass_min = P[i].Mass;
         }
@@ -764,6 +771,12 @@ void init(void)
         MPI_Allreduce(&mass_min, &mpi_mass_min, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
         MPI_Allreduce(&mass_max, &mpi_mass_max, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
         All.MinMassForParticleMerger = 0.49 * mpi_mass_min;
+#ifdef SINGLE_STAR_SINK_DYNAMICS /* Get mean gas mass, used in various subroutiens */
+        double mpi_mass_tot; long mpi_Ngas; long Ngas_l = (long) N_gas;
+        MPI_Allreduce(&mass_tot, &mpi_mass_tot, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(&Ngas_l, &mpi_Ngas, 1, MPI_LONG, MPI_SUM, MPI_COMM_WORLD);
+        All.MeanGasParticleMass = mpi_mass_tot/( (double)mpi_Ngas );
+#endif
 #ifdef GALSF_GENERATIONS
         All.MinMassForParticleMerger /= (float)GALSF_GENERATIONS;
 #endif
@@ -828,8 +841,7 @@ void init(void)
     {
         All.Time = All.TimeBegin = header.time;
         sprintf(All.SnapshotFileBase, "%s_converted", All.SnapshotFileBase);
-        if(ThisTask == 0)
-            printf("Start writing file %s\n", All.SnapshotFileBase);
+        if(ThisTask == 0) {printf("Start writing file %s\n", All.SnapshotFileBase);}
         printf("RestartSnapNum %d\n", RestartSnapNum);
 
         All.TopNodeAllocFactor = 0.008;
@@ -911,8 +923,8 @@ void check_omega(void)
 #ifdef GR_TABULATED_COSMOLOGY_G
     omega *= All.Gini / All.G;
 #endif
-    if(fabs(omega - All.Omega0) > 1.0e-2) // look for a 1% tolerance of omega-matter
-        {PRINT_WARNING("\n\nMass content in the ICs accounts only for Omega_M=%g,\nbut you specified Omega_M=%g in the parameterfile.\nRun will stop.\n",omega, All.Omega0); endrun(1);}
+    if(fabs(omega - All.OmegaMatter) > 1.0e-2) // look for a 1% tolerance of omega-matter
+        {PRINT_WARNING("\n\nMass content in the ICs accounts only for Omega_M=%g,\nbut you specified Omega_M=%g in the parameterfile.\nRun will stop.\n",omega, All.OmegaMatter); endrun(1);}
 }
 #endif
 
@@ -968,7 +980,7 @@ void setup_smoothinglengths(void)
                 } // closes if((RestartFlag == 0)||(P[i].Type != 0))
             }
     }
-    if((RestartFlag==0 || RestartFlag==2) && All.ComovingIntegrationOn) {for(i=0;i<N_gas;i++) {PPP[i].Hsml *= pow(All.Omega0/All.OmegaBaryon,1./NUMDIMS);}} /* correct (crudely) for baryon fraction, used in the estimate above for Hsml */
+    if((RestartFlag==0 || RestartFlag==2) && All.ComovingIntegrationOn) {for(i=0;i<N_gas;i++) {PPP[i].Hsml *= pow(All.OmegaMatter/All.OmegaBaryon,1./NUMDIMS);}} /* correct (crudely) for baryon fraction, used in the estimate above for Hsml */
 
 #ifdef BLACK_HOLES
     if(RestartFlag==0 || RestartFlag==2) {for(i=0;i<NumPart;i++) {if(P[i].Type == 5) {PPP[i].Hsml = All.SofteningTable[P[i].Type];}}}
@@ -1142,11 +1154,7 @@ void test_id_uniqueness(void)
 
 int compare_IDs(const void *a, const void *b)
 {
-    if(*((MyIDType *) a) < *((MyIDType *) b))
-        return -1;
-
-    if(*((MyIDType *) a) > *((MyIDType *) b))
-        return +1;
-
+    if(*((MyIDType *) a) < *((MyIDType *) b)) {return -1;}
+    if(*((MyIDType *) a) > *((MyIDType *) b)) {return +1;}
     return 0;
 }

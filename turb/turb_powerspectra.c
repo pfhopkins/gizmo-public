@@ -1278,9 +1278,7 @@ int powerspec_turb_find_nearest_evaluate(int target, int mode, int *nexport, int
       while(startnode >= 0)
 	{
 	  numngb_inbox = ngb_treefind_variable_targeted(pos, h, target, &startnode, mode, nexport, nsend_local, 1); // search for gas: 2^0=1
-
-	  if(numngb_inbox < 0)
-	    return -1;
+	  if(numngb_inbox < 0) {return -2;}
 
 	  for(n = 0; n < numngb_inbox; n++)
 	    {
@@ -1304,8 +1302,7 @@ int powerspec_turb_find_nearest_evaluate(int target, int mode, int *nexport, int
 	  if(listindex < NODELISTLENGTH)
 	    {
 	      startnode = DataGet[target].NodeList[listindex];
-	      if(startnode >= 0)
-		startnode = Nodes[startnode].u.d.nextnode;	/* open it */
+	      if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;}	/* open it */
 	    }
 	}
     }

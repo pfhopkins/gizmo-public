@@ -28,10 +28,10 @@
  *   code standards and be properly multi-threaded.
  */
 
-#ifdef BLACK_HOLES // master flag [needs to be here to prevent compiler breaking when this is not active] //
+#ifdef BLACK_HOLES // top-level flag [needs to be here to prevent compiler breaking when this is not active] //
 
 
-/*  This is the master routine for the BH physics modules.
+/*  This is the parent routine for the BH physics modules.
  *  It is called in calculate_non_standard_physics in run.c */
 void blackhole_accretion(void)
 {
@@ -89,7 +89,10 @@ double bh_vesc(int j, double mass, double r_code, double bh_softening)
     if(P[j].Type==0) {m_eff += 4.*M_PI * r_code*r_code*r_code * SphP[j].Density;} // assume an isothermal sphere interior, for Shu-type solution
 #endif
     double hinv = 1./All.ForceSoftening[5], fac=2.*All.G*m_eff/All.cf_atime;
-    return sqrt(-fac*kernel_gravity(r_code*hinv,hinv,hinv*hinv*hinv,-1) + cs_to_add*cs_to_add); // accounts for softening [non-Keplerian inside softening]
+#if defined(BH_REPOSITION_ON_POTMIN)
+    return sqrt(fac/r_code + cs_to_add*cs_to_add); // in this case BH dynamics are intentionally inexact and gravitational BH velocities not well-resolved, so use the larger Keplerian term here
+#endif
+    return sqrt(fac*fabs(kernel_gravity(r_code*hinv,hinv,hinv*hinv*hinv,-1)) + cs_to_add*cs_to_add); // accounts for softening [non-Keplerian inside softening]
 }
 
 
@@ -97,8 +100,16 @@ double bh_vesc(int j, double mass, double r_code, double bh_softening)
 /* check whether a particle is sufficiently bound to the BH to qualify for 'gravitational capture' */
 int bh_check_boundedness(int j, double vrel, double vesc, double dr_code, double sink_radius) // need to know the sink radius, which can be distinct from both the softening and search radii
 {
+#if defined(BH_REPOSITION_ON_POTMIN)
+    if(P[j].Type == 5) {return 1;} // if this module is active, we aren't doing exact BH-BH dynamics, so default is to be unrestrictive for BH-BH mergers //
+#endif
+
     /* if pair is a gas particle make sure to account for its pressure and internal energy */
-    double cs=0; if(P[j].Type==0) {cs=Get_Gas_Fast_MHD_wavespeed_i(j);} // use the fast MHD wavespeed to account for magnetic+thermal energy (but not e.g. cosmic ray), in allowing accretion //
+    double cs=0; if(P[j].Type==0) {
+        double vA = Get_Gas_Alfven_speed_i(j);
+        if(fabs(GAMMA(j)-1) < 0.1) {cs = sqrt(vA*vA + 3.*SphP[j].Pressure/SphP[j].Density);} // assume you're running gamma ~ 1 to hack an isothermal EOS, so we assume gamma=5/3 for boundedness calculation
+        else {cs = sqrt(vA*vA + 2.*SphP[j].InternalEnergy);} // effective speed [since what we really want is internal energy] to add to relative velocity to compare with escape speed for boundedness check
+    } // use the fast MHD wavespeed to account for magnetic+thermal energy (but not e.g. cosmic ray), in allowing accretion //
 
 #ifdef SINGLE_STAR_SINK_DYNAMICS
     if(P[j].Type == 0)
@@ -124,9 +135,6 @@ int bh_check_boundedness(int j, double vrel, double vesc, double dr_code, double
         if(P[j].Type == 0) {r_j = DMAX(r_j , PPP[j].Hsml);}
         apocenter_max = DMAX(10.0*All.ForceSoftening[5],DMIN(50.0*All.ForceSoftening[5],r_j));
         if(P[j].Type == 5) {apocenter_max = DMIN(apocenter_max , 1.*All.ForceSoftening[5]);}
-#endif
-#if defined(BH_REPOSITION_ON_POTMIN)
-        if(P[j].Type == 5) {return 1;} // default is to be unrestrictive for BH-BH mergers //
 #endif
         if(apocenter < apocenter_max) {bound = 1;}
     }
@@ -367,7 +375,7 @@ void set_blackhole_mdot(int i, int n, double dt)
         double reff = All.ForceSoftening[5], Gm_i = 1./(All.G*P[n].Mass);
 #if defined(BH_GRAVCAPTURE_FIXEDSINKRADIUS)
         double cs_min = 0.2 / UNIT_VEL_IN_KMS;
-        reff = All.G*2.*All.MinMassForParticleMerger/(cs_min*cs_min), Gm_i = 1./(All.G*2.*All.MinMassForParticleMerger); // effectively setting the value to the freefall time the particle has when it forms, for both 'size' of disk and 'effective mass' (for dynamical time below)
+        reff = All.G*All.MeanGasParticleMass/(cs_min*cs_min), Gm_i = 1./(All.G*All.MeanGasParticleMass); // effectively setting the value to the freefall time the particle has when it forms, for both 'size' of disk and 'effective mass' (for dynamical time below)
 #endif
         t_acc_disk = sqrt(reff*reff*reff * Gm_i); // dynamical time at radius "reff", essentially fastest-possible accretion time
 #if defined(BH_FOLLOW_ACCRETED_ANGMOM) && defined(BH_MDOT_FROM_ALPHAMODEL)
@@ -754,7 +762,7 @@ void blackhole_final_operations(void)
 #endif
 
 
-#ifdef BH_ANGLEWEIGHT_PHOTON_INJECTION
+#ifdef RT_BH_ANGLEWEIGHT_PHOTON_INJECTION
         P[n].KernelSum_Around_RT_Source = BlackholeTempInfo[i].BH_angle_weighted_kernel_sum;
 #endif            
 

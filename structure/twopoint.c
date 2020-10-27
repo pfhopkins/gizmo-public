@@ -206,8 +206,7 @@ int twopoint_count_local(int target, int mode, int *nexport, int *nsend_local)
 	  if(twopoint_ngb_treefind_variable(pos, rs, target, &startnode, mode, nexport, nsend_local) < 0)
 	    {
 	      /* in this case restore the count-table */
-	      memcpy(Count, Count_bak, sizeof(long long) * BINS_TP);
-	      return -1;
+	      memcpy(Count, Count_bak, sizeof(long long) * BINS_TP); {return -1;} /* buffer has filled -- important that only this and other buffer-full conditions return the negative condition for the routine */
 	    }
 	}
 
@@ -290,13 +289,10 @@ int twopoint_ngb_treefind_variable(MyDouble searchcenter[3], MyFloat rsearch, in
 		      if(*nexport >= All.BunchSize)
 			{
 			  *nexport = nexport_save;
-			  if(nexport_save == 0)
-			    endrun(13004);	/* in this case, the buffer is too small to process even a single particle */
-			  for(task = 0; task < NTask; task++)
-			    nsend_local[task] = 0;
-			  for(no = 0; no < nexport_save; no++)
-			    nsend_local[DataIndexTable[no].Task]++;
-			  return -1;
+			  if(nexport_save == 0) {endrun(13004);}	/* in this case, the buffer is too small to process even a single particle */
+			  for(task = 0; task < NTask; task++) {nsend_local[task] = 0;}
+			  for(no = 0; no < nexport_save; no++) {nsend_local[DataIndexTable[no].Task]++;}
+			  return -1; /* buffer has filled -- important that only this and other buffer-full conditions return the negative condition for the routine */
 			}
 		      Exportnodecount[task] = 0;
 		      Exportindex[task] = *nexport;

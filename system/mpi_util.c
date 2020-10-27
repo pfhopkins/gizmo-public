@@ -48,12 +48,8 @@ int mpi_calculate_offsets(int *send_count, int *send_offset, int *recv_count, in
     of the pointer targets. */
 int intpointer_compare(const void *a, const void *b)
 {
-  if((**(int **) a) < (**(int **) b))
-    return -1;
-
-  if((**(int **) a) > (**(int **) b))
-    return +1;
-
+  if((**(int **) a) < (**(int **) b)) {return -1;}
+  if((**(int **) a) > (**(int **) b)) {return +1;}
   return 0;
 }
 

@@ -21,7 +21,7 @@
 {
 #ifdef CHIMES_TURB_DIFF_IONS  // turbulent diffusion of CHIMES ions and molecules (passive scalar mixing) //
         
-    if((local.Mass>0)&&(P[j].Mass>0)&&((local.TD_DiffCoeff>0)||(SphP[j].TD_DiffCoeff>0)))
+    if((local.Mass>0)&&(P[j].Mass>0)&&((local.TD_DiffCoeff>MIN_REAL_NUMBER)||(SphP[j].TD_DiffCoeff>MIN_REAL_NUMBER)))
     {
         double wt_i=0.5, wt_j=0.5, cmag, d_scalar;
         double diffusion_wt = wt_i*local.TD_DiffCoeff + wt_j*SphP[j].TD_DiffCoeff; // physical
@@ -37,22 +37,28 @@
         int k_species;
         double rho_i = local.Density*All.cf_a3inv, rho_j = SphP[j].Density*All.cf_a3inv, rho_ij = 0.5*(rho_i+rho_j); // physical
 
-	// Loop through all CHIMES species to compute the change in 
-	// the total number of ions/molecules of that species. 
+        // Loop through all CHIMES species to compute the change in
+        // the total number of ions/molecules of that species.
         for(k_species = 0; k_species < ChimesGlobalVars.totalNumberOfSpecies; k_species++)
         {
             cmag = 0.0;
             double grad_dot_x_ij = 0.0;
 
-	    // For d_scalar, we want the difference in the number of ions per unit mass. 
-	    // This is analogous to turbulent_diffusion.h, which uses the difference in 
-	    // Metallicity (i.e. metal mass over total mass) here. 
-            d_scalar = (local.ChimesNIons[k_species] / local.Mass) - (SphP[j].ChimesNIons[k_species] / P[j].Mass); // physical
+            // For d_scalar, we want the difference in the number of ions per unit mass.
+            // This is analogous to turbulent_diffusion.h, which uses the difference in
+            // Metallicity (i.e. metal mass over total mass) here.
+            
+            double local_abundance_times_mass = local.ChimesNIons[k_species], external_abundance_times_mass; // values we will need
+            #pragma omp atomic read
+            external_abundance_times_mass = SphP[j].ChimesNIons[k_species]; // this variable can be reset owing to how we code this, needs to be carefully read for thread safety here.
+            double external_abundance_times_mass_0 = external_abundance_times_mass; // save initial value for below
+            
+            d_scalar = (local_abundance_times_mass / local.Mass) - (external_abundance_times_mass / P[j].Mass); // physical
             for(k = 0; k < 3; k++)
             {
                 double grad_direct = d_scalar * kernel.dp[k] * rinv * rinv; // 1/code length
 
-		// NOTE: For CHIMES, we ONLY do this with the LOWORDER method 
+                // NOTE: For CHIMES, we ONLY do this with the LOWORDER method 
                 double grad_ij = grad_direct;
                 grad_dot_x_ij += grad_ij * kernel.dp[k]; // physical
                 cmag += Face_Area_Vec[k] * grad_ij; // 1/code length
@@ -70,14 +76,16 @@
             cmag *= -diffusion_wt * dt_hydrostep; // physical
             if(fabs(cmag) > 0)
             {
-                double zlim = 0.25 * DMIN( DMIN(local.Mass, P[j].Mass) * fabs(d_scalar) , DMAX(local.ChimesNIons[k_species] , SphP[j].ChimesNIons[k_species]) );
+                double zlim = 0.25 * DMIN( DMIN(local.Mass, P[j].Mass) * fabs(d_scalar) , DMAX(local_abundance_times_mass , external_abundance_times_mass) );
                 if(fabs(cmag) > zlim) {cmag *= zlim / fabs(cmag);}
 #ifndef HYDRO_SPH
-		double dmet = ((SphP[j].ChimesNIons[k_species] / P[j].Mass) - (local.ChimesNIons[k_species] / local.Mass)) * fabs(mdot_estimated) * dt_hydrostep; 
+                double dmet = ((external_abundance_times_mass / P[j].Mass) - (local_abundance_times_mass / local.Mass)) * fabs(mdot_estimated) * dt_hydrostep;
                 cmag = MINMOD(dmet,cmag); // limiter based on mass exchange from MFV HLLC solver //
 #endif
                 out.ChimesIonsYield[k_species] += cmag;
-                SphP[j].ChimesNIons[k_species] -= cmag;
+                external_abundance_times_mass -= cmag; // that metal mass must come out of the neighbor element
+                #pragma omp atomic
+                SphP[j].ChimesNIons[k_species] += external_abundance_times_mass - external_abundance_times_mass_0; // here we enforce machine-accurate conservation by swapping right here. that means we need to be very careful to do this in a thread-safe manner
             }
         }
     } 

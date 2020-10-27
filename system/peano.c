@@ -94,12 +94,8 @@ void peano_hilbert_order(void)
 
 int peano_compare_key(const void *a, const void *b)
 {
-  if(((struct peano_hilbert_data *) a)->key < (((struct peano_hilbert_data *) b)->key))
-    return -1;
-
-  if(((struct peano_hilbert_data *) a)->key > (((struct peano_hilbert_data *) b)->key))
-    return +1;
-
+  if(((struct peano_hilbert_data *) a)->key < (((struct peano_hilbert_data *) b)->key)) {return -1;}
+  if(((struct peano_hilbert_data *) a)->key > (((struct peano_hilbert_data *) b)->key)) {return +1;}
   return 0;
 }
 

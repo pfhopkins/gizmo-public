@@ -811,8 +811,7 @@ int DynamicDiff_evaluate(int target, int mode, int *exportflag, int *exportnodec
         while (startnode >= 0) {
            
             numngb = ngb_treefind_pairs_threads(local.Pos, kernel.h_i, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist);
-
-            if (numngb < 0) return -1;
+            if(numngb < 0) {return -2;}
             
             for (n = 0; n < numngb; n++) {
                 j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */

@@ -65,9 +65,9 @@ TimeMax     1.0    % End of the simulation
 %---- Cosmological parameters 
 ComovingIntegrationOn   0       % is it cosmological? (yes=1, no=0)
 BoxSize                 10000.  % in code units
-Omega0                  0       % =0 for non-cosmological
-OmegaLambda             0       % =0 for non-cosmological
-OmegaBaryon             0       % =0 for non-cosmological
+Omega_Matter            0       % =0 for non-cosmological
+Omega_Lambda            0       % =0 for non-cosmological
+Omega_Baryon            0       % =0 for non-cosmological
 HubbleParam             1       % little 'h'; =1 for non-cosmological runs
 
 %---- Accuracy of time integration 
@@ -134,7 +134,7 @@ ConductionCoeff  1.0  % set/multiply conduction coefficient
 ShearViscosityCoeff     1.0     % set/multiply shear viscosity coefficient
 BulkViscosityCoeff      1.0     % set/multiply bulk viscosity coefficient
 
-%---- Turbulent Diffusion Master Switch (TURB_DIFFUSION on)
+%---- Turbulent Diffusion Top-level Switch (TURB_DIFFUSION on)
 TurbDiffusionCoefficient 1.0    % Normalizes diffusion rates relative to Smagorinsky-Lilly theory (~0.5-2)
 
 %--- Cosmic Ray + Gas Fluids (COSMIC_RAYS)

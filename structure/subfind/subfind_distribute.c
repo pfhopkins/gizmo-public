@@ -5,6 +5,7 @@
 #include <math.h>
 #include "../../allvars.h"
 #include "../../proto.h"
+#include "../../kernel.h"
 /*
 * This file was originally part of the GADGET3 code developed by Volker Springel.
 * It has been updated significantly by PFH for basic compatibility with GIZMO,
@@ -97,7 +98,7 @@ void subfind_distribute_groups(void)
 
 void subfind_distribute_particles(int mode)
 {
-  int nexport = 0, nimport = 0;
+  long nexport = 0, nimport = 0;
   int i, n, ngrp, target = 0;
   struct particle_data *partBuf;
 
@@ -133,13 +134,7 @@ void subfind_distribute_particles(int mode)
     }
 
 
-  if(NumPart - nexport + nimport > All.MaxPart)
-    {
-      printf
-	("on task=%d the maximum particle number All.MaxPart=%d is reached (NumPart=%d togo=%d toget=%d)",
-	 ThisTask, All.MaxPart, NumPart, nexport, nimport);
-      endrun(8765);
-    }
+  if(NumPart - nexport + nimport > All.MaxPart) {PRINT_WARNING("on task=%d the maximum particle number All.MaxPart=%d is reached (NumPart=%d togo=%ld toget=%ld)",ThisTask, All.MaxPart, NumPart, nexport, nimport); endrun(8765);}
 
   partBuf = (struct particle_data *) mymalloc("partBuf", nexport * sizeof(struct particle_data));
 
@@ -150,9 +145,7 @@ void subfind_distribute_particles(int mode)
     {
       if(mode == 0)
 	{
-	  if(!(P[n].GrNr > Ncollective && P[n].GrNr <= TotNgroups))	/* particle is in small group */
-	    continue;
-
+        if(!(P[n].GrNr > Ncollective && P[n].GrNr <= TotNgroups)) {continue;}	/* particle is in small group */
 	  target = (P[n].GrNr - 1) % NTask;
 	}
       else if(mode == 1)

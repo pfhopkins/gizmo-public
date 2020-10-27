@@ -118,7 +118,7 @@ for(k=0;k<N_RT_FREQ_BINS;k++) x[k] = (double *) malloc(N_gas * sizeof(double));\
 for(k=0;k<N_RT_FREQ_BINS;k++) memset(x[k], 0, N_gas * sizeof(double));}
 
 
-/*! routine to do the master loop for the CG iteration - this is the actual solver; it calls various subroutines
+/*! routine to do the top-level loop for the CG iteration - this is the actual solver; it calls various subroutines
  to do the weights/matrix calculation on all particles */
 void rt_diffusion_cg_solve(void)
 {
@@ -468,7 +468,7 @@ int rt_diffusion_cg_evaluate(int target, int mode, double **matrixmult_in, doubl
         while(startnode >= 0)
         {
             numngb_inbox = ngb_treefind_variable_threads(local.Pos, local.Hsml, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist);
-            if(numngb_inbox < 0) {return -1;}
+            if(numngb_inbox < 0) {return -2;}
             for(n = 0; n < numngb_inbox; n++)
             {
                 j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */

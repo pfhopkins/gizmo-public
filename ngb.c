@@ -132,7 +132,7 @@ int ngb_treefind_variable_threads(MyDouble searchcenter[3], MyFloat hsml, int ta
 */
 int ngb_treefind_variable_targeted(MyDouble searchcenter[3], MyFloat hsml, int target, int *startnode, int mode, int *nexport, int *nsend_local, int TARGET_BITMASK)
 {
-    int nexport_save = *nexport; /* this line must be here in the un-threaded versions */
+    long nexport_save = *nexport; /* this line must be here in the un-threaded versions */
 #include "system/ngb_codeblock_before_condition.h" // call the same variable/initialization block
     if(!((1 << P[p].Type) & (TARGET_BITMASK))) continue; // skip anything not of the desired type
     if(P[p].Mass <= 0) continue; // skip zero-mass particles
@@ -143,7 +143,7 @@ int ngb_treefind_variable_targeted(MyDouble searchcenter[3], MyFloat hsml, int t
 /* identical to above but includes 'both ways' search for interacting neighbors */
 int ngb_treefind_pairs_targeted(MyDouble searchcenter[3], MyFloat hsml, int target, int *startnode, int mode, int *nexport, int *nsend_local, int TARGET_BITMASK)
 {
-    int nexport_save = *nexport; /* this line must be here in the un-threaded versions */
+    long nexport_save = *nexport; /* this line must be here in the un-threaded versions */
 #include "system/ngb_codeblock_before_condition.h" // call the same variable/initialization block
     if(!((1 << P[p].Type) & (TARGET_BITMASK))) continue; // skip anything not of the desired type
     if(P[p].Mass <= 0) continue; // skip zero-mass particles
@@ -200,7 +200,7 @@ int ngb_treefind_fof_primary(MyDouble searchcenter[3], MyFloat hsml, int target,
     // cache some global vars locally for improved compiler alias analysis
     int maxPart = All.MaxPart;
     int maxNodes = MaxNodes;
-    int bunchSize = All.BunchSize;
+    long bunchSize = All.BunchSize;
     MyDouble xtmp; xtmp=0;
 
 #ifdef REDUCE_TREEWALK_BRANCHING
@@ -262,13 +262,10 @@ int ngb_treefind_fof_primary(MyDouble searchcenter[3], MyFloat hsml, int target,
                         if(*nexport >= bunchSize)
                         {
                             *nexport = nexport_save;
-                            if(nexport_save == 0)
-                                endrun(13005);	/* in this case, the buffer is too small to process even a single particle */
-                            for(task = 0; task < NTask; task++)
-                                nsend_local[task] = 0;
-                            for(no = 0; no < nexport_save; no++)
-                                nsend_local[DataIndexTable[no].Task]++;
-                            return -1;
+                            if(nexport_save == 0) {endrun(13005);}	/* in this case, the buffer is too small to process even a single particle */
+                            for(task = 0; task < NTask; task++) {nsend_local[task] = 0;}
+                            for(no = 0; no < nexport_save; no++) {nsend_local[DataIndexTable[no].Task]++;}
+                            return -1; /* buffer has filled -- important that only this and other buffer-full conditions return the negative condition for the routine */
                         }
                         Exportnodecount[task] = 0;
                         Exportindex[task] = *nexport;

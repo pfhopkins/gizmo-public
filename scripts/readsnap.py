@@ -115,8 +115,8 @@ def readsnap(sdir,snum,ptype,
     nL = 0 # initial particle point to start at 
     if(fname_ext=='.hdf5'):
         file = h5py.File(fname,'r') # Open hdf5 snapshot file
-        header_master = file["Header"] # Load header dictionary (to parse below)
-        header_toparse = header_master.attrs
+        header_topdict = file["Header"] # Load header dictionary (to parse below)
+        header_toparse = header_topdict.attrs
     else:
         file = open(fname) # Open binary snapshot file
         header_toparse = load_gadget_format_binary_header(file)
@@ -354,8 +354,8 @@ def load_gadget_format_binary_header(f):
     BoxSize = array.array('d')
     BoxSize.fromfile(f, 1)
     # Matter density at z=0 in units of the critical density. 1*double.
-    Omega0 = array.array('d')
-    Omega0.fromfile(f, 1)
+    OmegaMatter = array.array('d')
+    OmegaMatter.fromfile(f, 1)
     # Vacuum energy density at z=0 in units of the critical density. 1*double.
     OmegaLambda = array.array('d')
     OmegaLambda.fromfile(f, 1)
@@ -386,7 +386,7 @@ def load_gadget_format_binary_header(f):
     return {'NumPart_ThisFile':Npart, 'MassTable':Massarr, 'Time':a, 'Redshift':z, \
     'Flag_Sfr':FlagSfr[0], 'Flag_Feedback':FlagFeedback[0], 'NumPart_Total':Nall, \
     'Flag_Cooling':FlagCooling[0], 'NumFilesPerSnapshot':NumFiles[0], 'BoxSize':BoxSize[0], \
-    'Omega0':Omega0[0], 'OmegaLambda':OmegaLambda[0], 'HubbleParam':h, \
+    'Omega0':OmegaMatter[0], 'OmegaLambda':OmegaLambda[0], 'HubbleParam':h, \
     'Flag_StellarAge':FlagAge[0], 'Flag_Metals':FlagMetals[0], 'Nall_HW':NallHW, \
     'Flag_EntrICs':flag_entr_ics[0]}
 

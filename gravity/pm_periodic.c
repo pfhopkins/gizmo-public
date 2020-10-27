@@ -1410,12 +1410,8 @@ void pmpotential_periodic(void)
 
 int pm_periodic_compare_sortindex(const void *a, const void *b)
 {
-  if(part[*(int *) a].globalindex < part[*(int *) b].globalindex)
-    return -1;
-
-  if(part[*(int *) a].globalindex > part[*(int *) b].globalindex)
-    return +1;
-
+  if(part[*(int *) a].globalindex < part[*(int *) b].globalindex) {return -1;}
+  if(part[*(int *) a].globalindex > part[*(int *) b].globalindex) {return +1;}
   return 0;
 }
 
@@ -2780,7 +2776,7 @@ void pmtidaltensor_periodic_fourier(int component)
 		}
 
 	      /* prefactor = (2*M_PI) / All.BoxSize */
-	      /* note: tidal tensor = - d^2 Phi/ dx_i dx_j  IS THE SIGN CORRECT ?!?! */
+	      /* note: tidal tensor = - d^2 Phi/ dx_i dx_j  -- make sure the sign is correct here -- */
 	      cmplx_re(fft_of_rhogrid[ip]) *= (2 * M_PI) * (2 * M_PI) / (All.BoxSize * All.BoxSize);
 	      cmplx_im(fft_of_rhogrid[ip]) *= (2 * M_PI) * (2 * M_PI) / (All.BoxSize * All.BoxSize);
 
@@ -3496,7 +3492,7 @@ void foldonitself(int *typelist)
 void dump_potential(void)
 {
   char buf[1000];
-  int nprocgroup, masterTask, groupTask, n, i, j, k;
+  int nprocgroup, primaryTask, groupTask, n, i, j, k;
   double asmth, fac, box, tstart, tend;
   float *potential;
   FILE *fd;
@@ -3511,11 +3507,11 @@ void dump_potential(void)
   if((NTask % All.NumFilesWrittenInParallel))
     nprocgroup++;
 
-  masterTask = (ThisTask / nprocgroup) * nprocgroup;
+  primaryTask = (ThisTask / nprocgroup) * nprocgroup;
 
   for(groupTask = 0; groupTask < nprocgroup; groupTask++)
     {
-      if(ThisTask == (masterTask + groupTask))	/* ok, it's this processor's turn */
+      if(ThisTask == (primaryTask + groupTask))	/* ok, it's this processor's turn */
 	{
 	  if(!(fd = fopen(buf, "w")))
 	    {

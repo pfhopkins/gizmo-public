@@ -27,7 +27,7 @@ void GravAccel_ShearingSheet(void);
 void GravAccel_PaczynskyWiita(void);
 void GravAccel_RDITestProblem(void);
 
-/* master routine which decides which (if any) analytic gravitational forces are applied */
+/* parent routine which decides which (if any) analytic gravitational forces are applied */
 void add_analytic_gravitational_forces()
 {
     GravAccel_set_zeros_if_needed();    // initial book-keeping: make sure relevant terms are initialized/reset if needed

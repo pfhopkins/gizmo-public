@@ -64,7 +64,7 @@ function readsnap, frun, num, $
 			cosmological=cosmological
 
     COMMON GalaxyHeader, N,npart,massarr,time,redshift,flag_sfr,flag_feedbacktp,npartTotal, $
-		flag_cooling,numfiles,cosmocrap, $
+		flag_cooling,numfiles,cosmo_params, $
 		flag_multiphase, $
 		flag_stellarage, $
 		flag_snaphaspot,$
@@ -189,7 +189,7 @@ foundfile:
     npartTotal=lonarr(6)	
     flag_cooling=0L
     numfiles=0L
-    cosmocrap=dblarr(4)
+    cosmo_params=dblarr(4)
     flag_stellarage=0L
     flag_metals=0L
     bytesleft=256-6*4 - 6*8 - 8 - 8 - 2*4 - 6*4 - 2*4 - 4*8 - 2*4
@@ -220,7 +220,7 @@ foundfile:
 	return, -1
     endif
 
-    readu,1,npart,massarr,time,redshift,flag_sfr,flag_feedbacktp,npartTotal,flag_cooling,numfiles,cosmocrap,flag_stellarage,flag_metals,la
+    readu,1,npart,massarr,time,redshift,flag_sfr,flag_feedbacktp,npartTotal,flag_cooling,numfiles,cosmo_params,flag_stellarage,flag_metals,la
 
 	if flag_metals gt 1 then begin
 	  print, " Reading file in multiple metal species mode: N_metals = ",flag_metals
@@ -236,7 +236,7 @@ foundfile:
 	print, "npartTotal", npartTotal
 	print, "flag_cooling", flag_cooling
 	print, "numfiles", numfiles
-	print, "cosmocrap", cosmocrap
+	print, "cosmo_params", cosmo_params
 	print, "flag_stellarage", flag_stellarage
 	print, "flag_metals", flag_metals
 	print, "strlen(la)", strlen(la)
@@ -413,7 +413,7 @@ moveon:
 	
     if keyword_set(cosmological) then begin
       ascale=time
-      hubble=cosmocrap[3]
+      hubble=cosmo_params[3]
       hinv=1.d0/hubble
       print,' cosmological sim: a=',ascale,' h=',hubble
     endif
@@ -693,11 +693,11 @@ moveon:
     npartTotal= h5a_read(h5a_open_name(hdr_group_id,"NumPart_Total"))
     flag_cooling= h5a_read(h5a_open_name(hdr_group_id,"Flag_Cooling"))
     numfiles= h5a_read(h5a_open_name(hdr_group_id,"NumFilesPerSnapshot"))
-    cosmocrap= fltarr(4)
-    cosmocrap[0]= h5a_read(h5a_open_name(hdr_group_id,"BoxSize"))
-    cosmocrap[1]= h5a_read(h5a_open_name(hdr_group_id,"Omega0"))
-    cosmocrap[2]= h5a_read(h5a_open_name(hdr_group_id,"OmegaLambda"))
-    cosmocrap[3]= h5a_read(h5a_open_name(hdr_group_id,"HubbleParam"))
+    cosmo_params= fltarr(4)
+    cosmo_params[0]= h5a_read(h5a_open_name(hdr_group_id,"BoxSize"))
+    cosmo_params[1]= h5a_read(h5a_open_name(hdr_group_id,"Omega0"))
+    cosmo_params[2]= h5a_read(h5a_open_name(hdr_group_id,"OmegaLambda"))
+    cosmo_params[3]= h5a_read(h5a_open_name(hdr_group_id,"HubbleParam"))
     flag_stellarage= h5a_read(h5a_open_name(hdr_group_id,"Flag_StellarAge"))
     flag_metals= h5a_read(h5a_open_name(hdr_group_id,"Flag_Metals"))
 
@@ -707,7 +707,7 @@ moveon:
 	ascale=1.0
     if keyword_set(cosmological) then begin
       ascale=time
-      hubble=cosmocrap[3]
+      hubble=cosmo_params[3]
       hinv=1.d0/hubble
       print,' cosmological sim: a=',ascale,' h=',hubble
     endif

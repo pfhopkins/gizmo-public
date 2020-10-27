@@ -16,10 +16,10 @@
 */
 
 
-#ifdef BLACK_HOLES // master flag [needs to be here to prevent compiler breaking when this is not active] //
+#ifdef BLACK_HOLES // top-level flag [needs to be here to prevent compiler breaking when this is not active] //
 
 
-#define MASTER_FUNCTION_NAME blackhole_environment_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define CORE_FUNCTION_NAME blackhole_environment_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int CORE_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
 #define CONDITIONFUNCTION_FOR_EVALUATION if(bhsink_isactive(i)) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
 #include "../../system/code_block_xchange_initialize.h" /* pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
 
@@ -207,7 +207,7 @@ int blackhole_environment_evaluate(int target, int mode, int *exportflag, int *e
     while(startnode >= 0) {
         while(startnode >= 0) {
             numngb = ngb_treefind_pairs_threads_targeted(local.Pos, h_i, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist, BH_NEIGHBOR_BITFLAG);
-            if(numngb < 0) {return -1;}
+            if(numngb < 0) {return -2;}
             for(n = 0; n < numngb; n++)
             {
                 j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */
@@ -375,7 +375,7 @@ void blackhole_environment_loop(void)
  * ----------------------------------------------------------------------------------------------------- */
 #if defined(BH_GRAVACCRETION) && (BH_GRAVACCRETION == 0)
 
-#define MASTER_FUNCTION_NAME blackhole_environment_second_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define CORE_FUNCTION_NAME blackhole_environment_second_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int CORE_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
 #define CONDITIONFUNCTION_FOR_EVALUATION if(bhsink_isactive(i)) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
 #include "../../system/code_block_xchange_initialize.h" /* pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
 
@@ -419,7 +419,7 @@ int blackhole_environment_second_evaluate(int target, int mode, int *exportflag,
     while(startnode >= 0) {
         while(startnode >= 0) {
             numngb_inbox = ngb_treefind_pairs_threads_targeted(local.Pos, local.Hsml, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist, BH_NEIGHBOR_BITFLAG);
-            if(numngb_inbox < 0) {return -1;} /* no neighbors! */
+            if(numngb_inbox < 0) {return -2;} /* no neighbors! */
             for(n = 0; n < numngb_inbox; n++) /* neighbor loop */
             {
                 j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */
@@ -452,4 +452,4 @@ CPU_Step[CPU_BLACKHOLES] += measure_time(); /* collect timings and reset clock f
 
 
 
-#endif // master flag
+#endif // top-level flag

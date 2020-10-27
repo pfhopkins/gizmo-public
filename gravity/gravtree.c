@@ -87,7 +87,7 @@ void gravity_tree(void)
                                              sizemax(sizeof(struct gravdata_in),sizeof(struct gravdata_out))));
     DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
     DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
-    if(All.HighestActiveTimeBin == All.HighestOccupiedTimeBin) {if(ThisTask == 0) printf(" ..All.BunchSize=%d\n", All.BunchSize);}
+    if(All.HighestActiveTimeBin == All.HighestOccupiedTimeBin) {if(ThisTask == 0) printf(" ..All.BunchSize=%ld\n", All.BunchSize);}
     int k, ewald_max, diff, save_NextParticle, ndone, ndone_flag, place, recvTask; double tstart, tend, ax, ay, az; MPI_Status status;
     Ewaldcount = 0; Costtotal = 0; N_nodesinlist = 0; ewald_max=0;
 #if defined(BOX_PERIODIC) && !defined(GRAVITY_NOT_PERIODIC) && !defined(PMGRID)
@@ -223,7 +223,10 @@ void gravity_tree(void)
 #if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE) || defined(SINGLE_STAR_TIMESTEPPING)
                 GravDataIn[j].Mass = P[place].Mass;
 #endif
-#if defined(SINGLE_STAR_TIMESTEPPING) || defined(COMPUTE_JERK_IN_GRAVTREE)
+#if defined(BH_DYNFRICTION_FROMTREE)
+                if(P[place].Type==5) {GravDataIn[j].BH_Mass = P[place].BH_Mass;}
+#endif
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(COMPUTE_JERK_IN_GRAVTREE) || defined(BH_DYNFRICTION_FROMTREE)
                 for(k = 0; k < 3; k++) {GravDataIn[j].Vel[k] = P[place].Vel[k];}
 #endif
 #ifdef SINGLE_STAR_FIND_BINARIES
@@ -435,17 +438,27 @@ void gravity_tree(void)
     {
 #ifdef HERMITE_INTEGRATION
         if(HermiteOnlyFlag) {if(!eligible_for_hermite(i)) continue;} /* if we are completing an extra loop required for the Hermite integration, all of the below would be double-calculated, so skip it */
+#endif      
+#ifdef ADAPTIVE_TREEFORCE_UPDATE
+        double dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i);
+        if(!needs_new_treeforce(i)) { // if we don't yet need a new tree pass, just update GravAccel according to the jerk term, increment the counter, and go to the next particle           
+            for(j=0; j<3; j++) {P[i].GravAccel[j] += dt * P[i].GravJerk[j] * All.cf_a2inv;} // a^-1 from converting velocity term in the jerk to physical; a^-3 from the 1/r^3; a^2 from converting the physical dt * j increment to GravAccel back to the units for GravAccel; result is a^-2; note that Ewald and PMGRID terms are neglected from the jerk at present
+            P[i].time_since_last_treeforce += dt;
+            continue;
+        } else {
+            P[i].time_since_last_treeforce = dt;
+        }
 #endif
-
         /* before anything: multiply by G for correct units [be sure operations above/below are aware of this!] */
-        for(j=0;j<3;j++) {P[i].GravAccel[j] *= All.G;}
+        for(j=0;j<3;j++) {P[i].GravAccel[j] *= All.G;}        
 #if (SINGLE_STAR_TIMESTEPPING > 0)
         for(j=0;j<3;j++) {P[i].COM_GravAccel[j] *= All.G;}
 #endif
+
 #ifdef EVALPOTENTIAL
         P[i].Potential *= All.G;
 #ifdef BOX_PERIODIC
-        if(All.ComovingIntegrationOn) {P[i].Potential -= All.G * 2.8372975 * pow(P[i].Mass, 2.0 / 3) * pow(All.Omega0 * 3 * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits / (8 * M_PI * All.G), 1.0 / 3);} else {if(All.OmegaLambda>0) {P[i].Potential -= 0.5*All.OmegaLambda*All.Hubble_H0_CodeUnits*All.Hubble_H0_CodeUnits * (P[i].Pos[0]*P[i].Pos[0]+P[i].Pos[1]*P[i].Pos[1]+P[i].Pos[2]*P[i].Pos[2]);}}
+        if(All.ComovingIntegrationOn) {P[i].Potential -= All.G * 2.8372975 * pow(P[i].Mass, 2.0 / 3) * pow(All.OmegaMatter * 3 * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits / (8 * M_PI * All.G), 1.0 / 3);} else {if(All.OmegaLambda>0) {P[i].Potential -= 0.5*All.OmegaLambda*All.Hubble_H0_CodeUnits*All.Hubble_H0_CodeUnits * (P[i].Pos[0]*P[i].Pos[0]+P[i].Pos[1]*P[i].Pos[1]+P[i].Pos[2]*P[i].Pos[2]);}}
 #endif
 #ifdef PMGRID
         P[i].Potential += P[i].PM_Potential; /* add in long-range potential */
@@ -539,10 +552,10 @@ void gravity_tree(void)
 #endif
 
 #if !defined(BOX_PERIODIC) && !defined(PMGRID) /* some factors here in case we are trying to do comoving simulations in a non-periodic box (special use cases) */
-        if(All.ComovingIntegrationOn) {for(j=0;j<3;j++) {P[i].GravAccel[j] += 0.5*All.Omega0 *All.Hubble_H0_CodeUnits*All.Hubble_H0_CodeUnits * P[i].Pos[j];}}
+        if(All.ComovingIntegrationOn) {for(j=0;j<3;j++) {P[i].GravAccel[j] += 0.5*All.OmegaMatter *All.Hubble_H0_CodeUnits*All.Hubble_H0_CodeUnits * P[i].Pos[j];}}
         if(All.ComovingIntegrationOn==0) {for(j=0;j<3;j++) {P[i].GravAccel[j] += All.OmegaLambda*All.Hubble_H0_CodeUnits*All.Hubble_H0_CodeUnits * P[i].Pos[j];}}
 #ifdef EVALPOTENTIAL
-        if(All.ComovingIntegrationOn) {for(j=0;j<3;j++) {P[i].Potential -= 0.5*All.Omega0 *All.Hubble_H0_CodeUnits*All.Hubble_H0_CodeUnits * P[i].Pos[j]*P[i].Pos[j];}}
+        if(All.ComovingIntegrationOn) {for(j=0;j<3;j++) {P[i].Potential -= 0.5*All.OmegaMatter *All.Hubble_H0_CodeUnits*All.Hubble_H0_CodeUnits * P[i].Pos[j]*P[i].Pos[j];}}
 #endif
 #endif
 
@@ -624,6 +637,9 @@ void *gravity_primary_loop(void *p)
 #ifdef HERMITE_INTEGRATION /* if we are in the Hermite extra loops and a particle is not flagged for this, simply mark it done and move on */
         if(HermiteOnlyFlag && !eligible_for_hermite(i)) {ProcessedFlag[i]=1; continue;}
 #endif
+#ifdef ADAPTIVE_TREEFORCE_UPDATE
+        if(!needs_new_treeforce(i)) {ProcessedFlag[i]=1; continue;}
+#endif                
 
 #if defined(BOX_PERIODIC) && !defined(GRAVITY_NOT_PERIODIC) && !defined(PMGRID)
         if(Ewald_iter)
@@ -802,5 +818,16 @@ void subtract_companion_gravity(int i)
 #endif
     P[i].COM_dt_tidal = 0; for(i1=0;i1<3;i1++) for(i2=0;i2<3;i2++) {P[i].COM_dt_tidal += tidal_tensorps[i1][i2]*tidal_tensorps[i1][i2];}
     P[i].COM_dt_tidal = sqrt(1.0 / (All.G * sqrt(P[i].COM_dt_tidal)));
+}
+#endif
+
+#ifdef ADAPTIVE_TREEFORCE_UPDATE
+int needs_new_treeforce(int n){
+    if(P[n].Type > 0){ // in this implementation we only do the lazy updating for gas cells whose timesteps are otherwise constrained by multiphysics (e.g. radiation, feedback)
+        return 1;
+    } else {
+        if(P[n].time_since_last_treeforce >= P[n].tdyn_step_for_treeforce * ADAPTIVE_TREEFORCE_UPDATE) {return 1; }
+        else {return 0;}
+    }
 }
 #endif

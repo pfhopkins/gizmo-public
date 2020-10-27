@@ -6,6 +6,7 @@
 #include <gsl/gsl_math.h>
 #include "../allvars.h"
 #include "../proto.h"
+#include "../kernel.h"
 
 /*! Routines for gas equation-of-state terms (collects things like calculation of gas pressure)
  * This file was written by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
@@ -146,7 +147,7 @@ double get_pressure(int i)
       but for more general functionality, we want this index here to be appropriately variable. */
 double gamma_eos(int i)
 {
-#ifdef COOL_MOLECFRAC_NONEQM
+#if defined(COOL_MOLECFRAC_NONEQM) & !defined(EOS_SUBSTELLAR_ISM)
     if(i >= 0) {
         if(P[i].Type==0) {
             double fH = HYDROGEN_MASSFRAC, f = SphP[i].MolecularMassFraction, xe = SphP[i].Ne; // use the variables below to update the EOS as needed
@@ -158,9 +159,13 @@ double gamma_eos(int i)
 #ifdef EOS_SUBSTELLAR_ISM
     if(i>=0) {
         if(P[i].Type==0) {
-            double T_eff_atomic = 1.23 * (5./3.-1.) * U_TO_TEMP_UNITS * SphP[i].InternalEnergyPred;
-            double nH_cgs = SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_NHCGS;
+            double T_eff_atomic = 1.23 * (5./3.-1.) * U_TO_TEMP_UNITS * SphP[i].InternalEnergyPred, nH_cgs;
+            nH_cgs = SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_NHCGS;
+#ifdef COOL_MOLECFRAC_NONEQM
+            double f_mol = SphP[i].MolecularMassFraction;
+#else
             double T_transition=DMIN(8000.,nH_cgs), f_mol=1./(1. + T_eff_atomic*T_eff_atomic/(T_transition*T_transition));
+#endif
             /* double gamma_mol_atom = (29.-8./(2.-f_mol))/15.; // interpolates between 5/3 (fmol=0) and 7/5 (fmol=1) */
             /* return gamma_mol_atom + (5./3.-gamma_mol_atom) / (1 + T_eff_atomic*T_eff_atomic/(40.*40.)); // interpolates back up to 5/3 when temps fall below ~30K [cant excite upper states] */
             
@@ -451,7 +456,7 @@ double Get_Gas_Molecular_Mass_Fraction(int i, double temperature, double neutral
 #endif
     
     
-#if (SINGLE_STAR_SINK_FORMATION & 256) || defined(GALSF_SFR_MOLECULAR_CRITERION) /* estimate f_H2 with Krumholz & Gnedin 2010 fitting function, assuming simple scalings of radiation field, clumping, and other factors with basic gas properties so function only of surface density and metallicity, truncated at low values (or else it gives non-sensical answers) */
+#if (SINGLE_STAR_SINK_FORMATION & 256) || defined(GALSF_SFR_MOLECULAR_CRITERION) || defined(COOL_MOLECFRAC_KG) /* estimate f_H2 with Krumholz & Gnedin 2010 fitting function, assuming simple scalings of radiation field, clumping, and other factors with basic gas properties so function only of surface density and metallicity, truncated at low values (or else it gives non-sensical answers) */
     double clumping_factor=1, fH2_kg=0, tau_fmol = (0.1 + P[i].Metallicity[0]/All.SolarAbundances[0]) * evaluate_NH_from_GradRho(P[i].GradRho,PPP[i].Hsml,SphP[i].Density,PPP[i].NumNgb,1,i) * 434.78 * UNIT_SURFDEN_IN_CGS; // convert units for surface density. also limit to Z>=0.1, where their fits were actually good, or else get unphysically low molecular fractions
     if(tau_fmol>0) {double y = 0.756 * (1 + 3.1*pow(P[i].Metallicity[0]/All.SolarAbundances[0],0.365)) / clumping_factor; // this assumes all the equilibrium scalings of radiation field, density, SFR, etc, to get a trivial expression
         y = log(1 + 0.6*y + 0.01*y*y) / (0.6*tau_fmol); y = 1 - 0.75*y/(1 + 0.25*y); fH2_kg=DMIN(1,DMAX(0,y));}
@@ -459,7 +464,7 @@ double Get_Gas_Molecular_Mass_Fraction(int i, double temperature, double neutral
 #endif
     
     
-#if defined(COOLING) /* if none of the above is set, default to a wildly-oversimplified scaling set by fits to the temperature below which gas at a given density becomes molecular from cloud simulations in Glover+Clark 2012 */
+#if defined(COOLING) || defined(COOL_MOLECFRAC_GC) /* if none of the above is set, default to a wildly-oversimplified scaling set by fits to the temperature below which gas at a given density becomes molecular from cloud simulations in Glover+Clark 2012 */
     double T_mol = DMAX(1.,DMIN(8000., SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_NHCGS));
     return neutral_fraction / (1. + temperature*temperature/(T_mol*T_mol));
 #endif

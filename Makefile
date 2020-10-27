@@ -1119,7 +1119,7 @@ GRAVITY_OBJS  = gravity/forcetree.o \
                 gravity/ags_hsml.o \
                 gravity/binary.o
 
-HYDRO_OBJS = 	hydro/hydra_master.o \
+HYDRO_OBJS = 	hydro/hydro_toplevel.o \
 				hydro/density.o \
 				hydro/gradients.o \
 				turb/dynamic_diffusion.o \

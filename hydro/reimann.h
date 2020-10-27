@@ -280,7 +280,7 @@ static inline double get_dQ_from_slopelimiter(double dQ_1, MyFloat grad[3], stru
 
 
 /* --------------------------------------------------------------------------------- */
-/* Master Riemann solver routine: call this, it will call sub-routines */
+/* Top-level Riemann solver routine: call this, it will call sub-routines */
 /*  (written by P. Hopkins, this is just a wrapper though for the various sub-routines) */
 /* --------------------------------------------------------------------------------- */
 void Riemann_solver(struct Input_vec_Riemann Riemann_vec, struct Riemann_outputs *Riemann_out, double n_unit[3], double press_tot_limiter)
@@ -479,7 +479,7 @@ void Riemann_solver_KurganovTadmor_PWK(struct Input_vec_Riemann Riemann_vec, str
     S_L=alpha*cs_L; if(v_line_L>0) {S_L+=v_line_L;} else {S_L-=v_line_L;} /* fastest left-side wavespeed */
     S_R=alpha*cs_R; if(v_line_R>0) {S_R+=v_line_R;} else {S_R-=v_line_R;} /* fastest right-side wavespeed */
     S_M=DMAX(S_L,S_R);
-    Riemann_out->S_M = DMAX(cs_L+fabs(v_line_L) , cs_R+fabs(v_line_R)); /* note this does not have the limiter, otherwise corrections in hydra_core_meshless will be incorrect and unstable */
+    Riemann_out->S_M = DMAX(cs_L+fabs(v_line_L) , cs_R+fabs(v_line_R)); /* note this does not have the limiter, otherwise corrections in hydro_core_meshless will be incorrect and unstable */
     double f_rho_left = Riemann_vec.L.rho * (v_line_L + S_M);
     double f_rho_right = Riemann_vec.R.rho * (v_line_R - S_M);
 #if defined(HYDRO_MESHLESS_FINITE_VOLUME) /* MFV face vel is null, as we are in frame co-moving with face already */

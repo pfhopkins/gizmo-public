@@ -35,7 +35,7 @@ void savepositions(int num)
 {
     size_t bytes;
     char buf[500];
-    int n, filenr, gr, ngroups, masterTask, lastTask;
+    int n, filenr, gr, ngroups, primaryTask, lastTask;
 
     CPU_Step[CPU_MISC] += measure_time();
 
@@ -94,7 +94,7 @@ void savepositions(int num)
         sumup_large_ints(6, n_type, ntot_type_all);
 
         /* assign processors to output files */
-        distribute_file(All.NumFilesPerSnapshot, 0, 0, NTask - 1, &filenr, &masterTask, &lastTask);
+        distribute_file(All.NumFilesPerSnapshot, 0, 0, NTask - 1, &filenr, &primaryTask, &lastTask);
 
         if(All.NumFilesPerSnapshot > 1)
         {
@@ -119,7 +119,7 @@ void savepositions(int num)
         {
             if((filenr / All.NumFilesWrittenInParallel) == gr)	/* ok, it's this processor's turn */
             {
-                write_file(buf, masterTask, lastTask);
+                write_file(buf, primaryTask, lastTask);
             }
             MPI_Barrier(MPI_COMM_WORLD);
         }
@@ -224,8 +224,8 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                         while(fp_pos[k] >= box_length_xyz) {fp_pos[k] -= box_length_xyz;}
 #endif
                     }
-                    n++;
                     fp_pos += 3;
+                    n++;
                 }
             break;
 
@@ -234,7 +234,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                 if(P[pindex].Type == type)
                 {
 #if 1
-                    for(k=0;k<3;k++) {fp[k] = P[pindex].Vel[k] * sqrt(All.cf_a3inv);} // JUST write the conserved velocity here, not the drifted one in this manner //
+                    for(k=0;k<3;k++) {fp[k] = (MyOutputFloat) (P[pindex].Vel[k] * sqrt(All.cf_a3inv));} // JUST write the conserved velocity here, not the drifted one in this manner //
 #else
                     double dt_gravkick, dt_hydrokick;
                     integertime dt_integerstep = GET_PARTICLE_INTEGERTIME(pindex);
@@ -253,8 +253,8 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
 #endif
                     for(k = 0; k < 3; k++) {fp[k] *= sqrt(All.cf_a3inv);}
 #endif
-                    n++;
                     fp += 3;
+                    n++;
                 }
             break;
 
@@ -714,7 +714,8 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
-                    for(k = 0; k < 3; k++) {*fp++ = (Get_Gas_BField(pindex,k) * All.cf_a2inv * gizmo2gauss);}
+                    for(k=0;k<3;k++) {fp[k] = (MyOutputFloat) (Get_Gas_BField(pindex,k) * All.cf_a2inv * gizmo2gauss);}
+                    fp += 3;
                     n++;
                 }
 #endif
@@ -724,7 +725,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
-                    for(k = 0; k < 3; k++) {*fp++ = P[pindex].Particle_DivVel;}
+                    *fp++ = P[pindex].Particle_DivVel;
                     n++;
                 }
             break;
@@ -734,9 +735,8 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
-                    *fp++ = SphP[pindex].Vorticity[0];
-                    *fp++ = SphP[pindex].Vorticity[1];
-                    *fp++ = SphP[pindex].Vorticity[2];
+                    for(k=0;k<3;k++) {fp[k] = SphP[pindex].Vorticity[k];}
+                    fp += 3;
                     n++;
                 }
 #endif
@@ -747,8 +747,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
-                    for(k = 0; k < N_IMF_FORMPROPS; k++)
-                        fp[k] = P[pindex].IMF_FormProps[k];
+                    for(k = 0; k < N_IMF_FORMPROPS; k++) {fp[k] = P[pindex].IMF_FormProps[k];}
                     fp += N_IMF_FORMPROPS;
                     n++;
                 }
@@ -819,8 +818,8 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
-                    for(k = 0; k < 3; k++)
-                        *fp++ = (SphP[pindex].Gradients.Phi[k] * All.cf_a2inv*All.cf_a2inv * gizmo2gauss);
+                    for(k=0;k<3;k++) {fp[k] = (SphP[pindex].Gradients.Phi[k] * All.cf_a2inv*All.cf_a2inv * gizmo2gauss);}
+                    fp += 3;
                     n++;
                 }
 #endif
@@ -837,9 +836,9 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                     tcool = GetCoolingTime(u, SphP[pindex].Density * All.cf_a3inv, ne, pindex);
                     /* convert cooling time with current thermal energy to du/dt */
                     if(tcool != 0)
-                        *fp++ = u / tcool;
+                        {*fp++ = u / tcool;}
                     else
-                        *fp++ = 0;
+                        {*fp++ = 0;}
                     n++;
                 }
 #endif // OUTPUT_COOLRATE
@@ -883,8 +882,8 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
-                    for(k = 0; k < 3; k++)
-                        *fp++ = BPP(pindex).BH_Specific_AngMom[k];
+                    for(k = 0; k < 3; k++) {fp[k] = BPP(pindex).BH_Specific_AngMom[k];}
+                    fp += 3;
                     n++;
                 }
 #endif
@@ -911,6 +910,9 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             break;
 
         case IO_STAGE_PROTOSTAR:
+            break;
+            
+        case IO_AGE_PROTOSTAR:
             break;
 
         case IO_LUM_SINGLESTAR:
@@ -1110,9 +1112,9 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                 if(P[pindex].Type == type)
                 {
                     if(All.ComovingIntegrationOn)
-                        *fp++ = GDE_INITDENSITY(pindex) / (GDE_TIMEBEGIN(pindex) * GDE_TIMEBEGIN(pindex) * GDE_TIMEBEGIN(pindex));
+                        {*fp++ = GDE_INITDENSITY(pindex) / (GDE_TIMEBEGIN(pindex) * GDE_TIMEBEGIN(pindex) * GDE_TIMEBEGIN(pindex));}
                     else
-                        *fp++ = GDE_INITDENSITY(pindex);
+                        {*fp++ = GDE_INITDENSITY(pindex);}
                     n++;
                 }
 #endif
@@ -1132,7 +1134,8 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
         case IO_TURB_DYNAMIC_COEFF:
 #ifdef TURB_DIFF_DYNAMIC
             for (n = 0; n < pc; pindex++) {
-                if (P[pindex].Type == type) {
+                if (P[pindex].Type == type)
+                {
                     *fp++ = SphP[pindex].TD_DynDiffCoeff;
                     n++;
                 }
@@ -1176,11 +1179,11 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             case IO_EOSCS:
 #if defined(EOS_GENERAL)
             for(n = 0; n < pc; pindex++)
-            if(P[pindex].Type == type)
-        {
-            *fp++ = SphP[pindex].SoundSpeed;
-            n++;
-        }
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = SphP[pindex].SoundSpeed;
+                    n++;
+                }
 #endif
             break;
 
@@ -1198,8 +1201,8 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                         for(kf = 0; kf < 3; kf++)
                             fp[3*k + kf] = SphP[pindex].Elastic_Stress_Tensor[kf][k];
                     }
-                    n++;
                     fp += 9;
+                    n++;
                 }
 #endif
             break;
@@ -1207,11 +1210,11 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             case IO_EOSCOMP:
 #ifdef EOS_TILLOTSON
             for(n = 0; n < pc; pindex++)
-            if(P[pindex].Type == type)
-        {
-            *ip_int++ = SphP[pindex].CompositionType;
-            n++;
-        }
+                if(P[pindex].Type == type)
+                {
+                    *ip_int++ = SphP[pindex].CompositionType;
+                    n++;
+                }
 #endif
             break;
 
@@ -1220,11 +1223,9 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
-                    for(k = 0; k < 3; k++)
-                            fp[k] = SphP[pindex].ParticleVel[k];
-
-                    n++;
+                    for(k = 0; k < 3; k++) {fp[k] = SphP[pindex].ParticleVel[k];}
                     fp += 3;
+                    n++;
                 }
 #endif
             break;
@@ -1235,8 +1236,8 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                 if(P[pindex].Type == type)
                 {
                     for(k=0;k<N_RT_FREQ_BINS;k++) {fp[k] = SphP[pindex].Rad_E_gamma[k];}
-                    n++;
                     fp += N_RT_FREQ_BINS;
+                    n++;
                 }
 #endif
             break;
@@ -1247,8 +1248,8 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                 if(P[pindex].Type == type)
                 {
                     for(k=0;k<3;k++) {fp[k] = SphP[pindex].Rad_Accel[k];}
-                    n++;
                     fp += 3;
+                    n++;
                 }
 #endif
             break;
@@ -1258,11 +1259,9 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
-                    for(k=0;k<6;k++)
-                        {int kf; for(kf=0;kf<N_RT_FREQ_BINS;kf++) {
-                            fp[N_RT_FREQ_BINS*k + kf] = SphP[pindex].ET[kf][k];}}
-                    n++;
+                    for(k=0;k<6;k++) {int kf; for(kf=0;kf<N_RT_FREQ_BINS;kf++) {fp[N_RT_FREQ_BINS*k + kf] = SphP[pindex].ET[kf][k];}}
                     fp += 6*N_RT_FREQ_BINS;
+                    n++;
                 }
 #endif
             break;
@@ -1552,7 +1551,8 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_STAGE_PROTOSTAR:
             bytes_per_blockelement = sizeof(int);
             break;
-
+            
+        case IO_AGE_PROTOSTAR:
         case IO_MASS:
         case IO_BH_DIST:
         case IO_U:
@@ -1736,7 +1736,7 @@ int get_datatype_in_block(enum iofields blocknr)
     int typekey;
     switch (blocknr)
     {
-#if defined(OUTPUT_POSITIONS_IN_DOUBLE) || defined(INPUT_POSITIONS_IN_DOUBLE)
+#if (defined(OUTPUT_POSITIONS_IN_DOUBLE) && !defined(OUTPUT_IN_DOUBLEPRECISION)) || (defined(INPUT_POSITIONS_IN_DOUBLE) && !defined(INPUT_IN_DOUBLEPRECISION))
         case IO_POS:
             typekey = 3; /* pos outputs in HDF5 are double automatically, to prevent overlaps */
             break;
@@ -1761,7 +1761,7 @@ int get_datatype_in_block(enum iofields blocknr)
         case IO_STAGE_PROTOSTAR:
             typekey = 0;		/* native int */
             break;
-
+            
         default:
             typekey = 1;		/* native MyOutputFloat */
             break;
@@ -1834,6 +1834,7 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_MASS_D_PROTOSTAR:
         case IO_ZAMS_MASS:
         case IO_STAGE_PROTOSTAR:
+        case IO_AGE_PROTOSTAR:
         case IO_LUM_SINGLESTAR:
         case IO_BHPROGS:
         case IO_CAUSTIC_COUNTER:
@@ -2139,6 +2140,7 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_MASS_D_PROTOSTAR:
         case IO_ZAMS_MASS:
         case IO_STAGE_PROTOSTAR:
+        case IO_AGE_PROTOSTAR:
         case IO_LUM_SINGLESTAR:
         case IO_BHPROGS:
             for(i = 0; i < 6; i++) {if(i != 5) {typelist[i] = 0;}}
@@ -2461,6 +2463,9 @@ int blockpresent(enum iofields blocknr)
             break;
 
         case IO_STAGE_PROTOSTAR:
+            break;
+            
+        case IO_AGE_PROTOSTAR:
             break;
 
         case IO_LUM_SINGLESTAR:
@@ -2853,6 +2858,9 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
         case IO_STAGE_PROTOSTAR:
             strncpy(label, "PSST", 4);
             break;
+        case IO_AGE_PROTOSTAR:
+            strncpy(label, "PSAG", 4);
+            break;
         case IO_MASS_D_PROTOSTAR:
             strncpy(label, "PSMD", 4);
             break;
@@ -3221,6 +3229,9 @@ void get_dataset_name(enum iofields blocknr, char *buf)
         case IO_STAGE_PROTOSTAR:
             strcpy(buf, "ProtoStellarStage");
             break;
+        case IO_AGE_PROTOSTAR:
+            strcpy(buf, "ProtoStellarAge");
+            break;
         case IO_LUM_SINGLESTAR:
             strcpy(buf, "StarLuminosity_Solar");
             break;
@@ -3468,7 +3479,7 @@ void write_file(char *fname, int writeTask, int lastTask)
 
     header.num_files = All.NumFilesPerSnapshot;
     header.BoxSize = All.BoxSize;
-    header.Omega0 = All.Omega0;
+    header.OmegaMatter = All.OmegaMatter;
     header.OmegaLambda = All.OmegaLambda;
     header.HubbleParam = All.HubbleParam;
 
@@ -3652,11 +3663,12 @@ void write_file(char *fname, int writeTask, int lastTask)
 #ifdef HAVE_HDF5
                         if(ThisTask == writeTask && All.SnapFormat == 3 && header.npart[type] > 0)
                         {
-                            switch (get_datatype_in_block(blocknr))
+                            switch(get_datatype_in_block(blocknr))
                             {
                                 case 0:
                                     hdf5_datatype = H5Tcopy(H5T_NATIVE_UINT);
                                     break;
+                                    
                                 case 1:
 #ifdef OUTPUT_IN_DOUBLEPRECISION
                                     hdf5_datatype = H5Tcopy(H5T_NATIVE_DOUBLE);
@@ -3664,9 +3676,11 @@ void write_file(char *fname, int writeTask, int lastTask)
                                     hdf5_datatype = H5Tcopy(H5T_NATIVE_FLOAT);
 #endif
                                     break;
+                                    
                                 case 2:
                                     hdf5_datatype = H5Tcopy(H5T_NATIVE_UINT64);
                                     break;
+                                    
                                 case 3:
 #ifdef OUTPUT_POSITIONS_IN_DOUBLE
                                     hdf5_datatype = H5Tcopy(H5T_NATIVE_DOUBLE);
@@ -3678,10 +3692,7 @@ void write_file(char *fname, int writeTask, int lastTask)
 
                             dims[0] = header.npart[type];
                             dims[1] = get_values_per_blockelement(blocknr);
-                            if(dims[1] == 1)
-                                rank = 1;
-                            else
-                                rank = 2;
+                            if(dims[1] == 1) {rank = 1;} else {rank = 2;}
 
                             get_dataset_name(blocknr, buf);
 
@@ -3690,15 +3701,15 @@ void write_file(char *fname, int writeTask, int lastTask)
                             hdf5_dataset = H5Dcreate(hdf5_grp[type], buf, hdf5_datatype, hdf5_dataspace_in_file, H5P_DEFAULT);
 #else
                             if(dims[0] > 10)
-			    {
+                            {
                             	hid_t plist_id = H5Pcreate(H5P_DATASET_CREATE);
                             	hsize_t cdims[2]; cdims[0] = (hsize_t) (dims[0] / 10); cdims[1] = dims[1];
                             	hdf5_status = H5Pset_chunk (plist_id, rank, cdims);
                             	hdf5_status = H5Pset_deflate (plist_id, 4);
                             	hdf5_dataset = H5Dcreate2(hdf5_grp[type], buf, hdf5_datatype, hdf5_dataspace_in_file, H5P_DEFAULT, plist_id, H5P_DEFAULT);
-			    } else {
+                            } else {
                             	hdf5_dataset = H5Dcreate(hdf5_grp[type], buf, hdf5_datatype, hdf5_dataspace_in_file, H5P_DEFAULT);
-			    }
+                            }
 #endif
                             pcsum = 0;
                         }
@@ -3712,21 +3723,18 @@ void write_file(char *fname, int writeTask, int lastTask)
 
                                 for(p = writeTask; p <= lastTask; p++)
                                     if(p != ThisTask)
-                                        MPI_Send(&n_for_this_task, 1, MPI_INT, p, TAG_NFORTHISTASK, MPI_COMM_WORLD);
+                                        {MPI_Send(&n_for_this_task, 1, MPI_INT, p, TAG_NFORTHISTASK, MPI_COMM_WORLD);}
                             }
                             else
-                                MPI_Recv(&n_for_this_task, 1, MPI_INT, task, TAG_NFORTHISTASK, MPI_COMM_WORLD,
-                                         &status);
+                                MPI_Recv(&n_for_this_task, 1, MPI_INT, task, TAG_NFORTHISTASK, MPI_COMM_WORLD, &status);
 
                             while(n_for_this_task > 0)
                             {
                                 pc = n_for_this_task;
 
-                                if(pc > (int)blockmaxlen)
-                                    pc = blockmaxlen;
+                                if(pc > (int)blockmaxlen) {pc = blockmaxlen;}
 
-                                if(ThisTask == task)
-                                    fill_write_buffer(blocknr, &offset, pc, type);
+                                if(ThisTask == task) {fill_write_buffer(blocknr, &offset, pc, type);}
 
                                 if(ThisTask == writeTask && task != writeTask)
                                     MPI_Recv(CommBuffer, bytes_per_blockelement * pc, MPI_BYTE, task,
@@ -3753,11 +3761,10 @@ void write_file(char *fname, int writeTask, int lastTask)
 
                                         dims[0] = pc;
                                         dims[1] = get_values_per_blockelement(blocknr);
+                                        if(dims[1] == 1) {rank = 1;} else {rank = 2;}
                                         hdf5_dataspace_memory = H5Screate_simple(rank, dims, NULL);
 
-                                        hdf5_status =
-                                        H5Dwrite(hdf5_dataset, hdf5_datatype,
-                                                 hdf5_dataspace_memory,
+                                        hdf5_status = H5Dwrite(hdf5_dataset, hdf5_datatype, hdf5_dataspace_memory,
                                                  hdf5_dataspace_in_file, H5P_DEFAULT, CommBuffer);
 
                                         H5Sclose(hdf5_dataspace_memory);
@@ -3886,7 +3893,7 @@ void write_header_attributes_in_hdf5(hid_t handle)
 
     hdf5_dataspace = H5Screate(H5S_SCALAR);
     hdf5_attribute = H5Acreate(handle, "Omega0", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &header.Omega0);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &header.OmegaMatter);
     H5Aclose(hdf5_attribute);
     H5Sclose(hdf5_dataspace);
 
@@ -4017,46 +4024,26 @@ void mpi_printf(const char *fmt, ...)
 #if defined(IO_SUBFIND_READFOF_FROMIC)
 int io_compare_P_ID(const void *a, const void *b)
 {
-    if(((struct particle_data *) a)->ID < (((struct particle_data *) b)->ID))
-        return -1;
-
-    if(((struct particle_data *) a)->ID > (((struct particle_data *) b)->ID))
-        return +1;
-
+    if(((struct particle_data *) a)->ID < (((struct particle_data *) b)->ID)) {return -1;}
+    if(((struct particle_data *) a)->ID > (((struct particle_data *) b)->ID)) {return +1;}
     return 0;
 }
 
 int io_compare_P_GrNr_SubNr(const void *a, const void *b)
 {
-    if(((struct particle_data *) a)->GrNr < (((struct particle_data *) b)->GrNr))
-        return -1;
-
-    if(((struct particle_data *) a)->GrNr > (((struct particle_data *) b)->GrNr))
-        return +1;
-
-    if(((struct particle_data *) a)->SubNr < (((struct particle_data *) b)->SubNr))
-        return -1;
-
-    if(((struct particle_data *) a)->SubNr > (((struct particle_data *) b)->SubNr))
-        return +1;
-
+    if(((struct particle_data *) a)->GrNr < (((struct particle_data *) b)->GrNr)) {return -1;}
+    if(((struct particle_data *) a)->GrNr > (((struct particle_data *) b)->GrNr)) {return +1;}
+    if(((struct particle_data *) a)->SubNr < (((struct particle_data *) b)->SubNr)) {return -1;}
+    if(((struct particle_data *) a)->SubNr > (((struct particle_data *) b)->SubNr)) {return +1;}
     return 0;
 }
 
 int io_compare_P_GrNr_ID(const void *a, const void *b)
 {
-    if(((struct particle_data *) a)->GrNr < (((struct particle_data *) b)->GrNr))
-        return -1;
-
-    if(((struct particle_data *) a)->GrNr > (((struct particle_data *) b)->GrNr))
-        return +1;
-
-    if(((struct particle_data *) a)->ID < (((struct particle_data *) b)->ID))
-        return -1;
-
-    if(((struct particle_data *) a)->ID > (((struct particle_data *) b)->ID))
-        return +1;
-
+    if(((struct particle_data *) a)->GrNr < (((struct particle_data *) b)->GrNr)) {return -1;}
+    if(((struct particle_data *) a)->GrNr > (((struct particle_data *) b)->GrNr)) {return +1;}
+    if(((struct particle_data *) a)->ID < (((struct particle_data *) b)->ID)) {return -1;}
+    if(((struct particle_data *) a)->ID > (((struct particle_data *) b)->ID)) {return +1;}
     return 0;
 }
 

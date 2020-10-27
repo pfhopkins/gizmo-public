@@ -52,10 +52,14 @@ void split_particle_i(int i, int n_particles_split, int i_nearest);
 double gamma_eos(int i);
 void do_first_halfstep_kick(void);
 void do_second_halfstep_kick(void);
+double matrix_invert_ndims(double T[3][3], double Tinv[3][3]);
 #ifdef HERMITE_INTEGRATION
 int eligible_for_hermite(int i);
 void do_hermite_prediction(void);
 void do_hermite_correction(void);
+#endif
+#ifdef ADAPTIVE_TREEFORCE_UPDATE
+int needs_new_treeforce(int i);
 #endif
 void find_timesteps(void);
 #ifdef GALSF
@@ -79,7 +83,7 @@ double sub_turb_enclosed_mass(double r, double msub, double vmax, double radvmax
 
 void interpolate_fluxes_opacities_gasgrains(void);
 #if defined(RT_OPACITY_FROM_EXPLICIT_GRAINS)
-double return_grain_absorption_efficiency_Q(int i, int k_freq);
+double return_grain_extinction_efficiency_Q(int i, int k_freq);
 #endif
 int powerspec_turb_find_nearest_evaluate(int target, int mode, int *nexport, int *nsend_local);
 void powerspec_turb_calc_dispersion(void);
@@ -349,8 +353,7 @@ int io_compare_P_GrNr_ID(const void *a, const void *b);
 
 void write_file(char *fname, int readTask, int lastTask);
 
-void distribute_file(int nfiles, int firstfile, int firsttask, int lasttask, int *filenr, int *master,
-		     int *last);
+void distribute_file(int nfiles, int firstfile, int firsttask, int lasttask, int *filenr, int *primary_taskID, int *last);
 
 int get_values_per_blockelement(enum iofields blocknr);
 
@@ -487,7 +490,7 @@ void particle2in_addFB_fromstars(struct addFB_evaluate_data_in_ *in, int i, int 
 double mechanical_fb_calculate_eventrates(int i, double dt);
 #endif
 
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_FB_WINDS) || defined(SINGLE_STAR_FB_RAD) || defined(SINGLE_STAR_FB_SNE)
+#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_FB_WINDS) || defined(SINGLE_STAR_FB_RAD) || defined(SINGLE_STAR_FB_SNE) || defined(SINGLE_STAR_FB_LOCAL_RP)
 double single_star_fb_velocity(int n);
 #endif
 

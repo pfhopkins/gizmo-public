@@ -167,24 +167,14 @@ void long_range_force(void)
 #ifndef BOX_PERIODIC
   if(All.ComovingIntegrationOn)
     {
-      fac = 0.5 * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits * All.Omega0;
-
-      for(i = 0; i < NumPart; i++)
-	for(j = 0; j < 3; j++)
-	  P[i].GravPM[j] += fac * P[i].Pos[j];
+      fac = 0.5 * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits * All.OmegaMatter;
+      for(i = 0; i < NumPart; i++) {for(j = 0; j < 3; j++) {P[i].GravPM[j] += fac * P[i].Pos[j];}}
     }
 
-
-  /* Finally, the following factor allows a computation of cosmological simulation 
-     with vacuum energy in physical coordinates */
-
-  if(All.ComovingIntegrationOn == 0)
+  if(All.ComovingIntegrationOn == 0) /* special factor as in gravtree for cases where we want to run a non-cosmological simulation but with dark energy terms */
     {
       fac = All.OmegaLambda * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits;
-
-      for(i = 0; i < NumPart; i++)
-	for(j = 0; j < 3; j++)
-	  P[i].GravPM[j] += fac * P[i].Pos[j];
+      for(i = 0; i < NumPart; i++) {for(j = 0; j < 3; j++) {P[i].GravPM[j] += fac * P[i].Pos[j];}}
     }
 #endif
 

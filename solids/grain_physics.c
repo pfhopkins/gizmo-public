@@ -213,7 +213,7 @@ void apply_grain_dragforce(void)
         } // closes check for particle type, id
     } // closes main particle loop (loop over active particles)
 #if defined(GRAIN_BACKREACTION)
-    grain_backrx(); /* call master routine to assign the back-reaction force among neighbors */
+    grain_backrx(); /* call parent routine to assign the back-reaction force among neighbors */
 #endif
     PRINT_STATUS(" ..particulate/grain/PIC force evaluation done.");
     CPU_Step[CPU_DRAGFORCE] += measure_time();
@@ -229,7 +229,7 @@ void apply_grain_dragforce(void)
  'work' between neighbors, but all of the parallelization, looping, communication blocks,
  etc, are all handled for you. */
 
-#define MASTER_FUNCTION_NAME grain_backrx_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define CORE_FUNCTION_NAME grain_backrx_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int CORE_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
 #define CONDITIONFUNCTION_FOR_EVALUATION if(((1 << P[i].Type) & (GRAIN_PTYPES))&&(P[i].TimeBin>=0)&&(P[i].Mass>0)) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
 #include "../system/code_block_xchange_initialize.h" /* pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
 
@@ -285,7 +285,7 @@ int grain_backrx_evaluate(int target, int mode, int *exportflag, int *exportnode
     while(startnode >= 0) {
         while(startnode >= 0) {
             numngb_inbox = ngb_treefind_variable_threads_targeted(local.Pos, local.Hsml, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist, kernel_shared_BITFLAG);
-            if(numngb_inbox < 0) {return -1;} /* no neighbors! */
+            if(numngb_inbox < 0) {return -2;} /* no neighbors! */
             for(n = 0; n < numngb_inbox; n++) /* neighbor loop */
             {
                 j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */
@@ -400,7 +400,7 @@ void calculate_interact_kick(double dV[3], double kick[3], double m)
 #define GRAIN_RDI_TESTPROBLEM_Q_AT_GRAIN_MAX 1 /* needed for radiation problems below, default to unity */
 #endif
 
-#define MASTER_FUNCTION_NAME interpolate_fluxes_opacities_gasgrains_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define CORE_FUNCTION_NAME interpolate_fluxes_opacities_gasgrains_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int CORE_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
 #define CONDITIONFUNCTION_FOR_EVALUATION if(((1 << P[i].Type) & (GRAIN_PTYPES+1))&&(P[i].TimeBin>=0)&&(P[i].Mass>0)) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
 #include "../system/code_block_xchange_initialize.h" /* pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
 
@@ -418,7 +418,7 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
         double R_grain_code=P[i].Grain_Size/UNIT_LENGTH_IN_CGS, rho_grain_code=All.Grain_Internal_Density/UNIT_DENSITY_IN_CGS, rho_gas_code=P[i].Gas_Density*All.cf_a3inv; /* internal grain density in code units */
         for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++)
         {
-            double Q_abs_eff = return_grain_absorption_efficiency_Q(i, k_freq); /* need this to calculate the absorption efficiency in each band */
+            double Q_abs_eff = return_grain_extinction_efficiency_Q(i, k_freq); /* need this to calculate the absorption efficiency in each band */
             in->Grain_Abs_Coeff[k_freq] = Q_abs_eff * 3. / (4. * C_LIGHT_CODE_REDUCED * rho_grain_code * R_grain_code * rho_gas_code);
         }
     }
@@ -453,7 +453,7 @@ int interpolate_fluxes_opacities_gasgrains_evaluate(int target, int mode, int *e
             } else {
                 numngb_inbox = ngb_treefind_variable_threads(local.Pos, local.Hsml, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist); /* grains search for gas -they- can see */
             }
-            if(numngb_inbox < 0) {return -1;} /* no neighbors! */
+            if(numngb_inbox < 0) {return -2;} /* no neighbors! */
             for(n = 0; n < numngb_inbox; n++) /* neighbor loop */
             {
                 j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */
@@ -472,7 +472,7 @@ int interpolate_fluxes_opacities_gasgrains_evaluate(int target, int mode, int *e
                         double R_grain_code=P[j].Grain_Size/UNIT_LENGTH_IN_CGS, rho_grain_code=All.Grain_Internal_Density/UNIT_DENSITY_IN_CGS; /* internal grain density in code units */
                         for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++)
                         {
-                            double Q_abs_eff = return_grain_absorption_efficiency_Q(j, k_freq); /* need this to calculate the absorption efficiency in each band */
+                            double Q_abs_eff = return_grain_extinction_efficiency_Q(j, k_freq); /* need this to calculate the absorption efficiency in each band */
                             out.Interpolated_Opacity[k_freq] += wt * Q_abs_eff * 3. / (4. * rho_grain_code * R_grain_code);
                         }
                     } else { /* sitting on a -grain- element, want to interpolate flux to it and calculate radiation pressure force */
@@ -525,7 +525,7 @@ void interpolate_fluxes_opacities_gasgrains(void)
 
 
 
-double return_grain_absorption_efficiency_Q(int i, int k_freq)
+double return_grain_extinction_efficiency_Q(int i, int k_freq)
 {
     double Q = 1; /* default to geometric opacity */
 #if defined(GRAIN_RDI_TESTPROBLEM)
@@ -535,7 +535,7 @@ double return_grain_absorption_efficiency_Q(int i, int k_freq)
 #endif
 #else
     /* INSERT PHYSICS HERE -- this is where you want to specify the optical properties of grains relative to the frequency bins being evolved. could code up something for -ALL- the bins we do, but that's a lot, so we'll do these as-needed, for runs with different frequencies */
-    if(ThisTask==0) {PRINT_WARNING("Code does not have entered grain absorption efficiency/optical properties for your specific wavelength being evolved. Please enter that information in the routine 'return_grain_absorption_efficiency_Q'. For now will assume geometric absorption (Q=1). \n");}
+    if(ThisTask==0) {PRINT_WARNING("Code does not have entered grain absorption efficiency/optical properties for your specific wavelength being evolved. Please enter that information in the routine 'return_grain_extinction_efficiency_Q'. For now will assume geometric absorption (Q=1). \n");}
 #endif
     return Q;
 }

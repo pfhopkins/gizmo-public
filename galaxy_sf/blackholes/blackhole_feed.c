@@ -12,10 +12,10 @@
 * see notes in blackhole.c for details on code history.
 */
 
-#ifdef BLACK_HOLES // master flag [needs to be here to prevent compiler breaking when this is not active] //
+#ifdef BLACK_HOLES // top-level flag [needs to be here to prevent compiler breaking when this is not active] //
 
 
-#define MASTER_FUNCTION_NAME blackhole_feed_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define CORE_FUNCTION_NAME blackhole_feed_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int CORE_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
 #define CONDITIONFUNCTION_FOR_EVALUATION if(bhsink_isactive(i)) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
 #include "../../system/code_block_xchange_initialize.h" /* pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
 
@@ -113,7 +113,8 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
     /* initialize variables before loop is started */
     int startnode, numngb, listindex = 0, j, k, n; struct INPUT_STRUCT_NAME local; struct OUTPUT_STRUCT_NAME out; memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME)); /* define variables and zero memory and import data for local target*/
     if(mode == 0) {INPUTFUNCTION_NAME(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];} /* imports the data to the correct place and names */
-    double h_i = local.Hsml, wk, dwk, vrel, vesc, dpos[3], dvel[3], f_accreted; f_accreted=1; if((local.Mass<0)||(h_i<=0)) {return -1;}
+    double h_i = local.Hsml, wk, dwk, vrel, vesc, dpos[3], dvel[3], f_accreted; f_accreted=1;
+    if((local.Mass<0)||(h_i<=0)) {return 0;}
     double w, p, r2, r, u, sink_radius=All.ForceSoftening[5], h_i2 = h_i * h_i, hinv = 1 / h_i, hinv3 = hinv * hinv * hinv, ags_h_i = All.ForceSoftening[5]; p=0; w=0;
 #ifdef BH_REPOSITION_ON_POTMIN
     out.BH_MinPot = BHPOTVALUEINIT;
@@ -148,7 +149,7 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
     while(startnode >= 0) {
         while(startnode >= 0) {
             numngb = ngb_treefind_pairs_threads_targeted(local.Pos, h_i, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist, BH_NEIGHBOR_BITFLAG);
-            if(numngb < 0) return -1;
+            if(numngb < 0) {return -2;}
             for(n = 0; n < numngb; n++)
             {
                 j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */
@@ -160,8 +161,8 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
                     if(r2 < h_i2 || r2 < PPP[j].Hsml*PPP[j].Hsml)
                     {
                         vrel=0; for(k=0;k<3;k++) {vrel += dvel[k]*dvel[k];}
-                        r=sqrt(r2); vrel=sqrt(vrel)/All.cf_atime;  /* do this once and use below */
-                        vesc=bh_vesc(j,local.Mass,r, ags_h_i);
+                        r=sqrt(r2); vrel=sqrt(vrel)/All.cf_atime;  /* relative velocity in physical units. do this once and use below */
+                        vesc=bh_vesc(j, local.Mass, r, ags_h_i);
                         
                         /* note that SwallowID is both read and potentially re-written below: we need to make sure this is done in a thread-safe manner */
                         MyIDType SwallowID_j;
@@ -198,10 +199,10 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
                         if(P[j].Type == 5)  /* we may have a black hole merger -- check below if allowed */
                             if((local.ID != P[j].ID) && (SwallowID_j == 0) && (BPP(j).BH_Mass < local.BH_Mass)) /* we'll assume most massive BH swallows the other - simplifies analysis and ensures unique results */
 #ifdef SINGLE_STAR_SINK_DYNAMICS
-                            if((r < 1.0001*P[j].min_dist_to_bh) && (r < PPP[j].Hsml) && (r < sink_radius) && (P[j].Mass < local.Mass) && (P[j].Mass < 3*All.MinMassForParticleMerger)) /* only merge away stuff that is within the softening radius, and is no more massive that a few gas particles */
+                            if((r < 1.0001*P[j].min_dist_to_bh) && (r < PPP[j].Hsml) && (r < sink_radius) && (P[j].Mass < local.Mass) && (P[j].Mass < 10*All.MeanGasParticleMass)) /* only merge away stuff that is within the softening radius, and is no more massive that a few gas particles */
 #endif
                             {
-                                if((vrel < BH_CSND_FRAC_BH_MERGE * vesc) && (bh_check_boundedness(j,vrel,vesc,r,sink_radius)==1))
+                                if((vrel < vesc) && (bh_check_boundedness(j,vrel,vesc,r,sink_radius)==1))
                                 {
                                     printf(" ..BH-BH Merger: P[j.]ID=%llu to be swallowed by id=%llu \n", (unsigned long long) P[j].ID, (unsigned long long) local.ID);
                                     SwallowID_j = local.ID;
@@ -343,4 +344,4 @@ CPU_Step[CPU_BLACKHOLES] += measure_time(); /* collect timings and reset clock f
 #include "../../system/code_block_xchange_finalize.h" /* de-define the relevant variables and macros to avoid compilation errors and memory leaks */
 
 
-#endif // master flag
+#endif // top-level flag

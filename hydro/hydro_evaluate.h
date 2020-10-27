@@ -82,7 +82,7 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
     dt_hydrostep_i = local.Timestep * UNIT_INTEGERTIME_IN_PHYSICAL; /* (physical) timestep */
     out.MaxSignalVel = kernel.sound_i;
     kernel_mode = 0; /* need dwk and wk */
-    double cnumcrit2 = ((double)CONDITION_NUMBER_DANGER)*((double)CONDITION_NUMBER_DANGER) - local.ConditionNumber*local.ConditionNumber;
+    double cnumcrit2; cnumcrit2 = ((double)CONDITION_NUMBER_DANGER)*((double)CONDITION_NUMBER_DANGER) - local.ConditionNumber*local.ConditionNumber;
 #if defined(HYDRO_SPH)
 #ifdef HYDRO_PRESSURE_SPH
     kernel.p_over_rho2_i = local.Pressure / (local.EgyWtRho*local.EgyWtRho);
@@ -141,7 +141,7 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
             /* get the neighbor list */
             /* --------------------------------------------------------------------------------- */
             numngb = ngb_treefind_pairs_threads(local.Pos, kernel.h_i, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist);
-            if(numngb < 0) return -1;
+            if(numngb < 0) {return -2;}
 
             for(n = 0; n < numngb; n++)
             {
@@ -278,9 +278,9 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
                     the code has been compiled in */
                 /* --------------------------------------------------------------------------------- */
 #ifdef HYDRO_SPH
-#include "hydra_core_sph.h"
+#include "hydro_core_sph.h"
 #else
-#include "hydra_core_meshless.h"
+#include "hydro_core_meshless.h"
 #endif
 
 #ifdef FREEZE_HYDRO
@@ -481,14 +481,6 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
                         #pragma omp atomic write
                         NeedToWakeupParticles_local = 1;
                     }
-#if (SLOPE_LIMITER_TOLERANCE < 0) /* special here - can set off a chain of wakeups that runs away, b/c woken up cell has bottom timestep so will wake up everything else, etc. need to use something more like 'intended timestep' for this to work */
-                    if(2.*dt_hydrostep_i*WAKEUP < dt_hydrostep_j) {
-                        #pragma omp atomic write
-                        PPPZ[j].wakeup = 1;
-                        #pragma omp atomic write
-                        NeedToWakeupParticles_local = 1;
-                    }
-#endif
                 }
 #endif
 

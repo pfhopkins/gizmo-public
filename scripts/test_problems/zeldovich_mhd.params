@@ -27,9 +27,9 @@ BufferSize                         150
 TimeBegin                          0.047619
 TimeMax                            1
 ComovingIntegrationOn              1
-Omega0                             1
-OmegaLambda                        0
-OmegaBaryon                        1
+Omega_Matter                       1
+Omega_Lambda                       0
+Omega_Baryon                       1
 HubbleParam                        1
 BoxSize                            1
 OutputListOn                       0

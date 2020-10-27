@@ -117,6 +117,7 @@ struct GasGraddata_in
     MyFloat Hsml;
     integertime Timestep;
 #ifdef MHD_CONSTRAINED_GRADIENT
+    MyDouble ConditionNumber;
     MyLongDouble NV_T[3][3];
     MyFloat BGrad[3][3];
 #ifdef MHD_CONSTRAINED_GRADIENT_FAC_MEDDEV
@@ -139,9 +140,12 @@ struct GasGraddata_in
 *GasGradDataIn, *GasGradDataGet;
 
 
-
 struct GasGraddata_out
 {
+#if defined(HYDRO_TENSOR_FACE_CORRECTIONS)
+    MyDouble third_moment_weights[10];
+    MyDouble first_second_moment_weights[HYDRO_TENSOR_FACE_CORRECTIONS_NUMBER_MOMWTS];
+#endif
 #if defined(KERNEL_CRK_FACES)
     MyDouble m0;
     MyDouble m1[3];
@@ -201,6 +205,10 @@ static struct temporary_data_topass
     struct Quantities_for_Gradients Maxima;
     struct Quantities_for_Gradients Minima;
     MyFloat MaxDistance;
+#if defined(HYDRO_TENSOR_FACE_CORRECTIONS)
+    MyDouble third_moment_weights[10];
+    MyDouble first_second_moment_weights[HYDRO_TENSOR_FACE_CORRECTIONS_NUMBER_MOMWTS];
+#endif
 #if defined(KERNEL_CRK_FACES)
     MyDouble m0;
     MyDouble m1[3];
@@ -256,6 +264,7 @@ static inline void particle2in_GasGrad(struct GasGraddata_in *in, int i, int gra
     if(SHOULD_I_USE_SPH_GRADIENTS(SphP[i].ConditionNumber)) {in->Mass *= -1;}
     in->Timestep = GET_PARTICLE_INTEGERTIME(i);
 #ifdef MHD_CONSTRAINED_GRADIENT
+    in->ConditionNumber = SphP[i].ConditionNumber;
     if(gradient_iteration > 0)
         if(SphP[i].FlagForConstrainedGradients <= 0)
             in->Mass = 0;
@@ -374,6 +383,10 @@ static inline void out2particle_GasGrad(struct GasGraddata_out *out, int i, int 
         }
 #endif
 
+#if defined(HYDRO_TENSOR_FACE_CORRECTIONS)
+        for(k=0;k<10;k++) {ASSIGN_ADD_PRESET(GasGradDataPasser[i].third_moment_weights[k],out->third_moment_weights[k],mode);}
+        for(k=0;k<HYDRO_TENSOR_FACE_CORRECTIONS_NUMBER_MOMWTS;k++) {ASSIGN_ADD_PRESET(GasGradDataPasser[i].first_second_moment_weights[k],out->first_second_moment_weights[k],mode);}
+#endif
 #if defined(KERNEL_CRK_FACES)
         ASSIGN_ADD_PRESET(GasGradDataPasser[i].m0,out->m0,mode);
         for(k=0;k<3;k++) {ASSIGN_ADD_PRESET(GasGradDataPasser[i].dm0[k],out->dm0[k],mode);}
@@ -1548,10 +1561,46 @@ void hydro_gradient_calc(void)
             }
 #endif
 
+            
+#if defined(HYDRO_TENSOR_FACE_CORRECTIONS)
+            {
+                double S_in[9], S1[3], Bvec[3]={0}, S2[3][3], S2_inv[3][3], S3_proj[3][3], S3_proj_inv[3][3], CNum_S2, CNum_S3; int k1,k2;
+                for(k1=0;k1<HYDRO_TENSOR_FACE_CORRECTIONS_NUMBER_MOMWTS;k1++) {S_in[k1]=GasGradDataPasser[i].first_second_moment_weights[k1];} // we have this saved from the step below
+                S1[0]=S_in[0]; S1[1]=S_in[1]; S1[2]=S_in[2]; // these are the vector 1st-moment sums SUM[wt*dp]
+                // now assign the matrix based on the 6 independent 2nd-moment sums SUM[wt*dp*dp]
+                S2[0][0]=S_in[3]; S2[1][0]=S2[0][1]=S_in[4]; S2[2][0]=S2[0][2]=S_in[5];
+                S2[1][1]=S_in[6]; S2[2][1]=S2[1][2]=S_in[7]; S2[2][2]=S_in[8];
+                CNum_S2 = matrix_invert_ndims(S2, S2_inv); // invert the S2 matrix [momment-2 matrix]
+#if defined(HYDRO_TENSOR_FACE_CORRECTIONS_NGBITER)
+                double S2B[3][3], S2B_inv[3][3];
+                S2B[0][0]=S_in[3+6]; S2B[1][0]=S2B[0][1]=S_in[4+6]; S2B[2][0]=S2B[0][2]=S_in[5+6];
+                S2B[1][1]=S_in[6+6]; S2B[2][1]=S2B[1][2]=S_in[7+6]; S2B[2][2]=S_in[8+6];
+                CNum_S2 = matrix_invert_ndims(S2B, S2B_inv); // invert the S2 matrix [moment-2 matrix]
+                for(k1=0;k1<3;k1++) {for(k2=0;k2<3;k2++) {Bvec[k1] += -S2B_inv[k1][k2] * S1[k2];}} // calculate the B-coefficient matrix
+#else
+                for(k1=0;k1<3;k1++) {for(k2=0;k2<3;k2++) {Bvec[k1] += -S2_inv[k1][k2] * S1[k2];}} // calculate the B-coefficient matrix
+#endif
+                double m3wt[10]; for(k=0;k<10;k++) {m3wt[k]=GasGradDataPasser[i].third_moment_weights[k];} // assign these to a shorter variable
+                double xxx=m3wt[0], xxy=m3wt[1], xxz=m3wt[2], yyy=m3wt[3], xyy=m3wt[4], yyz=m3wt[5], zzz=m3wt[6], xzz=m3wt[7], yzz=m3wt[8], xyz=m3wt[9]; // assign them intuitive names here, that's all
+                S3_proj[0][0]= xxx*Bvec[0] + xxy*Bvec[1] + xxz*Bvec[2]; // now construct the components of this projection matrix
+                S3_proj[1][0]=S3_proj[0][1]= xxy*Bvec[0] + xyy*Bvec[1] + xyz*Bvec[2]; //=xyx*Bvec[0] + xyy*Bvec[1] + xyz*Bvec[2];
+                S3_proj[2][0]=S3_proj[0][2]= xxz*Bvec[0] + xyz*Bvec[1] + xzz*Bvec[2]; //=xzx*Bvec[0] + xzy*Bvec[1] + xzz*Bvec[2];
+                S3_proj[1][1]= xyy*Bvec[0] + yyy*Bvec[1] + yyz*Bvec[2]; //=yyx*Bvec[0] + yyy*Bvec[1] + yyz*Bvec[2];
+                S3_proj[2][1]=S3_proj[1][2]= xyz*Bvec[0] + yyz*Bvec[1] + yzz*Bvec[2]; //=yzx*Bvec[0] + yzy*Bvec[1] + yzz*Bvec[2];
+                S3_proj[2][2]= xzz*Bvec[0] + yzz*Bvec[1] + zzz*Bvec[2]; //=zzx*Bvec[0] + zzy*Bvec[1] + zzz*Bvec[2];
+                for(k1=0;k1<3;k1++) {for(k2=0;k2<3;k2++) {S3_proj[k1][k2] = -S3_proj[k1][k2] + S2[k1][k2];}} // add the S2 term that the term above corrects
+                CNum_S3 = matrix_invert_ndims(S3_proj, S3_proj_inv); // invert the corrected S2 matrix after correction from the projected S3 matrix down to a modified moment-2 matrix
+                for(k1=0;k1<3;k1++) {SphP[i].Tensor_MFM_Face_Corrections[k1] = Bvec[k1];} // load everything into the saved variables we'll use in the hydro step
+                SphP[i].Tensor_MFM_Face_Corrections[3] = S3_proj_inv[0][0]; SphP[i].Tensor_MFM_Face_Corrections[4] = S3_proj_inv[0][1]; SphP[i].Tensor_MFM_Face_Corrections[5] = S3_proj_inv[0][2];
+                SphP[i].Tensor_MFM_Face_Corrections[6] = S3_proj_inv[1][1]; SphP[i].Tensor_MFM_Face_Corrections[7] = S3_proj_inv[1][2]; SphP[i].Tensor_MFM_Face_Corrections[8] = S3_proj_inv[2][2];
+            }
+#endif
+
+            
 #if defined(KERNEL_CRK_FACES)
             {
                 // ok first, load the data from the passer structure into more convenient form //
-                double m0, dm0[3], m1[3], dm1[3][3], m2[3][3], m2i[3][3], dm2[3][3][3], detT;
+                double m0, dm0[3], m1[3], dm1[3][3], m2[3][3], m2i[3][3], dm2[3][3][3], Cnum_m2;
                 m0 = GasGradDataPasser[i].m0;
                 int k_x, k_y;
                 for(k=0;k<3;k++)
@@ -1578,36 +1627,7 @@ void hydro_gradient_calc(void)
                 // transform from 'mu' variables to 'm' variables for derivatives:
                 for(k=0;k<3;k++) {dm1[k][k] += m0;}
                 for(k=0;k<3;k++) {for(k_x=0;k_x<3;k_x++) {dm2[k][k_x][k_x] += m1[k]; dm2[k_x][k][k_x] += m1[k];}}
-                // now, invert the m2 matrix into the form we will actually use
-#if (NUMDIMS==1) // 1-D case //
-                detT = m2[0][0];
-                if(detT!=0 && !isnan(detT)) {m2i[0][0] = 1/detT}; /* only one non-trivial element in 1D! */
-#endif
-#if (NUMDIMS==2) // 2-D case //
-                detT = m2[0][0]*m2[1][1] - m2[0][1]*m2[1][0];
-                if((detT != 0)&&(!isnan(detT)))
-                {
-                    m2i[0][0] = +m2[1][1] / detT; m2i[0][1] = -m2[0][1] / detT;
-                    m2i[1][0] = -m2[1][0] / detT; m2i[1][1] = +m2[0][0] / detT;
-                }
-#endif
-#if (NUMDIMS==3) // 3-D case //
-                detT = m2[0][0] * m2[1][1] * m2[2][2] + m2[0][1] * m2[1][2] * m2[2][0] +
-                       m2[0][2] * m2[1][0] * m2[2][1] - m2[0][2] * m2[1][1] * m2[2][0] -
-                       m2[0][1] * m2[1][0] * m2[2][2] - m2[0][0] * m2[1][2] * m2[2][1];
-                if((detT != 0) && !isnan(detT))
-                {
-                    m2i[0][0] = (m2[1][1] * m2[2][2] - m2[1][2] * m2[2][1]) / detT;
-                    m2i[0][1] = (m2[0][2] * m2[2][1] - m2[0][1] * m2[2][2]) / detT;
-                    m2i[0][2] = (m2[0][1] * m2[1][2] - m2[0][2] * m2[1][1]) / detT;
-                    m2i[1][0] = (m2[1][2] * m2[2][0] - m2[1][0] * m2[2][2]) / detT;
-                    m2i[1][1] = (m2[0][0] * m2[2][2] - m2[0][2] * m2[2][0]) / detT;
-                    m2i[1][2] = (m2[0][2] * m2[1][0] - m2[0][0] * m2[1][2]) / detT;
-                    m2i[2][0] = (m2[1][0] * m2[2][1] - m2[1][1] * m2[2][0]) / detT;
-                    m2i[2][1] = (m2[0][1] * m2[2][0] - m2[0][0] * m2[2][1]) / detT;
-                    m2i[2][2] = (m2[0][0] * m2[1][1] - m2[0][1] * m2[1][0]) / detT;
-                }
-#endif
+                Cnum_m2 = matrix_invert_ndims(m2, m2i); // now, invert the m2 matrix into the form we will actually use
                 // now start constructing the actual derivatives we need //
                 double A = 0, B[3] = {0}, Bdotm1 = 0, dB[3][3]={{0}}, dA[3]={0};
                 for(k=0;k<3;k++)
@@ -1746,8 +1766,7 @@ int GasGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount
             {
                 numngb = ngb_treefind_pairs_threads(local.Pos, kernel.h_i, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist);
             }
-
-            if(numngb < 0) {return -1;}
+            if(numngb < 0) {return -2;}
 
             for(n = 0; n < numngb; n++)
             {
@@ -1811,7 +1830,7 @@ int GasGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount
                 {
                     kernel.dwk_i = kernel.wk_i = 0;
                 }
-#if defined(MHD_CONSTRAINED_GRADIENT) || defined(KERNEL_CRK_FACES)
+#if defined(MHD_CONSTRAINED_GRADIENT) || defined(KERNEL_CRK_FACES) || defined(HYDRO_TENSOR_FACE_CORRECTIONS_NGBITER)
                 if(kernel.r < h_j)
 #else
                 if((kernel.r < h_j) && (swap_to_j))
@@ -1833,39 +1852,13 @@ int GasGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount
                 {
                     kernel.dwk_j = kernel.wk_j = 0;
                 }
-
+                double Particle_Size_j, Particle_Size_i;  Particle_Size_j=Get_Particle_Size(j); Particle_Size_i=pow(local.Mass/local.GQuant.Density, 1./NUMDIMS);
 
 #if defined(MHD_CONSTRAINED_GRADIENT)
-                double V_j = P[j].Mass / SphP[j].Density, Face_Area_Vec[3], wt_i=V_i, wt_j=V_j, Particle_Size_i=pow(V_i,1./NUMDIMS)*All.cf_atime, Particle_Size_j=Get_Particle_Size(j)*All.cf_atime;
-#if (SLOPE_LIMITER_TOLERANCE != 2) && !((defined(HYDRO_FACE_AREA_LIMITER) || !defined(PROTECT_FROZEN_FIRE)) && (HYDRO_FIX_MESH_MOTION >= 5)) // unless using the most aggressive reconstruction, we will limit face-area disparity here //
-#if defined(COOLING) || (SLOPE_LIMITER_TOLERANCE==0)
-                if((fabs(V_i-V_j)/DMIN(V_i,V_j))/NUMDIMS > 1.25) {wt_i=wt_j=2.*V_i*V_j/(V_i+V_j);} else {wt_i=V_i; wt_j=V_j;} //wt_i=wt_j = 2.*V_i*V_j / (V_i + V_j); // more conservatively, could use DMIN(V_i,V_j), but that is less accurate
-#else
-                if((fabs(V_i-V_j)/DMIN(V_i,V_j))/NUMDIMS > 1.50) {wt_i=wt_j=(V_i*Particle_Size_j+V_j*Particle_Size_i)/(Particle_Size_i+Particle_Size_j);} else {wt_i=V_i; wt_j=V_j;} //wt_i=wt_j = (V_i*PPP[j].Hsml + V_j*local.Hsml) / (local.Hsml+PPP[j].Hsml); // should these be H, or be -effective sizes- //
-#endif
-#elif defined(GALSF)
-                if( (fabs(log(V_i/V_j)/NUMDIMS) > 1.25) && (kernel.r > local.Hsml || kernel.r > PPP[j].Hsml) ) {wt_i=wt_j=(V_i*Particle_Size_j+V_j*Particle_Size_i)/(Particle_Size_i+Particle_Size_j);}
-#endif
-                double Face_Area_Norm = 0;
-                for(k=0;k<3;k++)
-                {
-                    /* calculate the face area between the particles (must match what is done in the actual hydro routine! */
-                    Face_Area_Vec[k] = kernel.wk_i * wt_i * (local.NV_T[k][0]*kernel.dp[0] + local.NV_T[k][1]*kernel.dp[1] + local.NV_T[k][2]*kernel.dp[2])
-                                     + kernel.wk_j * wt_j * (SphP[j].NV_T[k][0]*kernel.dp[0] + SphP[j].NV_T[k][1]*kernel.dp[1] + SphP[j].NV_T[k][2]*kernel.dp[2]);
-                    if(All.ComovingIntegrationOn) {Face_Area_Vec[k] *= All.cf_atime*All.cf_atime;} /* Face_Area_Norm has units of area, need to convert to physical */
-                    /* on the first pass, we need to save the face information to be used to correct the gradients; this only needs to be done once */
-                    Face_Area_Norm += Face_Area_Vec[k]*Face_Area_Vec[k];
-                }
-                Face_Area_Norm = sqrt(Face_Area_Norm);
+                double V_j = P[j].Mass / SphP[j].Density, Face_Area_Vec[3], cnumcrit2 = ((double)CONDITION_NUMBER_DANGER)*((double)CONDITION_NUMBER_DANGER) - local.ConditionNumber*local.ConditionNumber;
 
-#if (defined(HYDRO_FACE_AREA_LIMITER) || !defined(PROTECT_FROZEN_FIRE)) && (HYDRO_FIX_MESH_MOTION >= 5)
-        /* check if face area exceeds maximum geometric allowed limit (can occur when particles with -very- different Hsml interact at the edge of the kernel, limited to geometric max to prevent numerical instability */
-                double Particle_Size_j = Get_Particle_Size(j);
-                double Particle_Size_i = pow(local.Mass/local.GQuant.Density, 1./NUMDIMS); // pow call too expensive?
-                double Amax = DMIN(Get_Particle_Expected_Area(Particle_Size_i) , Get_Particle_Expected_Area(Particle_Size_j)); // minimum of area "i" or area "j": this subroutine takes care of dimensionality, etc. note inputs are all in -physical- units here
-                if(Face_Area_Norm > Amax) {for(k=0;k<3;k++) {Face_Area_Vec[k] = (Amax/Face_Area_Norm) * Face_Area_Vec[k];}} /* set the face area to the maximum limit, and reset the face vector as well [ direction is preserved, just area changes] */
-#endif
-
+#include "compute_finitevol_faces.h" /* insert code block for computing Face_Area_Vec, Face_Area_Norm, n_unit, etc. */
+                
                 for(k=0;k<3;k++){
                     if(gradient_iteration == 0)
                     {
@@ -1964,7 +1957,7 @@ int GasGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount
                 if(gradient_iteration == 0) {for(k=0;k<3;k++) {out.Gradients[k].Phi += dphi_j * kernel.dp[k];}} else {for(k=0;k<3;k++) {out_iter.PhiGrad[k] += dphi_j * kernel.dp[k];}}
                 if(swap_to_j) {for(k=0;k<3;k++) {GasGradDataPasser[j].PhiGrad[k] += dphi_i * kernel.dp[k];}}
 #endif
-#endif
+#endif // MHD_CONSTRAINED_GRADIENT
 
                 if(gradient_iteration == 0)
                 {
@@ -1987,7 +1980,38 @@ int GasGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount
                     double dv_bar[3]; for(k=0;k<3;k++) {dv_bar[k] = SphP[j].Velocity_bar[k] - local.GQuant.Velocity_bar[k];} /* Need to calculate the filtered velocity gradient for the filtered shear */
                     NGB_SHEARBOX_BOUNDARY_VELCORR_(local.Pos,P[j].Pos,dv_bar,-1); /* wrap velocities for shearing boxes if needed */
                     for(k=0;k<3;k++) {MINMAX_CHECK(dv_bar[k], out.Minima.Velocity_bar[k], out.Maxima.Velocity_bar[k]);
-                        if (swap_to_j) {MINMAX_CHECK(-dv_bar[k], GasGradDataPasser[j].Minima.Velocity_bar[k], GasGradDataPasser[j].Maxima.Velocity_bar[k]);}}
+                        if(swap_to_j) {MINMAX_CHECK(-dv_bar[k], GasGradDataPasser[j].Minima.Velocity_bar[k], GasGradDataPasser[j].Maxima.Velocity_bar[k]);}}
+#endif
+
+                    
+#if defined(HYDRO_TENSOR_FACE_CORRECTIONS)
+                    double m3wt[10], m2wt[6], wt_i=kernel.wk_i, wt_j=kernel.wk_j, wt_i_A=wt_i, wt_i_B=wt_i, wt_j_A=wt_j, wt_j_B=wt_j;
+#if defined(HYDRO_TENSOR_FACE_CORRECTIONS_NGBITER)
+                    {
+                        double V_i = local.Mass/local.GQuant.Density, V_j = P[j].Mass/SphP[j].Density;
+                        wt_i_A = (V_i*kernel.wk_i + V_j*kernel.wk_j) / (2.*V_i);
+                        wt_i_B = (V_i*kernel.wk_i - V_j*kernel.wk_j) / (2.*V_i);
+                        wt_j_A = wt_i_A * V_i/V_j; wt_j_B = wt_i_B * V_i/V_j;
+                    }
+#endif
+                    m3wt[0]=kernel.dp[0]*kernel.dp[0]*kernel.dp[0]; m3wt[1]=kernel.dp[0]*kernel.dp[0]*kernel.dp[1]; m3wt[2]=kernel.dp[0]*kernel.dp[0]*kernel.dp[2];
+                    m3wt[3]=kernel.dp[1]*kernel.dp[1]*kernel.dp[1]; m3wt[4]=kernel.dp[1]*kernel.dp[1]*kernel.dp[0]; m3wt[5]=kernel.dp[1]*kernel.dp[1]*kernel.dp[2];
+                    m3wt[6]=kernel.dp[2]*kernel.dp[2]*kernel.dp[2]; m3wt[7]=kernel.dp[2]*kernel.dp[2]*kernel.dp[0]; m3wt[8]=kernel.dp[2]*kernel.dp[2]*kernel.dp[1];
+                    m3wt[9]=kernel.dp[0]*kernel.dp[1]*kernel.dp[2];
+                    for(k=0;k<10;k++) {out.third_moment_weights[k] += wt_i_B * m3wt[k];}
+                    for(k=0;k<3;k++) {out.first_second_moment_weights[k] += wt_i_A * kernel.dp[k];}
+                    m2wt[0]=kernel.dp[0]*kernel.dp[0]; m2wt[1]=kernel.dp[0]*kernel.dp[1]; m2wt[2]=kernel.dp[0]*kernel.dp[2];
+                    m2wt[3]=kernel.dp[1]*kernel.dp[1]; m2wt[4]=kernel.dp[1]*kernel.dp[2]; m2wt[5]=kernel.dp[2]*kernel.dp[2];
+                    for(k=0;k<6;k++) {out.first_second_moment_weights[k+3] += wt_i_A * m2wt[k];}
+                    if(swap_to_j) {
+                        for(k=0;k<10;k++) {GasGradDataPasser[j].third_moment_weights[k] -= wt_j_B * m3wt[k];}
+                        for(k=0;k<3;k++) {GasGradDataPasser[j].first_second_moment_weights[k] -= wt_j_A * kernel.dp[k];}
+                        for(k=0;k<6;k++) {GasGradDataPasser[j].first_second_moment_weights[k+3] += wt_j_A * m2wt[k];}
+                    }
+#if defined(HYDRO_TENSOR_FACE_CORRECTIONS_NGBITER)
+                    for(k=0;k<6;k++) {out.first_second_moment_weights[k+3+6] += wt_i_B * m2wt[k];}
+                    if(swap_to_j) {for(k=0;k<6;k++) {out.first_second_moment_weights[k+3+6] -= wt_i_B * m2wt[k];}}
+#endif
 #endif
 
 #if defined(KERNEL_CRK_FACES)

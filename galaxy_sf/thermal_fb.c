@@ -39,7 +39,7 @@ void determine_where_addthermalFB_events_occur(void)
 struct kernel_addthermalFB {double dp[3], r, wk, dwk, hinv, hinv3, hinv4;};
 
 
-#define MASTER_FUNCTION_NAME addthermalFB_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define CORE_FUNCTION_NAME addthermalFB_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int CORE_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
 #define INPUTFUNCTION_NAME particle2in_addthermalFB    /* name of the function which loads the element data needed (for e.g. broadcast to other processors, neighbor search) */
 #define OUTPUTFUNCTION_NAME out2particle_addthermalFB  /* name of the function which takes the data returned from other processors and combines it back to the original elements */
 #define CONDITIONFUNCTION_FOR_EVALUATION if(addthermalFB_evaluate_active_check(i)) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
@@ -108,7 +108,7 @@ int addthermalFB_evaluate(int target, int mode, int *exportflag, int *exportnode
     
     /* Load the data for the particle injecting feedback */
     if(mode == 0) {particle2in_addthermalFB(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];}
-    if(local.Msne<=0) return 0; // no SNe for the master particle! nothing to do here //
+    if(local.Msne<=0) return 0; // no SNe for the origin particle! nothing to do here //
     if(local.Hsml<=0) return 0; // zero-extent kernel, no particles //
     h2 = local.Hsml*local.Hsml;
     kernel_hinv(local.Hsml, &kernel.hinv, &kernel.hinv3, &kernel.hinv4);
@@ -128,7 +128,7 @@ int addthermalFB_evaluate(int target, int mode, int *exportflag, int *exportnode
         while(startnode >= 0)
         {
             numngb_inbox = ngb_treefind_pairs_threads(local.Pos, local.Hsml, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist);
-            if(numngb_inbox < 0) return -1;
+            if(numngb_inbox < 0) {return -2;}
             for(n = 0; n < numngb_inbox; n++)
             {
                 j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */

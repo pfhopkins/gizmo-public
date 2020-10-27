@@ -230,6 +230,5 @@
     /* convert everything to PHYSICAL units! */
     /* --------------------------------------------------------------------------------- */
     Fluxes.p *= All.cf_afac2 / All.cf_atime;
-    for(k=0;k<3;k++)
-        Fluxes.v[k] *= All.cf_afac2;
+    for(k=0;k<3;k++) {Fluxes.v[k] *= All.cf_afac2;}
 }

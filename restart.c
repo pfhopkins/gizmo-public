@@ -46,7 +46,7 @@ void restart(int modus)
 {
     char buf[200], buf_bak[200], buf_mv[500];
     double save_PartAllocFactor;
-    int nprocgroup, masterTask, groupTask;
+    int nprocgroup, primaryTask, groupTask;
     struct global_data_all_processes all_task0;
     int nmulti = MULTIPLEDOMAINS, regular_restarts_are_valid = 1, backup_restarts_are_valid = 1;
     
@@ -111,11 +111,11 @@ void restart(int modus)
         nprocgroup++;
     }
 
-  masterTask = (ThisTask / nprocgroup) * nprocgroup;
+  primaryTask = (ThisTask / nprocgroup) * nprocgroup;
 
   for(groupTask = 0; groupTask < nprocgroup; groupTask++)
     {
-      if(ThisTask == (masterTask + groupTask))	/* ok, it's this processor's turn */
+      if(ThisTask == (primaryTask + groupTask))	/* ok, it's this processor's turn */
 	{
 	  if(modus)
 	    {

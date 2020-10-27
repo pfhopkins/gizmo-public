@@ -9,7 +9,7 @@
 #include <unistd.h>
 #include <signal.h>
 #include <gsl/gsl_rng.h>
-
+#include <gsl/gsl_eigen.h>
 
 #include "./allvars.h"
 #include "./proto.h"
@@ -83,7 +83,7 @@ double target_mass_renormalization_factor_for_mergesplit(int i)
 }
 
 
-/*! This is the master routine to actually determine if mergers/splits need to be performed, and if so, to do them
+/*! This is the parent routine to actually determine if mergers/splits need to be performed, and if so, to do them
   modified by Takashi Okamoto (t.t.okamoto@gmail.com) on 20/6/2019
  */
 /*!   -- this subroutine is not openmp parallelized at present, so there's not any issue about conflicts over shared memory. if you make it openmp, make sure you protect the writes to shared memory here!!! -- */
@@ -436,13 +436,22 @@ void split_particle_i(int i, int n_particles_split, int i_nearest)
 #endif
 
         /* use a better particle shift based on the moment of inertia tensor to place new particles in the direction which is less well-sampled */
-#if (NUMDIMS > 1)
+#if (NUMDIMS > 1)        
         double norm=0, dp[3]; int m; dp[0]=dp[1]=dp[2]=0;
-        for(k = 0; k < NUMDIMS; k++)
-        {
-            for(m = 0; m < NUMDIMS; m++) {dp[k] += SphP[i].NV_T[k][m];}
-            norm += dp[k] * dp[k];
-        }
+
+        // get the eigenvector of NV_T that has the smallest eigenvalue (= sparsest sampling direction)
+        double nvt[9]; // auxiliary array to store NV_T in for feeding to GSL eigen routine
+        for(k=0; k < NUMDIMS; k++){for(m=0; m < NUMDIMS; m++) nvt[NUMDIMS*k + m] = SphP[i].NV_T[k][m];}
+        gsl_matrix_view M = gsl_matrix_view_array(nvt, 3, 3); gsl_vector *eigvals = gsl_vector_alloc(3); gsl_matrix *eigvecs = gsl_matrix_alloc(3,3);
+        gsl_eigen_symmv_workspace *v = gsl_eigen_symmv_alloc(3); gsl_eigen_symmv(&M.matrix, eigvals, eigvecs, v);
+        
+        int min_eigvec_index = 0;
+        double min_eigval = MAX_REAL_NUMBER;
+        for(k=0; k < NUMDIMS; k++){if(gsl_vector_get(eigvals,k) < min_eigval){min_eigval = gsl_vector_get(eigvals,k); min_eigvec_index=k;}}
+        for(k=0; k < NUMDIMS; k++){dp[k] = gsl_matrix_get(eigvecs, k, min_eigvec_index);}
+        gsl_eigen_symmv_free(v); gsl_vector_free(eigvals); gsl_matrix_free(eigvecs);
+           
+        for(k = 0; k < NUMDIMS; k++){norm += dp[k] * dp[k];}
         if(norm > 0)
         {
             norm = 1/sqrt(norm);
@@ -452,12 +461,6 @@ void split_particle_i(int i, int n_particles_split, int i_nearest)
             // if(dp[2]==1) {dx=d_r; dy=0; dz=0;} else {dz = sqrt(dp[1]*dp[1] + dp[0]*dp[0]); dx = -d_r * dp[1]/dz; dy = d_r * dp[0]/dz; dz = 0.0;}
         }
 #endif
-#ifdef PARTICLE_MERGE_SPLIT_EVERY_TIMESTEP
-       long bin = P[i].TimeBin;
-       if(FirstInTimeBin[bin] < 0) {FirstInTimeBin[bin]=j; LastInTimeBin[bin]=j; NextInTimeBin[j]=-1; PrevInTimeBin[j]=-1;} /* only particle in this time bin on this task */
-            else {NextInTimeBin[j]=FirstInTimeBin[bin]; PrevInTimeBin[j]=-1; PrevInTimeBin[FirstInTimeBin[bin]]=j; FirstInTimeBin[bin]=j;} /* there is already at least one particle; add this one "to the front" of the list */
-       force_add_star_to_tree(i, j);
-#endif       
 #ifdef WAKEUP  /* TO: rather conservative. But we want to update Density and Hsml after the particle masses were changed */
         PPPZ[i].wakeup = 1; PPPZ[j].wakeup = 1; NeedToWakeupParticles_local = 1;
 #endif
@@ -470,8 +473,12 @@ void split_particle_i(int i, int n_particles_split, int i_nearest)
     P[i].Pos[0] += dx; P[j].Pos[0] -= dx; P[i].Pos[1] += dy; P[j].Pos[1] -= dy; P[i].Pos[2] += dz; P[j].Pos[2] -= dz;
 
     /* Note: New tree construction can be avoided because of  `force_add_star_to_tree()' */
-    // we don't have to do below because we rebuild the tree (TO: 21/06/2019)
-    //force_add_star_to_tree(i, j);// (buggy)
+#ifdef PARTICLE_MERGE_SPLIT_EVERY_TIMESTEP    
+    long bin = P[i].TimeBin;
+    if(FirstInTimeBin[bin] < 0) {FirstInTimeBin[bin]=j; LastInTimeBin[bin]=j; NextInTimeBin[j]=-1; PrevInTimeBin[j]=-1;} /* only particle in this time bin on this task */
+    else {NextInTimeBin[j]=FirstInTimeBin[bin]; PrevInTimeBin[j]=-1; PrevInTimeBin[FirstInTimeBin[bin]]=j; FirstInTimeBin[bin]=j;} /* there is already at least one particle; add this one "to the front" of the list */
+    force_add_star_to_tree(i, j);
+#endif    
     /* we solve this by only calling the merge/split algorithm when we're doing the new domain decomposition */
 }
 

@@ -7,7 +7,7 @@
   // cache some global vars locally for improved compiler alias analysis
   int maxPart = All.MaxPart;
   int maxNodes = MaxNodes;
-  int bunchSize = All.BunchSize;
+  long bunchSize = All.BunchSize;
   integertime ti_Current = All.Ti_Current;
   MyDouble dx, dy, dz, dist, xtmp; xtmp=0;
 

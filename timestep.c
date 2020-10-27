@@ -318,8 +318,19 @@ integertime get_timestep(int p,		/*!< particle index */
 #endif
 
 #ifdef TIDAL_TIMESTEP_CRITERION // tidal criterion obtains the same energy error in an optimally-softened Plummer sphere over ~100 crossing times as the Power 2003 criterion
-    double dt_tidal = 0.; {int k; for(k=0; k<3; k++) {dt_tidal += P[p].tidal_tensorps[k][k]*P[p].tidal_tensorps[k][k];}} // this is diagonalized already in the gravity loop
-    dt_tidal = sqrt(2. * All.ErrTolIntAccuracy / sqrt(dt_tidal / 6)); // recovers sqrt(eta) * tdyn for a Keplerian potential
+    double dt_tidal = 0.; {int k; for(k=0; k<3; k++) {dt_tidal += P[p].tidal_tensorps[k][k]*P[p].tidal_tensorps[k][k] * All.cf_a3inv * All.cf_a3inv;}} // this is diagonalized already in the gravity loop
+    dt_tidal = sqrt(All.ErrTolIntAccuracy / sqrt(dt_tidal / 6)); // recovers sqrt(eta) * tdyn for a Keplerian potential
+    
+    if(P[p].Type == 0) {dt_tidal = DMIN(sqrt(All.ErrTolIntAccuracy/(All.G*SphP[p].Density*All.cf_a3inv)), dt_tidal);} // gas self-gravity timescale as a bare minimum
+    
+    if(All.ComovingIntegrationOn){ // floor to the dynamical time of the universe
+        double rho0 = (H0_CGS*H0_CGS*(3./(8.*M_PI*GRAVITY_G))*All.cf_a3inv / UNIT_DENSITY_IN_CGS);
+        dt_tidal = DMIN(dt_tidal, sqrt(All.ErrTolIntAccuracy / (All.G * rho0)));
+    } 
+#ifdef ADAPTIVE_TREEFORCE_UPDATE
+    P[p].tdyn_step_for_treeforce = dt_tidal; // hang onto this to decide how frequently to update the treeforce
+#endif
+    
 #if (SINGLE_STAR_TIMESTEPPING > 0)
     if(P[p].SuperTimestepFlag>=2) {dt_tidal = sqrt(2*All.ErrTolIntAccuracy) * P[p].COM_dt_tidal;}
 #endif
@@ -753,7 +764,7 @@ integertime get_timestep(int p,		/*!< particle index */
             dt_accr = 0.05 * DMAX(BPP(p).BH_Mass , All.MaxMassForParticleSplit) / BPP(p).BH_Mdot;
 #endif
 #ifdef SINGLE_STAR_SINK_DYNAMICS
-            dt_accr = All.MinMassForParticleMerger / BPP(p).BH_Mdot;
+            dt_accr = 0.5*All.MeanGasParticleMass / BPP(p).BH_Mdot;
 #endif
         } // if(BPP(p).BH_Mdot > 0 && BPP(p).BH_Mass > 0)
 #ifdef BH_SEED_GROWTH_TESTS
@@ -790,12 +801,6 @@ integertime get_timestep(int p,		/*!< particle index */
             double dt_cour_sink = All.CourantFac * (L_particle*All.cf_atime) / vsig;
 
             if(dt > dt_cour_sink && dt_cour_sink > 0) {dt = 1.01 * dt_cour_sink;}
-
-#if defined(SINGLE_STAR_FB_LOCAL_RP) || (defined(SINGLE_STAR_FB_RAD) && defined(RT_RAD_PRESSURE_FORCES))
-            double rad_acc = bh_lum_bol(BPP(p).BH_Mdot, BPP(p).BH_Mass, p) / C_LIGHT_CODE / (2*All.MinMassForParticleMerger); // effective acceleration due to momentum injection at the scale of the cell
-            double dt_radacc = sqrt(0.1 * eps / rad_acc);
-            if(dt > dt_radacc && dt_radacc > 0) dt = 1.01 * dt_radacc;
-#endif                    
         }
         if(P[p].StellarAge == All.Time)
         {   // want a brand new sink to be on the lowest occupied timebin
@@ -940,7 +945,7 @@ void find_dt_displacement_constraint(double hfac /*!<  should be  a^2*H(a)  */ )
 #endif
                     dmean = pow(min_mass[type] / (All.OmegaBaryon * 3 * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits / (8 * M_PI * All.G)), 1.0 / 3);
                 else
-                    dmean = pow(min_mass[type] / ((All.Omega0 - All.OmegaBaryon) * 3 * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits / (8 * M_PI * All.G)), 1.0 / 3);
+                    dmean = pow(min_mass[type] / ((All.OmegaMatter - All.OmegaBaryon) * 3 * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits / (8 * M_PI * All.G)), 1.0 / 3);
 
 #ifdef BLACK_HOLES
                 if(type == 5) {dmean = pow(min_mass[type] / (All.OmegaBaryon * 3 * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits / (8 * M_PI * All.G)), 1.0 / 3);}

@@ -67,7 +67,7 @@ int ags_gravity_kernel_shared_BITFLAG(short int particle_type_primary)
 
 #ifdef AGS_HSML_CALCULATION_IS_ACTIVE
 
-#define MASTER_FUNCTION_NAME ags_density_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define CORE_FUNCTION_NAME ags_density_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int CORE_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
 #define INPUTFUNCTION_NAME ags_particle2in_density    /* name of the function which loads the element data needed (for e.g. broadcast to other processors, neighbor search) */
 #define OUTPUTFUNCTION_NAME ags_out2particle_density  /* name of the function which takes the data returned from other processors and combines it back to the original elements */
 #define CONDITIONFUNCTION_FOR_EVALUATION if(ags_density_isactive(i)) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
@@ -164,11 +164,8 @@ int ags_density_evaluate(int target, int mode, int *exportflag, int *exportnodec
     {
         while(startnode >= 0)
         {
-            numngb_inbox = ngb_treefind_variable_threads_targeted(local.Pos, local.AGS_Hsml, target, &startnode, mode, exportflag,
-                                          exportnodecount, exportindex, ngblist, AGS_kernel_shared_BITFLAG);
-            
-            if(numngb_inbox < 0)
-                return -1;
+            numngb_inbox = ngb_treefind_variable_threads_targeted(local.Pos, local.AGS_Hsml, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist, AGS_kernel_shared_BITFLAG);
+            if(numngb_inbox < 0) {return -2;}
             
             for(n = 0; n < numngb_inbox; n++)
             {
@@ -681,7 +678,7 @@ double do_cbe_nvt_inversion_for_faces(int i)
     NV_T[1][0]=NV_T[0][1]; NV_T[2][0]=NV_T[0][2]; NV_T[2][1]=NV_T[1][2];
     /* want to work in dimensionless units for defining certain quantities robustly, so normalize out the units */
     double dimensional_NV_T_normalizer = pow( PPP[i].Hsml , 2-NUMDIMS ); /* this has the same dimensions as NV_T here */
-    for(j=0;j<3;j++) {for(k=0;k<3;k++) {NV_T[j][k]/=dimensional_NV_T_normalizer;}} /* now NV_T should be dimensionless */
+    for(j=0;j<3;j++) {for(k=0;k<3;k++) {NV_T[j][k] /= dimensional_NV_T_normalizer;}} /* now NV_T should be dimensionless */
     /* Also, we want to be able to calculate the condition number of the matrix to be inverted, since
         this will tell us how robust our procedure is (and let us know if we need to improve the conditioning) */
     double ConditionNumber=0, ConditionNumber_threshold = 10. * CONDITION_NUMBER_DANGER; /* set a threshold condition number - above this we will 'pre-condition' the matrix for better behavior */
@@ -691,44 +688,12 @@ double do_cbe_nvt_inversion_for_faces(int i)
     while(1)
     {
         /* initialize the matrix this will go into */
-        double FrobNorm=0, FrobNorm_inv=0, detT=0; /* initialize these quantities to null */
-        for(j=0;j<3;j++) {for(k=0;k<3;k++) {Tinv[j][k]=0;}} /* initialize Tinv to null */
-        for(j=0;j<3;j++) {for(k=0;k<3;k++) {FrobNorm += NV_T[j][k]*NV_T[j][k];}} /* calculate first part of condition number, Frobenius norm of NV_T */
-#if (NUMDIMS==1) // 1-D case //
-        detT = NV_T[0][0]; if((detT!=0) && !isnan(detT)) {Tinv[0][0] = 1/detT}; /* only one non-trivial element in 1D! */
-#endif
-#if (NUMDIMS==2) // 2-D case //
-        detT = NV_T[0][0]*NV_T[1][1] - NV_T[0][1]*NV_T[1][0];
-        if((detT != 0)&&(!isnan(detT)))
-        {
-            Tinv[0][0] = NV_T[1][1] / detT; Tinv[0][1] = -NV_T[0][1] / detT;
-            Tinv[1][0] = -NV_T[1][0] / detT; Tinv[1][1] = NV_T[0][0] / detT;
-        }
-#endif
-#if (NUMDIMS==3) // 3-D case //
-        detT =  NV_T[0][0] * NV_T[1][1] * NV_T[2][2] + NV_T[0][1] * NV_T[1][2] * NV_T[2][0] +
-                NV_T[0][2] * NV_T[1][0] * NV_T[2][1] - NV_T[0][2] * NV_T[1][1] * NV_T[2][0] -
-                NV_T[0][1] * NV_T[1][0] * NV_T[2][2] - NV_T[0][0] * NV_T[1][2] * NV_T[2][1];
-        if((detT != 0) && !isnan(detT)) /* check for zero determinant */
-        {
-            Tinv[0][0] = (NV_T[1][1] * NV_T[2][2] - NV_T[1][2] * NV_T[2][1]) / detT;
-            Tinv[0][1] = (NV_T[0][2] * NV_T[2][1] - NV_T[0][1] * NV_T[2][2]) / detT;
-            Tinv[0][2] = (NV_T[0][1] * NV_T[1][2] - NV_T[0][2] * NV_T[1][1]) / detT;
-            Tinv[1][0] = (NV_T[1][2] * NV_T[2][0] - NV_T[1][0] * NV_T[2][2]) / detT;
-            Tinv[1][1] = (NV_T[0][0] * NV_T[2][2] - NV_T[0][2] * NV_T[2][0]) / detT;
-            Tinv[1][2] = (NV_T[0][2] * NV_T[1][0] - NV_T[0][0] * NV_T[1][2]) / detT;
-            Tinv[2][0] = (NV_T[1][0] * NV_T[2][1] - NV_T[1][1] * NV_T[2][0]) / detT;
-            Tinv[2][1] = (NV_T[0][1] * NV_T[2][0] - NV_T[0][0] * NV_T[2][1]) / detT;
-            Tinv[2][2] = (NV_T[0][0] * NV_T[1][1] - NV_T[0][1] * NV_T[1][0]) / detT;
-        }
-#endif
-        for(j=0;j<3;j++) {for(k=0;k<3;k++) {FrobNorm_inv += Tinv[j][k]*Tinv[j][k];}} /* calculate second part of ConditionNumber as Frobenius norm of inverse matrix */
-        ConditionNumber = DMAX( sqrt(FrobNorm*FrobNorm_inv) / NUMDIMS , 1 ); /* this = sqrt( ||NV_T^-1||*||NV_T|| ) :: should be ~1 for a well-conditioned matrix */
-        if(ConditionNumber < ConditionNumber_threshold) {break;}
-        for(j=0;j<NUMDIMS;j++) {SphP[i].NV_T[j][j] += conditioning_term_to_add;} /* add the conditioning term which should make the matrix better-conditioned for subsequent use: this is a normalization times the identity matrix in the relevant number of dimensions */
+        ConditionNumber = matrix_invert_ndims(NV_T, Tinv); // compute the matrix inverse, and return the condition number
+        if(ConditionNumber < ConditionNumber_threshold) {break;} // end loop if we have reached target conditioning for the matrix
+        for(j=0;j<NUMDIMS;j++) {NV_T[j][j] += conditioning_term_to_add;} /* add the conditioning term which should make the matrix better-conditioned for subsequent use: this is a normalization times the identity matrix in the relevant number of dimensions */
         conditioning_term_to_add *= 1.2; /* multiply the conditioning term so it will grow and eventually satisfy our criteria */
     } // end of loop broken when condition number is sufficiently small
-    for(j=0;j<3;j++) {for(k=0;k<3;k++) {P[i].NV_T[j][k]=Tinv[j][k];}} // now P[i].NV_T holds the inverted matrix elements //
+    for(j=0;j<3;j++) {for(k=0;k<3;k++) {P[i].NV_T[j][k] = Tinv[j][k] / dimensional_NV_T_normalizer;}} // now P[i].NV_T holds the inverted matrix elements //
 #ifdef CBE_DEBUG
     if((ThisTask==0)&&(ConditionNumber>1.0e10)) {printf("Condition number == %g (Task=%d i=%d)\n",ConditionNumber,ThisTask,i);}
 #endif
@@ -745,7 +710,7 @@ double do_cbe_nvt_inversion_for_faces(int i)
  Everything below here is a giant block to define the sub-routines needed to calculate additional force
   terms for particle types that do not fall into the 'hydro' category.
  -------------------------------------------------------------------------------------------------------- */
-#define MASTER_FUNCTION_NAME AGSForce_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define CORE_FUNCTION_NAME AGSForce_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int CORE_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
 #define CONDITIONFUNCTION_FOR_EVALUATION if(AGSForce_isactive(i)) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
 #include "../system/code_block_xchange_initialize.h" /* pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
 
@@ -902,9 +867,8 @@ int AGSForce_evaluate(int target, int mode, int *exportflag, int *exportnodecoun
 #if defined(DM_SIDM)
             search_len *= 3.0; // need a 'buffer' because we will consider interactions with any kernel -overlap, not just inside one or the other kernel radius
 #endif
-            numngb_inbox = ngb_treefind_pairs_threads_targeted(local.Pos, search_len, target, &startnode, mode, exportflag,
-                                                                  exportnodecount, exportindex, ngblist, AGS_kernel_shared_BITFLAG);
-            if(numngb_inbox < 0) {return -1;} /* no neighbors! */
+            numngb_inbox = ngb_treefind_pairs_threads_targeted(local.Pos, search_len, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist, AGS_kernel_shared_BITFLAG);
+            if(numngb_inbox < 0) {return -2;} /* no neighbors! */
             for(n = 0; n < numngb_inbox; n++) /* neighbor loop */
             {
                 j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */

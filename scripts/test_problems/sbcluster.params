@@ -29,9 +29,9 @@ TimeBegin                          0.02
 TimeMax                            1
 ComovingIntegrationOn              1
 BoxSize                            1
-Omega0                             1
-OmegaLambda                        0
-OmegaBaryon                        0.1
+Omega_Matter                       1
+Omega_Lambda                       0
+Omega_Baryon                       0.1
 HubbleParam                        0.5
 OutputListOn                       0
 TimeOfFirstSnapshot                0.02

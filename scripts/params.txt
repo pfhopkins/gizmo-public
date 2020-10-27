@@ -53,9 +53,9 @@ GravityConstantInternal     0                 % Set the value of 'G' in code uni
 %---- Cosmological parameters
 ComovingIntegrationOn       1       % is the simulation a cosmological integration? (yes=1, no=0)
 BoxSize                     10000.  % box side-length in code units. irrelevant for open boxes. see user guide for custom box shapes.
-Omega0                      0.27    % Omega_Matter. Do not set, or set =0 for non-cosmological runs. [Default=0]
-OmegaLambda                 0.73    % Omega_Lambda. Do not set, or set =0 for non-cosmological runs. [Default=0]
-OmegaBaryon                 0.044   % Omega_Baryon. Do not set, or set =0 for non-cosmological runs. [Default=0]
+Omega_Matter                0.27    % Omega_Matter. Do not set, or set =0 for non-cosmological runs. [Default=0]
+Omega_Lambda                0.73    % Omega_Lambda. Do not set, or set =0 for non-cosmological runs. [Default=0]
+Omega_Baryon                0.044   % Omega_Baryon. Do not set, or set =0 for non-cosmological runs. [Default=0]
 HubbleParam                 0.7     % Hubble Parameter little 'h'; Do not set, or set =1 for non-cosmological runs. [Default=1]
 
 
@@ -135,7 +135,7 @@ ConductionCoeff                1.0       % set/multiply conduction coefficient
 ShearViscosityCoeff            1.0       % set/multiply shear viscosity coefficient
 BulkViscosityCoeff             1.0       % set/multiply bulk viscosity coefficient
 
-%---- Turbulent Diffusion Master Switch (TURB_DIFFUSION on)
+%---- Turbulent Diffusion Top-level Switch (TURB_DIFFUSION on)
 TurbDiffusionCoefficient       1.0       % Normalizes diffusion rates relative to Smagorinsky-Lilly theory [best calibration] (~0.5-2)
 
 %---- Cosmic Ray + Gas Fluids (COSMIC_RAYS on)

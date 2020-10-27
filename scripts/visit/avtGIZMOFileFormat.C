@@ -254,7 +254,7 @@ avtGIZMOFileFormat::ReadHeader() {
 
     attr_id = H5Aopen(group_id, "Omega0", H5P_DEFAULT);
       MYH5CHECK(attr_id);
-    ierr = H5Aread(attr_id, H5T_NATIVE_DOUBLE, &header.Omega0);
+    ierr = H5Aread(attr_id, H5T_NATIVE_DOUBLE, &header.OmegaMatter);
       MYH5CHECK(ierr);
     H5Aclose(attr_id);
 

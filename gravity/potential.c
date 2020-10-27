@@ -191,7 +191,7 @@ void compute_potential(void)
     {
         P[i].Potential -= P[i].Mass / All.ForceSoftening[P[i].Type] * kernel_gravity(0,1,1,-1); /* remove self-potential */
 #ifdef BOX_PERIODIC
-        if(All.ComovingIntegrationOn) {P[i].Potential -= 2.8372975 * pow(P[i].Mass, 2.0 / 3) * pow(All.Omega0 * 3 * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits / (8 * M_PI * All.G), 1.0 / 3);}
+        if(All.ComovingIntegrationOn) {P[i].Potential -= 2.8372975 * pow(P[i].Mass, 2.0 / 3) * pow(All.OmegaMatter * 3 * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits / (8 * M_PI * All.G), 1.0 / 3);}
 #endif
     }
 #endif
@@ -242,8 +242,7 @@ void compute_potential(void)
   if(All.ComovingIntegrationOn)
     {
 #ifndef BOX_PERIODIC
-      fac = -0.5 * All.Omega0 * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits;
-
+      fac = -0.5 * All.OmegaMatter * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits; /* special factor needed if running cosmological simulation in non-periodic box [special use cases] */
       for(i = 0; i < NumPart; i++)
 	{
 	  for(k = 0, r2 = 0; k < 3; k++) {r2 += P[i].Pos[k] * P[i].Pos[k];}
@@ -253,7 +252,7 @@ void compute_potential(void)
     }
   else
     {
-      fac = -0.5 * All.OmegaLambda * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits;
+      fac = -0.5 * All.OmegaLambda * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits; /* special factor needed if running non-cosmological simulation but want to include DE effects */
       if(fac != 0)
 	{
 	  for(i = 0; i < NumPart; i++)

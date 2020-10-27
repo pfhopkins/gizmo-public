@@ -484,7 +484,7 @@ void do_sph_kick_for_extra_physics(int i, integertime tstart, integertime tend, 
 #ifdef RADTRANSFER
     rt_update_driftkick(i,dt_entr,0);
 #ifdef GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION
-    if(P[i].Pos[2] > DMIN(14. + (All.Vertical_Grain_Accel*All.Dust_to_Gas_Mass_Ratio - All.Vertical_Gravity_Strength)*All.Time*All.Time/2., 18.)) {for(j=0;j<N_RT_FREQ_BINS;j++) {SphP[i].Rad_E_gamma[j]*=0.5; SphP[i].Rad_E_gamma_Pred[j]*=0.5;
+    if(P[i].Pos[2] > DMIN(14.*boxSize_X + (All.Vertical_Grain_Accel*All.Dust_to_Gas_Mass_Ratio - All.Vertical_Gravity_Strength)*All.Time*All.Time/2., 18.)) {for(j=0;j<N_RT_FREQ_BINS;j++) {SphP[i].Rad_E_gamma[j]*=0.5; SphP[i].Rad_E_gamma_Pred[j]*=0.5;
 #ifdef RT_EVOLVE_FLUX
         if(SphP[i].Rad_Flux[j][2] < 0) {SphP[i].Rad_Flux[j][2]=-SphP[i].Rad_Flux[j][2]; SphP[i].Rad_Flux_Pred[j][2]=SphP[i].Rad_Flux[j][2];}
 #endif
@@ -513,7 +513,7 @@ void apply_special_boundary_conditions(int i, double mass_for_dp, int mode)
                 if(P[i].Vel[j]<0) {P[i].Vel[j]=-P[i].Vel[j]; if(P[i].Type==0) {SphP[i].VelPred[j]=P[i].Vel[j]; SphP[i].HydroAccel[j]=0;} if(mode==1) {P[i].dp[j]+=2*P[i].Vel[j]*mass_for_dp;}}
                 P[i].Pos[j]=(0.+((double)P[i].ID)*1.e-9)*box_upper[j];
 #ifdef GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION
-                P[i].Pos[j]+=3.e-3; /* special because of our wierd boundary condition for this problem, sorry to have so many hacks for this! */
+                P[i].Pos[j]+=3.e-3*boxSize_X; /* special because of our wierd boundary condition for this problem, sorry to have so many hacks for this! */
 #endif
 #ifdef RT_EVOLVE_FLUX
                 if(P[i].Type==0) {int kf; for(kf=0;kf<N_RT_FREQ_BINS;kf++) {if(SphP[i].Rad_Flux[kf][j]<0) {SphP[i].Rad_Flux[kf][j]=-SphP[i].Rad_Flux[kf][j]; SphP[i].Rad_Flux_Pred[kf][j]=SphP[i].Rad_Flux[kf][j];}}}

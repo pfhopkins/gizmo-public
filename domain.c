@@ -1254,25 +1254,17 @@ struct tasklist_data
 
 int domain_sort_task(const void *a, const void *b)
 {
-  if(((struct domain_segments_data *) a)->task < (((struct domain_segments_data *) b)->task))
-    return -1;
-
-  if(((struct domain_segments_data *) a)->task > (((struct domain_segments_data *) b)->task))
-    return +1;
-
+  if(((struct domain_segments_data *) a)->task < (((struct domain_segments_data *) b)->task)) {return -1;}
+  if(((struct domain_segments_data *) a)->task > (((struct domain_segments_data *) b)->task)) {return +1;}
   return 0;
 }
 
 int domain_sort_load(const void *a, const void *b)
 {
   if(((struct domain_segments_data *) a)->normalized_load >
-     (((struct domain_segments_data *) b)->normalized_load))
-    return -1;
-
+     (((struct domain_segments_data *) b)->normalized_load)) {return -1;}
   if(((struct domain_segments_data *) a)->normalized_load <
-     (((struct domain_segments_data *) b)->normalized_load))
-    return +1;
-
+     (((struct domain_segments_data *) b)->normalized_load)) {return +1;}
   return 0;
 }
 
@@ -2006,12 +1998,8 @@ void domain_walktoptree(int no)
 
 int domain_compare_key(const void *a, const void *b)
 {
-  if(((struct peano_hilbert_data *) a)->key < (((struct peano_hilbert_data *) b)->key))
-    return -1;
-
-  if(((struct peano_hilbert_data *) a)->key > (((struct peano_hilbert_data *) b)->key))
-    return +1;
-
+  if(((struct peano_hilbert_data *) a)->key < (((struct peano_hilbert_data *) b)->key)) {return -1;}
+  if(((struct peano_hilbert_data *) a)->key > (((struct peano_hilbert_data *) b)->key)) {return +1;}
   return 0;
 }
 
@@ -2089,7 +2077,7 @@ int domain_recursively_combine_topTree(int start, int ncpu)
 {
   int i, nleft, nright, errflag = 0;
   int recvTask, ntopnodes_import;
-  int master_left, master_right;
+  int domainkey_top_left, domainkey_top_right;
   struct local_topnode_data *topNodes_import = 0, *topNodes_temp;
 
   nleft = ncpu / 2;
@@ -2103,17 +2091,17 @@ int domain_recursively_combine_topTree(int start, int ncpu)
 
   if(ncpu >= 2)
     {
-      master_left = start;
-      master_right = start + nleft;
-      if(master_left == master_right)
+      domainkey_top_left = start;
+      domainkey_top_right = start + nleft;
+      if(domainkey_top_left == domainkey_top_right)
 	endrun(123);
 
-      if(ThisTask == master_left || ThisTask == master_right)
+      if(ThisTask == domainkey_top_left || ThisTask == domainkey_top_right)
 	{
-	  if(ThisTask == master_left)
-	    recvTask = master_right;
+	  if(ThisTask == domainkey_top_left)
+	    recvTask = domainkey_top_right;
 	  else
-	    recvTask = master_left;
+	    recvTask = domainkey_top_left;
 
 	  /* inform each other about the length of the trees */
 	  MPI_Sendrecv(&NTopnodes, 1, MPI_INT, recvTask, TAG_GRAV_A,
@@ -2135,9 +2123,9 @@ int domain_recursively_combine_topTree(int start, int ncpu)
 		       recvTask, TAG_GRAV_B, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 	}
 
-      if(ThisTask == master_left)
+      if(ThisTask == domainkey_top_left)
 	{
-	  for(recvTask = master_left + 1; recvTask < master_left + nleft; recvTask++)
+	  for(recvTask = domainkey_top_left + 1; recvTask < domainkey_top_left + nleft; recvTask++)
 	    {
 	      MPI_Send(&ntopnodes_import, 1, MPI_INT, recvTask, TAG_GRAV_A, MPI_COMM_WORLD);
 	      MPI_Send(topNodes_import,
@@ -2146,9 +2134,9 @@ int domain_recursively_combine_topTree(int start, int ncpu)
 	    }
 	}
 
-      if(ThisTask == master_right)
+      if(ThisTask == domainkey_top_right)
 	{
-	  for(recvTask = master_right + 1; recvTask < master_right + nright; recvTask++)
+	  for(recvTask = domainkey_top_right + 1; recvTask < domainkey_top_right + nright; recvTask++)
 	    {
 	      MPI_Send(&ntopnodes_import, 1, MPI_INT, recvTask, TAG_GRAV_A, MPI_COMM_WORLD);
 	      MPI_Send(topNodes_import,
@@ -2157,9 +2145,9 @@ int domain_recursively_combine_topTree(int start, int ncpu)
 	    }
 	}
 
-      if(ThisTask > master_left && ThisTask < master_left + nleft)
+      if(ThisTask > domainkey_top_left && ThisTask < domainkey_top_left + nleft)
 	{
-	  MPI_Recv(&ntopnodes_import, 1, MPI_INT, master_left, TAG_GRAV_A, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+	  MPI_Recv(&ntopnodes_import, 1, MPI_INT, domainkey_top_left, TAG_GRAV_A, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
 	  topNodes_import =
 	    (struct local_topnode_data *) mymalloc("topNodes_import",
@@ -2168,14 +2156,14 @@ int domain_recursively_combine_topTree(int start, int ncpu)
 
 	  MPI_Recv(topNodes_import,
 		   ntopnodes_import * sizeof(struct local_topnode_data), MPI_BYTE,
-		   master_left, TAG_GRAV_B, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+		   domainkey_top_left, TAG_GRAV_B, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
 	}
 
 
-      if(ThisTask > master_right && ThisTask < master_right + nright)
+      if(ThisTask > domainkey_top_right && ThisTask < domainkey_top_right + nright)
 	{
-	  MPI_Recv(&ntopnodes_import, 1, MPI_INT, master_right, TAG_GRAV_A, MPI_COMM_WORLD,
+	  MPI_Recv(&ntopnodes_import, 1, MPI_INT, domainkey_top_right, TAG_GRAV_A, MPI_COMM_WORLD,
 		   MPI_STATUS_IGNORE);
 
 	  topNodes_import =
@@ -2185,10 +2173,10 @@ int domain_recursively_combine_topTree(int start, int ncpu)
 
 	  MPI_Recv(topNodes_import,
 		   ntopnodes_import * sizeof(struct local_topnode_data), MPI_BYTE,
-		   master_right, TAG_GRAV_B, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+		   domainkey_top_right, TAG_GRAV_B, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 	}
 
-      if(ThisTask >= master_left && ThisTask < master_left + nleft)
+      if(ThisTask >= domainkey_top_left && ThisTask < domainkey_top_left + nleft)
 	{
 	  /* swap the two trees so that result will be equal on all cpus */
 

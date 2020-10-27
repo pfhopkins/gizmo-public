@@ -85,7 +85,7 @@ void determine_where_SNe_occur(void)
 
 
 
-#define MASTER_FUNCTION_NAME addFB_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int MASTER_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
+#define CORE_FUNCTION_NAME addFB_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int CORE_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
 #define INPUTFUNCTION_NAME particle2in_addFB    /* name of the function which loads the element data needed (for e.g. broadcast to other processors, neighbor search) */
 #define OUTPUTFUNCTION_NAME out2particle_addFB  /* name of the function which takes the data returned from other processors and combines it back to the original elements */
 #define CONDITIONFUNCTION_FOR_EVALUATION if(addFB_evaluate_active_check(i,loop_iteration)) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
@@ -159,7 +159,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     else
     local = DATAGET_NAME[target];
 
-    if(local.Msne<=0) return 0; // no SNe for the master particle! nothing to do here //
+    if(local.Msne<=0) return 0; // no SNe for the origin particle! nothing to do here //
     if(local.Hsml<=0) return 0; // zero-extent kernel, no particles //
     h2 = local.Hsml*local.Hsml;
     kernel_hinv(local.Hsml, &kernel.hinv, &kernel.hinv3, &kernel.hinv4);
@@ -196,7 +196,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
         while(startnode >= 0)
         {
             numngb_inbox = ngb_treefind_pairs_threads(local.Pos, local.Hsml, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist);
-            if(numngb_inbox < 0) {return -1;}
+            if(numngb_inbox < 0) {return -2;}
 
             E_coupled = dP_sum = dP_boost_sum = 0;
             for(n = 0; n < numngb_inbox; n++)
@@ -350,6 +350,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 E_coupled += e_shock;
 
                 /* inject actual mass from mass return */
+                int couple_anything_but_scalar_mass_and_metals = 1; // key to indicate whether or not we actually need to do the next set of steps beyond pure scalar mass+metal couplings //
                 if(P[j].Hsml<=0) {if(rho_j>0){rho_j*=(1+dM_ejecta_in/Mass_j);} else {rho_j=dM_ejecta_in*kernel.hinv3;}} else {rho_j+=kernel_zero*dM_ejecta_in*hinv3_j;}
                 rho_j *= 1 + dM_ejecta_in/Mass_j; // inject mass at constant particle volume //
                 Mass_j += dM_ejecta_in;
@@ -363,6 +364,9 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
 #endif
 #endif
 #endif
+                if(couple_anything_but_scalar_mass_and_metals)
+                {
+                    
                 /* inject the post-shock energy and momentum (convert to specific units as needed first) */
                 e_shock *= 1 / Mass_j;
                 InternalEnergy_j += e_shock;
@@ -387,6 +391,8 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                     double q = q0 * v_bw[k];
                     Vel_j[k] += q;
                 }
+                    
+                } // couple_anything_but_scalar_mass_and_metals
                 
                 /* we updated variables that need to get assigned to element 'j' -- let's do it here in a thread-safe manner */
                 #pragma omp atomic
@@ -453,7 +459,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
 
     /* Load the data for the particle injecting feedback */
     if(mode == 0) {particle2in_addFB(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];}
-    if(local.Msne<=0) {return 0;} // no SNe for the master particle! nothing to do here //
+    if(local.Msne<=0) {return 0;} // no SNe for the origin particle! nothing to do here //
     if(local.Hsml<=0) {return 0;} // zero-extent kernel, no particles //
 
     // some units (just used below, but handy to define for clarity) //
@@ -514,7 +520,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
         while(startnode >= 0)
         {
             numngb_inbox = ngb_treefind_pairs_threads(local.Pos, local.Hsml, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist);
-            if(numngb_inbox < 0) {return -1;}
+            if(numngb_inbox < 0) {return -2;}
 
             E_coupled = dP_sum = dP_boost_sum = 0;
             for(n = 0; n < numngb_inbox; n++)
@@ -674,10 +680,12 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 massratio_ejecta = dM_ejecta_in / (dM_ejecta_in + Mass_j);
 
                 /* inject actual mass from mass return */
+                int couple_anything_but_scalar_mass_and_metals = 1; // key to indicate whether or not we actually need to do the next set of steps beyond pure scalar mass+metal couplings //
                 if(P[j].Hsml<=0) {if(rho_j>0){rho_j*=(1+dM_ejecta_in/Mass_j);} else {rho_j=dM_ejecta_in*kernel.hinv3;}} else {rho_j+=kernel_zero*dM_ejecta_in*hinv3_j;}
                 rho_j *= 1 + dM_ejecta_in/Mass_j; // inject mass at constant particle volume //
                 Mass_j += dM_ejecta_in;
                 out.M_coupled += dM_ejecta_in;
+                
 #ifdef METALS   /* inject metals */
                 for(k=0;k<NUM_METAL_SPECIES-NUM_AGE_TRACERS;k++) {Metallicity_j[k]=(1-massratio_ejecta)*Metallicity_j[k] + massratio_ejecta*local.yields[k];}
 #ifdef GALSF_FB_FIRE_AGE_TRACERS
@@ -687,6 +695,10 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
 #endif
 #endif
 #endif
+                
+                if(couple_anything_but_scalar_mass_and_metals)
+                {
+                    
                 /* inject momentum: account for ejecta being energy-conserving inside the cooling radius (or Hsml, if thats smaller) */
                 double wk_m_cooling = pnorm * m_cooling; // effective cooling mass for this particle
                 double boost_max = sqrt(1 + wk_m_cooling / dM_ejecta_in); // terminal momentum boost-factor
@@ -738,7 +750,10 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 {
                     InternalEnergy_j += d_Egy_internal; E_coupled += d_Egy_internal;
                 }
-#endif                
+#endif
+                    
+                } // couple_anything_but_scalar_mass_and_metals
+                    
                 /* we updated variables that need to get assigned to element 'j' -- let's do it here in a thread-safe manner */
                 #pragma omp atomic
                 P[j].Mass += Mass_j - Mass_j_0; // finite mass update [delta difference added here, allowing for another element to update in the meantime]. done this way to ensure conservation.
@@ -790,7 +805,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
 #endif // GALSF_USE_SNE_ONELOOP_SCHEME else
 
 
-/* master routine which calls the relevant loops */
+/* parent routine which calls the relevant loops */
 void mechanical_fb_calc(int fb_loop_iteration)
 {
     PRINT_STATUS(" ..mechanical feedback loop: iteration %d",fb_loop_iteration);
