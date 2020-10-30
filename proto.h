@@ -281,6 +281,9 @@ double Get_Gas_Ionized_Fraction(int i);
 #ifdef EOS_ELASTIC
 void elastic_body_update_driftkick(int i, double dt_entr, int mode);
 #endif
+#if defined(EOS_ELASTIC) || defined(EOS_TILLOTSON)
+double get_negative_pressure_tensilecorrfac(double r, double h_i, double h_j);
+#endif
 double INLINE_FUNC convert_internalenergy_soundspeed2(int i, double u);
 double INLINE_FUNC Get_Gas_effective_soundspeed_i(int i);
 double INLINE_FUNC Get_Gas_thermal_soundspeed_i(int i);

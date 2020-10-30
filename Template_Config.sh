@@ -328,9 +328,6 @@
 #COOL_GRACKLE                   # enable Grackle: cooling+chemistry package (requires COOLING above; https://grackle.readthedocs.org/en/latest ); see Grackle code for their required citations
 #COOL_GRACKLE_CHEMISTRY=1       # choose Grackle cooling chemistry: (0)=tabular, (1)=Atomic, (2)=(1)+H2+H2I+H2II, (3)=(2)+DI+DII+HD. Modules with dust and/or metal-line cooling require METALS also
 #COOL_GRACKLE_APIVERSION=1      # set the version of the grackle api: =1 (default) is compatible with versions of grackle below 2.2. After 2.2 significant changes to the grackle api were made which require different input formats, which require setting this to =2 or larger. note newest grackle apis may not yet be compatible with the hooks here!
-## ----------------------------------------------------------------------------------------------------
-# ----   This has additional hooks to use the various gizmo radiation fields if desired. The modules solve a large molecular and ion network, so can trace predictive chemistry for species in dense ISM gas in much greater detail than the other modules above (at additional CPU cost)
-## ----------------------------------------------------------------------------------------------------
 ####################################################################################################
 
 
@@ -454,6 +451,10 @@
 #FORCE_ENTROPIC_EOS_BELOW=(0.01) # set (manually) the alternative energy-entropy switch which is enabled by default in MFM/MFV: if relative velocities are below this threshold, it uses the entropic EOS
 #DISABLE_SPH_PARTICLE_WAKEUP    # don't let gas particles move to lower timesteps based on neighbor activity (use for debugging)
 #DO_UPWIND_TIME_CENTERING       # this (and DO_HALFSTEP_FOR_MESHLESS_METHODS) use alternative methods for up-winding the fluxes in the MFM/MFV schemes. this up-weighting can be more accurate in hydrostatic problems with a large sound-speed discontinuity -if- the pressure gradient is steady-state, but if they are moving or unstable, it is less accurate (and can suppress mixing)
+#HYDRO_KERNEL_SURFACE_VOLCORR   # attempt to correct SPH/MFM/MFV cell volumes for free-surface effects, using the estimated boundary correction for the Wendland C2 kernel (works with others but most accurate for this) based on asymmetry of neighbors within kernel, as calibrated in Reinhardt & Stadel 2017 (arXiv:1701.08296), see e.g. their Fig 3
+#DISABLE_SURFACE_VOLCORR        # disables HYDRO_KERNEL_SURFACE_VOLCORR if it would be set by default (e.g. if EOS_ELASTIC is enabled)
+#HYDRO_EXPLICITLY_INTEGRATE_VOLUME # explicitly integrate the kernel continuity equation for cell volumes (giving e.g. densities), as in e.g. Monaghan 2000, but with a term that relaxes the integrated cell volume back to the explicitly evaluated kernel calculation on a timescale ~10 t_cross where t_cross ~ MAX(H_kernel , L_grad) / MIN(cs_eff) where L_grad is the density gradient scale length and cs_eff the minimum sound/torsion/tension wave speed. This module ONLY makes sense for strictly fixed-mass (SPH/MFM) methods
+#DISABLE_EXPLICIT_VOLUME_INTEGRATION # disables HYDRO_EXPLICITLY_INTEGRATE_VOLUME if it would be set by default (e.g. if EOS_ELASTIC is enabled)
 # --------------------
 # ----- Additional Fluid Physics and Gravity
 #COOLING_OPERATOR_SPLIT         # do the hydro heating/cooling in operator-split fashion from chemical/radiative. slightly more accurate when tcool >> tdyn, but much noisier when tcool << tdyn

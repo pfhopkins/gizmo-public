@@ -1,14 +1,16 @@
 % Example compile-time options: 
 %
-%        HYDRO_MESHLESS_FINITE_MASS
 %        BOX_SPATIAL_DIMENSION=2
 %        SELFGRAVITY_OFF
 %        EOS_TILLOTSON
 %        EOS_ELASTIC
-%        KERNEL_FUNCTION=5
+%        KERNEL_FUNCTION=6
 %
-% (The choice of KERNEL_FUNCTION=5 is optional here. Experiment with different kernels. 
-%   But be sure to set DesNumNgb accordingly; for e.g. KERNEL_FUNCTION=5 or 7, use 40, =3 or 5, use 20)
+% (The choice of KERNEL_FUNCTION=6 is optional here. Experiment with different kernels.
+%   But be sure to set DesNumNgb accordingly; for e.g. KERNEL_FUNCTION=5 or 7, use 40, =3, use 20, =4 or 6 use 32)
+%
+% Experiment with both HYDRO_MESHLESS_FINITE_MASS and HYDRO_DENSITY_SPH. On some elastic problems, SPH can
+%   give improved problems, though if you have fluid phases, MFM tends to give better behavior.
 %
 InitCondFile                       ring_collision_ics % choose IC and resolution
 ICFormat                           3
@@ -24,12 +26,12 @@ ComovingIntegrationOn              0
 OutputListOn                       0
 TimeOfFirstSnapshot                0
 TimeBetSnapshot                    5
-MaxSizeTimestep                    0.004
+MaxSizeTimestep                    0.1
 TreeDomainUpdateFrequency          0.005
 UnitLength_in_cm                   1
 UnitMass_in_g                      1
 UnitVelocity_in_cm_per_s           1
-DesNumNgb                          40    % 20 for cubic spline, 40 for quintic
+DesNumNgb                          32 % make sure to set appropriate for kernel
 Softening_Type0                    0.001 % this is our elastic material
 Softening_Type1                    0
 Softening_Type2                    0

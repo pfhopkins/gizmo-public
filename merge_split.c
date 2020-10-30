@@ -440,22 +440,17 @@ void split_particle_i(int i, int n_particles_split, int i_nearest)
         double norm=0, dp[3]; int m; dp[0]=dp[1]=dp[2]=0;
 
         // get the eigenvector of NV_T that has the smallest eigenvalue (= sparsest sampling direction)
-        double nvt[9]; // auxiliary array to store NV_T in for feeding to GSL eigen routine
-        for(k=0; k < NUMDIMS; k++){for(m=0; m < NUMDIMS; m++) nvt[NUMDIMS*k + m] = SphP[i].NV_T[k][m];}
-        gsl_matrix_view M = gsl_matrix_view_array(nvt, 3, 3); gsl_vector *eigvals = gsl_vector_alloc(3); gsl_matrix *eigvecs = gsl_matrix_alloc(3,3);
-        gsl_eigen_symmv_workspace *v = gsl_eigen_symmv_alloc(3); gsl_eigen_symmv(&M.matrix, eigvals, eigvecs, v);
-        
-        int min_eigvec_index = 0;
-        double min_eigval = MAX_REAL_NUMBER;
-        for(k=0; k < NUMDIMS; k++){if(gsl_vector_get(eigvals,k) < min_eigval){min_eigval = gsl_vector_get(eigvals,k); min_eigvec_index=k;}}
-        for(k=0; k < NUMDIMS; k++){dp[k] = gsl_matrix_get(eigvecs, k, min_eigvec_index);}
+        double nvt[NUMDIMS*NUMDIMS]={0}; for(k=0;k<NUMDIMS;k++) {for(m=0;m<NUMDIMS;m++) {nvt[NUMDIMS*k + m]=SphP[i].NV_T[k][m];}} // auxiliary array to store NV_T in for feeding to GSL eigen routine
+        gsl_matrix_view M = gsl_matrix_view_array(nvt,NUMDIMS,NUMDIMS); gsl_vector *eigvals = gsl_vector_alloc(NUMDIMS); gsl_matrix *eigvecs = gsl_matrix_alloc(NUMDIMS,NUMDIMS);
+        gsl_eigen_symmv_workspace *v = gsl_eigen_symmv_alloc(NUMDIMS); gsl_eigen_symmv(&M.matrix, eigvals, eigvecs, v);
+        int min_eigvec_index = 0; double min_eigval = MAX_REAL_NUMBER;
+        for(k=0;k<NUMDIMS;k++) {if(gsl_vector_get(eigvals,k) < min_eigval){min_eigval = gsl_vector_get(eigvals,k); min_eigvec_index=k;}}
+        for(k=0;k<NUMDIMS;k++) {dp[k] = gsl_matrix_get(eigvecs, k, min_eigvec_index);}
         gsl_eigen_symmv_free(v); gsl_vector_free(eigvals); gsl_matrix_free(eigvecs);
-           
-        for(k = 0; k < NUMDIMS; k++){norm += dp[k] * dp[k];}
+        for(k=0;k<NUMDIMS;k++) {norm += dp[k] * dp[k];}
         if(norm > 0)
         {
-            norm = 1/sqrt(norm);
-            for(k=0;k<NUMDIMS;k++) {dp[k] *= norm;}
+            norm = 1/sqrt(norm); for(k=0;k<NUMDIMS;k++) {dp[k] *= norm;}
             dx=d_r*dp[0]; dy=d_r*dp[1]; dz=d_r*dp[2];
             /* rotate to 90-degree offset from above orientation, if using the density gradient */
             // if(dp[2]==1) {dx=d_r; dy=0; dz=0;} else {dz = sqrt(dp[1]*dp[1] + dp[0]*dp[0]); dx = -d_r * dp[1]/dz; dy = d_r * dp[0]/dz; dz = 0.0;}

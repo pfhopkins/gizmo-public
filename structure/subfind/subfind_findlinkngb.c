@@ -47,28 +47,17 @@ void subfind_find_linkngb(void)
   int ngrp, recvTask, place, nexport, nimport;
   double t0, t1;
 
-
-  if(ThisTask == 0)
-    printf("Start find_linkngb (%d particles on task=%d)\n", NumPartGroup, ThisTask);
-
-  //int save_DesNumNgb = All.DesNumNgb;
-  //All.DesNumNgb = All.DesLinkNgb;	/* for simplicity, reset this value */
-
+  if(ThisTask == 0) {printf("Start find_linkngb (%d particles on task=%d)\n", NumPartGroup, ThisTask);}
 
   /* allocate buffers to arrange communication */
-
   Ngblist = (int *) mymalloc("Ngblist", NumPartGroup * sizeof(int));
   Dist2list = (double *) mymalloc("Dist2list", NumPartGroup * sizeof(double));
 
-  All.BunchSize =
-    (int) ((All.BufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
+  All.BunchSize =(int) ((All.BufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
 					     sizeof(struct linkngbdata_in) + sizeof(struct linkngbdata_out) +
-					     sizemax(sizeof(struct linkngbdata_in),
-						     sizeof(struct linkngbdata_out))));
-  DataIndexTable =
-    (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
-  DataNodeList =
-    (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
+					     sizemax(sizeof(struct linkngbdata_in),sizeof(struct linkngbdata_out))));
+  DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
+  DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
 
   Left = (MyFloat *)mymalloc("Left", sizeof(MyFloat) * NumPartGroup);
   Right = (MyFloat *)mymalloc("Right", sizeof(MyFloat) * NumPartGroup);
@@ -84,7 +73,6 @@ void subfind_find_linkngb(void)
   do
     {
       t0 = my_second();
-
       i = 0;			/* begin with this index */
 
       do
@@ -304,8 +292,6 @@ void subfind_find_linkngb(void)
 
   myfree(Dist2list);
   myfree(Ngblist);
-
-  //All.DesNumNgb = save_DesNumNgb;	/* restore it */
 }
 
 

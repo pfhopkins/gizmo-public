@@ -286,6 +286,19 @@ void do_the_kick(int i, integertime tstart, integertime tend, integertime tcurre
             }
 #endif // closes ENERGY_ENTROPY_SWITCH_IS_ACTIVE
             
+#ifdef HYDRO_EXPLICITLY_INTEGRATE_VOLUME
+            SphP[i].Density_ExplicitInt *= exp(-DMIN(1.5,DMAX(-1.5,P[i].Particle_DivVel*All.cf_a2inv * dt_hydrokick))); /*!< explicitly integrated volume/density variable to be used if integrating the SPH-like form of the continuity directly */
+            if(SphP[i].FaceClosureError > 0) {double drho2=0; int k; for(k=0;k<3;k++) {drho2+=SphP[i].Gradients.Density[k]*SphP[i].Gradients.Density[k];} /* the evolved density evolves back to the explicit density on a relaxation time of order the sound-crossing or tension wave-crossing time across the density gradient length */
+                if(drho2>0 && SphP[i].Density_ExplicitInt>0 && SphP[i].Density>0) {
+                    double Lgrad = SphP[i].Density / sqrt(drho2); Lgrad=DMAX(Lgrad,PPP[i].Hsml); double cs_eff_forrestoringforce=Get_Gas_effective_soundspeed_i(i); /* gradient scale length and sound speed */
+#if defined(EOS_TILLOTSON)
+                    cs_eff_forrestoringforce=DMIN(cs_eff_forrestoringforce , sqrt(All.Tillotson_EOS_params[SphP[i].CompositionType][10] / SphP[i].Density)); /* speed of deviatoric waves, which is most relevant, if defined */
+#endif
+                    double delta = 0.1 * dt_hydrokick * cs_eff_forrestoringforce / Lgrad, q0=log(SphP[i].Density_ExplicitInt), q1=log(P[i].Mass/SphP[i].FaceClosureError), qn=0; if(delta > 0.005) {qn=q0*exp(-delta) + q1*(1.-exp(-delta));} else {qn=q0 + (q1-q0)*delta*(1.-0.5*delta);} /* evolves in log-space across this span */
+                    SphP[i].Density_ExplicitInt = exp(q0); /* set final density */
+                }}
+#endif
+
 #ifdef RADTRANSFER /* block here to deal with tricky cases where radiation energy density is -much- larger than thermal */
             int kfreq; double erad_tot=0,emin=0,enew=0,demin=0,dErad=0; for(kfreq=0;kfreq<N_RT_FREQ_BINS;kfreq++) {erad_tot+=SphP[i].Rad_E_gamma[kfreq];}
             if(erad_tot > 0)
@@ -360,6 +373,9 @@ void do_the_kick(int i, integertime tstart, integertime tend, integertime tcurre
                 P[i].Mass = SphP[i].MassTrue; //mass_old + SphP[i].DtMass * dt_hydrokick;
 #endif
                 SphP[i].InternalEnergyPred = SphP[i].InternalEnergy; //ent_old + SphP[i].DtInternalEnergy * dt_entr;
+#ifdef HYDRO_EXPLICITLY_INTEGRATE_VOLUME
+                SphP[i].Density = SphP[i].Density_ExplicitInt; /*!< explicitly integrated volume/density variable to be used if integrating the SPH-like form of the continuity directly */
+#endif
             }
         }
         

@@ -156,7 +156,7 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
                 integertime TimeStep_J; TimeStep_J = GET_PARTICLE_INTEGERTIME(j); dt_hydrostep_j = TimeStep_J * UNIT_INTEGERTIME_IN_PHYSICAL;
                 dt_hydrostep = DMAX(dt_hydrostep_i , dt_hydrostep_j); // this is used for flux-limiting, so we always want to be more conservative and use the larger timestep //
                 int j_is_active_for_fluxes = 0;
-#if !defined(BOX_SHEARING) && !defined(_OPENMP) // (shearing box means the fluxes at the boundaries are not actually symmetric, so can't do this; OpenMP on some new compilers goes bad here because pointers [e.g. P...] are not thread-safe shared with predictive operations, and vectorization means no gain here with OMP anyways) //
+#if 0 //!defined(BOX_SHEARING) && !defined(_OPENMP) // (shearing box means the fluxes at the boundaries are not actually symmetric, so can't do this; OpenMP on some new compilers goes bad here because pointers [e.g. P...] are not thread-safe shared with predictive operations, and vectorization means no gain here with OMP anyways) //
                 if(local.Timestep > TimeStep_J) {continue;} /* compute from particle with smaller timestep */
                 /* use relative positions to break degeneracy */
                 if(local.Timestep == TimeStep_J)
@@ -246,7 +246,10 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
 #ifdef TURB_DIFF_METALS
                 double mdot_estimated = 0;
 #endif
-
+#if defined(EOS_TILLOTSON) || defined(EOS_ELASTIC)
+                double tensile_correction_factor = get_negative_pressure_tensilecorrfac(kernel.r, kernel.h_i, kernel.h_j); 
+#endif
+                
                 /* --------------------------------------------------------------------------------- */
                 /* calculate the kernel functions (centered on both 'i' and 'j') */
                 if(kernel.r < kernel.h_i)

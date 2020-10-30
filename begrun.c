@@ -1940,7 +1940,7 @@ void read_parameter_file(char *fname)
 #endif
     if(All.MaxNumNgbDeviation < 0.05) All.MaxNumNgbDeviation = 0.05;
 #ifdef EOS_ELASTIC
-    All.MaxNumNgbDeviation /= 5.0;
+    All.MaxNumNgbDeviation /= 20.0;
 #endif
 #ifdef AGS_HSML_CALCULATION_IS_ACTIVE
     All.AGS_MaxNumNgbDeviation = All.AGS_DesNumNgb / 640.;
@@ -1976,114 +1976,83 @@ void read_parameter_file(char *fname)
     /* now we're going to do a bunch of checks */
     if((All.ErrTolIntAccuracy<=0)||(All.ErrTolIntAccuracy>0.05))
     {
-        if(ThisTask==0)
-            printf("ErrTolIntAccuracy must be >0 and <0.05 to ensure stability \n");
-        endrun(1);
+        if(ThisTask==0) {printf("ErrTolIntAccuracy must be >0 and <0.05 to ensure stability \n"); endrun(1);}
     }
     if((All.ErrTolTheta<=0.1)||(All.ErrTolTheta>=0.9))
     {
-        if(ThisTask==0)
-            printf("ErrTolTheta must be >0.1 and <0.9 to ensure stability \n");
-        endrun(1);
+        if(ThisTask==0) {printf("ErrTolTheta must be >0.1 and <0.9 to ensure stability \n"); endrun(1);}
     }
     if((All.CourantFac<=0)||(All.CourantFac>0.5))
     {
-        if(ThisTask==0)
-            printf("CourantFac must be >0 and <0.5 to ensure stability \n");
-        endrun(1);
+        if(ThisTask==0) {printf("CourantFac must be >0 and <0.5 to ensure stability \n"); endrun(1);}
     }
     if((All.ErrTolForceAcc<=0)||(All.ErrTolForceAcc>=0.01))
     {
-        if(ThisTask==0)
-            printf("ErrTolForceAcc must be >0 and <0.01 to ensure stability \n");
-        endrun(1);
+        if(ThisTask==0) {printf("ErrTolForceAcc must be >0 and <0.01 to ensure stability \n"); endrun(1);}
     }
     if((All.MaxRMSDisplacementFac<=0)||(All.MaxRMSDisplacementFac>0.25))
     {
-        if(ThisTask==0)
-            printf("MaxRMSDisplacementFac must be >0 and <0.25 to ensure stability \n");
-        endrun(1);
+        if(ThisTask==0) {printf("MaxRMSDisplacementFac must be >0 and <0.25 to ensure stability \n"); endrun(1);}
     }
 #ifdef HYDRO_SPH
     if((All.ArtBulkViscConst<=0.5)||(All.ArtBulkViscConst>=2.0))
     {
-        if(ThisTask==0)
-            printf("ArtBulkViscConst must be >0.5 and <2 to ensure stability \n");
-        endrun(1);
+        if(ThisTask==0) {printf("ArtBulkViscConst must be >0.5 and <2 to ensure stability \n"); endrun(1);}
     }
 #ifdef SPHAV_ARTIFICIAL_CONDUCTIVITY
     if((All.ArtCondConstant<=0)||(All.ArtCondConstant>0.5))
     {
-        if(ThisTask==0)
-            printf("For SPH-mode runs, ArtCondConstant must be >0 and <0.5");
-        endrun(1);
+        if(ThisTask==0) {printf("For SPH-mode runs, ArtCondConstant must be >0 and <0.5"); endrun(1);}
     }
 #endif
 #ifdef SPHAV_CD10_VISCOSITY_SWITCH
     if((All.ViscosityAMin<=0.025)||(All.ViscosityAMin>=All.ViscosityAMax)||(All.ViscosityAMin>1.0))
     {
-        if(ThisTask==0)
-            printf("For SPH-mode runs, ViscosityAMin must be >0.025 (stability) and <MIN(1,ViscosityAMax)");
-        endrun(1);
+        if(ThisTask==0) {printf("For SPH-mode runs, ViscosityAMin must be >0.025 (stability) and <MIN(1,ViscosityAMax)"); endrun(1);}
     }
     if((All.ViscosityAMax<1))
     {
-        if(ThisTask==0)
-            printf("For SPH-mode runs, ViscosityAMax must be >1");
-        endrun(1);
+        if(ThisTask==0) {printf("For SPH-mode runs, ViscosityAMax must be >1"); endrun(1);}
     }
 #endif
 #ifdef SPH_TP12_ARTIFICIAL_RESISTIVITY
     if((All.ArtMagDispConst<1)||(All.ArtMagDispConst>2))
     {
-        if(ThisTask==0)
-            printf("For SPH-mode runs, ArtificialResistivityMax must be >1 and <2");
-        endrun(1);
+        if(ThisTask==0) {printf("For SPH-mode runs, ArtificialResistivityMax must be >1 and <2"); endrun(1);}
     }
 #endif
 #endif
 #ifdef DIVBCLEANING_DEDNER
     if((All.DivBcleanParabolicSigma<0.1)||(All.DivBcleanParabolicSigma>1))
     {
-        if(ThisTask==0)
-            printf("Divergence-Cleaning Damping Parameter DivBcleaningParabolicSigma must be >0.1 and <1");
-        endrun(1);
+        if(ThisTask==0) {printf("Divergence-Cleaning Damping Parameter DivBcleaningParabolicSigma must be >0.1 and <1"); endrun(1);}
     }
     if((All.DivBcleanHyperbolicSigma<0.5)||(All.DivBcleanHyperbolicSigma>2))
     {
-        if(ThisTask==0)
-            printf("Divergence-Cleaning Damping Parameter DivBcleanHyperbolicSigma must be >0.5 and <2");
-        endrun(1);
+        if(ThisTask==0) {printf("Divergence-Cleaning Damping Parameter DivBcleanHyperbolicSigma must be >0.5 and <2"); endrun(1);}
     }
 #endif
     if((All.MaxNumNgbDeviation<=0)||(All.MaxNumNgbDeviation>0.1*All.DesNumNgb))
     {
-        if(ThisTask==0)
-            printf("MaxNumNgbDeviation must be >0 and <0.1*DesNumNgb \n");
-        endrun(1);
+        if(ThisTask==0) {printf("MaxNumNgbDeviation must be >0 and <0.1*DesNumNgb \n"); endrun(1);}
     }
     if(!isnan(All.DesNumNgb))
     {
         if((All.DesNumNgb<KERNEL_NMIN)||(All.DesNumNgb>KERNEL_NMAX))
         {
-            if(ThisTask==0)
-                printf("For the kernel chosen, proper sampling and stability requires DesNumNgb must be >%d and <%d \n", KERNEL_NMIN,KERNEL_NMAX);
-            endrun(1);
+            if(ThisTask==0) {printf("For the kernel chosen, proper sampling and stability requires DesNumNgb must be >%d and <%d \n",KERNEL_NMIN,KERNEL_NMAX); endrun(1);}
         }
     }
 #ifdef AGS_HSML_CALCULATION_IS_ACTIVE
     if((All.AGS_MaxNumNgbDeviation<=0)||(All.AGS_MaxNumNgbDeviation>0.1*All.AGS_DesNumNgb))
     {
-        if(ThisTask==0)
-            printf("AGS_MaxNumNgbDeviation must be >0 and <0.1*AGS_DesNumNgb \n");
-        endrun(1);
+        if(ThisTask==0) {printf("AGS_MaxNumNgbDeviation must be >0 and <0.1*AGS_DesNumNgb \n"); endrun(1);}
     }
     if(!isnan(All.AGS_DesNumNgb))
     {
         if((All.AGS_DesNumNgb<KERNEL_NMIN)||(All.AGS_DesNumNgb>KERNEL_NMAX))
         {
-            printf("For the kernel chosen, proper sampling and stability requires AGS_DesNumNgb must be >%d and <%d \n", KERNEL_NMIN,KERNEL_NMAX);
-            endrun(1);
+            if(ThisTask==0) {printf("For the kernel chosen, proper sampling and stability requires AGS_DesNumNgb must be >%d and <%d \n",KERNEL_NMIN,KERNEL_NMAX); endrun(1);}
         }
 
     }
@@ -2094,16 +2063,12 @@ void read_parameter_file(char *fname)
 
     if(All.NumFilesWrittenInParallel != (1 << pnum))
     {
-        if(ThisTask == 0)
-            printf("NumFilesWrittenInParallel MUST be a power of 2\n");
-        endrun(0);
+        if(ThisTask == 0) {printf("NumFilesWrittenInParallel MUST be a power of 2\n"); endrun(1);}
     }
 
     if(All.NumFilesWrittenInParallel > NTask)
     {
-        if(ThisTask == 0)
-            printf("NumFilesWrittenInParallel MUST be smaller than number of processors\n");
-        endrun(0);
+        if(ThisTask == 0) {printf("NumFilesWrittenInParallel MUST be smaller than number of processors\n"); endrun(1);}
     }
 
 #if defined(BOX_LONG_X) ||  defined(BOX_LONG_Y) || defined(BOX_LONG_Z)
@@ -2112,20 +2077,15 @@ void read_parameter_file(char *fname)
     {
         printf("Code was compiled with BOX_LONG_X/Y/Z and either BOX_PERIODIC or PMGRID, but not with SELFGRAVITY_OFF or GRAVITY_NOT_PERIODIC.\n");
         printf("The gravitational solver does not allow stretched-periodic boxes (cubic-box periodic or non-periodic gravity required).\n");
+        endrun(1);
     }
-    endrun(0);
 #endif
 #endif
 
 
 #ifdef GR_TABULATED_COSMOLOGY_W
 #ifndef GR_TABULATED_COSMOLOGY
-    if(ThisTask == 0)
-    {
-        fprintf(stdout, "Code was compiled with GR_TABULATED_COSMOLOGY_W, but not with GR_TABULATED_COSMOLOGY.\n");
-        fprintf(stdout, "This is not allowed.\n");
-    }
-    endrun(0);
+    if(ThisTask == 0) {fprintf(stdout, "Code was compiled with GR_TABULATED_COSMOLOGY_W, but not with GR_TABULATED_COSMOLOGY; this is not allowed.\n"); endrun(1);}
 #endif
 #endif
 
@@ -2135,8 +2095,7 @@ void read_parameter_file(char *fname)
 
 #ifdef PTHREADS_NUM_THREADS
 #ifdef _OPENMP
-    if(ThisTask == 0) {printf("PTHREADS_NUM_THREADS is incompatible with enabling OpenMP in the compiler options \n");}
-    endrun(0);
+    if(ThisTask == 0) {printf("PTHREADS_NUM_THREADS is incompatible with enabling OpenMP in the compiler options \n"); endrun(1);}
 #endif
 #endif
 

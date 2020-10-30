@@ -4,6 +4,7 @@
 #include <string.h>
 #include <math.h>
 #include <gsl/gsl_math.h>
+#include <gsl/gsl_eigen.h>
 #include "../allvars.h"
 #include "../proto.h"
 #include "../kernel.h"

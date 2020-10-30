@@ -16,26 +16,18 @@
 //#define HYDRO_FACE_VOLUME_RECONSTRUCTION_CORRECTION
 #endif
     
-    double s_star_ij,s_i,s_j,v_frame[3],dummy_pressure,distance_from_i[3],distance_from_j[3];
-    double leak_vs_tol = 0.5 * (local.FaceClosureError+SphP[j].FaceClosureError);
+    double s_star_ij,s_i,s_j,v_frame[3],dummy_pressure,distance_from_i[3],distance_from_j[3],leak_vs_tol=0;
+#if !(defined(HYDRO_KERNEL_SURFACE_VOLCORR) || defined(EOS_ELASTIC))
+    leak_vs_tol = 0.5 * (local.FaceClosureError+SphP[j].FaceClosureError);
+#endif
     dummy_pressure=face_area_dot_vel=face_vel_i=face_vel_j=Face_Area_Norm=0;
     double Pressure_i = local.Pressure, Pressure_j = SphP[j].Pressure;
 #if defined(EOS_TILLOTSON) || defined(EOS_ELASTIC)
-    /* negative pressures are allowed, but dealt with below by a constant shift and re-shift, which should be invariant for HLLC with the MFM method */
-    if((Pressure_i<0)||(Pressure_j<0))
+    if((Pressure_i<0)||(Pressure_j<0)) /* negative pressures are allowed, but dealt with below by a constant shift and re-shift, which should be invariant for HLLC with the MFM method */
     {
         dummy_pressure = -DMIN(Pressure_i,Pressure_j);
         Pressure_i += dummy_pressure; Pressure_j += dummy_pressure;
-        /* we still need to include an effective stress for large negative pressures when elements are too close, to prevent tensile instability */
-        double h_eff = 0.5*(Particle_Size_i + Particle_Size_j); // effective inter-particle spacing around these elements
-        if(kernel.r < 2.*h_eff) // check if close
-        {
-            double r_over_h_eff = kernel.r / h_eff, wk_0, wk_r, dwk_tmp; // define separation relative to mean
-            kernel_main(0.5, 1., 1., &wk_0, &dwk_tmp, -1); // use kernels because of their stability properties: here weight for 'mean separation'
-            kernel_main(0.5*r_over_h_eff, 1., 1., &wk_r, &dwk_tmp, -1); // here weight for actual half-separation
-            double wt_corr = wk_r / wk_0; // weighting function
-            dummy_pressure *= 1 - 1.*0.2 * wt_corr*wt_corr*wt_corr*wt_corr; // actual limiting function (if close enough, pressure reverses to repulsive (pre-factor of ~1-2 before 0.2 here) //
-        }
+        dummy_pressure *= 1. - tensile_correction_factor; /* we still need to include an effective stress for large negative pressures when elements are too close, to prevent tensile instability */
     }
 #endif
     

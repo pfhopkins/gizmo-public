@@ -560,7 +560,7 @@ void construct_gradient(double *grad, int i)
     if(SHOULD_I_USE_SPH_GRADIENTS(SphP[i].ConditionNumber))
     {
         /* the condition number was bad, so we used SPH-like gradients */
-        int k; for(k=0;k<3;k++) {grad[k] *= PPP[i].DhsmlNgbFactor / SphP[i].Density;}
+        if(SphP[i].Density > 0) {int k; for(k=0;k<3;k++) {grad[k] *= PPP[i].DhsmlNgbFactor / SphP[i].Density;}}
     } else {
         /* ok, the condition number was good so we used the matrix-like gradient estimator */
         int k; double v_tmp[3];
@@ -1774,7 +1774,7 @@ int GasGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount
                 if(GasGrad_isactive(j)==0) continue;
 
                 integertime TimeStep_J; TimeStep_J = GET_PARTICLE_INTEGERTIME(j);
-#if !defined(BOX_SHEARING) && !defined(_OPENMP) // (shearing box means the fluxes at the boundaries are not actually symmetric, so can't do this; OpenMP on some new compilers goes bad here because pointers [e.g. P...] are not thread-safe shared with predictive operations, and vectorization means no gain here with OMP anyways) //
+#if 0 //!defined(BOX_SHEARING) && !defined(_OPENMP) // (shearing box means the fluxes at the boundaries are not actually symmetric, so can't do this; OpenMP on some new compilers goes bad here because pointers [e.g. P...] are not thread-safe shared with predictive operations, and vectorization means no gain here with OMP anyways) //
                 if(local.Timestep > TimeStep_J) continue; /* compute from particle with smaller timestep */
                 /* use relative positions to break degeneracy */
                 if(local.Timestep == TimeStep_J)
@@ -2153,7 +2153,7 @@ int GasGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount
                     /* first do particle i */
                     if(kernel.r < kernel.h_i)
                     {
-                        if(sph_gradients_flag_i) {kernel.wk_i = -kernel.dwk_i/kernel.r * P[j].Mass;} // sph-like weights for gradients //
+                        if(sph_gradients_flag_i && kernel.r > 0) {kernel.wk_i = -kernel.dwk_i/kernel.r * P[j].Mass;} // sph-like weights for gradients //
                         for(k=0;k<3;k++)
                         {
                             double wk_xyz_i = -kernel.wk_i * kernel.dp[k]; /* sign is important here! */
@@ -2191,7 +2191,7 @@ int GasGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount
                     /* next do particle j */
                     if((kernel.r < h_j) && (swap_to_j))
                     {
-                        if(sph_gradients_flag_j) {kernel.wk_j = -kernel.dwk_j/kernel.r * local.Mass;} // sph-like weights for gradients //
+                        if(sph_gradients_flag_j && kernel.r > 0) {kernel.wk_j = -kernel.dwk_j/kernel.r * local.Mass;} // sph-like weights for gradients //
                         for(k=0;k<3;k++)
                         {
                             double wk_xyz_j = -kernel.wk_j * kernel.dp[k]; /* sign is important here! (note dp-dd signs cancel) */
