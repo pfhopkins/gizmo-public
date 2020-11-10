@@ -1,0 +1,35 @@
+%-------------------------------------------------------------------------
+%----  This is an example parameter file like the included "params.txt"
+%       for GIZMO, showing an example set of CHIMES parameters added.
+%       (all the other parameters need to be added too -- this is just
+%        an example of the CHIMES-specific 'block')
+%       See the CHIMES-specific readme for more details of the additions
+%-------------------------------------------------------------------------
+Chimes_data_path        /path/reaction_network/chimes-data
+PhotoIonTable           FG20_cross_sections/z0.000_cross_sections.hdf5
+Thermal_Evolution_On    1 % 0=evolve chemistry only; 1=evolve temperature and chemistry.
+Chemistry_eqm           0 % 0=NonEq; 1=eqm tables; 2=solve eqm from rate eqns.
+StaticMolCooling        0 % 0=incl Div(velocity); 1=thermal line broadening only.
+CellSelfShielding_On    2 % 0=optically thin; 1=update column densities within chemistry solver; 2=only update column densities at start of hydro step.
+Shielding_length_factor 0.5 % Multiplicative factor for the shielding length.
+Grain_Temperature       10 % dust temperature in K
+CR_rate                 1.8e-16 % HI ionisation rate from cosmic rays, s^-1
+max_mol_temperature     1.0e5 % K; above this temperature, molecules are excluded.
+rad_field_norm_factor   1.0   % Multiplicative factor to scale the UV field given by the PhotoIonTable 
+relativeTolerance       1.0e-4 % Controls accuracy of thermo-chemistry integration.
+absoluteTolerance       1.0e-10 % Controls accuracy of chemistry integration.
+explicitTolerance       0.1     % Controls accuracy of chemistry integration.
+scale_metal_tolerances  0 % 0=fixed, 1=scaled
+IncludeCarbon 		1 % 0=exclude carbon from chemistry network; 1=include it.
+IncludeNitrogen		1 % NOTE: These IncludeXXX parameters also require
+IncludeOxygen 		1 % the METALS and COOL_METAL_LINES_BY_SPECIES Config flags,
+IncludeNeon 		1 % otherwise the metal abundances will be set to zero.
+IncludeMagnesium	1
+IncludeSilicon 		1
+IncludeSulphur 		1
+IncludeCalcium 		1
+IncludeIron 		1
+chimes_debug            0 % Controls debug statements from CHIMES. 
+N_chimes_full_output_freq 10 % How often all abundances are written to snapshot (req. CHIMES_REDUCED_OUTPUT).
+Chimes_f_esc_ion        0.05 % minimum enforced ionizing photon escape fraction from local attenuation
+Chimes_f_esc_G0         0.1 % minimum enforced FUV (photoelectric) photon escape from local attenuation

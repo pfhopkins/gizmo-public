@@ -1,4 +1,4 @@
-double Face_Area_Norm=0; // need this to be set here for any module below
+    Face_Area_Norm=0; // need this to be set here for any module below
 
 
 /*  if we are using fixed-grid mode for the code, we manually set the areas to the correct geometric areas, which is trivial */

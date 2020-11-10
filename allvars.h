@@ -283,20 +283,31 @@
 #endif
 #endif
 
-
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || ((defined(SINGLE_STAR_FB_WINDS) || defined(SINGLE_STAR_FB_SNE)) && defined(FLAG_NOT_IN_PUBLIC_CODE))
-#define MAINTAIN_TREE_IN_REARRANGE // don't rebuild the domains/tree every time a particle is spawned - salvage the existing one by redirecting pointers as needed
-#if defined(SINGLE_STAR_FB_WINDS)
-#define GALSF_FB_MECHANICAL //We will use the FIRE wind module for low mass loss rate stars (spawning leads to issues)
+#if (defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_FB_WINDS) || defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_FB_SNE) || defined(RT_OTVET) || defined(RT_FLUXLIMITEDDIFFUSION) || defined(RT_M1) || defined(RT_LOCALRAYGRID) || defined(SINGLE_STAR_FB_LOCAL_RP)) && defined(SINGLE_STAR_TIMESTEPPING) && defined(SINGLE_STAR_SINK_DYNAMICS)
+#define SINGLE_STAR_FB_TIMESTEPLIMIT // general flag indicating feedback is on
 #endif
+
+
+#if defined(SINGLE_STAR_FB_WINDS) && !defined(GALSF_FB_MECHANICAL)
+#define GALSF_FB_MECHANICAL // we will use the FIRE wind module for low mass loss rate stars (spawning leads to issues)
+#endif
+
 #ifdef SINGLE_STAR_FB_SNE
 #if !(CHECK_IF_PREPROCESSOR_HAS_NUMERICAL_VALUE_(SINGLE_STAR_FB_SNE)) /* no numerical value is set, so set one as our 'default' */
 #undef SINGLE_STAR_FB_SNE
 #define SINGLE_STAR_FB_SNE 1 // fraction of the SN energy in the kinetic energy of particles vs internal
 #endif
-#define SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT 2 //determines the maximum number of ejecta particles spawned per timestep, see below
-#define SINGLE_STAR_FB_SNE_N_EJECTA (4*(SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT)*((SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT)+1)) //Maximum number of ejecta particles spawned per timestep
 #endif
+
+#if defined(FLAG_NOT_IN_PUBLIC_CODE) || ((defined(SINGLE_STAR_FB_WINDS) || defined(SINGLE_STAR_FB_SNE)) && defined(FLAG_NOT_IN_PUBLIC_CODE))
+#define MAINTAIN_TREE_IN_REARRANGE // don't rebuild the domains/tree every time a particle is spawned - salvage the existing one by redirecting pointers as needed
+#endif
+
+#if (defined(SINGLE_STAR_FB_SNE) || defined(SINGLE_STAR_FB_WINDS)) && !defined(SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT)
+#define SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT 2 // determines the maximum number of ejecta particles spawned per timestep, see below
+#endif
+#if defined(SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT)
+#define SINGLE_STAR_FB_SNE_N_EJECTA (4*(SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT)*((SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT)+1)) // maximum number of ejecta cells spawned per timestep - follows from tiling rules for rays from RHD-direct-ray method
 #endif
 
 #if defined(SINGLE_STAR_FB_LOCAL_RP) // use standard angle-weighted local coupling to impart photon momentum from stars
@@ -305,7 +316,7 @@
 #endif
 #endif
 
-#if ((defined(SINGLE_STAR_FB_WINDS) || defined(SINGLE_STAR_FB_SNE)) && !defined(FLAG_NOT_IN_PUBLIC_CODE))
+#if ((defined(SINGLE_STAR_FB_WINDS) || defined(SINGLE_STAR_FB_SNE)) && !defined(FLAG_NOT_IN_PUBLIC_CODE) && !defined(GALSF_FB_MECHANICAL))
 #define GALSF_FB_MECHANICAL // enable mechanical feedback from single stellar sources
 #endif
 
@@ -1351,7 +1362,6 @@ z=((z)>boxHalf_Z)?((z)-boxSize_Z):(((z)<-boxHalf_Z)?((z)+boxSize_Z):(z)))
 
 #define FACT1 0.366025403785	/* FACT1 = 0.5 * (sqrt(3)-1) */
 #define FACT2 0.86602540        /* FACT2 = 0.5 * sqrt(3) */
-#define CRSOL_OVER_CTRUE_SQUARED_FOR_BEAMING (((C_LIGHT_CODE_REDUCED*C_LIGHT_CODE_REDUCED)/(C_LIGHT_CODE*C_LIGHT_CODE))) /* factor needed in some places in the code to deal with relativistic terms when we use a RSOL */
 
 
 
@@ -1376,20 +1386,16 @@ z=((z)>boxHalf_Z)?((z)-boxSize_Z):(((z)<-boxHalf_Z)?((z)+boxSize_Z):(z)))
 /*  Global variables                                     */
 /*********************************************************/
 
-
 extern int FirstActiveParticle;
 extern int *NextActiveParticle;
 extern unsigned char *ProcessedFlag;
-
 extern int TimeBinCount[TIMEBINS];
 extern int TimeBinCountSph[TIMEBINS];
 extern int TimeBinActive[TIMEBINS];
-
 extern int FirstInTimeBin[TIMEBINS];
 extern int LastInTimeBin[TIMEBINS];
 extern int *NextInTimeBin;
 extern int *PrevInTimeBin;
-
 #ifdef GALSF
 extern double TimeBinSfr[TIMEBINS];
 #endif
@@ -1416,34 +1422,22 @@ extern double TimeBin_BH_Medd[TIMEBINS];
 #ifdef HERMITE_INTEGRATION
 extern int HermiteOnlyFlag;     /*!< flag to only do Hermite integration for applicable particles (ie. stars) in the gravity routine - set =1 on the first prediction pass and =2 on the second correction pass */
 #endif
-
 extern int ThisTask;		/*!< the number of the local processor  */
 extern int NTask;		/*!< number of processors */
 extern int PTask;		/*!< note: NTask = 2^PTask */
-
 extern double CPUThisRun;	/*!< Sums CPU time of current process */
-
 extern int NumForceUpdate;	/*!< number of active particles on local processor in current timestep  */
 extern long long GlobNumForceUpdate;
-
 extern int NumSphUpdate;	/*!< number of active SPH particles on local processor in current timestep  */
-
 extern int MaxTopNodes;	        /*!< Maximum number of nodes in the top-level tree used for domain decomposition */
-
-extern int RestartFlag;		/*!< taken from command line used to start code. 0 is normal start-up from
-				   initial conditions, 1 is resuming a run from a set of restart files, while 2
-				   marks a restart from a snapshot file. */
+extern int RestartFlag;		/*!< taken from command line used to start code. 0 is normal start-up from initial conditions, 1 is resuming a run from a set of restart files, while 2 marks a restart from a snapshot file. */
 extern int RestartSnapNum;
 extern int SelRnd;
-
 extern int TakeLevel;
-
 extern int *Exportflag;	        /*!< Buffer used for flagging whether a particle needs to be exported to another process */
 extern int *Exportnodecount;
 extern int *Exportindex;
-
 extern int *Send_offset, *Send_count, *Recv_count, *Recv_offset;
-
 extern size_t AllocatedBytes;
 extern size_t HighMarkBytes;
 extern size_t FreeBytes;
@@ -1453,19 +1447,15 @@ extern char CPU_SymbolImbalance[CPU_PARTS];
 extern char CPU_String[CPU_STRING_LEN + 1];
 extern double WallclockTime;    /*!< This holds the last wallclock time measurement for timings measurements */
 extern int Flag_FullStep;	/*!< Flag used to signal that the current step involves all particles */
-
 extern size_t HighMark_run,  HighMark_domain, HighMark_gravtree, HighMark_pmperiodic,
   HighMark_pmnonperiodic,  HighMark_sphdensity, HighMark_sphhydro, HighMark_GasGrad;
 
 #ifdef TURB_DRIVING
 extern size_t HighMark_turbpower;
 #endif
-
 extern int TreeReconstructFlag;
 extern int GlobFlag;
-
 extern char DumpFlag;
-
 #ifdef WAKEUP
 extern int NeedToWakeupParticles;
 extern int NeedToWakeupParticles_local;
@@ -1477,37 +1467,26 @@ extern int N_gas;		/*!< number of gas particles on the LOCAL processor  */
 extern int N_stars;
 #endif
 
-
 extern long long Ntype[6];	/*!< total number of particles of each type */
 extern int NtypeLocal[6];	/*!< local number of particles of each type */
-
 extern gsl_rng *random_generator;	/*!< the random number generator used */
-
-
 extern int Gas_split;           /*!< current number of newly-spawned gas particles outside block */
 #ifdef GALSF
 extern int Stars_converted;	/*!< current number of star particles in gas particle block */
 #endif
 
 extern double TimeOfLastTreeConstruction;	/*!< holds what it says */
-
-extern int *Ngblist;		/*!< Buffer to hold indices of neighbours retrieved by the neighbour search
-				   routines */
-
+extern int *Ngblist;		/*!< Buffer to hold indices of neighbours retrieved by the neighbour search routines */
 extern double *R2ngblist;
-
 extern double DomainCorner[3], DomainCenter[3], DomainLen, DomainFac;
 extern int *DomainStartList, *DomainEndList;
-
 extern double *DomainWork;
 extern int *DomainCount;
 extern int *DomainCountSph;
 extern int *DomainTask;
 extern int *DomainNodeIndex;
 extern int *DomainList, DomainNumChanged;
-
 extern peanokey *Key, *KeySorted;
-
 
 #ifdef RT_CHEM_PHOTOION
 double rt_ion_nu_min[N_RT_FREQ_BINS];
@@ -1530,7 +1509,7 @@ int CR_species_ID_in_bin[N_CR_PARTICLE_BINS];
 #define N_CR_SPECTRUM_LUT 101 /*!< number of elements per bin in the look-up-tables we will pre-compute to use for inverting the energy-number relation to determine the spectral slope */
 double CR_global_slope_lut[N_CR_PARTICLE_BINS][N_CR_SPECTRUM_LUT]; /*!< holder for the actual look-up-tables */
 #if defined(FLAG_NOT_IN_PUBLIC_CODE_EVOLVE_SPECTRUM_EXTENDED_NETWORK)
-#define N_CR_PARTICLE_SPECIES 7
+#define N_CR_PARTICLE_SPECIES 8
 int CR_secondary_species_listref[N_CR_PARTICLE_SPECIES][N_CR_PARTICLE_SPECIES]; /*!< list for each type of the different secondaries to which it can decay */
 int CR_secondary_target_bin[N_CR_PARTICLE_BINS][N_CR_PARTICLE_SPECIES]; /*!< destination bin for the secondaries produced by different primaries */
 double CR_frag_secondary_coeff[N_CR_PARTICLE_BINS][N_CR_PARTICLE_SPECIES]; /*!< coefficients for fragmentation to the given secondaries (also pre-computed for simplicity) */
@@ -1541,8 +1520,6 @@ double CR_rad_decay_coeff[N_CR_PARTICLE_BINS]; /*!< radioactive decay coefficien
 #endif
 int CR_species_ID_active_list[N_CR_PARTICLE_SPECIES]; /*!< holds the list of species ids to loop over */
 #endif
-
-
 
 extern struct topnode_data
 {
@@ -1557,11 +1534,9 @@ extern struct topnode_data
 } *TopNodes;
 
 extern int NTopnodes, NTopleaves;
-
 #ifdef USE_PREGENERATED_RANDOM_NUMBER_TABLE
 extern double RndTable[RNDTABLE];
 #endif
-
 
 #ifdef SUBFIND
 extern int GrNr;
@@ -1580,12 +1555,9 @@ extern struct Subfind_DensityOtherPropsEval_data_out
 #endif
 
 
-
 /* variables for input/output , usually only used on process 0 */
 
-
 extern char ParameterFile[100];	/*!< file name of parameterfile used for starting the simulation */
-
 extern FILE
 #ifndef IO_REDUCED_MODE
  *FdTimebin,    /*!< file handle for timebin.txt log-file. */
@@ -1604,20 +1576,18 @@ extern FILE
 #endif
 #endif
  *FdCPU;        /*!< file handle for cpu.txt log-file. */
-
 #ifdef GALSF
 extern FILE *FdSfr;		/*!< file handle for sfr.txt log-file. */
 #endif
 #ifdef GALSF_FB_MECHANICAL
 extern FILE *FdSneIIHeating;	/*!< file handle for SNIIheating.txt log-file */
 #endif
-
 #ifdef BLACK_HOLES
 extern FILE *FdBlackHoles;	/*!< file handle for blackholes.txt log-file. */
-#ifdef BH_OUTPUT_GASSWALLOW
+#ifdef OUTPUT_SINK_ACCRETION_HIST
 extern FILE *FdBhSwallowDetails;
 #endif
-#ifdef BH_OUTPUT_FORMATION_PROPERTIES
+#ifdef OUTPUT_SINK_FORMATION_PROPS
 extern FILE *FdBhFormationDetails;
 #endif
 #if !defined(IO_REDUCED_MODE) || defined(BH_OUTPUT_MOREINFO)
@@ -1632,23 +1602,14 @@ extern FILE *FdBhWindDetails;
 #endif
 
 
-
 #if defined(COOLING) && defined(GALSF_EFFECTIVE_EQS)
 #ifndef COOLING_OPERATOR_SPLIT
 #define COOLING_OPERATOR_SPLIT /*!< the Springel-Hernquist EOS depends explicitly on the cooling time in a way that requires de-coupled hydro cooling */
 #endif
 #endif
 
-
-
-
-
-/*! table for the cosmological drift factors */
-extern double DriftTable[DRIFT_TABLE_LENGTH];
-
-/*! table for the cosmological kick factor for gravitational forces */
-extern double GravKickTable[DRIFT_TABLE_LENGTH];
-
+extern double DriftTable[DRIFT_TABLE_LENGTH]; /*! table for the cosmological drift factors */
+extern double GravKickTable[DRIFT_TABLE_LENGTH]; /*! table for the cosmological kick factor for gravitational forces */
 extern void *CommBuffer;	/*!< points to communication buffer, which is used at a few places */
 
 /*! This structure contains data which is the SAME for all tasks (mostly code parameters read from the
@@ -1676,10 +1637,8 @@ extern struct global_data_all_processes
   int MaxPartSph;		/*!< This gives the maxmimum number of SPH particles that can be stored on one processor. */
   int ICFormat;			/*!< selects different versions of IC file-format */
   int SnapFormat;		/*!< selects different versions of snapshot file-formats */
-  int DoDynamicUpdate;
   int NumFilesPerSnapshot;	/*!< number of files in multi-file snapshot dumps */
-  int NumFilesWrittenInParallel;	/*!< maximum number of files that may be written simultaneously when
-                                     writing/reading restart-files, or when writing snapshot files */
+  int NumFilesWrittenInParallel;	/*!< maximum number of files that may be written simultaneously when writing/reading restart-files, or when writing snapshot files */
   double BufferSize;		/*!< size of communication buffer in MB */
   long BunchSize;     	        /*!< number of particles fitting into the buffer in the parallel tree algorithm  */
 
@@ -1701,14 +1660,12 @@ extern struct global_data_all_processes
 #endif
 
   /* some SPH parameters */
-
   double DesNumNgb;		/*!< Desired number of SPH neighbours */
 #ifdef SUBFIND
   int DesLinkNgb;       /*! < Number of neighbors used for linking and density estimation in SUBFIND */
 #endif
 
   double MaxNumNgbDeviation;	/*!< Maximum allowed deviation neighbour number */
-
   double ArtBulkViscConst;	/*!< Sets the parameter \f$\alpha\f$ of the artificial viscosity */
   double InitGasTemp;		/*!< may be used to set the temperature in the IC's */
   double InitGasU;		/*!< the same, but converted to thermal energy per unit mass */
@@ -1799,7 +1756,6 @@ extern struct global_data_all_processes
   double TotalMeshSize[2];
 #endif
 
-
   integertime Ti_nextlineofsight;
 #ifdef OUTPUT_LINEOFSIGHT
   double TimeFirstLineOfSight;
@@ -1807,55 +1763,28 @@ extern struct global_data_all_processes
 
   int    CPU_TimeBinCountMeasurements[TIMEBINS];
   double CPU_TimeBinMeasurements[TIMEBINS][NUMBER_OF_MEASUREMENTS_TO_RECORD];
-
   int LevelToTimeBin[GRAVCOSTLEVELS];
 
   /* variables that keep track of cumulative CPU consumption */
-
   double TimeLimitCPU;
   double CPU_Sum[CPU_PARTS];    /*!< sums wallclock time/CPU consumption in whole run */
 
   /* tree code opening criterion */
-
   double ErrTolTheta;		/*!< BH tree opening angle */
   double ErrTolForceAcc;	/*!< parameter for relative opening criterion in tree walk */
 
-
   /* adjusts accuracy of time-integration */
-
-  double ErrTolIntAccuracy;	/*!< accuracy tolerance parameter \f$ \eta \f$ for timestep criterion. The
-				   timesteps is \f$ \Delta t = \sqrt{\frac{2 \eta eps}{a}} \f$ */
-
-  double MinSizeTimestep,	/*!< minimum allowed timestep. Normally, the simulation terminates if the
-				   timestep determined by the timestep criteria falls below this limit. */
+  double ErrTolIntAccuracy;	/*!< accuracy tolerance parameter \f$ \eta \f$ for timestep criterion. The timesteps is \f$ \Delta t = \sqrt{\frac{2 \eta eps}{a}} \f$ */
+  double MinSizeTimestep,	/*!< minimum allowed timestep. Normally, the simulation terminates if the timestep determined by the timestep criteria falls below this limit. */
     MaxSizeTimestep;		/*!< maximum allowed timestep */
-
-  double MaxRMSDisplacementFac;	/*!< this determines a global timestep criterion for cosmological simulations
-				   in comoving coordinates.  To this end, the code computes the rms velocity
-				   of all particles, and limits the timestep such that the rms displacement
-				   is a fraction of the mean particle separation (determined from the
-				   particle mass and the cosmological parameters). This parameter specifies
-				   this fraction. */
-
+  double MaxRMSDisplacementFac;	/*!< this determines a global timestep criterion for cosmological simulations in comoving coordinates.  To this end, the code computes the rms velocity
+				   of all particles, and limits the timestep such that the rms displacement is a fraction of the mean particle separation (determined from the
+				   particle mass and the cosmological parameters). This parameter specifies this fraction. */
   int MaxMemSize;
-
   double CourantFac;		/*!< SPH-Courant factor */
 
-
   /* frequency of tree reconstruction/domain decomposition */
-
-
   double TreeDomainUpdateFrequency;	/*!< controls frequency of domain decompositions  */
-
-
-  /* gravitational and hydrodynamical softening lengths (given in terms of an `equivalent' Plummer softening length)
-   *
-   * five groups of particles are supported 0=gas,1=halo,2=disk,3=bulge,4=stars
-   */
-    double MinGasHsmlFractional; /*!< minimim allowed gas kernel length relative to force softening (what you actually set) */
-    double MinHsml;			/*!< minimum allowed gas kernel length */
-    double MaxHsml;           /*!< minimum allowed gas kernel length */
-
 #ifdef TURB_DRIVING
     double TurbInjectedEnergy;
     double TurbDissipatedEnergy;
@@ -1865,6 +1794,12 @@ extern struct global_data_all_processes
     int FileNumberTurbSpectrum;
 #endif
 #endif
+
+  /* gravitational and hydrodynamical softening lengths (given in terms of an `equivalent' Plummer softening length)
+   * five groups of particles are supported 0=gas,1=halo,2=disk,3=bulge,4=stars */
+    double MinGasHsmlFractional; /*!< minimim allowed gas kernel length relative to force softening (what you actually set) */
+    double MinHsml;			/*!< minimum allowed gas kernel length */
+    double MaxHsml;           /*!< minimum allowed gas kernel length */
 
   double SofteningGas,		/*!< for type 0 */
     SofteningHalo,		/*!< for type 1 */
@@ -1883,12 +1818,8 @@ extern struct global_data_all_processes
   double SofteningTable[6];	/*!< current (comoving) gravitational softening lengths for each particle type */
   double ForceSoftening[6];	/*!< the same, but multiplied by a factor 2.8 - at that scale the force is Newtonian */
 
-
-  /*! If particle masses are all equal for one type, the corresponding entry in MassTable is set to this
-   *  value, * allowing the size of the snapshot files to be reduced
-   */
+  /*! If particle masses are all equal for one type, the corresponding entry in MassTable is set to this value, * allowing the size of the snapshot files to be reduced */
   double MassTable[6];
-
 
   /* some filenames */
   char InitCondFile[100],
@@ -1896,23 +1827,18 @@ extern struct global_data_all_processes
     SnapshotFileBase[100],
     RestartFile[100], ResubmitCommand[100], OutputListFilename[100];
     /* EnergyFile[100], CpuFile[100], InfoFile[100], TimingsFile[100], TimebinFile[100], */
-
 #ifdef COOL_GRACKLE
     char GrackleDataFile[100];
 #endif
-
   /*! table with desired output times */
   double OutputListTimes[MAXLEN_OUTPUTLIST];
   char OutputListFlag[MAXLEN_OUTPUTLIST];
   int OutputListLength;		/*!< number of times stored in table of desired output times */
 
-
-
 #ifdef RADTRANSFER
   integertime Radiation_Ti_begstep;
   integertime Radiation_Ti_endstep;
 #endif
-
 #ifdef RT_EVOLVE_INTENSITIES
     double Rad_Intensity_Direction[N_RT_INTENSITY_BINS][3];
 #endif
@@ -1923,15 +1849,19 @@ extern struct global_data_all_processes
     double star_Teff;
 #endif
 
-
 #ifdef RT_LEBRON
     double PhotonMomentum_Coupled_Fraction;
 #endif
 
-
 #ifdef GRAIN_FLUID
 #define GRAIN_PTYPES 8 /* default to allowed particle type for grains == 3, only, but can make this a more extended list as desired */
 #ifdef GRAIN_RDI_TESTPROBLEM
+#if !defined(GRAIN_RDI_TESTPROBLEM_SET_ABSFRAC)
+#define GRAIN_RDI_TESTPROBLEM_SET_ABSFRAC (0.5)
+#endif
+#if !defined(GRAIN_RDI_TESTPROBLEM_Q_AT_GRAIN_MAX)
+#define GRAIN_RDI_TESTPROBLEM_Q_AT_GRAIN_MAX (1.0)
+#endif
 #if(NUMDIMS==3)
 #define GRAV_DIRECTION_RDI 2
 #else
@@ -1945,7 +1875,7 @@ extern struct global_data_all_processes
 #ifdef BOX_SHEARING
     double Pressure_Gradient_Accel;
 #endif
-#endif
+#endif // GRAIN_RDI_TESTPROBLEM
     double Grain_Internal_Density;
     double Grain_Size_Min;
     double Grain_Size_Max;
@@ -1955,8 +1885,6 @@ extern struct global_data_all_processes
 #ifdef PIC_MHD
     double PIC_Charge_to_Mass_Ratio;
 #endif
-
-
 
 
 #ifdef GDE_DISTORTIONTENSOR
@@ -2038,7 +1966,6 @@ extern struct global_data_all_processes
 #endif
 #endif
 
-
 #ifdef GR_TABULATED_COSMOLOGY
   double DarkEnergyConstantW;	/*!< fixed w for equation of state */
 #if defined(GR_TABULATED_COSMOLOGY_W) || defined(GR_TABULATED_COSMOLOGY_G) || defined(GR_TABULATED_COSMOLOGY_H)
@@ -2083,7 +2010,6 @@ extern struct global_data_all_processes
 #if defined(CONDUCTION_SPITZER) || defined(VISCOSITY_BRAGINSKII)
     double ElectronFreePathFactor;	/*!< Factor to get electron mean free path */
 #endif
-
 
 #ifdef MAGNETIC
 #ifdef MHD_B_SET_IN_PARAMS
@@ -2131,7 +2057,6 @@ extern struct global_data_all_processes
 #if defined(EOS_TILLOTSON) || defined(EOS_ELASTIC)
   double Tillotson_EOS_params[7][12]; /*! < holds parameters for Tillotson EOS for solids */
 #endif
-
 
 #ifdef EOS_TABULATED
     char EosTable[100];
@@ -2384,7 +2309,7 @@ extern ALIGN(32) struct particle_data
     MyDouble COM_dt_tidal; //timescale from tidal tensor evaluated at the center of mass without contribution from the companion
     MyDouble COM_GravAccel[3]; //gravitational acceleration evaluated at the center of mass without contribution from the companion
 #endif
-#ifdef SINGLE_STAR_FB
+#ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
     MyFloat MaxFeedbackVel; // maximum signal velocity of any feedback mechanism emanating from the star
     MyFloat min_bh_fb_time;  // minimum time for feedback to arrive from a star
 #endif    
@@ -2615,6 +2540,10 @@ extern struct sph_particle_data
 #ifdef CHIMES_STELLAR_FLUXES
     double Chimes_G0[CHIMES_LOCAL_UV_NBINS];            /*!< 6-13.6 eV flux, in Habing units */
     double Chimes_fluxPhotIon[CHIMES_LOCAL_UV_NBINS];   /*!< ionising flux (>13.6 eV), in cm^-2 s^-1 */
+#ifdef CHIMES_HII_REGIONS
+    double Chimes_G0_HII[CHIMES_LOCAL_UV_NBINS];
+    double Chimes_fluxPhotIon_HII[CHIMES_LOCAL_UV_NBINS];
+#endif
 #endif
 #ifdef CHIMES_TURB_DIFF_IONS
     double ChimesNIons[CHIMES_TOTSIZE];
@@ -2982,7 +2911,7 @@ extern struct gravdata_out
     int COM_calc_flag; //flag that tells whether this was only a rerun to get the acceleration ad the tidal tenor at the center of mass of a binary
     int SuperTimestepFlag; // 2 if allowed to super-timestep, 1 if a candidate for super-timestepping, 0 otherwise
 #endif
-#ifdef SINGLE_STAR_FB
+#ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
     MyFloat min_bh_fb_time; // minimum time for feedback to arrive from a star
 #endif    
 #endif
@@ -3014,8 +2943,7 @@ extern struct info_block
 
 
 
-/*! Header for the standard file format.
- */
+/*! Header for the standard file format */
 extern struct io_header
 {
   int npart[6];			    /*!< number of particles of each type in this file */
@@ -3033,7 +2961,6 @@ extern struct io_header
   double HubbleParam;		/*!< Hubble parameter in units of 100 km/sec/Mpc */
   int flag_stellarage;		/*!< flags whether the file contains formation times of star particles */
   int flag_metals;		    /*!< flags whether the file contains metallicity values for gas and star particles */
-  int flag_agetracers;      /*!< flags whether the file contains age-tracer values for gas and star particles */
 
   unsigned int npartTotalHighWord[6];   /*!< High word of the total number of particles of each type (needed to combine with npartTotal to allow >2^31 particles of a given type) */
   int flag_doubleprecision; /*!< flags that snapshot contains double-precision instead of single precision */
@@ -3285,7 +3212,7 @@ extern ALIGN(32) struct NODE
 #if defined(SINGLE_STAR_TIMESTEPPING)
   MyFloat bh_vel[3];    /*!< holds the mass-weighted avg. velocity of black holes in the node */
   int N_BH;             /*!< holds the number of BH particles in the node. Used for refinement/search criteria */
-#ifdef SINGLE_STAR_FB
+#ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
   MyFloat MaxFeedbackVel;
 #endif
 #endif    

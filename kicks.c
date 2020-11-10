@@ -299,14 +299,13 @@ void do_the_kick(int i, integertime tstart, integertime tend, integertime tcurre
                 }}
 #endif
 
-#ifdef RADTRANSFER /* block here to deal with tricky cases where radiation energy density is -much- larger than thermal */
-            int kfreq; double erad_tot=0,emin=0,enew=0,demin=0,dErad=0; for(kfreq=0;kfreq<N_RT_FREQ_BINS;kfreq++) {erad_tot+=SphP[i].Rad_E_gamma[kfreq];}
-            if(erad_tot > 0)
+#ifdef RADTRANSFER /* block here to deal with tricky cases where radiation energy density is -much- larger than thermal, re-distribute the energy that would have taken us negative in gas back into radiation */
+            int kfreq; double erad_tot=0,emin=0,enew=0,demin=0,dErad=0,rsol_fac=C_LIGHT_CODE_REDUCED/C_LIGHT_CODE;  for(kfreq=0;kfreq<N_RT_FREQ_BINS;kfreq++) {erad_tot+=SphP[i].Rad_E_gamma[kfreq];}
+            if(erad_tot > 0) // ?? do some checks if this helps or hurts (identical setup in predict)
             {
-                demin=0.025*SphP[i].InternalEnergy; emin=0.025*(erad_tot+SphP[i].InternalEnergy*P[i].Mass); enew=DMAX(erad_tot+dEnt*P[i].Mass,emin);
-                dEnt=(enew-erad_tot)/P[i].Mass; if(dEnt<demin) {dErad=dEnt-demin; dEnt=demin;}
-                if(dErad<-0.975*erad_tot) {dErad=-0.975*erad_tot;}
-                SphP[i].InternalEnergy = dEnt; for(kfreq=0;kfreq<N_RT_FREQ_BINS;kfreq++) {SphP[i].Rad_E_gamma[kfreq] *= 1 + dErad/erad_tot;}
+                demin=0.025*SphP[i].InternalEnergy; emin=0.025*(erad_tot/rsol_fac + SphP[i].InternalEnergy*P[i].Mass); enew=DMAX(erad_tot/rsol_fac + dEnt*P[i].Mass, emin);
+                dEnt=(enew - erad_tot/rsol_fac) / P[i].Mass; if(dEnt < demin) {dErad=rsol_fac*(dEnt-demin); dEnt=demin;}
+                if(dErad<-0.975*erad_tot) {dErad=-0.975*erad_tot;} SphP[i].InternalEnergy = dEnt; for(kfreq=0;kfreq<N_RT_FREQ_BINS;kfreq++) {SphP[i].Rad_E_gamma[kfreq] *= 1 + dErad/erad_tot;}
             } else {
                 if(dEnt < 0.5*SphP[i].InternalEnergy) {SphP[i].InternalEnergy *= 0.5;} else {SphP[i].InternalEnergy = dEnt;}
             }
@@ -500,7 +499,7 @@ void do_sph_kick_for_extra_physics(int i, integertime tstart, integertime tend, 
 #ifdef RADTRANSFER
     rt_update_driftkick(i,dt_entr,0);
 #ifdef GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION
-    if(P[i].Pos[2] > DMIN(14.*boxSize_X + (All.Vertical_Grain_Accel*All.Dust_to_Gas_Mass_Ratio - All.Vertical_Gravity_Strength)*All.Time*All.Time/2., 18.)) {for(j=0;j<N_RT_FREQ_BINS;j++) {SphP[i].Rad_E_gamma[j]*=0.5; SphP[i].Rad_E_gamma_Pred[j]*=0.5;
+    if(P[i].Pos[2] > DMIN(18., DMAX(1.1*All.Time*C_LIGHT_CODE_REDUCED, DMIN(14.*boxSize_X + (All.Vertical_Grain_Accel*All.Dust_to_Gas_Mass_Ratio - All.Vertical_Gravity_Strength)*All.Time*All.Time/2., 18.)))) {for(j=0;j<N_RT_FREQ_BINS;j++) {SphP[i].Rad_E_gamma[j]*=0.5; SphP[i].Rad_E_gamma_Pred[j]*=0.5;
 #ifdef RT_EVOLVE_FLUX
         if(SphP[i].Rad_Flux[j][2] < 0) {SphP[i].Rad_Flux[j][2]=-SphP[i].Rad_Flux[j][2]; SphP[i].Rad_Flux_Pred[j][2]=SphP[i].Rad_Flux[j][2];}
 #endif

@@ -390,7 +390,7 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 #endif // #ifdef BH_WIND_KICK
                         #pragma omp atomic
                         N_gas_swallowed++;
-#ifdef BH_OUTPUT_GASSWALLOW
+#ifdef OUTPUT_SINK_ACCRETION_HIST
                         MyDouble tempB[3]={0,0,0};
 #ifdef MAGNETIC
                         for(k=0;k<3;k++) {tempB[k]=Get_Gas_BField(j,k);} //use particle magnetic field

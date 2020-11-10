@@ -228,10 +228,10 @@ FILE *FdSneIIHeating;	/*!< file handle for SNIIheating.txt log-file */
 
 #ifdef BLACK_HOLES
 FILE *FdBlackHoles;		/*!< file handle for blackholes.txt log-file. */
-#ifdef BH_OUTPUT_GASSWALLOW
+#ifdef OUTPUT_SINK_ACCRETION_HIST
 FILE *FdBhSwallowDetails;
 #endif
-#ifdef BH_OUTPUT_FORMATION_PROPERTIES
+#ifdef OUTPUT_SINK_FORMATION_PROPS
 FILE *FdBhFormationDetails;
 #endif
 #if !defined(IO_REDUCED_MODE) || defined(BH_OUTPUT_MOREINFO)

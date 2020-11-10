@@ -1,0 +1,39 @@
+/****************************************************************************
+ * This file is part of CHIMES.
+ * Copyright (c) 2020 Alexander Richings (alexander.j.richings@durham.ac.uk)
+ *
+ * CHIMES is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ ***************************************************************************/
+
+#ifdef CHIMES_ENABLE_GNU_SOURCE
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 
+#endif 
+#endif
+
+#ifdef H5_USE_16_API
+#undef H5_USE_16_API
+#endif 
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <hdf5.h>
+#include <string.h> 
+#include <sundials/sundials_types.h>
+#include "chimes_proto.h"
+#include "chimes_vars.h"
+
+

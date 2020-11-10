@@ -566,7 +566,7 @@ void force_update_node_recursive(int no, int sib, int father)
         MyFloat bh_mass=0, bh_pos_times_mass[3]={0,0,0};   /* position of each black hole in the node times its mass; divide by total mass at the end to get COM */
 #if defined(SINGLE_STAR_TIMESTEPPING) || defined(SINGLE_STAR_FIND_BINARIES)
         MyFloat bh_mom[3] = {0,0,0}; int N_BH = 0;
-#ifdef SINGLE_STAR_FB
+#ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
         MyFloat max_feedback_vel=0;
 #endif        
 #endif
@@ -656,7 +656,7 @@ void force_update_node_recursive(int no, int sib, int father)
                         bh_mom[1] += Nodes[p].bh_vel[1] * Nodes[p].bh_mass;
                         bh_mom[2] += Nodes[p].bh_vel[2] * Nodes[p].bh_mass;
                         N_BH += Nodes[p].N_BH;
-#ifdef SINGLE_STAR_FB
+#ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
                         if(Nodes[p].bh_mass > 0) {max_feedback_vel = DMAX(Nodes[p].MaxFeedbackVel, max_feedback_vel);}
 #endif                        
 #endif
@@ -754,7 +754,7 @@ void force_update_node_recursive(int no, int sib, int father)
                         bh_mom[0] += pa->Vel[0] * pa->Mass;
                         bh_mom[1] += pa->Vel[1] * pa->Mass;
                         bh_mom[2] += pa->Vel[2] * pa->Mass;
-#ifdef SINGLE_STAR_FB
+#ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
                         max_feedback_vel = DMAX(pa->MaxFeedbackVel, max_feedback_vel);
 #endif                        
 #endif
@@ -910,7 +910,7 @@ void force_update_node_recursive(int no, int sib, int father)
                 Nodes[no].bh_vel[1] = bh_mom[1] / bh_mass;
                 Nodes[no].bh_vel[2] = bh_mom[2] / bh_mass;
                 Nodes[no].N_BH = N_BH;
-#ifdef SINGLE_STAR_FB
+#ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
                 Nodes[no].MaxFeedbackVel = max_feedback_vel;
 #endif                        
 #endif
@@ -1012,7 +1012,7 @@ void force_exchange_pseudodata(void)
 #if defined(SINGLE_STAR_TIMESTEPPING) || defined(SINGLE_STAR_FIND_BINARIES)
         MyFloat bh_vel[3];
         int N_BH;
-#ifdef  SINGLE_STAR_FB
+#ifdef  SINGLE_STAR_FB_TIMESTEPLIMIT
         MyFloat MaxFeedbackVel;
 #endif        
 #endif
@@ -1090,7 +1090,7 @@ void force_exchange_pseudodata(void)
             DomainMoment[i].bh_vel[1] = Nodes[no].bh_vel[1];
             DomainMoment[i].bh_vel[2] = Nodes[no].bh_vel[2];
             DomainMoment[i].N_BH = Nodes[no].N_BH;
-#ifdef SINGLE_STAR_FB
+#ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
             DomainMoment[i].MaxFeedbackVel = Nodes[no].MaxFeedbackVel;
 #endif            
 #endif
@@ -1182,7 +1182,7 @@ void force_exchange_pseudodata(void)
                     Nodes[no].bh_vel[1] = DomainMoment[i].bh_vel[1];
                     Nodes[no].bh_vel[2] = DomainMoment[i].bh_vel[2];
                     Nodes[no].N_BH = DomainMoment[i].N_BH;
-#ifdef SINGLE_STAR_FB
+#ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
                     Nodes[no].MaxFeedbackVel = DomainMoment[i].MaxFeedbackVel;
 #endif                        
 #endif
@@ -1243,7 +1243,7 @@ void force_treeupdate_pseudos(int no)
 #if defined(SINGLE_STAR_TIMESTEPPING) || defined(SINGLE_STAR_FIND_BINARIES)
     MyFloat bh_mom[3] = {0,0,0};
     int N_BH = 0;
-#ifdef SINGLE_STAR_FB
+#ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
     MyFloat max_feedback_vel=0;
 #endif    
 #endif
@@ -1308,7 +1308,7 @@ void force_treeupdate_pseudos(int no)
             bh_mom[0] += Nodes[p].bh_vel[0] * Nodes[p].bh_mass;
             bh_mom[1] += Nodes[p].bh_vel[1] * Nodes[p].bh_mass;
             bh_mom[2] += Nodes[p].bh_vel[2] * Nodes[p].bh_mass;
-#ifdef SINGLE_STAR_FB
+#ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
             if(Nodes[p].bh_mass > 0) {max_feedback_vel = DMAX(max_feedback_vel, Nodes[p].MaxFeedbackVel);}
 #endif
             N_BH += Nodes[p].N_BH;
@@ -1449,7 +1449,7 @@ void force_treeupdate_pseudos(int no)
             Nodes[no].bh_vel[0] = bh_mom[0] / bh_mass;
             Nodes[no].bh_vel[1] = bh_mom[1] / bh_mass;
             Nodes[no].bh_vel[2] = bh_mom[2] / bh_mass;
-#ifdef SINGLE_STAR_FB
+#ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
             Nodes[no].MaxFeedbackVel = max_feedback_vel;
 #endif            
             Nodes[no].N_BH = N_BH;
@@ -1654,10 +1654,10 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #ifdef SINGLE_STAR_TIMESTEPPING
     double min_bh_approach_time = MAX_REAL_NUMBER;
     double min_bh_freefall_time = MAX_REAL_NUMBER;
-#endif
-#ifdef SINGLE_STAR_FB
+#ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
     double min_bh_fb_time = MAX_REAL_NUMBER;
-#endif    
+#endif
+#endif
 #endif
 
 
@@ -1816,7 +1816,7 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
     {
         double h_eff_phys = soft * pow(NORM_COEFF/All.DesNumNgb,1./NUMDIMS) * All.cf_atime; // convert from softening kernel extent to effective size, assuming 3D here, and convert to physical code units
         double sigma_particle =  pmass / (h_eff_phys*h_eff_phys); // quick estimate of effective surface density of the target, in physical code units
-        double fac_stellum_0 = -All.PhotonMomentum_Coupled_Fraction / (4.*M_PI * C_LIGHT_CODE * sigma_particle * All.G); // this will be multiplied by L/r^2 below, giving acceleration, then extra G because code thinks this is gravity, so put extra G here. everything is in -physical- code units here //
+        double fac_stellum_0 = -All.PhotonMomentum_Coupled_Fraction / (4.*M_PI * C_LIGHT_CODE_REDUCED * sigma_particle * All.G); // this will be multiplied by L/r^2 below, giving acceleration, then extra G because code thinks this is gravity, so put extra G here. everything is in -physical- code units here //
         int kf; for(kf=0;kf<N_RT_FREQ_BINS;kf++) {fac_stellum[kf] = fac_stellum_0*(1 - exp(-rt_kappa(-1,kf)*sigma_particle));} // rt_kappa is in physical code units, so sigma_eff_abs should be also -- approximate surface-density through particle (for checking if we enter optically-thick limit)
     }
 #endif
@@ -1894,7 +1894,7 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #endif                    
                     r2soft *= KERNEL_FAC_FROM_FORCESOFT_TO_PLUMMER;
                     r2soft = r2 + r2soft*r2soft;
-#ifdef SINGLE_STAR_FB
+#ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
                     if(ptype == 0) {
                         double tSqr_fb = r2soft /(P[no].MaxFeedbackVel * P[no].MaxFeedbackVel + MIN_REAL_NUMBER);
                         if(tSqr_fb < min_bh_fb_time) {min_bh_fb_time = tSqr_fb;}
@@ -2291,7 +2291,7 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                     r2soft = DMAX(All.ForceSoftening[5], soft) * KERNEL_FAC_FROM_FORCESOFT_TO_PLUMMER;
                     r2soft = r2 + r2soft*r2soft;
                     double tSqr = r2soft/(vSqr + MIN_REAL_NUMBER), tff4 = r2soft*r2soft*r2soft/(M_total*M_total);
-#ifdef SINGLE_STAR_FB
+#ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
                     if(ptype == 0) {
                         double tSqr_fb = r2soft /(nop->MaxFeedbackVel * nop->MaxFeedbackVel + MIN_REAL_NUMBER);
                         if(tSqr_fb < min_bh_fb_time) {min_bh_fb_time = tSqr_fb;}
@@ -2711,7 +2711,7 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #ifdef SINGLE_STAR_TIMESTEPPING
         P[target].min_bh_approach_time = sqrt(min_bh_approach_time);
         P[target].min_bh_freefall_time = sqrt(sqrt(min_bh_freefall_time)/All.G);
-#ifdef SINGLE_STAR_FB
+#ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
         P[target].min_bh_fb_time = sqrt(min_bh_fb_time);
 #endif  
 #endif
@@ -2768,7 +2768,7 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #ifdef SINGLE_STAR_TIMESTEPPING
         GravDataResult[target].min_bh_approach_time = sqrt(min_bh_approach_time);
         GravDataResult[target].min_bh_freefall_time = sqrt(sqrt(min_bh_freefall_time)/All.G);
-#ifdef SINGLE_STAR_FB
+#ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
         GravDataResult[target].min_bh_fb_time = sqrt(min_bh_fb_time);
 #endif        
 #endif

@@ -477,7 +477,7 @@ int interpolate_fluxes_opacities_gasgrains_evaluate(int target, int mode, int *e
                         }
                     } else { /* sitting on a -grain- element, want to interpolate flux to it and calculate radiation pressure force */
                         wt = SphP[j].Density*All.cf_a3inv * wk_i; /* weight of element to 'i, with appropriate coefficient from above */
-                        double radacc[3]={0},vel_i[3]={0},dtEgamma_work_done=0; for(k=0;k<3;k++) {vel_i[k]=local.Vel[k]/All.cf_atime;} /* velocity of interest here is the grain velocity (radiation in lab frame) */
+                        double radacc[3]={0},vel_i[3]={0},dtEgamma_work_done=0; for(k=0;k<3;k++) {vel_i[k]=(C_LIGHT_CODE_REDUCED/C_LIGHT_CODE)*local.Vel[k]/All.cf_atime;} /* velocity of interest here is the grain velocity (radiation in lab frame) */
                         for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++)
                         {
                             double f_kappa_abs=0.5,vdot_h[3]={0},flux_i[3]={0},flux_mag=0,erad_i=0,flux_corr=1;
@@ -488,7 +488,7 @@ int interpolate_fluxes_opacities_gasgrains_evaluate(int target, int mode, int *e
                             for(k=0;k<3;k++) {flux_i[k]=SphP[j].Rad_Flux_Pred[k_freq][k]; flux_mag+=flux_i[k]*flux_i[k];}
                             if(flux_mag>0 && isfinite(flux_mag)) {flux_mag=sqrt(flux_mag);} else {flux_mag=MIN_REAL_NUMBER; flux_i[0]=flux_i[1]=0; flux_i[2]=flux_mag;}
 #elif (defined(RT_OTVET) || defined(RT_FLUXLIMITEDDIFFUSION))
-                            erad_i = SphP[j].Rad_E_gamma_Pred[k_freq]; //for(k=0;k<3;k++) {flux_i[k] = SphP[j].Rad_Flux_Limiter[k_freq] * (-SphP[j].Gradients.Rad_E_gamma_ET[k_freq][k]*All.cf_a3inv/All.cf_atime) * C_LIGHT_CODE_REDUCED / (SphP[j].Density*All.cf_a3inv * SphP[j].Rad_Kappa[k_freq]); flux_mag+=flux_i[k]*flux_i[k];} // can't use this because kappa isn't calculated yet
+                            erad_i = SphP[j].Rad_E_gamma_Pred[k_freq];
                             for(k=0;k<3;k++) {flux_i[k] = -SphP[j].Gradients.Rad_E_gamma_ET[k_freq][k]; flux_mag+=flux_i[k]*flux_i[k];}
                             if(flux_mag>0) {for(k=0;k<3;k++) {flux_i[k]/=sqrt(flux_mag);}} else {flux_i[0]=0;flux_i[1]=0;flux_i[2]=1;}
                             flux_mag = erad_i*C_LIGHT_CODE_REDUCED; for(k=0;k<3;k++) {flux_i[k]*=flux_mag;}

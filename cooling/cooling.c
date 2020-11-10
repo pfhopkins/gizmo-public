@@ -127,21 +127,23 @@ void do_the_cooling_for_particle(int i)
 
 
 
+        
 #ifdef RT_INFRARED /* assume (for now) that all radiated/absorbed energy comes from the IR bin [not really correct, this should just be the dust term] */
         double nHcgs = HYDROGEN_MASSFRAC * UNIT_DENSITY_IN_CGS * SphP[i].Density / PROTONMASS;	/* hydrogen number dens in cgs units */
-        double ratefact = nHcgs * nHcgs / (SphP[i].Density * UNIT_DENSITY_IN_CGS);
-        double de_u = -SphP[i].LambdaDust * ratefact * dtime*UNIT_TIME_IN_CGS / (UNIT_SPECEGY_IN_CGS) * P[i].Mass; /* energy gained by gas needs to be subtracted from radiation */
+        double ratefact = (C_LIGHT_CODE_REDUCED/C_LIGHT_CODE) * nHcgs * nHcgs / (SphP[i].Density * UNIT_DENSITY_IN_CGS); /* need to account for RSOL factors in emission/absorption rates */
+        double de_u = -SphP[i].LambdaDust * ratefact * (dtime*UNIT_TIME_IN_CGS) / (UNIT_SPECEGY_IN_CGS) * P[i].Mass; /* energy gained by gas needs to be subtracted from radiation */
         if(de_u<=-0.99*SphP[i].Rad_E_gamma[RT_FREQ_BIN_INFRARED]) {de_u=-0.99*SphP[i].Rad_E_gamma[RT_FREQ_BIN_INFRARED]; unew=DMAX(0.01*SphP[i].InternalEnergy , SphP[i].InternalEnergy-de_u/P[i].Mass);}
         SphP[i].Rad_E_gamma[RT_FREQ_BIN_INFRARED] += de_u; /* energy gained by gas is lost here */
         SphP[i].Rad_E_gamma_Pred[RT_FREQ_BIN_INFRARED] = SphP[i].Rad_E_gamma[RT_FREQ_BIN_INFRARED]; /* updated drifted */
 #if defined(RT_EVOLVE_INTENSITIES)
         int k_tmp; for(k_tmp=0;k_tmp<N_RT_INTENSITY_BINS;k_tmp++) {SphP[i].Rad_Intensity[RT_FREQ_BIN_INFRARED][k_tmp] += de_u/RT_INTENSITY_BINS_DOMEGA; SphP[i].Rad_Intensity_Pred[RT_FREQ_BIN_INFRARED][k_tmp] += de_u/RT_INTENSITY_BINS_DOMEGA;}
 #endif
-        double momfac = CRSOL_OVER_CTRUE_SQUARED_FOR_BEAMING * de_u / All.cf_atime; int kv; // add leading-order relativistic corrections here, accounting for gas motion in the addition/subtraction to the flux
+        int kv; // add leading-order relativistic corrections here, accounting for gas motion in the addition/subtraction to the flux:
 #if defined(RT_EVOLVE_FLUX)
-        for(kv=0;kv<3;kv++) {SphP[i].Rad_Flux[RT_FREQ_BIN_INFRARED][kv] += momfac*SphP[i].VelPred[kv]; SphP[i].Rad_Flux_Pred[RT_FREQ_BIN_INFRARED][kv] += momfac*SphP[i].VelPred[kv];}
+        for(kv=0;kv<3;kv++) {double fluxfac = (C_LIGHT_CODE_REDUCED/C_LIGHT_CODE)*SphP[i].VelPred[kv]/All.cf_atime * de_u;
+            SphP[i].Rad_Flux[RT_FREQ_BIN_INFRARED][kv] += fluxfac; SphP[i].Rad_Flux_Pred[RT_FREQ_BIN_INFRARED][kv] += fluxfac;}
 #endif
-        momfac = 1. - CRSOL_OVER_CTRUE_SQUARED_FOR_BEAMING * de_u / (P[i].Mass * C_LIGHT_CODE_REDUCED*C_LIGHT_CODE_REDUCED); // back-reaction on gas from emission
+        double momfac = 1. - de_u / (P[i].Mass * C_LIGHT_CODE*C_LIGHT_CODE_REDUCED); // back-reaction on gas from emission [note peculiar units here, its b/c of how we fold in the existing value of v and tilde[u] in our derivation - one rsol factor in denominator needed]
         for(kv=0;kv<3;kv++) {P[i].Vel[kv] *= momfac; SphP[i].VelPred[kv] *= momfac;}
 #endif
 
@@ -492,13 +494,9 @@ double find_abundances_and_rates(double logT, double rho, int target, double shi
     fac_noneq_cgs = (dt * UNIT_TIME_IN_CGS) * necgs; // factor needed below to asses whether timestep is larger/smaller than recombination time
 
 #if defined(RT_CHEM_PHOTOION)
-    double c_light_ne=0, Sigma_particle=0, abs_per_kappa_dt=0;
+    double c_light_ne=0;
     if(target >= 0)
     {
-        double L_particle = Get_Particle_Size(target)*All.cf_atime; // particle effective size/slab thickness
-        double cx_to_kappa = HYDROGEN_MASSFRAC / PROTONMASS * UNIT_MASS_IN_CGS; // pre-factor for converting cross sections into opacities
-        Sigma_particle = cx_to_kappa * P[target].Mass / (M_PI*L_particle*L_particle); // effective surface density through particle
-        abs_per_kappa_dt = cx_to_kappa * C_LIGHT_CODE_REDUCED * (SphP[target].Density*All.cf_a3inv) * dt; // fractional absorption over timestep
         nH0 = SphP[target].HI; // need to initialize a value for the iteration below
 #ifdef RT_CHEM_PHOTOION_HE
         nHe0 = SphP[target].HeI; nHep = SphP[target].HeII; // need to intialize a value for the iteration below
@@ -564,7 +562,7 @@ double find_abundances_and_rates(double logT, double rho, int target, double shi
                     if(rt_ion_G_HI[k] > 0)
                     {
                         cross_section_ion = nH0 * rt_ion_sigma_HI[k];
-                        dummy = rt_ion_sigma_HI[k] * c_ne_time_n_photons_vol;// egy per photon x cross section x photon flux (w attenuation factors already included in flux/energy update:) * slab_averaging_function(cross_section_ion * Sigma_particle); // * slab_averaging_function(cross_section_ion * abs_per_kappa_dt);
+                        dummy = rt_ion_sigma_HI[k] * c_ne_time_n_photons_vol;// egy per photon x cross section x photon flux (w attenuation factors already included in flux/energy update:) * slab_averaging_function(cross_section_ion * Sigma_particle); // * slab_averaging_function(cross_section_ion * abs_per_kappa_dt); // commented-out terms not appropriate here based on how we treat RSOL terms
                         if(dummy > thold*gJH0ne_0) {dummy = thold*gJH0ne_0;}
                         gJH0ne += dummy;
                     }
@@ -572,14 +570,14 @@ double find_abundances_and_rates(double logT, double rho, int target, double shi
                     if(rt_ion_G_HeI[k] > 0)
                     {
                         cross_section_ion = nHe0 * rt_ion_sigma_HeI[k];
-                        dummy = rt_ion_sigma_HeI[k] * c_ne_time_n_photons_vol;// * slab_averaging_function(cross_section_ion * Sigma_particle); // * slab_averaging_function(cross_section_ion * abs_per_kappa_dt);
+                        dummy = rt_ion_sigma_HeI[k] * c_ne_time_n_photons_vol;// * slab_averaging_function(cross_section_ion * Sigma_particle); // * slab_averaging_function(cross_section_ion * abs_per_kappa_dt); // commented-out terms not appropriate here based on how we treat RSOL terms
                         if(dummy > thold*gJHe0ne_0) {dummy = thold*gJHe0ne_0;}
                         gJHe0ne += dummy;
                     }
                     if(rt_ion_G_HeII[k] > 0)
                     {
                         cross_section_ion = nHep * rt_ion_sigma_HeII[k];
-                        dummy = rt_ion_sigma_HeII[k] * c_ne_time_n_photons_vol;// * slab_averaging_function(cross_section_ion * Sigma_particle); // * slab_averaging_function(cross_section_ion * abs_per_kappa_dt);
+                        dummy = rt_ion_sigma_HeII[k] * c_ne_time_n_photons_vol;// * slab_averaging_function(cross_section_ion * Sigma_particle); // * slab_averaging_function(cross_section_ion * abs_per_kappa_dt); // commented-out terms not appropriate here based on how we treat RSOL terms
                         if(dummy > thold*gJHepne_0) {dummy = thold*gJHepne_0;}
                         gJHepne += dummy;
                     }
@@ -740,15 +738,7 @@ double CoolingRate(double logT, double rho, double n_elec_guess, int target)
 
 
 #if defined(RT_CHEM_PHOTOION) || defined(RT_PHOTOELECTRIC)
-    double Sigma_particle = 0, abs_per_kappa_dt = 0, cx_to_kappa = 0;
-    if(target >= 0)
-    {
-        double L_particle = Get_Particle_Size(target)*All.cf_atime; // particle effective size/slab thickness
-        double dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(target); // dtime [code units]
-        Sigma_particle = P[target].Mass / (M_PI*L_particle*L_particle); // effective surface density through particle
-        abs_per_kappa_dt = C_LIGHT_CODE_REDUCED * (SphP[target].Density*All.cf_a3inv) * dt; // fractional absorption over timestep
-        cx_to_kappa = HYDROGEN_MASSFRAC / PROTONMASS * UNIT_MASS_IN_CGS; // pre-factor for converting cross sections into opacities
-    }
+    double cx_to_kappa = HYDROGEN_MASSFRAC / PROTONMASS * UNIT_MASS_IN_CGS; // pre-factor for converting cross sections into opacities
 #endif
     if(logT < Tmax)
     {
@@ -830,21 +820,21 @@ double CoolingRate(double logT, double rho, double n_elec_guess, int target)
                     {
                         cross_section_ion = nH0 * rt_ion_sigma_HI[k];
                         kappa_ion = cx_to_kappa * cross_section_ion;
-                        dummy = rt_ion_G_HI[k] * cross_section_ion * c_nH_time_n_photons_vol;// (egy per photon x cross section x photon flux) :: attenuation factors [already in flux/energy update]: * slab_averaging_function(kappa_ion * Sigma_particle); // egy per photon x cross section x photon flux (w attenuation factors) // * slab_averaging_function(kappa_ion * abs_per_kappa_dt);
+                        dummy = rt_ion_G_HI[k] * cross_section_ion * c_nH_time_n_photons_vol;// (egy per photon x cross section x photon flux) :: attenuation factors [already in flux/energy update]: * slab_averaging_function(kappa_ion * Sigma_particle); // egy per photon x cross section x photon flux (w attenuation factors) // * slab_averaging_function(kappa_ion * abs_per_kappa_dt);  // commented-out terms not appropriate here based on how we treat RSOL terms
                         Heat += dummy;
                     }
                     if(rt_ion_G_HeI[k] > 0)
                     {
                         cross_section_ion = nHe0 * rt_ion_sigma_HeI[k];
                         kappa_ion = cx_to_kappa * cross_section_ion;
-                        dummy = rt_ion_G_HeI[k] * cross_section_ion * c_nH_time_n_photons_vol;// * slab_averaging_function(kappa_ion * Sigma_particle); // * slab_averaging_function(kappa_ion * abs_per_kappa_dt);
+                        dummy = rt_ion_G_HeI[k] * cross_section_ion * c_nH_time_n_photons_vol;// * slab_averaging_function(kappa_ion * Sigma_particle); // * slab_averaging_function(kappa_ion * abs_per_kappa_dt);  // commented-out terms not appropriate here based on how we treat RSOL terms
                         Heat += dummy;
                     }
                     if(rt_ion_G_HeII[k] > 0)
                     {
                         cross_section_ion = nHep * rt_ion_sigma_HeII[k];
                         kappa_ion = cx_to_kappa * cross_section_ion;
-                        dummy = rt_ion_G_HeII[k] * cross_section_ion * c_nH_time_n_photons_vol;// * slab_averaging_function(kappa_ion*Sigma_particle); // * slab_averaging_function(kappa_ion * abs_per_kappa_dt);
+                        dummy = rt_ion_G_HeII[k] * cross_section_ion * c_nH_time_n_photons_vol;// * slab_averaging_function(kappa_ion*Sigma_particle); // * slab_averaging_function(kappa_ion * abs_per_kappa_dt); // commented-out terms not appropriate here based on how we treat RSOL terms
                         Heat += dummy;
                     }
                 }

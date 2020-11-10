@@ -423,10 +423,6 @@ void subfind(int num)
   if(ThisTask == 0)
     printf("subfind_exchange() (for return to original CPU)  took %g sec\n", timediff(t0, t1));
 
-
-
-  All.DoDynamicUpdate = 0;
-
   domain_Decomposition(1, 0, 0);
 
   force_treebuild(NumPart, NULL);
@@ -1203,7 +1199,6 @@ void subfind_save_local_catalogue(int num)
     {
       write_header_attributes_in_hdf5(hdf5_headergrp);
     }
-
   else
     {
 #endif

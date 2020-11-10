@@ -9,6 +9,7 @@
 #include <sys/types.h>
 #include "allvars.h"
 #include "proto.h"
+#include "kernel.h"
 
 /*! \file io.c
  *  \brief Output of a snapshot file to disk.
@@ -588,7 +589,12 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             for (n = 0; n < pc; pindex++)
                 if (P[pindex].Type == type)
                 {
+#ifdef CHIMES_HII_REGIONS
+                    if(SphP[pindex].DelayTimeHII > 0) {for (k = 0; k < CHIMES_LOCAL_UV_NBINS; k++) {fp[k] = (MyOutputFloat) (SphP[pindex].Chimes_G0[k] + SphP[pindex].Chimes_G0_HII[k]);}}
+                        else {for(k = 0; k < CHIMES_LOCAL_UV_NBINS; k++) {fp[k] = (MyOutputFloat) SphP[pindex].Chimes_G0[k];}}
+#else
                     for (k = 0; k < CHIMES_LOCAL_UV_NBINS; k++) {fp[k] = (MyOutputFloat) SphP[pindex].Chimes_G0[k]; }
+#endif
                     fp += CHIMES_LOCAL_UV_NBINS;
                     n++;
                 }
@@ -600,7 +606,12 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             for (n = 0; n < pc; pindex++)
                 if (P[pindex].Type == type)
                 {
+#ifdef CHIMES_HII_REGIONS
+                    if(SphP[pindex].DelayTimeHII > 0) {for (k = 0; k < CHIMES_LOCAL_UV_NBINS; k++) {fp[k] = (MyOutputFloat) (SphP[pindex].Chimes_fluxPhotIon[k] + SphP[pindex].Chimes_fluxPhotIon_HII[k]);}}
+                        else {for (k = 0; k < CHIMES_LOCAL_UV_NBINS; k++) {fp[k] = (MyOutputFloat) SphP[pindex].Chimes_fluxPhotIon[k];}}
+#else
                     for (k = 0; k < CHIMES_LOCAL_UV_NBINS; k++) {fp[k] = (MyOutputFloat) SphP[pindex].Chimes_fluxPhotIon[k];}
+#endif
                     fp += CHIMES_LOCAL_UV_NBINS;
                     n++;
                 }
@@ -1960,28 +1971,20 @@ int get_values_per_blockelement(enum iofields blocknr)
 long get_particles_in_block(enum iofields blocknr, int *typelist)
 {
     long i, nall, nsel, ntot_withmasses, ngas, nstars, nngb;
-
-    nall = 0;
-    nsel = 0;
-    ntot_withmasses = 0;
+    nall = 0; nsel = 0; ntot_withmasses = 0;
 
     for(i = 0; i < 6; i++)
     {
         typelist[i] = 0;
-
         if(header.npart[i] > 0)
         {
             nall += header.npart[i];
             typelist[i] = 1;
         }
-
-        if(All.MassTable[i] == 0)
-            ntot_withmasses += header.npart[i];
+        if(All.MassTable[i] == 0) {ntot_withmasses += header.npart[i];}
     }
-
     ngas = header.npart[0];
     nstars = header.npart[4];
-
 
     switch (blocknr)
     {
@@ -3434,7 +3437,6 @@ void write_file(char *fname, int writeTask, int lastTask)
     }
 
     /* fill file header */
-
     for(n = 0; n < 6; n++)
     {
         header.npart[n] = (int) ntot_type[n];
@@ -3457,7 +3459,6 @@ void write_file(char *fname, int writeTask, int lastTask)
     header.flag_cooling = 0;
     header.flag_stellarage = 0;
     header.flag_metals = 0;
-    header.flag_agetracers = 0;
 
 #ifdef COOLING
     header.flag_cooling = 1;
@@ -3472,10 +3473,6 @@ void write_file(char *fname, int writeTask, int lastTask)
 #ifdef METALS
     header.flag_metals = NUM_METAL_SPECIES;
 #endif
-#ifdef GALSF_FB_FIRE_AGE_TRACERS
-    header.flag_agetracers = GALSF_FB_FIRE_AGE_TRACERS;
-#endif
-
 
     header.num_files = All.NumFilesPerSnapshot;
     header.BoxSize = All.BoxSize;
@@ -3557,12 +3554,10 @@ void write_file(char *fname, int writeTask, int lastTask)
 
                 if(npart > 0)
                 {
-                    for(type = 0; type < 6; type++)
-                        InfoBlock[n_info].is_present[type] = typelist[type];
+                    for(type = 0; type < 6; type++) {InfoBlock[n_info].is_present[type] = typelist[type];}
                     InfoBlock[n_info].ndim = get_values_per_blockelement(blocknr);
                     get_Tab_IO_Label(blocknr, label);
-                    for(i = 0; i < 4; i++)
-                        InfoBlock[n_info].label[i] = label[i];
+                    for(i = 0; i < 4; i++) {InfoBlock[n_info].label[i] = label[i];}
                     switch (get_datatype_in_block(blocknr))
                     {
                         case 0:
@@ -3613,17 +3608,13 @@ void write_file(char *fname, int writeTask, int lastTask)
     for(bnr = 0; bnr < 1000; bnr++)
     {
         blocknr = (enum iofields) bnr;
-
-        if(blocknr == IO_LASTENTRY)
-            break;
+        if(blocknr == IO_LASTENTRY) {break;}
 
         if(blockpresent(blocknr))
         {
             bytes_per_blockelement = get_bytes_per_blockelement(blocknr, 0);
-
             size_t MyBufferSize = All.BufferSize;
             blockmaxlen = (size_t) ((MyBufferSize * 1024 * 1024) / bytes_per_blockelement);
-
             npart = get_particles_in_block(blocknr, &typelist[0]);
 
             if(npart > 0)
@@ -3631,7 +3622,6 @@ void write_file(char *fname, int writeTask, int lastTask)
                 if(ThisTask == 0)
                 {
                     char buf[1000];
-
                     get_dataset_name(blocknr, buf);
                     printf("writing block %d (%s)...\n", bnr, buf);
                 }
@@ -3695,7 +3685,6 @@ void write_file(char *fname, int writeTask, int lastTask)
                             if(dims[1] == 1) {rank = 1;} else {rank = 2;}
 
                             get_dataset_name(blocknr, buf);
-
                             hdf5_dataspace_in_file = H5Screate_simple(rank, dims, NULL);
 #ifndef IO_COMPRESS_HDF5
                             hdf5_dataset = H5Dcreate(hdf5_grp[type], buf, hdf5_datatype, hdf5_dataspace_in_file, H5P_DEFAULT);
@@ -3722,8 +3711,7 @@ void write_file(char *fname, int writeTask, int lastTask)
                                 n_for_this_task = n_type[type];
 
                                 for(p = writeTask; p <= lastTask; p++)
-                                    if(p != ThisTask)
-                                        {MPI_Send(&n_for_this_task, 1, MPI_INT, p, TAG_NFORTHISTASK, MPI_COMM_WORLD);}
+                                    {if(p != ThisTask) {MPI_Send(&n_for_this_task, 1, MPI_INT, p, TAG_NFORTHISTASK, MPI_COMM_WORLD);}}
                             }
                             else
                                 MPI_Recv(&n_for_this_task, 1, MPI_INT, task, TAG_NFORTHISTASK, MPI_COMM_WORLD, &status);
@@ -3731,18 +3719,14 @@ void write_file(char *fname, int writeTask, int lastTask)
                             while(n_for_this_task > 0)
                             {
                                 pc = n_for_this_task;
-
                                 if(pc > (int)blockmaxlen) {pc = blockmaxlen;}
-
                                 if(ThisTask == task) {fill_write_buffer(blocknr, &offset, pc, type);}
 
                                 if(ThisTask == writeTask && task != writeTask)
-                                    MPI_Recv(CommBuffer, bytes_per_blockelement * pc, MPI_BYTE, task,
-                                             TAG_PDATA, MPI_COMM_WORLD, &status);
+                                    {MPI_Recv(CommBuffer, bytes_per_blockelement * pc, MPI_BYTE, task, TAG_PDATA, MPI_COMM_WORLD, &status);}
 
                                 if(ThisTask != writeTask && task == ThisTask)
-                                    MPI_Ssend(CommBuffer, bytes_per_blockelement * pc, MPI_BYTE, writeTask,
-                                              TAG_PDATA, MPI_COMM_WORLD);
+                                    {MPI_Ssend(CommBuffer, bytes_per_blockelement * pc, MPI_BYTE, writeTask, TAG_PDATA, MPI_COMM_WORLD);}
 
                                 if(ThisTask == writeTask)
                                 {
@@ -3764,8 +3748,7 @@ void write_file(char *fname, int writeTask, int lastTask)
                                         if(dims[1] == 1) {rank = 1;} else {rank = 2;}
                                         hdf5_dataspace_memory = H5Screate_simple(rank, dims, NULL);
 
-                                        hdf5_status = H5Dwrite(hdf5_dataset, hdf5_datatype, hdf5_dataspace_memory,
-                                                 hdf5_dataspace_in_file, H5P_DEFAULT, CommBuffer);
+                                        hdf5_status = H5Dwrite(hdf5_dataset, hdf5_datatype, hdf5_dataspace_memory, hdf5_dataspace_in_file, H5P_DEFAULT, CommBuffer);
 
                                         H5Sclose(hdf5_dataspace_memory);
 #endif
@@ -3815,9 +3798,7 @@ void write_file(char *fname, int writeTask, int lastTask)
         if(All.SnapFormat == 3)
         {
 #ifdef HAVE_HDF5
-            for(type = 5; type >= 0; type--)
-                if(header.npart[type] > 0)
-                    H5Gclose(hdf5_grp[type]);
+            for(type = 5; type >= 0; type--) {if(header.npart[type] > 0) {H5Gclose(hdf5_grp[type]);}}
             H5Gclose(hdf5_headergrp);
             H5Fclose(hdf5_file);
 #endif
@@ -3835,127 +3816,431 @@ void write_file(char *fname, int writeTask, int lastTask)
 #ifdef HAVE_HDF5
 void write_header_attributes_in_hdf5(hid_t handle)
 {
-    hsize_t adim[1] = { 6 };
+    hsize_t adim[1] = { 6 }; hid_t hdf5_dataspace, hdf5_attribute;
 
-    hid_t hdf5_dataspace, hdf5_attribute;
-
-    hdf5_dataspace = H5Screate(H5S_SIMPLE);
-    H5Sset_extent_simple(hdf5_dataspace, 1, adim, NULL);
+    hdf5_dataspace = H5Screate(H5S_SIMPLE); H5Sset_extent_simple(hdf5_dataspace, 1, adim, NULL);
     hdf5_attribute = H5Acreate(handle, "NumPart_ThisFile", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, header.npart);
-    H5Aclose(hdf5_attribute);
-    H5Sclose(hdf5_dataspace);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, header.npart); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 
-    hdf5_dataspace = H5Screate(H5S_SIMPLE);
-    H5Sset_extent_simple(hdf5_dataspace, 1, adim, NULL);
+    hdf5_dataspace = H5Screate(H5S_SIMPLE); H5Sset_extent_simple(hdf5_dataspace, 1, adim, NULL);
     hdf5_attribute = H5Acreate(handle, "NumPart_Total", H5T_NATIVE_UINT, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_UINT, header.npartTotal);
-    H5Aclose(hdf5_attribute);
-    H5Sclose(hdf5_dataspace);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_UINT, header.npartTotal); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 
-    hdf5_dataspace = H5Screate(H5S_SIMPLE);
-    H5Sset_extent_simple(hdf5_dataspace, 1, adim, NULL);
+    hdf5_dataspace = H5Screate(H5S_SIMPLE); H5Sset_extent_simple(hdf5_dataspace, 1, adim, NULL);
     hdf5_attribute = H5Acreate(handle, "NumPart_Total_HighWord", H5T_NATIVE_UINT, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_UINT, header.npartTotalHighWord);
-    H5Aclose(hdf5_attribute);
-    H5Sclose(hdf5_dataspace);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_UINT, header.npartTotalHighWord); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 
-    hdf5_dataspace = H5Screate(H5S_SIMPLE);
-    H5Sset_extent_simple(hdf5_dataspace, 1, adim, NULL);
+    hdf5_dataspace = H5Screate(H5S_SIMPLE); H5Sset_extent_simple(hdf5_dataspace, 1, adim, NULL);
     hdf5_attribute = H5Acreate(handle, "MassTable", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, header.mass);
-    H5Aclose(hdf5_attribute);
-    H5Sclose(hdf5_dataspace);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, header.mass); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 
-    hdf5_dataspace = H5Screate(H5S_SCALAR);
-    hdf5_attribute = H5Acreate(handle, "Time", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &header.time);
-    H5Aclose(hdf5_attribute);
-    H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Time", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &header.time); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 
-    hdf5_dataspace = H5Screate(H5S_SCALAR);
-    hdf5_attribute = H5Acreate(handle, "Redshift", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &header.redshift);
-    H5Aclose(hdf5_attribute);
-    H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Redshift", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &header.redshift); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 
-    hdf5_dataspace = H5Screate(H5S_SCALAR);
-    hdf5_attribute = H5Acreate(handle, "BoxSize", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &header.BoxSize);
-    H5Aclose(hdf5_attribute);
-    H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BoxSize", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &header.BoxSize); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 
-    hdf5_dataspace = H5Screate(H5S_SCALAR);
-    hdf5_attribute = H5Acreate(handle, "NumFilesPerSnapshot", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &header.num_files);
-    H5Aclose(hdf5_attribute);
-    H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "NumFilesPerSnapshot", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &header.num_files); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 
-    hdf5_dataspace = H5Screate(H5S_SCALAR);
-    hdf5_attribute = H5Acreate(handle, "Omega0", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &header.OmegaMatter);
-    H5Aclose(hdf5_attribute);
-    H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "ComovingIntegrationOn", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &All.ComovingIntegrationOn); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 
-    hdf5_dataspace = H5Screate(H5S_SCALAR);
-    hdf5_attribute = H5Acreate(handle, "OmegaLambda", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &header.OmegaLambda);
-    H5Aclose(hdf5_attribute);
-    H5Sclose(hdf5_dataspace);
+    if(All.ComovingIntegrationOn)
+    {
+        hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Omega_Matter", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+        H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.OmegaMatter); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 
-    hdf5_dataspace = H5Screate(H5S_SCALAR);
-    hdf5_attribute = H5Acreate(handle, "HubbleParam", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &header.HubbleParam);
-    H5Aclose(hdf5_attribute);
-    H5Sclose(hdf5_dataspace);
+        hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Omega_Lambda", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+        H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.OmegaLambda); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 
-    hdf5_dataspace = H5Screate(H5S_SCALAR);
-    hdf5_attribute = H5Acreate(handle, "Flag_Sfr", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &header.flag_sfr);
-    H5Aclose(hdf5_attribute);
-    H5Sclose(hdf5_dataspace);
+        hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Omega_Baryon", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+        H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.OmegaBaryon); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 
-    hdf5_dataspace = H5Screate(H5S_SCALAR);
-    hdf5_attribute = H5Acreate(handle, "Flag_Cooling", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &header.flag_cooling);
-    H5Aclose(hdf5_attribute);
-    H5Sclose(hdf5_dataspace);
+        hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Omega_Radiation", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+        H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.OmegaRadiation); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    }
 
-    hdf5_dataspace = H5Screate(H5S_SCALAR);
-    hdf5_attribute = H5Acreate(handle, "Flag_StellarAge", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &header.flag_stellarage);
-    H5Aclose(hdf5_attribute);
-    H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "HubbleParam", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &header.HubbleParam); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 
-    hdf5_dataspace = H5Screate(H5S_SCALAR);
-    hdf5_attribute = H5Acreate(handle, "Flag_Metals", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &header.flag_metals);
-    H5Aclose(hdf5_attribute);
-    H5Sclose(hdf5_dataspace);
+    {double tmp=UNIT_MASS_IN_CGS; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "UnitMass_In_CGS", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+        H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &tmp); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+    {double tmp=UNIT_VEL_IN_CGS; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "UnitVelocity_In_CGS", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+        H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &tmp); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+    {double tmp=UNIT_LENGTH_IN_CGS; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "UnitLength_In_CGS", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+        H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &tmp); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+#ifdef MAGNETIC
+    {double tmp=UNIT_B_IN_GAUSS; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Internal_UnitB_In_Gauss", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+        H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &tmp); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+#endif
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Gravitational_Constant_In_Code_Inits", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.G); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 
-    hdf5_dataspace = H5Screate(H5S_SCALAR);
-    hdf5_attribute = H5Acreate(handle, "Flag_AgeTracers", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &header.flag_agetracers);
-    H5Aclose(hdf5_attribute);
-    H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Minimum_Mass_For_Cell_Merge", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.MinMassForParticleMerger); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Maximum_Mass_For_Cell_Split", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.MaxMassForParticleSplit); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 
-    hdf5_dataspace = H5Screate(H5S_SCALAR);
-    hdf5_attribute = H5Acreate(handle, "Flag_Feedback", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &header.flag_feedback);
-    H5Aclose(hdf5_attribute);
-    H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SIMPLE); H5Sset_extent_simple(hdf5_dataspace, 1, adim, NULL);
+    hdf5_attribute = H5Acreate(handle, "Fixed_ForceSoftening_Keplerian_Kernel_Extent", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, All.ForceSoftening); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 
-    hdf5_dataspace = H5Screate(H5S_SCALAR);
-    hdf5_attribute = H5Acreate(handle, "Flag_DoublePrecision", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &header.flag_doubleprecision);
-    H5Aclose(hdf5_attribute);
-    H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Flag_Sfr", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &header.flag_sfr); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 
-    hdf5_dataspace = H5Screate(H5S_SCALAR);
-    hdf5_attribute = H5Acreate(handle, "Flag_IC_Info", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &header.flag_ic_info);
-    H5Aclose(hdf5_attribute);
-    H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Flag_Cooling", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &header.flag_cooling); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Flag_StellarAge", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &header.flag_stellarage); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Flag_Metals", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &header.flag_metals); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Flag_Feedback", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &header.flag_feedback); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Flag_DoublePrecision", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &header.flag_doubleprecision); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Flag_IC_Info", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &header.flag_ic_info); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+
+    {int ivar=KERNEL_FUNCTION; hdf5_dataspace=H5Screate(H5S_SCALAR); hdf5_attribute=H5Acreate(handle,"Kernel_Function_ID",H5T_NATIVE_INT,hdf5_dataspace,H5P_DEFAULT);
+        H5Awrite(hdf5_attribute,H5T_NATIVE_INT,&ivar); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+
+    hdf5_dataspace=H5Screate(H5S_SCALAR); hdf5_attribute=H5Acreate(handle,"Effective_Kernel_NeighborNumber",H5T_NATIVE_DOUBLE,hdf5_dataspace,H5P_DEFAULT);
+    H5Awrite(hdf5_attribute,H5T_NATIVE_DOUBLE,&All.DesNumNgb); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+
+#ifdef SUBFIND
+    hdf5_dataspace=H5Screate(H5S_SCALAR); hdf5_attribute=H5Acreate(handle,"Subfind_FOFLink_NeighborNumber",H5T_NATIVE_INT,hdf5_dataspace,H5P_DEFAULT);
+    H5Awrite(hdf5_attribute,H5T_NATIVE_INT,&All.DesLinkNgb); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+
+
+#if defined(DM_SIDM)
+#ifdef GRAIN_COLLISIONS
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Grain_InteractionRenormalization", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.DM_InteractionCrossSection); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Grain_DissipationFactor", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.DM_DissipationFactor); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Grain_KickPerCollision", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.DM_KickPerCollision); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Grain_InteractionVelocityScale", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.DM_InteractionVelocityScale); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#else
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "DM_InteractionCrossSection", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.DM_InteractionCrossSection); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "DM_DissipationFactor", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.DM_DissipationFactor); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "DM_KickPerCollision", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.DM_KickPerCollision); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "DM_InteractionVelocityScale", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.DM_InteractionVelocityScale); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+#endif
+
+#ifdef DM_SCALARFIELD_SCREENING
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "DM_ScalarBeta", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.ScalarBeta); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "DM_ScalarScreeningLength", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.ScalarScreeningLength); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+
+#if defined(FLAG_NOT_IN_PUBLIC_CODE_EVOLVE_SPECTRUM)
+    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_CR_PARTICLE_SPECIES}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
+    hdf5_attribute = H5Acreate(handle, "CR_Active_Species_ID_List", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, CR_species_ID_active_list); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+
+    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_CR_PARTICLE_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
+    hdf5_attribute = H5Acreate(handle, "CR_Bin_Species_ID", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, CR_species_ID_in_bin); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+
+    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_CR_PARTICLE_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
+    hdf5_attribute = H5Acreate(handle, "CR_Bin_Charge", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, CR_global_charge_in_bin); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+
+    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_CR_PARTICLE_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
+    hdf5_attribute = H5Acreate(handle, "CR_Bin_Min_Rigidity_GV", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, CR_global_min_rigidity_in_bin); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+
+    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_CR_PARTICLE_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
+    hdf5_attribute = H5Acreate(handle, "CR_Bin_Med_Rigidity_GV", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, CR_global_rigidity_at_bin_center); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+
+    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_CR_PARTICLE_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
+    hdf5_attribute = H5Acreate(handle, "CR_Bin_Max_Rigidity_GV", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, CR_global_max_rigidity_in_bin); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+
+    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_CR_PARTICLE_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
+    hdf5_attribute = H5Acreate(handle, "CR_Bin_Max_Rigidity_GV", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, CR_global_max_rigidity_in_bin); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+
+    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[2]={N_CR_PARTICLE_BINS,N_CR_SPECTRUM_LUT}; H5Sset_extent_simple(hdf5_dataspace, 2, tmp_dim, NULL);
+    hdf5_attribute = H5Acreate(handle, "CR_Bin_Energy_vs_Number_GlobalLookupTable", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, CR_global_slope_lut); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+#endif
+
+#if defined(FLAG_NOT_IN_PUBLIC_CODE_EVOLVE_SPECTRUM_EXTENDED_NETWORK)
+    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[2]={N_CR_PARTICLE_SPECIES,N_CR_PARTICLE_SPECIES}; H5Sset_extent_simple(hdf5_dataspace, 2, tmp_dim, NULL);
+    hdf5_attribute = H5Acreate(handle, "CR_Primary_to_Secondary_Products_List", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, CR_secondary_species_listref); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+
+    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_CR_PARTICLE_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
+    hdf5_attribute = H5Acreate(handle, "CR_Bin_Radioactive_Decay_Rate_persecond", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, CR_rad_decay_coeff); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+
+    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_CR_PARTICLE_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
+    hdf5_attribute = H5Acreate(handle, "CR_Bin_Total_Fragmentation_Rate_cmcubedpersecond", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, CR_frag_coeff); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+
+    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[2]={N_CR_PARTICLE_BINS,N_CR_PARTICLE_SPECIES}; H5Sset_extent_simple(hdf5_dataspace, 2, tmp_dim, NULL);
+    hdf5_attribute = H5Acreate(handle, "CR_Bin_Secondary_Product_TargetBins", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, CR_secondary_target_bin); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+
+    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[2]={N_CR_PARTICLE_BINS,N_CR_PARTICLE_SPECIES}; H5Sset_extent_simple(hdf5_dataspace, 2, tmp_dim, NULL);
+    hdf5_attribute = H5Acreate(handle, "CR_Bin_Fragmentation_Coefficients_To_Secondaries", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, CR_frag_secondary_coeff); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+#endif
+
+#ifdef RT_EVOLVE_INTENSITIES
+    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[2]={N_RT_INTENSITY_BINS,3}; H5Sset_extent_simple(hdf5_dataspace, 2, tmp_dim, NULL);
+    hdf5_attribute = H5Acreate(handle, "Radiation_Intensity_Grid_Direction_Vectors", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, All.Rad_Intensity_Direction); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+#endif
+
+
+#ifdef RT_LEBRON
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "LEBRON_PhotonMomentum_Coupled_Fraction", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.PhotonMomentum_Coupled_Fraction); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+
+
+#ifdef GRAIN_FLUID
+    {int holder=GRAIN_PTYPES; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "GrainCR_Particle_Type_BitFlag", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &holder); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+#if !defined(PIC_MHD) || defined(GRAIN_FLUID_AND_PIC_BOTH_DEFINED)
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Grain_Internal_Density", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.Grain_Internal_Density); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Grain_Size_Min", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.Grain_Size_Min); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Grain_Size_Max", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.Grain_Size_Max); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Grain_Size_Spectrum_Powerlaw", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.Grain_Size_Spectrum_Powerlaw); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+#ifdef GRAIN_RDI_TESTPROBLEM
+    {double holder=GRAIN_RDI_TESTPROBLEM_SET_ABSFRAC; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "RDI_TestProblemm_Grain_Abs_Frac", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &holder); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+    {double holder=GRAIN_RDI_TESTPROBLEM_Q_AT_GRAIN_MAX; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "RDI_TestProblemm_Q_At_Max_Grainsize", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &holder); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Grain_Charge_Parameter", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.Grain_Charge_Parameter); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Dust_to_Gas_Mass_Ratio", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.Dust_to_Gas_Mass_Ratio); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Vertical_Gravity_Strength", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.Vertical_Gravity_Strength); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Vertical_Grain_Accel", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.Vertical_Grain_Accel); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Vertical_Grain_Accel_Angle", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.Vertical_Grain_Accel_Angle); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#ifdef BOX_SHEARING
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Pressure_Gradient_Accel", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.Pressure_Gradient_Accel); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+#endif
+#endif
+
+#ifdef PIC_MHD
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "PIC_Charge_to_Mass_Ratio", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.PIC_Charge_to_Mass_Ratio); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+
+#ifdef GALSF
+    {double holder=DMAX(All.PhysDensThresh,All.OverDensThresh); hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Density_Threshold_For_SF_CodeUnits", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &holder); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+#if !defined(SINGLE_STAR_SINK_DYNAMICS)
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "SF_Timescale_At_Density_Threshold_CodeUnits", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.MaxSfrTimescale); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+#endif
+
+#ifdef GALSF_EFFECTIVE_EQS
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Effective_ISM_EOS_Parameter_EgySpecSN", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.EgySpecSN); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Effective_ISM_EOS_Parameter_FactorSN", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.FactorSN); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Effective_ISM_EOS_Parameter_EgySpecCold", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.EgySpecCold); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Effective_ISM_EOS_Parameter_FactorEVP", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.FactorEVP); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Effective_ISM_EOS_Parameter_FeedbackEnergy", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.FeedbackEnergy); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Effective_ISM_EOS_Parameter_TempSupernova", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.TempSupernova); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Effective_ISM_EOS_Parameter_TempClouds", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.TempClouds); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Effective_ISM_EOS_Parameter_FactorForSofterEQS", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.FactorForSofterEQS); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+
+
+#ifdef GALSF_SUBGRID_WINDS
+    {int holder=GALSF_SUBGRID_WIND_SCALING; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "SubGrid_Wind_Model_Scaling_Key", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &holder); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "SubGrid_Wind_Model_WindEfficiency", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.WindEfficiency); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "SubGrid_Wind_Model_WindEnergyFraction", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.WindEnergyFraction); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "SubGrid_Wind_Model_WindFreeTravelMaxTimeFactor", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.WindFreeTravelMaxTimeFactor); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "SubGrid_Wind_Model_WindFreeTravelDensFac", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.WindFreeTravelDensFac); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#if (GALSF_SUBGRID_WIND_SCALING>0)
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "SubGrid_Wind_Model_VariableWindVelFactor", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.VariableWindVelFactor); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "SubGrid_Wind_Model_VariableWindSpecMomentum", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.VariableWindSpecMomentum); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+#endif
+
+#ifdef GALSF_FB_FIRE_AGE_TRACERS
+    {int holder=NUM_AGE_TRACERS; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "AgeTracer_NumberOfBins", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &holder); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "AgeTracerEventsPerTimeBin", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.AgeTracerRateNormalization); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#ifdef GALSF_FB_FIRE_AGE_TRACERS_CUSTOM
+    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={NUM_AGE_TRACERS+1}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
+    hdf5_attribute = H5Acreate(handle, "AgeTracer_CustomTimeBins", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, All.AgeTracerTimeBins); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+#else
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "AgeTracerBinStart", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.AgeTracerBinStart); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "AgeTracerBinEnd", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.AgeTracerBinEnd); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+#endif
+
+#ifdef METALS
+    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={NUM_METAL_SPECIES}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
+    hdf5_attribute = H5Acreate(handle, "Solar_Abundances_Adopted", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, All.SolarAbundances); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+#endif
+
+#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BAL_f_accretion", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BAL_f_accretion); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BAL_v_outflow", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BAL_v_outflow); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+
+
+#if defined(BH_COSMIC_RAYS)
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BH_CosmicRay_Injection_Efficiency", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BH_CosmicRay_Injection_Efficiency); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+
+#ifdef GR_TABULATED_COSMOLOGY
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "DarkEnergyConstantW", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.DarkEnergyConstantW); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+
+#ifdef TURB_DIFFUSION
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "TurbDiffusion_Coefficient", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.TurbDiffusion_Coefficient); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#ifdef TURB_DIFF_DYNAMIC
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "TurbDynamicDiffFac", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.TurbDynamicDiffFac); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "TurbDynamicDiffSmoothing", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.TurbDynamicDiffSmoothing); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+#endif
+
+#if defined(CONDUCTION) && !defined(CONDUCTION_SPITZER)
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Thermal_ConductionCoeff", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.ConductionCoeff); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+
+#if defined(VISCOSITY) && !defined(VISCOSITY_BRAGINSKII)
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "ShearViscosityCoeff", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.ShearViscosityCoeff); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BulkViscosityCoeff", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BulkViscosityCoeff); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+
+#ifdef AGS_HSML_CALCULATION_IS_ACTIVE
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Effective_Kernel_NeighborNumber_CollisionlessParticles", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.AGS_DesNumNgb); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+
+#ifdef DM_FUZZY
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "ScalarField_hbar_over_mass", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.ScalarField_hbar_over_mass); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+
+#ifdef TURB_DRIVING
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "TurbDriving_Global_DecayTime", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.TurbDriving_Global_DecayTime); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "TurbDriving_Global_AccelerationPowerVariable", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.TurbDriving_Global_AccelerationPowerVariable); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "TurbDriving_Global_DtTurbUpdates", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.TurbDriving_Global_DtTurbUpdates); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "TurbDriving_Global_DrivingScaleKMinVar", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.TurbDriving_Global_DrivingScaleKMinVar); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "TurbDriving_Global_DrivingScaleKMaxVar", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.TurbDriving_Global_DrivingScaleKMaxVar); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "TurbDriving_Global_SolenoidalFraction", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.TurbDriving_Global_SolenoidalFraction); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "TurbDriving_Global_DrivingSpectrumKey", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &All.TurbDriving_Global_DrivingSpectrumKey); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "TurbDriving_Global_DrivingRandomNumberKey", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &All.TurbDriving_Global_DrivingRandomNumberKey); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+
+#if defined(EOS_TILLOTSON) || defined(EOS_ELASTIC)
+    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[2]={7,12}; H5Sset_extent_simple(hdf5_dataspace, 2, tmp_dim, NULL);
+    hdf5_attribute = H5Acreate(handle, "Tillotson_EOS_parameters_for_all_species", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, All.Tillotson_EOS_params); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+#endif
+
+#ifdef BLACK_HOLES
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BlackHoleAccretionFactor", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BlackHoleAccretionFactor); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BlackHoleFeedbackFactor", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BlackHoleFeedbackFactor); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "SeedBlackHoleMass", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.SeedBlackHoleMass); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BlackHoleNgbFactor", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BlackHoleNgbFactor); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BlackHoleMaxAccretionRadius", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BlackHoleMaxAccretionRadius); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BlackHoleEddingtonFactor", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BlackHoleEddingtonFactor); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BlackHoleRadiativeEfficiency", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BlackHoleRadiativeEfficiency); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#if defined(BH_SEED_FROM_FOF) || defined(BH_SEED_FROM_LOCALGAS)
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "SeedBlackHoleMassSigma", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.SeedBlackHoleMassSigma); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "SeedBlackHoleMinRedshift", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.SeedBlackHoleMinRedshift); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+#ifdef BH_SEED_FROM_LOCALGAS
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "SeedBlackHolePerUnitMass", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.SeedBlackHolePerUnitMass); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+#ifdef BH_ALPHADISK_ACCRETION
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "SeedAlphaDiskMass", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.SeedAlphaDiskMass); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+#ifdef BH_SEED_FROM_FOF
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "MinFoFMassForNewSeed", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.MinFoFMassForNewSeed); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+#endif
 
 }
 #endif
@@ -3980,8 +4265,7 @@ size_t my_fwrite(void *ptr, size_t size, size_t nmemb, FILE * stream)
             endrun(777);
         }
     }
-    else
-        nwritten = 0;
+    else {nwritten = 0;}
 
     return nwritten;
 }
@@ -3994,15 +4278,12 @@ size_t my_fread(void *ptr, size_t size, size_t nmemb, FILE * stream)
 {
     size_t nread;
 
-    if(size * nmemb == 0)
-        return 0;
+    if(size * nmemb == 0) {return 0;}
 
     if((nread = fread(ptr, size, nmemb, stream)) != nmemb)
     {
-        if(feof(stream))
-            printf("I/O error (fread) on task=%d has occured: end of file\n", ThisTask);
-        else
-            printf("I/O error (fread) on task=%d has occured: %s\n", ThisTask, strerror(errno));
+        if(feof(stream)) {printf("I/O error (fread) on task=%d has occured: end of file\n", ThisTask);}
+            else {printf("I/O error (fread) on task=%d has occured: %s\n", ThisTask, strerror(errno));}
         fflush(stdout);
         endrun(778);
     }

@@ -103,10 +103,10 @@ void blackhole_end(void)
             fprintf(FdBlackHoles, "%g %d %g %g %g %g %g\n", All.Time, All.TotBHs, total_mass_holes, total_mdot, mdot_in_msun_per_year, total_mass_real, total_mdoteddington);
         }
         fflush(FdBlackHoles);
-#ifdef BH_OUTPUT_GASSWALLOW
+#ifdef OUTPUT_SINK_ACCRETION_HIST
         fflush(FdBhSwallowDetails);
 #endif
-#ifdef BH_OUTPUT_FORMATION_PROPERTIES
+#ifdef OUTPUT_SINK_FORMATION_PROPS
         fflush(FdBhFormationDetails);
 #endif
 #if !defined(IO_REDUCED_MODE) || defined(BH_OUTPUT_MOREINFO)

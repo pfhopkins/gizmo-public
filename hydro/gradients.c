@@ -756,9 +756,10 @@ void hydro_gradient_calc(void)
             int N_chunks_for_import, ngrp_initial, ngrp;
             for(ngrp_initial = 1; ngrp_initial < (1 << PTask); ngrp_initial += N_chunks_for_import) /* sub-chunking loop opener */
             {
+                int flagall;
                 N_chunks_for_import = (1 << PTask) - ngrp_initial;
                 do {
-                    int flag = 0, flagall; Nimport = 0;
+                    int flag = 0; Nimport = 0;
                     for(ngrp = ngrp_initial; ngrp < ngrp_initial + N_chunks_for_import; ngrp++)
                     {
                         recvTask = ThisTask ^ ngrp;
@@ -771,7 +772,7 @@ void hydro_gradient_calc(void)
                     if(flagall) {N_chunks_for_import /= 2;} else {break;}
                 } while(N_chunks_for_import > 0);
                 if(N_chunks_for_import == 0) {printf("Memory is insufficient for even one import-chunk: N_chunks_for_import=%d  ngrp_initial=%d  Nimport=%ld  FreeBytes=%lld , but we need to allocate=%lld \n",N_chunks_for_import, ngrp_initial, Nimport, (long long)FreeBytes,(long long)(Nimport * sizeof(struct GasGraddata_in) + Nimport * sizeof(struct GasGraddata_out) + 16384)); endrun(9999);}
-                if(ngrp_initial == 1 && N_chunks_for_import != ((1 << PTask) - ngrp_initial)) PRINT_WARNING("Splitting import operation into sub-chunks as we are hitting memory limits (check this isn't imposing large communication cost)");
+                if(flagall) {if(ThisTask==0) PRINT_WARNING("Splitting import operation into sub-chunks as we are hitting memory limits (check this isn't imposing large communication cost)");}
 
                 /* now allocated the import and results buffers */
                 GasGradDataGet = (struct GasGraddata_in *) mymalloc("GasGradDataGet", Nimport * sizeof(struct GasGraddata_in));
@@ -1855,7 +1856,7 @@ int GasGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount
                 double Particle_Size_j, Particle_Size_i;  Particle_Size_j=Get_Particle_Size(j); Particle_Size_i=pow(local.Mass/local.GQuant.Density, 1./NUMDIMS);
 
 #if defined(MHD_CONSTRAINED_GRADIENT)
-                double V_j = P[j].Mass / SphP[j].Density, Face_Area_Vec[3], cnumcrit2 = ((double)CONDITION_NUMBER_DANGER)*((double)CONDITION_NUMBER_DANGER) - local.ConditionNumber*local.ConditionNumber;
+                double V_j = P[j].Mass / SphP[j].Density, Face_Area_Vec[3], Face_Area_Norm, cnumcrit2 = ((double)CONDITION_NUMBER_DANGER)*((double)CONDITION_NUMBER_DANGER) - local.ConditionNumber*local.ConditionNumber;
 
 #include "compute_finitevol_faces.h" /* insert code block for computing Face_Area_Vec, Face_Area_Norm, n_unit, etc. */
                 

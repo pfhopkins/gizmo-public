@@ -147,14 +147,14 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
                 if(P[j].Mass <= 0) {continue;} // require the particle has mass //
                 double dp[3]; for(k=0; k<3; k++) {dp[k] = local.Pos[k] - P[j].Pos[k];}
                 NEAREST_XYZ(dp[0],dp[1],dp[2],1); /* find the closest image in the given box size  */
-                double r2=0, r, c_light_eff, wk; for(k=0;k<3;k++) {r2 += dp[k]*dp[k];}
+                double r2=0, r, wk; for(k=0;k<3;k++) {r2 += dp[k]*dp[k];}
                 if(r2<=0) {continue;} // same particle //
 #ifdef RT_BH_ANGLEWEIGHT_PHOTON_INJECTION
                 if((All.TimeStep > 0) && (r2>=h2) && (r2 >= PPP[j].Hsml*PPP[j].Hsml)) {continue;} // outside kernel //
 #else
                 if(r2>=h2) {continue;} // outside kernel //
 #endif                
-                r = sqrt(r2); c_light_eff = C_LIGHT_CODE_REDUCED; // useful variables for below
+                r = sqrt(r2); // useful variables for below
                 
                 /* calculate the kernel weight used to apply photons to the neighbor */
 #ifdef RT_BH_ANGLEWEIGHT_PHOTON_INJECTION // use the angle-weighted coupling
@@ -193,7 +193,7 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
                     if(isnan(slabfac_x)||(slabfac_x<=0)) {slabfac_x=0;} else if(slabfac_x>1) {slabfac_x=1;}
                     int kv;
 #if !defined(RT_DISABLE_RAD_PRESSURE)
-                    double dv = -slabfac_x * dE / (c_light_eff * P[j].Mass); // total absorbed momentum (needs multiplication by dp[kv]/r for directionality)
+                    double dv = -slabfac_x * dE / (C_LIGHT_CODE_REDUCED * P[j].Mass); // total absorbed momentum (needs multiplication by dp[kv]/r for directionality)
                     for(kv=0;kv<3;kv++) {
                         double dv_tmp = dv*(dp[kv]/r)*All.cf_atime;
                         #pragma omp atomic
@@ -207,7 +207,7 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
 		            double dE_donation=0; int donation_bin=rt_get_donation_target_bin(k), do_donation=1;
 #ifdef RT_CHEM_PHOTOION  // figure out if we have enough photons to carve a Stromgren sphere through this cell. If yes, inject ionizing radiation, otherwise more accurate to downgrade it to model an unresolved HII region
                     if(k==RT_FREQ_BIN_H0) {
-                        double stellum=0; if(local.Dt > 0) {stellum = local.Luminosity[k] / RT_SPEEDOFLIGHT_REDUCTION / local.Dt * UNIT_LUM_IN_CGS;}
+                        double stellum=0; if(local.Dt > 0) {stellum = local.Luminosity[k] / (C_LIGHT_CODE_REDUCED/C_LIGHT_CODE) / local.Dt * UNIT_LUM_IN_CGS;}
                         double RHII = 4.01e-9*pow(stellum,0.333)*pow(SphP[j].Density*All.cf_a3inv*UNIT_DENSITY_IN_CGS,-0.66667) / UNIT_LENGTH_IN_CGS;
                         if(DMAX(r, Get_Particle_Size(j))*All.cf_atime < RHII) {do_donation = 0;} // don't inject ionizing photons outside the Stromgren radius
                     }
@@ -219,7 +219,7 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
 #endif // RT_REPROCESS_INJECTED_PHOTONS
 
 #if defined(RT_EVOLVE_FLUX) /* when we use RT_INJECT_PHOTONS_DISCRETELY_ADD_MOMENTUM_FOR_LOCAL_EXTINCTION, we add the 'full' optically-thin flux directly to the neighbor cells. a more general formulation allows these fluxes to build up self-consistently, since we don't know a-priori what these 'should' be */
-                    double dflux = -dE * c_light_eff / r;
+                    double dflux = -dE * C_LIGHT_CODE_REDUCED / r;
                     for(kv=0;kv<3;kv++) {dfluxes[kv] += dflux*dp[kv];}
 #endif
 #endif // RT_INJECT_PHOTONS_DISCRETELY_ADD_MOMENTUM_FOR_LOCAL_EXTINCTION
@@ -257,7 +257,7 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
 #endif
 
 #if defined(RT_EVOLVE_FLUX) // add relativistic corrections here, which should be there in general. however we will ignore [here] the 'back-reaction' term, since we're assuming the source is a star or something like that, where this would be negligible. gas self gain/loss is handled separately.
-                    {int kv; for(kv=0;kv<3;kv++) {dfluxes[kv] += CRSOL_OVER_CTRUE_SQUARED_FOR_BEAMING * dE*local.Vel[kv]/All.cf_atime;}}
+                    {int kv; for(kv=0;kv<3;kv++) {dfluxes[kv] += dE * ((C_LIGHT_CODE_REDUCED/C_LIGHT_CODE)*local.Vel[kv]/All.cf_atime);}}
 #ifdef GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION
                     {double dflux=dE*C_LIGHT_CODE_REDUCED; dfluxes[2] += dflux;}
 #endif

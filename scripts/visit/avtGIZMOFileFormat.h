@@ -107,8 +107,8 @@ class avtGIZMOFileFormat : public avtSTSDFileFormat
       int num_part_this_file[GIZMO_N_PTYPE];
       unsigned int num_part_total[GIZMO_N_PTYPE];
       unsigned int num_part_total_high_word[GIZMO_N_PTYPE];
-      double OmegaMatter;
-      double OmegaLambda;
+      double Omega_Matter;
+      double Omega_Lambda;
       double redshift;
       double time;
     };

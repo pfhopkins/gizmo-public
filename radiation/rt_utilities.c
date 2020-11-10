@@ -122,7 +122,7 @@ int rt_get_source_luminosity(int i, int mode, double *lum)
 #endif
     
     /* need to renormalize ALL sources for reduced speed of light */
-    {int k; for(k=0;k<N_RT_FREQ_BINS;k++) {lum[k] *= RT_SPEEDOFLIGHT_REDUCTION;}}
+    {int k; for(k=0;k<N_RT_FREQ_BINS;k++) {lum[k] *= (C_LIGHT_CODE_REDUCED/C_LIGHT_CODE);}}
     return active_check;
 }
 
@@ -515,7 +515,7 @@ int rt_get_lum_band_singlestar(int i, int mode, double *lum)
 #if defined(RADTRANSFER) || defined(RT_USE_GRAVTREE)
 double rt_absorption_rate(int i, int k_freq)
 {
-    /* should be equal to (c * Kappa_opacity * rho) */
+    /* should be equal to (c_reduced * Kappa_opacity * rho) */
     return C_LIGHT_CODE_REDUCED * rt_absorb_frac_albedo(i, k_freq) * rt_kappa(i,k_freq) * SphP[i].Density*All.cf_a3inv;
 }
 #endif 
@@ -545,14 +545,14 @@ void rt_eddington_update_calculation(int j)
 #endif
 #ifdef RT_M1
     /* calculate the eddington tensor with the M1 closure */
-    int k_freq, k; double c_light = C_LIGHT_CODE_REDUCED, n_flux_j[3], fmag_j, V_j_inv = SphP[j].Density / P[j].Mass;
+    int k_freq, k; double n_flux_j[3], fmag_j, V_j_inv = SphP[j].Density / P[j].Mass;
     for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++)
     {
         n_flux_j[0]=n_flux_j[1]=n_flux_j[2]=0;
         double flux_vol[3]; for(k=0;k<3;k++) {flux_vol[k] = SphP[j].Rad_Flux[k_freq][k] * V_j_inv;}
         fmag_j = 0; for(k=0;k<3;k++) {fmag_j += flux_vol[k]*flux_vol[k];}
         if(fmag_j <= 0) {fmag_j=0;} else {fmag_j=sqrt(fmag_j); for(k=0;k<3;k++) {n_flux_j[k]=flux_vol[k]/fmag_j;}}
-        double f_chifac = fmag_j / (MIN_REAL_NUMBER + c_light * SphP[j].Rad_E_gamma[k_freq] * V_j_inv);
+        double f_chifac = fmag_j / (MIN_REAL_NUMBER + C_LIGHT_CODE_REDUCED * SphP[j].Rad_E_gamma[k_freq] * V_j_inv);
         if(f_chifac < 0) {f_chifac=0;}
         if(fmag_j <= 0) {f_chifac = 0;}
         // restrict values of f_chifac to physical range.
@@ -639,8 +639,8 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
     double E_abs_tot = 0;/* energy absorbed in other bands is transfered to IR, by default: track it here */
     double Rad_E_gamma_tot = 0; // dust temperature defined by total radiation energy density //
     {int j; for(j=0;j<N_RT_FREQ_BINS;j++) {Rad_E_gamma_tot += SphP[i].Rad_E_gamma[j];}}
-    double u_gamma = Rad_E_gamma_tot * (SphP[i].Density*All.cf_a3inv/P[i].Mass) * UNIT_PRESSURE_IN_CGS; // photon energy density in CGS //
-    double Dust_Temperature_4 = C_LIGHT_CODE_REDUCED*UNIT_VEL_IN_CGS * u_gamma / (4. * 5.67e-5); // estimated effective temperature of local rad field in equilibrium with dust emission //
+    double a_rad_inverse=C_LIGHT/(4.*5.67e-5), vol_inv_phys=(SphP[i].Density*All.cf_a3inv/P[i].Mass), u_gamma = Rad_E_gamma_tot * vol_inv_phys * UNIT_PRESSURE_IN_CGS; // photon energy density in CGS //
+    double Dust_Temperature_4 = u_gamma * a_rad_inverse; // estimated effective temperature of local rad field in equilibrium with dust emission. note that for our definitions, rad energy density has its 'normal' value independent of RSOL, so Tdust should as well; emission -and- absorption are both lower by a factor of RSOL, but these cancel in the Tdust4 here //
     SphP[i].Dust_Temperature = sqrt(sqrt(Dust_Temperature_4));
     double T_min = get_min_allowed_dustIRrad_temperature();
     if(SphP[i].Dust_Temperature <= T_min) {SphP[i].Dust_Temperature = T_min;} // dust temperature shouldn't be below CMB
@@ -687,8 +687,8 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
                 total_de_dt = E_abs_tot + SphP[i].Rad_Je[kf] + dt_e_gamma_band;
                 if(fabs(a0)>0)
                 {
-                    Dust_Temperature_4 = total_emission_rate * (SphP[i].Density*All.cf_a3inv/P[i].Mass) / (4. * (MIN_REAL_NUMBER + fabs(a0)) / C_LIGHT_CODE_REDUCED); // flux units
-                    Dust_Temperature_4 *= UNIT_FLUX_IN_CGS / (5.67e-5); // convert to cgs
+                    Dust_Temperature_4 = total_emission_rate * vol_inv_phys / (MIN_REAL_NUMBER + fabs(a0)); // physical energy density units, both emission and absorption rates reduced by one power of RSOL so cancel
+                    Dust_Temperature_4 *= UNIT_PRESSURE_IN_CGS * a_rad_inverse; // convert to cgs; physical a_r here
                     SphP[i].Dust_Temperature = sqrt(sqrt(Dust_Temperature_4));
                     if(SphP[i].Dust_Temperature < T_min) {SphP[i].Dust_Temperature = T_min;} // dust temperature shouldn't be below CMB
                 }
@@ -726,21 +726,20 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
             // for OTVET/FLD methods, need to apply radiation pressure term here so can limit this b/c just based on a gradient which is not flux-limited [as in hydro operators] //
             {
                 double radacc[3]={0}, rmag=0, vel_i[3], L_particle = Get_Particle_Size(i)*All.cf_atime; // particle effective size/slab thickness
-                double Sigma_particle = P[i].Mass / (M_PI*L_particle*L_particle); // effective surface density through particle
-                double abs_per_kappa_dt = C_LIGHT_CODE_REDUCED * (SphP[i].Density*All.cf_a3inv) * dt_entr; // fractional absorption over timestep
+                double Sigma_particle = P[i].Mass / (M_PI*L_particle*L_particle), abs_per_kappa_dt = C_LIGHT_CODE_REDUCED * (SphP[i].Density*All.cf_a3inv) * dt_entr; // effective surface density through particle & fractional absorption over timestep
                 double f_kappa_abs = rt_absorb_frac_albedo(i,kf); // get albedo, we'll need this below
-                double slabfac_rp = slab_averaging_function(f_kappa_abs*SphP[i].Rad_Kappa[kf]*Sigma_particle) * slab_averaging_function(f_kappa_abs*SphP[i].Rad_Kappa[kf]*abs_per_kappa_dt); // reduction factor for absorption over dt
+                double slabfac_rp=1; if(check_if_absorbed_photons_can_be_reemitted_into_same_band(kf)==0) {slabfac_rp=slab_averaging_function(f_kappa_abs*SphP[i].Rad_Kappa[kf]*Sigma_particle) * slab_averaging_function(f_kappa_abs*SphP[i].Rad_Kappa[kf]*abs_per_kappa_dt);} // reduction factor for absorption over dt
                 int kx; for(kx=0;kx<3;kx++)
                 {
                     radacc[kx] = -dt_entr * slabfac_rp * return_flux_limiter(i,kf) * (SphP[i].Gradients.Rad_E_gamma_ET[kf][kx] / SphP[i].Density) / All.cf_atime; // naive radiation-pressure calc for FLD methods [physical units]
                     rmag += radacc[kx]*radacc[kx]; // compute magnitude
-                    if(mode==0) {vel_i[kx]=P[i].Vel[kx]/All.cf_atime;} else {vel_i[kx]=SphP[i].VelPred[kx]/All.cf_atime;}
+                    if(mode==0) {vel_i[kx]=(C_LIGHT_CODE_REDUCED/C_LIGHT_CODE)*P[i].Vel[kx]/All.cf_atime;} else {vel_i[kx]=(C_LIGHT_CODE_REDUCED/C_LIGHT_CODE)*SphP[i].VelPred[kx]/All.cf_atime;} // note this is the 'effective' u appearing in the RHD equations for an RSOL, care needed with these factors!
                 }
                 if(rmag > 0)
                 {
                     rmag = sqrt(rmag); for(kx=0;kx<3;kx++) {radacc[kx] /= rmag;} // normalize
                     double rmag_max = de_abs / (P[i].Mass * C_LIGHT_CODE_REDUCED * (MIN_REAL_NUMBER + f_kappa_abs)); // limit magnitude to absorbed photon momentum
-                    if(rmag > rmag_max) {rmag=rmag_max;}
+                    if(check_if_absorbed_photons_can_be_reemitted_into_same_band(kf)==0) {if(rmag > rmag_max) {rmag=rmag_max;}}
 #if defined(RT_ENABLE_R15_GRADIENTFIX)
                     rmag = rmag_max; // set to maximum (optically thin limit)
 #endif
@@ -751,7 +750,7 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
                         work_band += vel_i[kx] * radacc_eff * P[i].Mass; // PdV work done by photons [absorbed ones are fully-destroyed, so their loss of energy and momentum is already accounted for by their deletion in this limit //
                         if(mode==0) {P[i].Vel[kx] += radacc_eff * All.cf_atime;} else {SphP[i].VelPred[kx] += radacc_eff * All.cf_atime;}
                     }
-                    double d_egy_rad = (2.*f_kappa_abs-1.)*work_band , d_egy_int = -2.*f_kappa_abs*work_band;
+                    double d_egy_rad = (2.*f_kappa_abs-1.)*work_band , d_egy_int = -2.*f_kappa_abs*work_band * (C_LIGHT_CODE/C_LIGHT_CODE_REDUCED); // correct for rsol factor above which reduced vel_i by rsol; -only- add back this term for gas
                     if(mode==0) {SphP[i].InternalEnergy += d_egy_int;} else {SphP[i].InternalEnergyPred += d_egy_int;}
 #if defined(RT_EVOLVE_INTENSITIES)
                     {int k_q; for(k_q=0;k_q<N_RT_INTENSITY_BINS;k_q++) {if(mode==0) {SphP[i].Rad_Intensity[kf][k_q]+=d_egy_rad/RT_INTENSITY_BINS_DOMEGA;} else {SphP[i].Rad_Intensity_Pred[kf][k_q]+=d_egy_rad/RT_INTENSITY_BINS_DOMEGA;}}}
@@ -781,16 +780,16 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
 
 #if defined(RT_EVOLVE_FLUX)
             int k_dir; double f_mag=0, E_rad_forflux=0, vdot_h[3]={0}, vel_i[3]={0}, DeltaFluxEff[3]={0}, rho=SphP[i].Density*All.cf_a3inv; E_rad_forflux=0.5*(e0+ef); // use energy density averaged over this update for the operation below
-            for(k_dir=0;k_dir<3;k_dir++) {if(mode==0) {vel_i[k_dir]=P[i].Vel[k_dir]/All.cf_atime;} else {vel_i[k_dir]=SphP[i].VelPred[k_dir]/All.cf_atime;}} // need gas velocity at this time
+            for(k_dir=0;k_dir<3;k_dir++) {if(mode==0) {vel_i[k_dir]=(C_LIGHT_CODE_REDUCED/C_LIGHT_CODE)*P[i].Vel[k_dir]/All.cf_atime;} else {vel_i[k_dir]=(C_LIGHT_CODE_REDUCED/C_LIGHT_CODE)*SphP[i].VelPred[k_dir]/All.cf_atime;}} // need gas velocity at this time [effective v - note RSOL terms]
             double teqm_inv = SphP[i].Rad_Kappa[kf] * rho * C_LIGHT_CODE_REDUCED + MIN_REAL_NUMBER; // physical code units of 1/time, defines characteristic timescale for coming to equilibrium flux. see notes for CR second-order module for details. //
-            eddington_tensor_dot_vector(SphP[i].ET[kf],vel_i,vdot_h); // calculate volume integral of scattering coefficient t_inv * (gas_vel . [e_rad*I + P_rad_tensor]), which gives an additional time-derivative term. this is the P term //
+            eddington_tensor_dot_vector(SphP[i].ET[kf], vel_i, vdot_h); // calculate volume integral of scattering coefficient t_inv * (gas_vel . [e_rad*I + P_rad_tensor]), which gives an additional time-derivative term. this is the P term //
             for(k_dir=0;k_dir<3;k_dir++) {vdot_h[k_dir] = E_rad_forflux * (vel_i[k_dir] + vdot_h[k_dir]);} // and this is the eI term, multiply both by radiation energy to use in this step //
-#ifdef RT_COMPGRAD_EDDINGTON_TENSOR
-            for(k_dir=0;k_dir<3;k_dir++) {DeltaFluxEff[k_dir] -= (P[i].Mass/rho) * (C_LIGHT_CODE_REDUCED*C_LIGHT_CODE_REDUCED/teqm_inv) * SphP[i].Gradients.Rad_E_gamma_ET[kf][k_dir];}
+#ifdef RT_COMPGRAD_EDDINGTON_TENSOR // ??
+            for(k_dir=0;k_dir<3;k_dir++) {DeltaFluxEff[k_dir] -= (P[i].Mass/rho) * (C_LIGHT_CODE_REDUCED*C_LIGHT_CODE_REDUCED/teqm_inv) * SphP[i].Gradients.Rad_E_gamma_ET[kf][k_dir];} // here we compute the nabla.pressure_gradient_tensor term from gradients directly, and use this in the next step after multiplying the flux equation by (tilde[c]^2/dt_eqm_inv) and working in dimensionless time units
 #else
-            for(k_dir=0;k_dir<3;k_dir++) {DeltaFluxEff[k_dir] += (SphP[i].Dt_Rad_Flux[kf][k_dir]/teqm_inv);}
+            for(k_dir=0;k_dir<3;k_dir++) {DeltaFluxEff[k_dir] += (SphP[i].Dt_Rad_Flux[kf][k_dir]/teqm_inv);} // the nabla.pressure_gradient_tensor is computed in the finite-volume solver, here
 #endif
-            for(k_dir=0;k_dir<3;k_dir++) {DeltaFluxEff[k_dir] += vdot_h[k_dir] * dt_entr;} // add the 'enthalpy advection' term here, vdot_h = Erad v.(e*I + P_rad)
+            for(k_dir=0;k_dir<3;k_dir++) {DeltaFluxEff[k_dir] += vdot_h[k_dir];} // add the 'enthalpy advection' term here, vdot_h = Erad v.(e*I + P_rad)
 
             double tau=dt_entr*teqm_inv, f00=exp(-tau), f11=1.-f00;
             if(tau > 0 && isfinite(tau))
@@ -801,15 +800,18 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
                 for(k_dir=0;k_dir<3;k_dir++)
                 {
                     double flux_0; if(mode==0) {flux_0 = SphP[i].Rad_Flux[kf][k_dir];} else {flux_0 = SphP[i].Rad_Flux_Pred[kf][k_dir];}
-                    flux_0 += vel_i[k_dir] * de_emission_minus_absorption * CRSOL_OVER_CTRUE_SQUARED_FOR_BEAMING; // add Lorentz term from net energy injected by absorption and re-emission (effectively, we operator-split this term and solve it -BEFORE- going to the next step)
+                    flux_0 += vel_i[k_dir] * de_emission_minus_absorption; // add Lorentz term from net energy injected by absorption and re-emission (effectively, we operator-split this term and solve it -BEFORE- going to the next step)
                     double flux_f = flux_0 * f00 + DeltaFluxEff[k_dir] * f11; // exact solution for dE/dt = -E*abs + de , the 'reduction factor' appropriately suppresses the source term //
                     if(mode==0) {SphP[i].Rad_Flux[kf][k_dir] = flux_f;} else {SphP[i].Rad_Flux_Pred[kf][k_dir] = flux_f;}
                     f_mag += flux_f*flux_f; // magnitude of flux vector
                 }
                 if(f_mag > 0) // limit the flux according the physical (optically thin) maximum //
                 {
-                    f_mag=sqrt(f_mag); double fmag_max = 1.0 * C_LIGHT_CODE * ef; // maximum flux should be optically-thin limit: e_gamma*c: here allow some tolerance for numerical leapfrogging in timestepping. NOT the reduced RSOL here.
+                    f_mag=sqrt(f_mag); double fmag_max = C_LIGHT_CODE_REDUCED * ef; // maximum flux should be optically-thin limit: e_gamma*c: here allow some tolerance for numerical leapfrogging in timestepping. should be the RSOL here, although in principle equations can allow exceeding this if we have reached equilibrium, it really violates the M1 closure assumptions. see discussion in Skinner+Ostriker 2013 or Levermore et al. 1984
                     if(f_mag > fmag_max) {for(k_dir=0;k_dir<3;k_dir++) {if(mode==0) {SphP[i].Rad_Flux[kf][k_dir] *= fmag_max/f_mag;} else {SphP[i].Rad_Flux_Pred[kf][k_dir] *= fmag_max/f_mag;}}}
+#if defined(GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION)
+                    if(P[i].Pos[2]<=0.1) {if(mode==0) {SphP[i].Rad_Flux[kf][0]=SphP[i].Rad_Flux[kf][1]=0; SphP[i].Rad_Flux[kf][2]=fmag_max;} else {SphP[i].Rad_Flux_Pred[kf][0]=SphP[i].Rad_Flux_Pred[kf][1]=0; SphP[i].Rad_Flux_Pred[kf][2]=fmag_max;}}
+#endif
                 }
             }
 #endif
@@ -824,7 +826,7 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
     if(dt_entr > 0) { // none of this is worth doing if we don't have a finite timestep here
     for(kf=0;kf<N_RT_FREQ_BINS;kf++)
     {
-        int k,k_om; double rho=SphP[i].Density*All.cf_a3inv, ceff=C_LIGHT_CODE_REDUCED, teq_inv=SphP[i].Rad_Kappa[kf]*rho*ceff, beta[3], f_a=rt_absorb_frac_albedo(i,kf), f_s=1.-f_a, b_dot_n[N_RT_INTENSITY_BINS]={0}, beta_2=0.;
+        int k,k_om; double rho=SphP[i].Density*All.cf_a3inv, ceff=C_LIGHT_CODE_REDUCED, ctrue=C_LIGHT_CODE, teq_inv=SphP[i].Rad_Kappa[kf]*rho*ceff, beta[3], f_a=rt_absorb_frac_albedo(i,kf), f_s=1.-f_a, b_dot_n[N_RT_INTENSITY_BINS]={0}, beta_2=0.;
         int n_iter = 1 + (int)(DMIN(DMAX(4. , dt_entr/teq_inv), 1000.)); // number of iterations to subcycle everything below //
         double dt=dt_entr/n_iter, tau=dt*teq_inv, i0[N_RT_INTENSITY_BINS]={0}, invfourpi=1./(4.*M_PI), J, b_dot_H, b2_dot_K; int i_iter;
         for(i_iter=0; i_iter<n_iter; i_iter++)
@@ -832,7 +834,7 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
             double egy_0=0,flux_0[3]={0},egy_f=0,flux_f[3]={0}; // compute total change over sub-cycle, to update gas properties
             // load all the gas and intensity properties we need [all can change on the subcycle so some re-computing here]
             for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {if(mode==0) {i0[k_om] = RT_INTENSITY_BINS_DOMEGA*SphP[i].Rad_Intensity[kf][k_om];} else {i0[k_om] = RT_INTENSITY_BINS_DOMEGA*SphP[i].Rad_Intensity_Pred[kf][k_om];}}
-            for(k=0;k<3;k++) {if(mode==0) {beta[k]=P[i].Vel[k]/(All.cf_atime*ceff);} else {beta[k]=SphP[i].VelPred[k]/(All.cf_atime*ceff);}} // need gas velocity at this time
+            for(k=0;k<3;k++) {if(mode==0) {beta[k]=P[i].Vel[k]/(All.cf_atime*ctrue);} else {beta[k]=SphP[i].VelPred[k]/(All.cf_atime*ctrue);}} // need gas velocity at this time; with equations written this way, the 'beta' term is the -true- beta, so we have to use the true SOL
             for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {b_dot_n[k_om]=0; for(k=0;k<3;k++) {b_dot_n[k_om]+=All.Rad_Intensity_Direction[k_om][k]*beta[k];}}
             beta_2=0; for(k=0;k<3;k++) {beta_2+=beta[k]*beta[k];}
             for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {egy_0+=i0[k_om]; for(k=0;k<3;k++) {flux_0[k]+=All.Rad_Intensity_Direction[k_om][k]*i0[k_om];}}
@@ -848,7 +850,7 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
             
             // flux 'boost' and 'beaming' terms (go as n.beta). note we replace je -> je-I + I, and use the fact that we have solved already for the time-integral of (psi_a*(je-I)*dt) = de_emission_minus_absorption_saved, which can be re-used here, in average form <psi_a*(je-I)> = dE/dt --> just make sure the units are correct! because we're working in dimensionless units below, we should divide by tau, to be working in the same delta-units here: these are the 3 n.beta * [ psi_a*(j_em-J_nu)*(creduced/c)^2 + (psi_a+psi_s)*J_nu) ] in the intensity equation
             double fboost[N_RT_INTENSITY_BINS], fboost_avg=0, fboost_avg_p=0, fboost_avg_m=0; // calculate flux 'boost' terms
-            for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {fboost[k_om] = 3.*b_dot_n[k_om] * ((CRSOL_OVER_CTRUE_SQUARED_FOR_BEAMING*de_emission_minus_absorption_saved[kf][k_om]/tau) + ((f_a+f_s)*J)); fboost_avg += fboost[k_om]/N_RT_INTENSITY_BINS;} // pre-calculate to get mean value, will divide out
+            for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {fboost[k_om] = 3.*b_dot_n[k_om] * ((de_emission_minus_absorption_saved[kf][k_om]/tau) + ((f_a+f_s)*J)); fboost_avg += fboost[k_om]/N_RT_INTENSITY_BINS;} // pre-calculate to get mean value, will divide out
             for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {work=(fboost[k_om]-fboost_avg)*tau; if((work>0) || (i0[k_om]<=0)) {fboost[k_om]=work; fboost_avg_p+=fboost[k_om];} else {fboost[k_om]=work/(1.-work/i0[k_om]); fboost_avg_m+=fboost[k_om];}} // zero total energy change at linear order ensured by subtracting out sum here; non-linearization ensures i0 cannot be negative, but does allow second-order dt work term to appear, that's ok for now
             if(fboost_avg_p>0 && fboost_avg_m<0) {double fc=-fboost_avg_m/fboost_avg_p; fboost_avg_m=(1.+fc)/(1.+fc*fc); fboost_avg_p=fc*fboost_avg_m;} else {fboost_avg_m=fboost_avg_p=0;} // // these re-weight to gaurantee the non-linear sum is identically zero while preserving positive-definite behavior
             for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {if(fboost[k_om]>0) {i0[k_om]+=fboost_avg_p*fboost[k_om];} else {i0[k_om]+=fboost_avg_m*fboost[k_om];}} // alright done!
@@ -859,8 +861,8 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
             // ok -now- calculate the net change in momentum and energy, for updating the gas quantities
             for(k_om=0;k_om<N_RT_INTENSITY_BINS;k_om++) {egy_f+=i0[k_om]; for(k=0;k<3;k++) {flux_f[k]+=All.Rad_Intensity_Direction[k_om][k]*i0[k_om];}}
             double dv_gas[3]={0}, ke_gas_0=0, ke_gas_f=0, v0g=0, u0=0;
-            for(k=0;k<3;k++) {dv_gas[k] = -(flux_f[k]-flux_0[k])/(ceff*P[i].Mass); v0g=ceff*beta[k]; ke_gas_0+=(v0g*v0g); ke_gas_f+=(v0g+dv_gas[k])*(v0g+dv_gas[k]);} // note everything is volume-integrated, accounted for above, and we defined flux for convience without the c, so just one power of c here.
-            double d_ke_gas = 0.5*(ke_gas_f - ke_gas_0)*P[i].Mass, de_gas=-(egy_f-egy_0), de_gas_internal=(de_gas-d_ke_gas)/P[i].Mass;
+            for(k=0;k<3;k++) {dv_gas[k] = -(flux_f[k]-flux_0[k])/(ceff*P[i].Mass); v0g=ctrue*beta[k]; ke_gas_0+=(v0g*v0g); ke_gas_f+=(v0g+dv_gas[k])*(v0g+dv_gas[k]);} // note everything is volume-integrated, accounted for above, and we defined flux for convience without the c, so just one power of c here.
+            double d_ke_gas = 0.5*(ke_gas_f - ke_gas_0)*P[i].Mass, de_gas=-(ctrue/ceff)*(egy_f-egy_0), de_gas_internal=(de_gas-d_ke_gas)/P[i].Mass; // note ctrue/ceff factor here, accounting for rsol difference in gas heating/cooling rates vs RHD
             if(mode==0) {u0=SphP[i].InternalEnergy;} else {u0=SphP[i].InternalEnergyPred;} // for updating gas internal energy (work terms, after subtracting kinetic energy changes)
             if(de_gas_internal<=-0.9*u0) {de_gas_internal = DMIN(de_gas_internal/(1.-de_gas_internal/u0), -0.9*u0);} // just a catch to avoid negative energies (will break energy conservation if you are slamming into it, however!
             
@@ -873,7 +875,7 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
     } // loop over frequencies
     } // finite timestep requirement
 #else
-    double mom_fac = 1. - CRSOL_OVER_CTRUE_SQUARED_FOR_BEAMING * total_erad_emission_minus_absorption / (P[i].Mass * C_LIGHT_CODE_REDUCED*C_LIGHT_CODE_REDUCED); // back-reaction on gas from emission, which is isotropic in the fluid frame but anisotropic in the lab frame. this effect is only important in actually semi-relativistic problems so we use "real" C here, not a RSOL, and match the corresponding term above in the radiation flux equation (if that is evolved explicitly).
+    double mom_fac = 1. - total_erad_emission_minus_absorption / (P[i].Mass * C_LIGHT_CODE*C_LIGHT_CODE_REDUCED); // back-reaction on gas from emission, which is isotropic in the fluid frame but anisotropic in the lab frame. this effect is only important in actually semi-relativistic problems so we use "real" C here, not a RSOL, and match the corresponding term above in the radiation flux equation (if that is evolved explicitly). careful checking-through gives the single termm here, not both
     {int k_dir; for(k_dir=0;k_dir<3;k_dir++) {if(mode==0) {P[i].Vel[k_dir] *= mom_fac;} else {SphP[i].VelPred[k_dir] *= mom_fac;}}}
 #endif
 
@@ -903,8 +905,8 @@ void rt_set_simple_inits(int RestartFlag)
         {
             int k;
 #ifdef RT_INFRARED
-            SphP[i].Dust_Temperature = All.InitGasTemp; //get_min_allowed_dustIRrad_temperature(); // in K, floor = CMB temperature or 10K
-            SphP[i].Radiation_Temperature = All.InitGasTemp; //SphP[i].Dust_Temperature;
+            SphP[i].Dust_Temperature = DMIN(All.InitGasTemp,100.); //get_min_allowed_dustIRrad_temperature(); // in K, floor = CMB temperature or 10K
+            SphP[i].Radiation_Temperature = DMIN(All.InitGasTemp,100.); //SphP[i].Dust_Temperature;
             SphP[i].Dt_Rad_E_gamma_T_weighted_IR = 0;
 #endif
 #ifdef RT_RAD_PRESSURE_OUTPUT
@@ -931,7 +933,7 @@ void rt_set_simple_inits(int RestartFlag)
                 SphP[i].Rad_Flux_Limiter[k] = 1;
 #endif
 #ifdef RT_INFRARED
-                if(k==RT_FREQ_BIN_INFRARED) {SphP[i].Rad_E_gamma[RT_FREQ_BIN_INFRARED] = 5.67e-5 * 4 / (C_LIGHT * RT_SPEEDOFLIGHT_REDUCTION) * pow(All.InitGasTemp,4.) / UNIT_PRESSURE_IN_CGS * P[i].Mass / (SphP[i].Density*All.cf_a3inv);}
+                if(k==RT_FREQ_BIN_INFRARED) {SphP[i].Rad_E_gamma[RT_FREQ_BIN_INFRARED] = (4.*5.67e-5 / C_LIGHT) * pow(DMIN(All.InitGasTemp,100.),4.) / UNIT_PRESSURE_IN_CGS * P[i].Mass / (SphP[i].Density*All.cf_a3inv);}
 #endif
 #ifdef RT_EVOLVE_ENERGY
                 SphP[i].Rad_E_gamma_Pred[k] = SphP[i].Rad_E_gamma[k]; SphP[i].Dt_Rad_E_gamma[k] = 0;
@@ -944,10 +946,7 @@ void rt_set_simple_inits(int RestartFlag)
 #endif
                 
 #ifdef GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION
-                lum[RT_FREQ_BIN_GENERIC_USER_FREQ] = (P[i].Mass/1.) * All.Vertical_Grain_Accel * C_LIGHT_CODE * (All.Grain_Internal_Density*All.Grain_Size_Max) * A_base / (0.75*GRAIN_RDI_TESTPROBLEM_Q_AT_GRAIN_MAX); // special behavior for particular test of stratified boxes compared to explicit dust opacities
-                double q_a = (0.75*GRAIN_RDI_TESTPROBLEM_Q_AT_GRAIN_MAX) / (All.Grain_Internal_Density*All.Grain_Size_Max),
-                e0 = All.Vertical_Grain_Accel / q_a,
-                kappa_0 = q_a * All.Dust_to_Gas_Mass_Ratio, cell_vol = (P[i].Mass/SphP[i].Density);
+                double q_a = (0.75*GRAIN_RDI_TESTPROBLEM_Q_AT_GRAIN_MAX) / (All.Grain_Internal_Density*All.Grain_Size_Max), e0 = All.Vertical_Grain_Accel / q_a, kappa_0 = q_a * All.Dust_to_Gas_Mass_Ratio, cell_vol = (P[i].Mass/SphP[i].Density);
                 double rho_base_setup = 1., H_scale_setup = 1.; // define in code units the -assumed- initial scaling of the base gas density and vertical scale-length (PROBLEM SPECIFIC HERE!)
 #ifdef GRAIN_RDI_TESTPROBLEM_ACCEL_DEPENDS_ON_SIZE
                 kappa_0 *= sqrt(All.Grain_Size_Max / All.Grain_Size_Min); // opacity must be corrected for dependence of Q on grainsize or lack thereof
@@ -1083,6 +1082,25 @@ double slab_averaging_function(double x)
 
 
 
+/* simple code to make special exceptions for certain bands to allow radiation pressure forces to exceed absorbed photon momentum as needed */
+int check_if_absorbed_photons_can_be_reemitted_into_same_band(int kfreq)
+{
+    int checker = 0; // default to no, but this isn't always true
+#if defined(RT_FREEFREE)
+    if(kfreq==RT_FREQ_BIN_FREEFREE) {checker=1;} // skip
+#endif
+#if defined(RT_GENERIC_USER_FREQ)
+    if(kfreq==RT_FREQ_BIN_GENERIC_USER_FREQ) {checker=1;} // skip
+#endif
+#if defined(RT_INFRARED)
+    if(kfreq==RT_FREQ_BIN_INFRARED) {checker=1;} // skip
+#endif
+    return checker;
+}
+
+
+
+
 #ifdef RT_INFRARED
 
 /* return the minimum user-specified dust temperature. note there is nothing physical about this, just a convenience function since we enforce a minimum -gas- temperature */
@@ -1102,26 +1120,26 @@ double get_rt_ir_lambdadust_effective(double T, double rho, double *nH0_guess, d
     double LambdaDust_initial_guess = 1.116e-32 * (Tdust_0-T) * sqrt(T)*(1.-0.8*exp(-75./T)) * (P[target].Metallicity[0]/All.SolarAbundances[0]); // guess value based on the -current- values of T, Tdust //
         
     double egy_therm = SphP[target].InternalEnergyPred*P[target].Mass; // true internal energy (before this cooling loop)
-    double egy_rad = SphP[target].Rad_E_gamma_Pred[RT_FREQ_BIN_INFRARED]; // true radiation field energy (before this cooling loop)
+    double egy_rad = (C_LIGHT_CODE/C_LIGHT_CODE_REDUCED) * SphP[target].Rad_E_gamma_Pred[RT_FREQ_BIN_INFRARED]; // effective radiation field energy (before this cooling loop), accounting for the effects of an RSOL on the difference between the gas and radiation field energy equations
     double egy_tot = egy_rad + egy_therm; // true total energy [in code units]
-    double nHcgs = HYDROGEN_MASSFRAC * rho / PROTONMASS;    // effective hydrogen number dens in cgs units (just for normalization convention)
+    double nHcgs = HYDROGEN_MASSFRAC * rho / PROTONMASS; // effective hydrogen number dens in cgs units (just for normalization convention)
     double volume = (P[target].Mass / (SphP[target].Density*All.cf_a3inv)); // particle volume in code units
-    double ratefact = (nHcgs*nHcgs) * volume / (UNIT_PRESSURE_IN_CGS /UNIT_TIME_IN_CGS); // conversion b/t Lambda and du used by code
-    double Erad_to_T4_fac = RT_SPEEDOFLIGHT_REDUCTION * 1.32e14 * UNIT_PRESSURE_IN_CGS / volume; // conversion from absolute rad energy to T^4 units, used multiple places below, coefficient = cL_reduced/(4*sigma_B)
+    double ratefact = (nHcgs*nHcgs) * volume / (UNIT_PRESSURE_IN_CGS / UNIT_TIME_IN_CGS); // conversion b/t Lambda and du used by code
+    double Erad_to_T4_fac = (C_LIGHT_CODE_REDUCED/C_LIGHT_CODE) * (C_LIGHT/(4. * 5.67e-5)) * UNIT_PRESSURE_IN_CGS / volume; // conversion from absolute rad energy to T^4 units, used multiple places below, coefficient = cL_reduced/(4*sigma_B); note RSOL power above cancels here b/c of the cancellation in absorption+emission coefficients
     double Teff = Get_Gas_Mean_Molecular_Weight_mu(T, rho, nH0_guess, ne_guess, 0, target) * (GAMMA(target)-1.) * U_TO_TEMP_UNITS * (egy_tot / P[target].Mass); // convert from internal energy to temperature units for factor below
 
-    double xf, a = Teff*Teff*Teff*Teff / (Erad_to_T4_fac*egy_tot); // dimensionless factors needed to solve for the equilibrium Tdust-Tgas relation
+    double xf, a = Teff*Teff*Teff*Teff / (Erad_to_T4_fac*egy_tot); // dimensionless factors needed to solve for the equilibrium Tdust-Tgas relation; this assumes total 'effective' energy between gas and radiation is conserved, and Td=Tgas, and solves for what the equilibrium temperature would be in terms of xf = Teqm / Teff
     if(a<0.2138) {xf=(1+19*a+132*a*a+418*a*a*a+580*a*a*a*a+243*a*a*a*a*a)/(1+20*a+148*a*a+508*a*a*a+796*a*a*a*a+432*a*a*a*a*a);} // eqm solution (power series approx)
      else {double a0=pow(a,0.25); xf=(-704-1045*a0+128*a0*a0*a0*(39+32*a0*(4+7*a0+64*a0*a0*a0*(-1+8*a0*(-1+4*a0)))))/(8388608.*a*a*a0*a0);} // eqm solution (power series approx)
 
-    double L0_abs = fabs(LambdaDust_initial_guess); // absolute value of the initially-computed guess for the cooling/heating rate
-    double Edot0 = L0_abs * ratefact; // now this is an absolute Edot in code units
-    double efinal_minus_einitial = egy_tot*xf - egy_therm; // change in energy if we went all the way to equilibrium
-    double t_cooling_eff = fabs(efinal_minus_einitial) / Edot0; // effective cooling time at the initially-estimated rate here
+    double L0_abs = fabs(LambdaDust_initial_guess); // absolute value of the initially-computed guess for the cooling/heating rate of the gas
+    double Edot0 = L0_abs * ratefact; // now this is an absolute Edot in code units, for the gas loss/gain from dust
+    double efinal_minus_einitial = egy_tot*xf - egy_therm; // change in gas thermal energy if we went all the way to equilibrium
+    double t_cooling_eff = fabs(efinal_minus_einitial) / Edot0; // effective cooling time at the initially-estimated rate here: we'll use this to stably interpolate
     double sign_term=1.; if(efinal_minus_einitial < 0.) {sign_term=-1.;} // sign of the cooling/heating (to keep for below)
     double dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(target); // timestep being taken [code units]
     double tau = dt/t_cooling_eff, xfac=(1.-exp(-tau))/tau; if(tau<0.05) {xfac=1.-0.5*tau+tau*tau/6.;} else {if(tau>20.) {xfac=1./tau;}} // correct rate to asymptote to equilibrium
-    double lambda_eff = sign_term * L0_abs * xfac; // final effective cooling/heating rate
+    double lambda_eff = sign_term * L0_abs * xfac; // final effective gas cooling/heating rate
 
     SphP[target].Dust_Temperature = DMAX(pow(Erad_to_T4_fac*DMAX( 0., egy_rad - lambda_eff*ratefact*dt ), 0.25), get_min_allowed_dustIRrad_temperature()); // update dust temperature guess //
     return lambda_eff;

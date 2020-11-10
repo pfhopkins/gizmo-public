@@ -111,7 +111,7 @@ double get_pressure(int i)
     if(P[i].Mass>0 && SphP[i].Density>0) {for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++)
     {
         press += (gamma_rad-1.) * return_flux_limiter(i,k_freq) * SphP[i].Rad_E_gamma_Pred[k_freq] * SphP[i].Density / P[i].Mass;
-        soundspeed2 +=  gamma_rad*(gamma_rad-1.) * SphP[i].Rad_E_gamma_Pred[k_freq] / P[i].Mass;
+        soundspeed2 += gamma_rad*(gamma_rad-1.) * SphP[i].Rad_E_gamma_Pred[k_freq] / P[i].Mass;
     }}
     soundspeed = sqrt(soundspeed2);
 #endif
@@ -477,9 +477,9 @@ double Get_Gas_Molecular_Mass_Fraction(int i, double temperature, double neutral
 double yhelium(int target)
 {
 #ifdef COOL_METAL_LINES_BY_SPECIES
-    if(target >= 0) {double ytmp=DMIN(0.5,P[target].Metallicity[1]); return 0.25*ytmp/(1.-ytmp);} else {return ((1-HYDROGEN_MASSFRAC)/(4*HYDROGEN_MASSFRAC));}
+    if(target >= 0) {double ytmp=DMIN(0.5,P[target].Metallicity[1]); return 0.25*ytmp/(1.-ytmp);} else {return ((1.-HYDROGEN_MASSFRAC)/(4.*HYDROGEN_MASSFRAC));}
 #else
-    return ((1-HYDROGEN_MASSFRAC)/(4*HYDROGEN_MASSFRAC)); // assume uniform H-He gas
+    return ((1.-HYDROGEN_MASSFRAC)/(4.*HYDROGEN_MASSFRAC)); // assume uniform H-He gas
 #endif
 }
 

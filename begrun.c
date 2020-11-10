@@ -226,6 +226,10 @@ void begrun(void)
     init_geofactor_table();
 #endif
 
+#if defined(FLAG_NOT_IN_PUBLIC_CODE_EVOLVE_SPECTRUM)
+    CR_initialize_multibin_quantities(); // initialize the global variables and look-up tables //
+#endif
+    
   All.TimeLastRestartFile = CPUThisRun;
 
   if(RestartFlag == 0 || RestartFlag == 2 || RestartFlag == 3 || RestartFlag == 4 || RestartFlag == 5 || RestartFlag == 6)
@@ -431,9 +435,6 @@ void begrun(void)
 #endif
     rt_set_simple_inits(RestartFlag);
 #endif
-#if defined(FLAG_NOT_IN_PUBLIC_CODE_EVOLVE_SPECTRUM)
-    CR_initialize_multibin_quantities(); // initialize the global variables and look-up tables //
-#endif
 
 
   if(All.ComovingIntegrationOn) {init_drift_table();}
@@ -550,11 +551,11 @@ void open_outputfiles(void)
   sprintf(buf, "%sblackhole_details/blackhole_details_%d.txt", All.OutputDir, ThisTask);
   if(!(FdBlackHolesDetails = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
 #endif
-#ifdef BH_OUTPUT_GASSWALLOW
+#ifdef OUTPUT_SINK_ACCRETION_HIST
   sprintf(buf, "%sblackhole_details/bhswallow_%d.txt", All.OutputDir, ThisTask);
   if(!(FdBhSwallowDetails = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
 #endif
-#ifdef BH_OUTPUT_FORMATION_PROPERTIES
+#ifdef OUTPUT_SINK_FORMATION_PROPS
   sprintf(buf, "%sblackhole_details/bhformation_%d.txt", All.OutputDir, ThisTask);
   if(!(FdBhFormationDetails = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
 #endif

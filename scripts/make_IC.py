@@ -110,24 +110,10 @@ def make_IC():
     h.attrs['MassTable'] = np.zeros(6); # these can be set if all particles will have constant masses for the entire run. however since 
                                         # we set masses explicitly by-particle this should be zero. that is more flexible anyways, as it 
                                         # allows for physics which can change particle masses 
-    ## all of the parameters below will be overwritten by whatever is set in the run-time parameterfile if
-    ##   this file is read in as an IC file, so their values are irrelevant. they are only important if you treat this as a snapshot
-    ##   for restarting. Which you shouldn't - it requires many more fields be set. But we still need to set some values for the code to read
     h.attrs['Time'] = 0.0;  # initial time
-    h.attrs['Redshift'] = 0.0; # initial redshift
-    h.attrs['BoxSize'] = 1.0; # box size
     h.attrs['NumFilesPerSnapshot'] = 1; # number of files for multi-part snapshots
-    h.attrs['Omega0'] = 1.0; # z=0 Omega_matter
-    h.attrs['OmegaLambda'] = 0.0; # z=0 Omega_Lambda
-    h.attrs['HubbleParam'] = 1.0; # z=0 hubble parameter (small 'h'=H/100 km/s/Mpc)
-    h.attrs['Flag_Sfr'] = 0; # flag indicating whether star formation is on or off
-    h.attrs['Flag_Cooling'] = 0; # flag indicating whether cooling is on or off
-    h.attrs['Flag_StellarAge'] = 0; # flag indicating whether stellar ages are to be saved
-    h.attrs['Flag_Metals'] = 0; # flag indicating whether metallicity are to be saved
-    h.attrs['Flag_Feedback'] = 0; # flag indicating whether some parts of springel-hernquist model are active
     h.attrs['Flag_DoublePrecision'] = 0; # flag indicating whether ICs are in single/double precision
-    h.attrs['Flag_IC_Info'] = 0; # flag indicating extra options for ICs
-    ## ok, that ends the block of 'useless' parameters
+    ## no other parameters will be read from the header if we are parsing an HDF5 file for reading in
     
     # Now, the actual data!
     #   These blocks should all be written in the order of their particle type (0,1,2,3,4,5)

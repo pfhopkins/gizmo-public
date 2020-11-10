@@ -1227,8 +1227,8 @@ FOBJS   += eos/helmholtz/helm_impl.o eos/helmholtz/helm_wrap.o
 FINCL   += eos/helmholtz/helm_const.dek eos/helmholtz/helm_implno.dek eos/helmholtz/helm_table_storage.dek eos/helmholtz/helm_vector_eos.dek
 endif
 
-# chimes files are treated as special for now because they are not in the public
-#  code and have not had their macro logic cleaned up to allow appropriate compilation without chimes flags enabled
+# chimes files are treated as special for now because they require special external libraries (e.g. sundials) that are otherwise not
+#   used anywhere else in the code, and have not had their macro logic cleaned up to allow appropriate compilation without chimes flags enabled
 ifeq (CHIMES,$(findstring CHIMES,$(CONFIGVARS)))
 OBJS    += cooling/chimes/chimes.o cooling/chimes/chimes_cooling.o cooling/chimes/init_chimes.o cooling/chimes/rate_equations.o cooling/chimes/update_rates.o 
 INCL    += cooling/chimes/chimes_interpol.h cooling/chimes/chimes_proto.h cooling/chimes/chimes_vars.h 

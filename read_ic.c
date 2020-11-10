@@ -670,8 +670,7 @@ void read_file(char *fname, int readTask, int lastTask)
         }
 
 
-        for(i = 0; i < 6; i++)
-            All.MassTable[i] = header.mass[i];
+        for(i = 0; i < 6; i++) {All.MassTable[i] = header.mass[i];}
 
         All.MaxPart = (int) (All.PartAllocFactor * (All.TotNumPart / NTask));
         All.MaxPartSph = (int) (All.PartAllocFactor * (All.TotN_gas / NTask));	/* sets the maximum number of particles that may reside on a processor */

@@ -367,10 +367,8 @@ integertime get_timestep(int p,		/*!< particle index */
         if(eligible_for_hermite(p)) dt *= 1.4; // gives 10^-6 energy error per orbit for a 0.9 eccentricity binary
 #endif
     }
-#if defined(SINGLE_STAR_FB) && !defined(NOGRAVITY)    
-    if(P[p].Type == 0){
-        dt = DMIN(dt, All.CourantFac * DMIN(P[p].min_bh_fb_time, P[p].min_bh_approach_time));
-    }
+#if defined(SINGLE_STAR_FB_TIMESTEPLIMIT) && !defined(NOGRAVITY)    
+    if(P[p].Type == 0) {dt = DMIN(dt, All.CourantFac * DMIN(P[p].min_bh_fb_time, P[p].min_bh_approach_time));}
 #endif    
 #endif // SINGLE_STAR_TIMESTEPPING
 
@@ -411,7 +409,7 @@ integertime get_timestep(int p,		/*!< particle index */
         double L_particle = Get_Particle_Size(p);
         dt_courant = 0.5 * All.CourantFac * (L_particle*All.cf_atime) / csnd;
 #if defined(GRAIN_BACKREACTION)
-        if(P[p].Grain_AccelTimeMin < dt_courant) {dt_courant = P[p].Grain_AccelTimeMin;}
+        if(6.*P[p].Grain_AccelTimeMin < dt_courant) {dt_courant = 6.*P[p].Grain_AccelTimeMin;}
 #endif
 #ifdef PIC_MHD
         if(P[p].Grain_SubType==3)
@@ -597,7 +595,7 @@ integertime get_timestep(int p,		/*!< particle index */
 #endif
 
 #if defined(GRAIN_BACKREACTION)
-            if(P[p].Grain_AccelTimeMin < dt) {dt = P[p].Grain_AccelTimeMin;}
+            if(6.*P[p].Grain_AccelTimeMin < dt) {dt = 6.*P[p].Grain_AccelTimeMin;}
 #endif
 
 
@@ -795,7 +793,7 @@ integertime get_timestep(int p,		/*!< particle index */
 
             double L_particle = Get_Particle_Size(p);
             double vsig = P[p].BH_SurroundingGasVel;
-#if defined(SINGLE_STAR_FB) && !defined(NOGRAVITY)
+#if defined(SINGLE_STAR_FB_TIMESTEPLIMIT) && !defined(NOGRAVITY)
             vsig += P[p].MaxFeedbackVel;
 #endif                        
             double dt_cour_sink = All.CourantFac * (L_particle*All.cf_atime) / vsig;
@@ -808,7 +806,7 @@ integertime get_timestep(int p,		/*!< particle index */
             double dt_min =  GET_PHYSICAL_TIMESTEP_FROM_TIMEBIN(bin);
             if(dt > dt_min && dt_min > 0) dt = 1.01 * dt_min;
         }
-#endif
+#endif // SINGLE_STAR_TIMESTEPPING
     } // if(P[p].Type == 5)
 
 #endif // BLACK_HOLES

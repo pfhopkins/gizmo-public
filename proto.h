@@ -228,7 +228,6 @@ int compare_densities_for_sort(const void *a, const void *b);
 int io_compare_P_ID(const void *a, const void *b);
 int io_compare_P_GrNr_SubNr(const void *a, const void *b);
 void drift_particle(int i, integertime time1);
-int ShouldWeDoDynamicUpdate(void);
 void put_symbol(double t0, double t1, char c);
 void write_cpu_log(void);
 int get_timestep_bin(integertime ti_step);
@@ -493,8 +492,8 @@ void particle2in_addFB_fromstars(struct addFB_evaluate_data_in_ *in, int i, int 
 double mechanical_fb_calculate_eventrates(int i, double dt);
 #endif
 
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_FB_WINDS) || defined(SINGLE_STAR_FB_RAD) || defined(SINGLE_STAR_FB_SNE) || defined(SINGLE_STAR_FB_LOCAL_RP)
-double single_star_fb_velocity(int n);
+#ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
+double single_star_feedback_velocity_fortimestep(int n);
 #endif
 
 #ifdef GRAIN_FLUID
@@ -679,6 +678,7 @@ int rt_get_lum_band_singlestar(int i, int mode, double *lum);
 void eddington_tensor_dot_vector(double ET[6], double vec_in[3], double vec_out[3]);
 double return_flux_limiter(int target, int k_freq);
 double rt_kappa(int j, int k_freq);
+int check_if_absorbed_photons_can_be_reemitted_into_same_band(int kfreq);
 double rt_absorb_frac_albedo(int j, int k_freq);
 double rt_absorption_rate(int i, int k_freq);
 double rt_diffusion_coefficient(int i, int k_freq);

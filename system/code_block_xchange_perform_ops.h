@@ -77,9 +77,10 @@ be copy-pasted and can be generically optimized in a single place */
         int N_chunks_for_import, ngrp_initial, ngrp;
         for(ngrp_initial = 1; ngrp_initial < (1 << PTask); ngrp_initial += N_chunks_for_import) /* sub-chunking loop opener */
         {
+            int flagall;
             N_chunks_for_import = (1 << PTask) - ngrp_initial;
             do {
-                int flag = 0, flagall; Nimport = 0;
+                int flag = 0; Nimport = 0;
                 for(ngrp = ngrp_initial; ngrp < ngrp_initial + N_chunks_for_import; ngrp++)
                 {
                     recvTask = ThisTask ^ ngrp;
@@ -92,8 +93,8 @@ be copy-pasted and can be generically optimized in a single place */
                 if(flagall) {N_chunks_for_import /= 2;} else {break;}
             } while(N_chunks_for_import > 0);
             if(N_chunks_for_import == 0) {printf("Memory is insufficient for even one import-chunk: N_chunks_for_import=%d  ngrp_initial=%d  Nimport=%ld  FreeBytes=%lld , but we need to allocate=%lld \n",N_chunks_for_import, ngrp_initial, Nimport, (long long)FreeBytes,(long long)(Nimport * sizeof(struct INPUT_STRUCT_NAME) + Nimport * sizeof(struct OUTPUT_STRUCT_NAME) + 16384)); endrun(9977);}
-            if(ngrp_initial == 1 && N_chunks_for_import != ((1 << PTask) - ngrp_initial)) PRINT_WARNING("Splitting import operation into sub-chunks as we are hitting memory limits (check this isn't imposing large communication cost)");
-            
+            if(flagall) {if(ThisTask==0) PRINT_WARNING("Splitting import operation into sub-chunks as we are hitting memory limits (check this isn't imposing large communication cost)");}
+
             /* now allocated the import and results buffers */
             DATAGET_NAME = (struct INPUT_STRUCT_NAME *) mymalloc("DATAGET_NAME", Nimport * sizeof(struct INPUT_STRUCT_NAME));
             DATARESULT_NAME = (struct OUTPUT_STRUCT_NAME *) mymalloc("DATARESULT_NAME", Nimport * sizeof(struct OUTPUT_STRUCT_NAME));
