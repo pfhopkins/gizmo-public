@@ -10,7 +10,7 @@
  * This file was written by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
  */
 /* --------------------------------------------------------------------------------- */
-//#define RT_ENHANCED_NUMERICAL_DIFFUSION /* option which increases numerical diffusion, to get smoother solutions, if desired; akin to slopelimiters~0 model */
+#define RT_ENHANCED_NUMERICAL_DIFFUSION /* option which increases numerical diffusion, to get smoother solutions, if desired; akin to slopelimiters~0 model */
 {
     // first define some variables needed regardless //
     double c_light = C_LIGHT_CODE_REDUCED;
@@ -163,24 +163,27 @@
                 face_dot_flux += Face_Area_Vec[k] * grad; /* remember, our 'flux' variable is a volume-integral */
             }
             grad_norm = sqrt(grad_norm) + MIN_REAL_NUMBER;
-            double reduced_flux = grad_norm / (C_LIGHT_CODE_REDUCED * 0.5*(scalar_i+scalar_j)); // |f|/(c*E): ratio of flux to optically thin limit
-            if(reduced_flux > 1) {reduced_flux=1;} else {if(reduced_flux < 0) {reduced_flux=0;}}
             double cos_theta_face_flux = face_dot_flux / (Face_Area_Norm * grad_norm); // angle between flux and face vector normal
             if(cos_theta_face_flux < -1) {cos_theta_face_flux=-1;} else {if(cos_theta_face_flux > 1) {cos_theta_face_flux=1;}}
+#if 0
+            double reduced_flux = grad_norm / (C_LIGHT_CODE_REDUCED * 0.5*(scalar_i+scalar_j)); // |f|/(c*E): ratio of flux to optically thin limit
+            if(reduced_flux > 1) {reduced_flux=1;} else {if(reduced_flux < 0) {reduced_flux=0;}}
             double lam_m, lam_p, wt, y_f=1.-reduced_flux, y_f_h=sqrt(y_f), y_f_h2=sqrt(y_f_h), cth=cos_theta_face_flux/2.;
             wt = (1. + cos_theta_face_flux)*(1. + cos_theta_face_flux) / 4.;
             lam_m = sthreeinv - reduced_flux*(+cth + (1.-(y_f_h2+wt*y_f_h)/(1.+wt))*(+cth+sthreeinv));
             wt = (1. - cos_theta_face_flux)*(1. - cos_theta_face_flux) / 4.;
             lam_p = sthreeinv - reduced_flux*(-cth + (1.-(y_f_h2+wt*y_f_h)/(1.+wt))*(-cth+sthreeinv));
-            
+            /* alternative expression not accounting for rotation from Audit et al. astro-ph 0206281 */
+            lam_p=lam_m=1; double f=DMIN(1.,DMAX(0.,reduced_flux)), eps_f=DMAX(f,DMIN(1.,1./(MIN_REAL_NUMBER+tau_c_i[k_freq]))), xd=sqrt(4.-3.*f*f), x=(3.+4.*f*f)/(5.+2.*xd), xp=2.*f/xd, xpe=1.*xp, xq=sqrt(DMAX(xpe*xpe+4.*(x-xp*f),0));
+            lam_m=(xq-xpe)/2.; lam_p=(xq+xpe)/2.; if(lam_p>1 || lam_m <0) {lam_p=1.; lam_m=0.;}
             if(lam_p < 0) {lam_p=0;} else {if(lam_p>1) {lam_p=1;}}
             if(lam_m < 0) {lam_m=0;} else {if(lam_m>1) {lam_m=1;}}
             double hlle_wtfac_f, hlle_wtfac_u, eps_wtfac_f = 1.0e-10; // minimum weight
             if((lam_m==0)&&(lam_p==0)) {hlle_wtfac_f=0.5;} else {hlle_wtfac_f=lam_p/(lam_p+lam_m);}
             if(hlle_wtfac_f < eps_wtfac_f) {hlle_wtfac_f=eps_wtfac_f;} else {if(hlle_wtfac_f > 1.-eps_wtfac_f) {hlle_wtfac_f=1.-eps_wtfac_f;}}
             hlle_wtfac_u = hlle_wtfac_f * (1.-hlle_wtfac_f) * (lam_p + lam_m); // weight for addition of diffusion term
-#ifdef RT_ENHANCED_NUMERICAL_DIFFUSION
-            hlle_wtfac_u = hlle_wtfac_f = 0.5;
+#else
+            double hlle_wtfac_u=0.5, hlle_wtfac_f=0.5; // this corresponds to the Global-Lax-Friedrichs (GLF) flux function
 #endif
             /* the flux is already known (its explicitly evolved, rather than determined by the gradient of the energy density */
             for(k=0;k<3;k++) {cmag += Face_Area_Vec[k] * (hlle_wtfac_f*flux_i[k] + (1.-hlle_wtfac_f)*flux_j[k]);} /* remember, our 'flux' variable is a volume-integral [all physical units here] */
@@ -236,7 +239,7 @@
                 if(f_direct != 0)
                 {
                     thold_hll = (0.5*hlle_wtfac_u) * fabs(cmag); // add hll term but flux-limited //
-#ifdef RT_ENHANCED_NUMERICAL_DIFFUSION
+#ifndef RT_ENHANCED_NUMERICAL_DIFFUSION
                     if(fabs(f_direct) > thold_hll) {f_direct *= thold_hll/fabs(f_direct);}
 #endif
                     cmag += f_direct;
@@ -244,12 +247,14 @@
                 // enforce a flux limiter for stability (to prevent overshoot) //
                 cmag *= dt_hydrostep; // all in physical units //
                 double sVi = scalar_i*V_i_phys, sVj = scalar_j*V_j_phys; // physical units //
-                thold_hll = 0.25 * DMIN(fabs(sVi-sVj), DMAX(fabs(sVi), fabs(sVj)));
+                thold_hll = 0.25 * DMAX(fabs(sVi-sVj), DMAX(fabs(sVi), fabs(sVj)));
 #ifdef RT_ENHANCED_NUMERICAL_DIFFUSION
                 thold_hll *= 2.0;
 #endif
                 if(sign_c0 < 0) {thold_hll *= 1.e-2;} // if opposing signs, restrict this term //
+#ifndef RT_ENHANCED_NUMERICAL_DIFFUSION
                 if(fabs(cmag)>thold_hll) {cmag *= thold_hll/fabs(cmag);}
+#endif
                 cmag /= dt_hydrostep;
                 Fluxes_Rad_E_gamma[k_freq] += cmag; // returned in physical units //
 #ifdef RT_INFRARED // define advected radiation temperature based on direction of net radiation flow //
