@@ -32,7 +32,7 @@
 #include <nvector/nvector_serial.h> 
 #include <sundials/sundials_types.h>
 #include <sundials/sundials_dense.h> 
-#include "chimes_proto.h"
+#include "../../allvars.h"
 #include "chimes_vars.h"
 
 

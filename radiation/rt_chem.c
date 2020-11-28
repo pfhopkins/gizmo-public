@@ -147,13 +147,13 @@ void rt_get_sigma(void)
 void rt_update_chemistry(void)
 {
     int i;
-    double nH, temp, rho, nHII, dtime, c_light, A, B, CC, n_photons_vol, alpha_HII, gamma_HI, fac;
+    double nH, temp, rho, nHII, dtime, c_light_codeunits, A, B, CC, n_photons_vol, alpha_HII, gamma_HI, fac;
 #ifdef RT_CHEM_PHOTOION_HE
     double alpha_HeII, alpha_HeIII, gamma_HeI, gamma_HeII, nHeII, nHeIII, D, E, F, G, J, L, y_fac;
 #endif
     
     fac = UNIT_TIME_IN_CGS / (UNIT_LENGTH_IN_CGS*UNIT_LENGTH_IN_CGS*UNIT_LENGTH_IN_CGS);
-    c_light = C_LIGHT_CODE;
+    c_light_codeunits = C_LIGHT_CODE;
     
     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
         if(P[i].Type == 0)
@@ -176,7 +176,7 @@ void rt_update_chemistry(void)
             }
             
             A = dtime * gamma_HI * nH * SphP[i].Ne;
-            B = dtime * c_light * n_photons_vol * rt_ion_sigma_HI[RT_FREQ_BIN_H0];
+            B = dtime * c_light_codeunits * n_photons_vol * rt_ion_sigma_HI[RT_FREQ_BIN_H0];
             CC = dtime * alpha_HII * nH * SphP[i].Ne;
             
             /* semi-implicit scheme for ionization */
@@ -244,13 +244,13 @@ void rt_update_chemistry(void)
 void rt_update_chemistry(void)
 {
     int i, j;
-    double nH, temp, rho, nHII, c_light, n_photons_vol, dtime, A, B, CC, alpha_HII, gamma_HI, fac, k_HI;
+    double nH, temp, rho, nHII, c_light_codeunits, n_photons_vol, dtime, A, B, CC, alpha_HII, gamma_HI, fac, k_HI;
 #ifdef RT_CHEM_PHOTOION_HE
     double alpha_HeII, alpha_HeIII, gamma_HeI, gamma_HeII, nHeII, nHeIII, D, E, F, G, J, L, k_HeI, k_HeII, y_fac;
 #endif
     
     fac = UNIT_TIME_IN_CGS / (UNIT_LENGTH_IN_CGS*UNIT_LENGTH_IN_CGS*UNIT_LENGTH_IN_CGS);
-    c_light = C_LIGHT_CODE;
+    c_light_codeunits = C_LIGHT_CODE;
     
     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
         if(P[i].Type == 0)
@@ -263,10 +263,10 @@ void rt_update_chemistry(void)
             for(j = 0; j < N_RT_FREQ_BINS; j++)
             {
                 n_photons_vol = rt_return_photon_number_density(i,j);
-                if(rt_ion_nu_min[j] >= 13.6) {k_HI += c_light * rt_ion_sigma_HI[j] * n_photons_vol;}
+                if(rt_ion_nu_min[j] >= 13.6) {k_HI += c_light_codeunits * rt_ion_sigma_HI[j] * n_photons_vol;}
 #ifdef RT_CHEM_PHOTOION_HE
-                if(rt_ion_nu_min[j] >= 24.6) {k_HeI += c_light * rt_ion_sigma_HeI[j] * n_photons_vol;}
-                if(rt_ion_nu_min[j] >= 54.4) {k_HeII += c_light * rt_ion_sigma_HeII[j] * n_photons_vol;}
+                if(rt_ion_nu_min[j] >= 24.6) {k_HeI += c_light_codeunits * rt_ion_sigma_HeI[j] * n_photons_vol;}
+                if(rt_ion_nu_min[j] >= 54.4) {k_HeII += c_light_codeunits * rt_ion_sigma_HeII[j] * n_photons_vol;}
 #endif
             }
             

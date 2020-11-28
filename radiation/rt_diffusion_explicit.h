@@ -13,7 +13,7 @@
 #define RT_ENHANCED_NUMERICAL_DIFFUSION /* option which increases numerical diffusion, to get smoother solutions, if desired; akin to slopelimiters~0 model */
 {
     // first define some variables needed regardless //
-    double c_light = C_LIGHT_CODE_REDUCED;
+    double c_light_eff = C_LIGHT_CODE_REDUCED, rsol_corr = c_light_eff / C_LIGHT_CODE;
 #if defined(HYDRO_MESHLESS_FINITE_VOLUME)
     double v_frame[3]={0}; for(k=0;k<3;k++) {v_frame[k]=0.5*(ParticleVel_j[k] + local.ParticleVel[k])/All.cf_atime;} // frame velocity, not fluid velocity, is what appears here
 #else
@@ -60,8 +60,8 @@
 
             /* here we add the HLL-like correction term. this greatly reduces noise and improves the stability of the diffusion.
             	however it comes at the cost of (significant) additional numerical diffusion */
-            double v_eff_light = DMIN(c_light , kappa_ij / Particle_Size_j); // physical
-            double c_hll = 0.5*fabs(face_vel_i-face_vel_j) + v_eff_light;
+            double v_eff_touse = DMIN(c_light_eff , kappa_ij / Particle_Size_j); // physical
+            double c_hll = DMIN(0.5*fabs(face_vel_i-face_vel_j) + v_eff_touse , c_light_eff);
             double q = 0.5 * c_hll * kernel.r * All.cf_atime / fabs(1.e-37 + kappa_ij); q = (0.2 + q) / (0.2 + q + q*q); // physical
             double d_scalar_tmp = d_scalar - grad_dot_x_ij; // (1/code volume)
             double d_scalar_hll = MINMOD(d_scalar , d_scalar_tmp) * All.cf_a3inv; // physical
@@ -82,7 +82,7 @@
             if((check_for_stability_sign < 0) && (fabs(f_direct) > HLL_DIFFUSION_OVERSHOOT_FACTOR*fabs(cmag))) {cmag = 0;}
 
             // prevent super-luminal local fluxes //
-            double R_flux = fabs(cmag) / (3. * Face_Area_Norm * c_light * (fabs(d_scalar)*All.cf_a3inv) + 1.e-37); // physical
+            double R_flux = fabs(cmag) / (3. * Face_Area_Norm * c_light_eff * (fabs(d_scalar)*All.cf_a3inv) + 1.e-37); // physical
             R_flux = (1. + 12.*R_flux) / (1. + 12.*R_flux*(1.+R_flux)); // 12 arbitrary but >>1 gives good behavior here //
 #ifndef FREEZE_HYDRO
             cmag *= R_flux;
@@ -93,21 +93,18 @@
             double scalar_ij_phys = 2.*scalar_i*scalar_j/(scalar_i+scalar_j) * All.cf_a3inv; // use harmonic mean here, to weight lower value
 #ifdef RT_FLUXLIMITER
             double fluxlim_j = return_flux_limiter(j,k_freq);
-            double fluxlim_i = local.RT_DiffusionCoeff[k_freq] * local.Density * local.Rad_Kappa[k_freq] / C_LIGHT_CODE_REDUCED; /* figure this out by what we've passed to save an extra variable being sent, here */
+            double fluxlim_i = local.RT_DiffusionCoeff[k_freq] * local.Density * local.Rad_Kappa[k_freq] / c_light_eff; /* figure this out by what we've passed to save an extra variable being sent, here */
             fluxlim_ij = 0.5 * (fluxlim_i+fluxlim_j);
 #endif
-            double fac_fluxlim = (4./3.)*fluxlim_ij*(C_LIGHT_CODE_REDUCED/C_LIGHT_CODE)*v_Fluid_dot_rt - v_Area_dot_rt; /* also need to account for where the RSOL terms appear in the asymptotic flux with an RSOL */
+            double fac_fluxlim = rsol_corr*(4./3.)*fluxlim_ij*v_Fluid_dot_rt - v_Area_dot_rt; /* also need to account for where the RSOL terms appear in the asymptotic flux with an RSOL */
 #ifdef RT_RADPRESSURE_IN_HYDRO
-            fac_fluxlim = fluxlim_ij*(C_LIGHT_CODE_REDUCED/C_LIGHT_CODE)*v_Fluid_dot_rt - v_Area_dot_rt + (2.*rt_absorb_frac_albedo(j,k_freq))*(fluxlim_ij/3.)*v_Fluid_dot_rt; // when P is included in hydro solver, some terms are automatically included, some not, so the pre-factor here needs to be revised
+            fac_fluxlim = rsol_corr*fluxlim_ij*v_Fluid_dot_rt - v_Area_dot_rt + (2.*rt_absorb_frac_albedo(j,k_freq))*(fluxlim_ij/3.)*v_Fluid_dot_rt; // when P is included in hydro solver, some terms are automatically included, some not, so the pre-factor here needs to be revised
 #endif
             cmag_adv += scalar_ij_phys * fac_fluxlim; // need to be careful with the sign here. since this is an oriented area and A points from j to i, need to watch the sign here (recently flipped in push - need to test). the 1/3 sometimes above owes to the fact that this is really the --pressure-- term for FLD-like methods, the energy term is implicitly part of the flux already if we're actually doing this correctly //
-#if defined(HYDRO_MESHLESS_FINITE_VOLUME)
-            //for(k=0;k<3;k++) {cmag_adv -= (v_frame[k]-0.5*(local.Vel[k]+VelPred_j[k])/All.cf_atime) * scalar_ij_phys * Face_Area_Vec[k];} // not needed anymore with definitions above for v-fluid vs v-cell
-#endif
             cmag_adv += fabs(v_Area_dot_rt) * (scalar_j-scalar_i); // hll (rusanov) flux to stabilize and smooth flow
             if(fabs(cmag_adv)>0) // now limit the advective flux like we limit other fluxes
             {
-                double cmag_max = 0.5 * DMAX(1,0.5*(tau_c_i[k_freq]+tau_c_j)) * (fabs(v_Area_dot_rt/Face_Area_Norm)/c_light) * fabs(cmag); /* the 0.5 factor gives better result for the outflow test */
+                double cmag_max = 0.5 * DMAX(1,0.5*(tau_c_i[k_freq]+tau_c_j)) * (fabs(v_Area_dot_rt/Face_Area_Norm)/c_light_eff) * fabs(cmag); /* the 0.5 factor gives better result for the outflow test */
                 if(fabs(cmag_adv) > cmag_max) {cmag_adv *= cmag_max/fabs(cmag_adv);}
                 cmag += cmag_adv;
             }
@@ -136,12 +133,7 @@
 #else /* RT_EVOLVE_FLUX is ON, so we don't solve a diffusion equation, but a system of two standard advection-like equations */
 
 
-    int k_freq;
-    double Fluxes_Rad_Flux[N_RT_FREQ_BINS][3];
-    double c_hll = 0.5*fabs(face_vel_i-face_vel_j) + c_light; // physical units
-    double V_i_phys = V_i / All.cf_a3inv;
-    double V_j_phys = V_j / All.cf_a3inv;
-    double sthreeinv = 1./sqrt(3.);
+    int k_freq; double Fluxes_Rad_Flux[N_RT_FREQ_BINS][3], V_i_phys = V_i / All.cf_a3inv, V_j_phys = V_j / All.cf_a3inv;
     for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++)
     {
         Fluxes_Rad_E_gamma[k_freq] = 0;
@@ -157,7 +149,7 @@
             /* calculate the eigenvalues for the HLLE flux-weighting */
             for(k=0;k<3;k++)
             {
-                flux_i[k] = local.Rad_Flux[k_freq][k]/V_i_phys - v_frame[k]*scalar_i;; flux_j[k] = SphP[j].Rad_Flux_Pred[k_freq][k]/V_j_phys - v_frame[k]*scalar_j; // units (E_phys/[t_phys*L_phys^2]) [physical]. include advective flux terms here
+                flux_i[k] = local.Rad_Flux[k_freq][k]/V_i_phys - rsol_corr*v_frame[k]*scalar_i;; flux_j[k] = SphP[j].Rad_Flux_Pred[k_freq][k]/V_j_phys - rsol_corr*v_frame[k]*scalar_j; // units (E_phys/[t_phys*L_phys^2]) [physical]. include advective flux terms here
                 double grad = 0.5*(flux_i[k] + flux_j[k]);
                 grad_norm += grad*grad;
                 face_dot_flux += Face_Area_Vec[k] * grad; /* remember, our 'flux' variable is a volume-integral */
@@ -166,7 +158,8 @@
             double cos_theta_face_flux = face_dot_flux / (Face_Area_Norm * grad_norm); // angle between flux and face vector normal
             if(cos_theta_face_flux < -1) {cos_theta_face_flux=-1;} else {if(cos_theta_face_flux > 1) {cos_theta_face_flux=1;}}
 #if 0
-            double reduced_flux = grad_norm / (C_LIGHT_CODE_REDUCED * 0.5*(scalar_i+scalar_j)); // |f|/(c*E): ratio of flux to optically thin limit
+            double sthreeinv = 1./sqrt(3.);
+            double reduced_flux = grad_norm / (c_light_eff * 0.5*(scalar_i+scalar_j)); // |f|/(c*E): ratio of flux to optically thin limit
             if(reduced_flux > 1) {reduced_flux=1;} else {if(reduced_flux < 0) {reduced_flux=0;}}
             double lam_m, lam_p, wt, y_f=1.-reduced_flux, y_f_h=sqrt(y_f), y_f_h2=sqrt(y_f_h), cth=cos_theta_face_flux/2.;
             wt = (1. + cos_theta_face_flux)*(1. + cos_theta_face_flux) / 4.;
@@ -193,14 +186,14 @@
             eddington_tensor_dot_vector(local.ET[k_freq],Face_Area_Vec,ET_dot_Face_i); /* compute face dotted into eddington tensors for both sides */
             eddington_tensor_dot_vector(SphP[j].ET[k_freq],Face_Area_Vec,ET_dot_Face_j); /* compute face dotted into eddington tensors for both sides */
 #ifdef RT_ENHANCED_NUMERICAL_DIFFUSION
-            for(k=0;k<3;k++) {cmag_flux[k] += c_light*c_light * Face_Area_Vec[k] * 0.5*(scalar_i + scalar_j)/3.;}
+            for(k=0;k<3;k++) {cmag_flux[k] += c_light_eff*c_light_eff * Face_Area_Vec[k] * 0.5*(scalar_i + scalar_j)/3.;}
 #else
-            for(k=0;k<3;k++) {cmag_flux[k] += c_light*c_light * (hlle_wtfac_f*scalar_i*ET_dot_Face_i[k] + (1.-hlle_wtfac_f)*scalar_j*ET_dot_Face_j[k]);}
+            for(k=0;k<3;k++) {cmag_flux[k] += c_light_eff*c_light_eff * (hlle_wtfac_f*scalar_i*ET_dot_Face_i[k] + (1.-hlle_wtfac_f)*scalar_j*ET_dot_Face_j[k]);}
 #endif
             
             /* add asymptotic-preserving correction so that numerical flux doesn't unphysically dominate in optically thick limit */
-            double v_eff_light = DMIN(c_light , kappa_ij / Particle_Size_j); // physical
-            c_hll = 0.5*fabs(face_vel_i-face_vel_j) + DMAX(1.,hlle_wtfac_u) * v_eff_light; // physical
+            double v_eff_touse = DMIN(c_light_eff , kappa_ij / Particle_Size_j); // physical
+            double c_hll = DMIN( 0.5*fabs(face_vel_i-face_vel_j) + DMAX(1.,hlle_wtfac_u) * v_eff_touse , c_light_eff ); // physical
             double tau_c_j = Particle_Size_j * SphP[j].Rad_Kappa[k_freq]*(SphP[j].Density*All.cf_a3inv); // = L_particle / (lambda_mean_free_path) = L*kappa*rho [physical units] //
             double hll_corr = 1./(1. + 1.5*DMAX(tau_c_i[k_freq],tau_c_j));
             /* q below is a limiter to try and make sure the diffusion speed given by the hll flux doesn't exceed the diffusion speed in the diffusion limit */
@@ -210,12 +203,12 @@
             renormerFAC = 1;
 #endif
 #if !defined(RT_ENHANCED_NUMERICAL_DIFFUSION)
-            double RTopticaldepth = DMIN(Particle_Size_i,Particle_Size_j) * C_LIGHT_CODE_REDUCED / kappa_ij;
+            double RTopticaldepth = DMIN(Particle_Size_i,Particle_Size_j) * c_light_eff / kappa_ij;
             double reductionfactor = sqrt((1.0-exp(-RTopticaldepth*RTopticaldepth))) / RTopticaldepth;
-            double reducedcM1 = reductionfactor * C_LIGHT_CODE_REDUCED / sqrt(3.0);
-            v_eff_light = DMAX(reducedcM1 , 2.*All.cf_afac3*kernel.vsig);
-            c_hll = 0.5*fabs(face_vel_i-face_vel_j) + v_eff_light;
-            hll_corr = 1. / (1. + 1.5 * v_eff_light * DMAX(Particle_Size_j/kappa_j , Particle_Size_i/kappa_i));
+            double reducedcM1 = reductionfactor * c_light_eff / sqrt(3.0);
+            v_eff_touse = DMAX(reducedcM1 , 2.*All.cf_afac3*kernel.vsig);
+            c_hll = DMIN( 0.5*fabs(face_vel_i-face_vel_j) + v_eff_touse , c_light_eff );
+            hll_corr = 1. / (1. + 1.5 * v_eff_touse * DMAX(Particle_Size_j/kappa_j , Particle_Size_i/kappa_i));
             q = 0.5 * c_hll * (kernel.r * All.cf_atime) / fabs(MIN_REAL_NUMBER + kappa_ij); q = (0.2 + q) / (0.2 + q + q*q);
             renormerFAC = DMIN(1.,fabs(cos_theta_face_flux*cos_theta_face_flux * q * hll_corr));
 
@@ -249,12 +242,11 @@
                 double sVi = scalar_i*V_i_phys, sVj = scalar_j*V_j_phys; // physical units //
                 thold_hll = 0.25 * DMAX(fabs(sVi-sVj), DMAX(fabs(sVi), fabs(sVj)));
 #ifdef RT_ENHANCED_NUMERICAL_DIFFUSION
-                thold_hll *= 2.0;
-#endif
+                thold_hll *= 2.0; // allow this term to be more generous //
+#else
                 if(sign_c0 < 0) {thold_hll *= 1.e-2;} // if opposing signs, restrict this term //
-#ifndef RT_ENHANCED_NUMERICAL_DIFFUSION
-                if(fabs(cmag)>thold_hll) {cmag *= thold_hll/fabs(cmag);}
 #endif
+                if(fabs(cmag)>thold_hll) {cmag *= thold_hll/fabs(cmag);}
                 cmag /= dt_hydrostep;
                 Fluxes_Rad_E_gamma[k_freq] += cmag; // returned in physical units //
 #ifdef RT_INFRARED // define advected radiation temperature based on direction of net radiation flow //
@@ -276,7 +268,7 @@
             }
                         
             // now we need to add the advective flux. note we do this after the limiters above, since those are designed for the diffusive terms, and this is simpler and more stable. we do this zeroth order (super-diffusive, but that's fine for our purposes)
-            double flux_dot_face=0,v_Area_dot_rt=0; for(k=0;k<3;k++) {flux_dot_face += 0.5*(flux_i[k]+flux_j[k])*Face_Area_Vec[k]; v_Area_dot_rt += v_frame[k]*Face_Area_Vec[k];} // order of operations needs care here. following through on the divergence theorem carefully, the transport follows v, with A dotted into flux here, rather than A.v or some other law
+            double flux_dot_face=0,v_Area_dot_rt=0; for(k=0;k<3;k++) {flux_dot_face += 0.5*(flux_i[k]+flux_j[k])*Face_Area_Vec[k]; v_Area_dot_rt += rsol_corr*v_frame[k]*Face_Area_Vec[k];} // order of operations needs care here. following through on the divergence theorem carefully, the transport follows v, with A dotted into flux here, rather than A.v or some other law
             //for(k=0;k<3;k++) {cmag_flux[k] += -v_frame[k]*flux_dot_face + 0.5*fabs(v_Area_dot_rt)*(flux_j[k]-flux_i[k]);} // need to be careful with the sign here. since this is an oriented area and A points from j to i, need to flip the sign here //
             for(k=0;k<3;k++) {cmag_flux[k] += -0.5*(flux_i[k]+flux_j[k])*v_Area_dot_rt + 0.5*fabs(v_Area_dot_rt)*(flux_j[k]-flux_i[k]);} // need to be careful with the sign here. since this is an oriented area and A points from j to i, need to flip the sign here //
 
@@ -291,7 +283,7 @@
                     /* flux-limiter to prevent overshoot */
                     cmag_flux[k] *= dt_hydrostep;
                     thold_hll = DMIN( DMAX( DMIN(fabs(local.Rad_Flux[k_freq][k]), fabs(SphP[j].Rad_Flux_Pred[k_freq][k])) , fabs(local.Rad_Flux[k_freq][k]-SphP[j].Rad_Flux_Pred[k_freq][k]) ) , DMAX(fabs(local.Rad_Flux[k_freq][k]), fabs(SphP[j].Rad_Flux_Pred[k_freq][k])) );
-                    double fii=V_i_phys*scalar_i*c_light, fjj=V_j_phys*scalar_j*c_light; // physical units //
+                    double fii=V_i_phys*scalar_i*c_light_eff, fjj=V_j_phys*scalar_j*c_light_eff; // physical units //
                     double tij = DMIN( DMAX( DMIN(fabs(fii),fabs(fjj)) , fabs(fii-fjj) ) , DMAX(fabs(fii),fabs(fjj)) );
                     thold_hll = 0.25 * DMAX( thold_hll , 0.5*tij );
                     if(fabs(cmag_flux[k])>thold_hll) {cmag_flux[k] *= thold_hll/fabs(cmag_flux[k]);}

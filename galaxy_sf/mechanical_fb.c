@@ -18,11 +18,10 @@
 int addFB_evaluate_active_check(int i, int fb_loop_iteration);
 int addFB_evaluate_active_check(int i, int fb_loop_iteration)
 {
-    if(P[i].Type <= 1) return 0;
-    if(P[i].Mass <= 0) return 0;
-    if(PPP[i].Hsml <= 0) return 0;
-    if(PPP[i].NumNgb <= 0) return 0;
-    if(P[i].SNe_ThisTimeStep>0) {if(fb_loop_iteration<0 || fb_loop_iteration==0) return 1;}
+    if(P[i].Type <= 1) {return 0;} // note quantities used here must -not- change in the loop [hence not using mass here], b/c can change offsets for return from different processors, giving a negative mass and undefined behaviors
+    if(PPP[i].Hsml <= 0) {return 0;}
+    if(PPP[i].NumNgb <= 0) {return 0;}
+    if(P[i].SNe_ThisTimeStep>0) {if(fb_loop_iteration<0 || fb_loop_iteration==0) {return 1;}}
     return 0;
 }
 
@@ -111,7 +110,7 @@ void particle2in_addFB(struct addFB_evaluate_data_in_ *in, int i, int loop_itera
 #endif
     for(k=0;k<AREA_WEIGHTED_SUM_ELEMENTS;k++) {in->Area_weighted_sum[k] = P[i].Area_weighted_sum[k];}
     in->Msne = 0; in->unit_mom_SNe = 0; in->SNe_v_ejecta = 0;
-    if((P[i].DensAroundStar <= 0)||(P[i].Mass == 0)) {return;} // events not possible [catch for mass->0]
+    if((P[i].DensAroundStar <= 0)||(P[i].Mass <= 0)) {return;} // events not possible [catch for mass->0]
     if(loop_iteration < 0) {in->Msne=P[i].Mass; in->unit_mom_SNe=1.e-4; in->SNe_v_ejecta=1.0e-4; return;} // weighting loop
     particle2in_addFB_fromstars(in,i,loop_iteration); // subroutine that actually deals with the assignment of feedback properties
     in->unit_mom_SNe = in->Msne * in->SNe_v_ejecta;
@@ -119,15 +118,18 @@ void particle2in_addFB(struct addFB_evaluate_data_in_ *in, int i, int loop_itera
 
 void out2particle_addFB(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration)
 {
-    if(loop_iteration < 0)
+    if(P[i].Mass > 0)
     {
-        int k=0, kmin=0, kmax=7; if(loop_iteration == -1) {kmin=kmax; kmax=AREA_WEIGHTED_SUM_ELEMENTS;}
+        if(loop_iteration < 0)
+        {
+            int k=0, kmin=0, kmax=7; if(loop_iteration == -1) {kmin=kmax; kmax=AREA_WEIGHTED_SUM_ELEMENTS;}
 #ifdef GALSF_USE_SNE_ONELOOP_SCHEME
-        kmin=0; kmax=AREA_WEIGHTED_SUM_ELEMENTS;
+            kmin=0; kmax=AREA_WEIGHTED_SUM_ELEMENTS;
 #endif
-        for(k=kmin;k<kmax;k++) {ASSIGN_ADD(P[i].Area_weighted_sum[k], out->Area_weighted_sum[k], mode);}
-    } else {
-        P[i].Mass -= out->M_coupled; if((P[i].Mass<0)||(isnan(P[i].Mass))) {P[i].Mass=0;}
+            for(k=kmin;k<kmax;k++) {ASSIGN_ADD(P[i].Area_weighted_sum[k], out->Area_weighted_sum[k], mode);}
+        } else {
+            P[i].Mass -= out->M_coupled; if((P[i].Mass<0)||(isnan(P[i].Mass))) {P[i].Mass=0;}
+        }
     }
 }
 
@@ -140,57 +142,25 @@ void out2particle_addFB(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loo
 
 int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
 {
-    int startnode, numngb_inbox, listindex = 0;
-    int j, k, n;
-    double u,r2,h2;
-    double kernel_zero,wk,dM,dP;
-    double E_coupled,dP_sum,dP_boost_sum;
-
-    struct kernel_addFB kernel;
-    struct addFB_evaluate_data_in_ local;
-    struct OUTPUT_STRUCT_NAME out;
+    int startnode, numngb_inbox, listindex = 0, j, k, n;
+    double u,r2,h2,kernel_zero,wk,dM,dP,E_coupled,dP_sum,dP_boost_sum;
+    struct kernel_addFB kernel; struct addFB_evaluate_data_in_ local; struct OUTPUT_STRUCT_NAME out;
     memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME));
-
     kernel_main(0.0,1.0,1.0,&kernel_zero,&wk,-1); wk=0;
-
-    /* Load the data for the particle injecting feedback */
-    if(mode == 0)
-    particle2in_addFB(&local, target, loop_iteration);
-    else
-    local = DATAGET_NAME[target];
-
-    if(local.Msne<=0) return 0; // no SNe for the origin particle! nothing to do here //
-    if(local.Hsml<=0) return 0; // zero-extent kernel, no particles //
-    h2 = local.Hsml*local.Hsml;
-    kernel_hinv(local.Hsml, &kernel.hinv, &kernel.hinv3, &kernel.hinv4);
-
-    // some units (just used below, but handy to define for clarity) //
-    double unitlength_in_kpc=UNIT_LENGTH_IN_KPC * All.cf_atime;
-    double density_to_n=All.cf_a3inv*UNIT_DENSITY_IN_NHCGS;
-    double unit_egy_SNe = 1.0e51/UNIT_ENERGY_IN_CGS;
+    if(mode == 0) {particle2in_addFB(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];} /* Load the data for the particle injecting feedback */
+    if(local.Msne<=0) {return 0;} // no SNe for the origin particle! nothing to do here //
+    if(local.Hsml<=0) {return 0;} // zero-extent kernel, no particles //
+    h2 = local.Hsml*local.Hsml; kernel_hinv(local.Hsml, &kernel.hinv, &kernel.hinv3, &kernel.hinv4);
+    double unitlength_in_kpc=UNIT_LENGTH_IN_KPC * All.cf_atime, density_to_n=All.cf_a3inv*UNIT_DENSITY_IN_NHCGS, unit_egy_SNe = 1.0e51/UNIT_ENERGY_IN_CGS; // some units (just used below, but handy to define for clarity) //
 
 
     // now define quantities that will be used below //
-    double Esne51;
-    Esne51 = 0.5*local.SNe_v_ejecta*local.SNe_v_ejecta*local.Msne / unit_egy_SNe;
-    double RsneKPC, RsneKPC_0;//, RsneMAX;
-    RsneKPC=0.; //RsneMAX=local.Hsml;
-    RsneKPC_0=(0.0284/unitlength_in_kpc) * pow(1+Esne51,0.286); //Cioffi: weak external pressure
-    double r2max_phys = 2.0/unitlength_in_kpc; // no super-long-range effects allowed! (of course this is arbitrary in code units) //
-    r2max_phys *= r2max_phys;
-
-
+    double Esne51; Esne51 = 0.5*local.SNe_v_ejecta*local.SNe_v_ejecta*local.Msne / unit_egy_SNe;
+    double RsneKPC, RsneKPC_0; RsneKPC=0.; RsneKPC_0=(0.0284/unitlength_in_kpc) * pow(1+Esne51,0.286); //Cioffi: weak external pressure
+    double r2max_phys = 2.0/unitlength_in_kpc; r2max_phys *= r2max_phys; // no super-long-range effects allowed! (of course this is arbitrary in code units) //
 
     /* Now start the actual FB computation for this particle */
-    if(mode == 0)
-    {
-        startnode = All.MaxPart;    /* root node */
-    }
-    else
-    {
-        startnode = DATAGET_NAME[target].NodeList[0];
-        startnode = Nodes[startnode].u.d.nextnode;    /* open it */
-    }
+    if(mode == 0) {startnode = All.MaxPart;} else {startnode = DATAGET_NAME[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode;} /* root node & node opening */
     while(startnode >= 0)
     {
         while(startnode >= 0)
@@ -232,11 +202,11 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 double sph_area = fabs(local.V_i*local.V_i*kernel.dwk + V_j*V_j*dwk_j); // effective face area //
                 wk = 0.5 * (1 - 1/sqrt(1 + sph_area / (M_PI*kernel.r*kernel.r))); // corresponding geometric weight //
                 if((wk <= 0)||(isnan(wk))) continue; // no point in going further, there's no physical weight here
-                double wk_vec[AREA_WEIGHTED_SUM_ELEMENTS] = {0};
+                double wk_vec[AREA_WEIGHTED_SUM_ELEMENTS]={0}, wk_tmp=0;
                 wk_vec[0] = wk;
-                if(kernel.dp[0]>0) {wk_vec[1]=wk*kernel.dp[0]/kernel.r; wk_vec[2]=0;} else {wk_vec[1]=0; wk_vec[2]=wk*kernel.dp[0]/kernel.r;}
-                if(kernel.dp[1]>0) {wk_vec[3]=wk*kernel.dp[1]/kernel.r; wk_vec[4]=0;} else {wk_vec[3]=0; wk_vec[4]=wk*kernel.dp[1]/kernel.r;}
-                if(kernel.dp[2]>0) {wk_vec[5]=wk*kernel.dp[2]/kernel.r; wk_vec[6]=0;} else {wk_vec[5]=0; wk_vec[6]=wk*kernel.dp[2]/kernel.r;}
+                wk_tmp=wk*kernel.dp[0]/kernel.r; if(kernel.dp[0]>0) {wk_vec[1]=wk_tmp;} else {wk_vec[2]=wk_tmp;}
+                wk_tmp=wk*kernel.dp[1]/kernel.r; if(kernel.dp[1]>0) {wk_vec[3]=wk_tmp;} else {wk_vec[4]=wk_tmp;}
+                wk_tmp=wk*kernel.dp[2]/kernel.r; if(kernel.dp[2]>0) {wk_vec[5]=wk_tmp;} else {wk_vec[6]=wk_tmp;}
 
                 // if loop_iteration==-1, this is a pre-calc loop to get the relevant weights for coupling //
                 if(loop_iteration < 0)
@@ -247,7 +217,6 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 // NOW do the actual feedback calculation //
                 double wk_norm = 1. / (MIN_REAL_NUMBER + fabs(local.Area_weighted_sum[0])); // normalization for scalar weight sum
                 wk *= wk_norm; // this way wk matches the value summed above for the weighting //
-
                 if((wk <= 0)||(isnan(wk))) continue;
 
                 // ok worth initializing other variables we will use below
@@ -268,9 +237,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
 #endif
                 
                 /* define initial mass and ejecta velocity in this 'cone' */
-                double v_bw[3]={0}, e_shock=0;
-                double pnorm = 0;
-                double pvec[3]={0};
+                double v_bw[3]={0}, e_shock=0, pnorm = 0, pvec[3]={0};
                 for(k=0; k<3; k++)
                 {
                     double q; q = 0; int i1=2*k+1, i2=i1+1;
@@ -328,17 +295,8 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
 
                 /* below expression is again just as good a fit to the simulations, and much faster to evaluate */
                 double z0 = Metallicity_j[0]/All.SolarAbundances[0];
-                if(z0 < 0.01)
-                {
-                    RsneKPC *= 2.0;
-                } else {
-                    if(z0 < 1)
-                    {
-                        RsneKPC *= 0.93 + 0.0615 / (0.05 + 0.8*z0);
-                    } else {
-                        RsneKPC *= 0.8 + 0.4 / (1 + z0);
-                    }
-                }
+                if(z0 < 0.01) {RsneKPC *= 2.0;} else {
+                    if(z0 < 1) {RsneKPC *= 0.93 + 0.0615 / (0.05 + 0.8*z0);} else {RsneKPC *= 0.8 + 0.4 / (1 + z0);}}
                 /* calculates cooling radius given density and metallicity in this annulus into which the ejecta propagate */
 
                 /* if coupling radius > R_cooling, account for thermal energy loss in the post-shock medium:
@@ -425,17 +383,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 
             } // for(n = 0; n < numngb; n++)
         } // while(startnode >= 0)
-
-        if(mode == 1)
-        {
-            listindex++;
-            if(listindex < NODELISTLENGTH)
-            {
-                startnode = DATAGET_NAME[target].NodeList[listindex];
-                if(startnode >= 0)
-                startnode = Nodes[startnode].u.d.nextnode;    /* open it */
-            }
-        } // if(mode == 1)
+        if(mode == 1) {listindex++; if(listindex < NODELISTLENGTH) {startnode = DATAGET_NAME[target].NodeList[listindex]; if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;}}}    /* open it */
     } // while(startnode >= 0)
 
     /* Now collect the result at the right place */
@@ -452,9 +400,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
 {
     int startnode, numngb_inbox, listindex = 0, j, k, n;
     double u,r2,kernel_zero,wk,dM_ejecta_in,dP,E_coupled,dP_sum,dP_boost_sum;
-    struct kernel_addFB kernel;
-    struct addFB_evaluate_data_in_ local;
-    struct OUTPUT_STRUCT_NAME out;
+    struct kernel_addFB kernel; struct addFB_evaluate_data_in_ local; struct OUTPUT_STRUCT_NAME out;
     memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME));
 
     /* Load the data for the particle injecting feedback */
@@ -463,12 +409,9 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     if(local.Hsml<=0) {return 0;} // zero-extent kernel, no particles //
 
     // some units (just used below, but handy to define for clarity) //
-    double h2 = local.Hsml*local.Hsml;
-    kernel_main(0.0,1.0,1.0,&kernel_zero,&wk,-1); wk=0; // define the kernel zero-point value, needed to prevent some nasty behavior when no neighbors found
+    double h2 = local.Hsml*local.Hsml; kernel_main(0.0,1.0,1.0,&kernel_zero,&wk,-1); wk=0; // define the kernel zero-point value, needed to prevent some nasty behavior when no neighbors found
     kernel_hinv(local.Hsml, &kernel.hinv, &kernel.hinv3, &kernel.hinv4); // define kernel quantities
-    double unitlength_in_kpc= UNIT_LENGTH_IN_KPC * All.cf_atime;
-    double density_to_n=All.cf_a3inv*UNIT_DENSITY_IN_NHCGS;
-    double unit_egy_SNe = 1.0e51/UNIT_ENERGY_IN_CGS;
+    double unitlength_in_kpc= UNIT_LENGTH_IN_KPC * All.cf_atime, density_to_n=All.cf_a3inv*UNIT_DENSITY_IN_NHCGS, unit_egy_SNe = 1.0e51/UNIT_ENERGY_IN_CGS;
 
     // now define quantities that will be used below //
     double psi_cool=1, psi_egycon=1, v_ejecta_eff=local.SNe_v_ejecta;
@@ -476,7 +419,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     double pnorm_sum = 1./(MIN_REAL_NUMBER + fabs(local.Area_weighted_sum[10])); // re-normalization after second pass for normalized "pnorm" (should be close to ~1)
     if((local.Area_weighted_sum[0] > MIN_REAL_NUMBER) && (loop_iteration >= 0))
     {
-        double vba_2_eff = wk_norm * local.Area_weighted_sum[7]; // phi term for energy: weighted mass-deposited KE for ejecta neighbors
+        double vba_2_eff = pnorm_sum * local.Area_weighted_sum[7]; // phi term for energy: weighted mass-deposited KE for ejecta neighbors
         v_ejecta_eff = sqrt(local.SNe_v_ejecta*local.SNe_v_ejecta + vba_2_eff); // account for all terms to get the revised KE term here
         double beta_egycon = sqrt(pnorm_sum / local.Msne) * (1./v_ejecta_eff) * local.Area_weighted_sum[8]; // beta term for re-normalization for energy [can be positive or negative]
         double beta_cool = pnorm_sum * local.Area_weighted_sum[9]; // beta term if all particles in terminal-momentum-limit
@@ -503,18 +446,8 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     if(local.Hsml >= r2max_phys) {psi_egycon=DMIN(psi_egycon,1); psi_cool=DMIN(psi_cool,1);}
     r2max_phys *= r2max_phys;
 
-
     /* Now start the actual FB computation for this particle */
-    if(mode == 0)
-    {
-        startnode = All.MaxPart;    /* root node */
-    }
-    else
-    {
-        startnode = DATAGET_NAME[target].NodeList[0];
-        startnode = Nodes[startnode].u.d.nextnode;    /* open it */
-    }
-
+    if(mode == 0) {startnode = All.MaxPart;} else {startnode = DATAGET_NAME[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode;}    /* start at root node, open it */
     while(startnode >= 0)
     {
         while(startnode >= 0)
@@ -637,7 +570,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                             vel_ba_2 += v_ba*v_ba; // magnitude of velocity vector (for corrected post-shock energies to distribute)
                             cos_vel_ba_pcoupled += v_ba * pvec[k]/pnorm; // direction of ejecta [after correction loop]
                         }
-                        wk_vec[7] = wk * vel_ba_2; // phi_0 term : residual KE term from mass-coupling for {small, second-order} energy correction
+                        wk_vec[7] = pnorm * vel_ba_2; // phi_0 term : residual KE term from mass-coupling for {small, second-order} energy correction
                         wk_vec[8] = sqrt(pnorm * Mass_j) * cos_vel_ba_pcoupled; // beta_0 term : cross-term for momentum coupling effect on energy-coupling
                         wk_vec[9] = pnorm * cos_vel_ba_pcoupled / v_cooling; // calculate the beta term as if all particles hit terminal: more accurate result in that limit
                         wk_vec[10] = pnorm; // normalization (so that we can divide by its sum to properly normalize the beta_egy and beta_cool quantities)
@@ -674,6 +607,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                     pnorm += pvec[k]*pvec[k];
                 }
                 pnorm = sqrt(pnorm); // this (vector norm) is the new 'weight function' for our purposes
+                pnorm *= pnorm_sum; for(k=0;k<3;k++) {pvec[k] *= pnorm_sum;} // ??? normalize following sum [10] to ensure faces sum to unity
                 dM_ejecta_in = pnorm * local.Msne;
                 double mj_preshock, massratio_ejecta;
                 mj_preshock = Mass_j;
@@ -784,21 +718,11 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 
             } // for(n = 0; n < numngb; n++)
         } // while(startnode >= 0)
-
-        if(mode == 1)
-        {
-            listindex++;
-            if(listindex < NODELISTLENGTH)
-            {
-                startnode = DATAGET_NAME[target].NodeList[listindex];
-                if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;}    /* open it */
-            }
-        } // if(mode == 1)
+        if(mode == 1) {listindex++; if(listindex < NODELISTLENGTH) {startnode = DATAGET_NAME[target].NodeList[listindex]; if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;}}}    /* open it */
     } // while(startnode >= 0)
 
     /* Now collect the result at the right place */
     if(mode == 0) {out2particle_addFB(&out, target, 0, loop_iteration);} else {DATARESULT_NAME[target] = out;}
-
     return 0;
 } // int addFB_evaluate
 

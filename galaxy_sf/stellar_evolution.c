@@ -174,6 +174,18 @@ double mechanical_fb_calculate_eventrates(int i, double dt)
 
 
 
+#ifdef METALS
+void get_jet_yields(double *yields, int i) {
+    int k; for(k=0;k<NUM_METAL_SPECIES;k++) {yields[k]=P[i].Metallicity[k];} /* return surface abundances, to leading order */
+#ifdef STARFORGE_FEEDBACK_TRACERS
+    for(k=0;k<NUM_STARFORGE_FEEDBACK_TRACERS;k++) {yields[NUM_METAL_SPECIES-NUM_STARFORGE_FEEDBACK_TRACERS+k]=0;} yields[NUM_METAL_SPECIES-NUM_STARFORGE_FEEDBACK_TRACERS+0]=1; // this is 'fully' jet material, so mark as such here, so it is noted for all wind routines [whichever form of the wind subroutine we actually use, otherwise it would only appear in the jet version]
+#endif
+}
+#endif
+
+
+
+
 
 
 

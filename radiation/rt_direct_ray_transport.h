@@ -13,11 +13,11 @@
 #if defined(RT_EVOLVE_INTENSITIES)
 if(local.Mass>0 && P[j].Mass>0 && dt_hydrostep>0 && Face_Area_Norm>0)
 {
-    double c_light=C_LIGHT_CODE_REDUCED, V_i_invphys=All.cf_a3inv/V_i, V_j_invphys=All.cf_a3inv/V_j, vfluid_minus_vface_dotA=0, cminusv_n_dotA[N_RT_INTENSITY_BINS]={0}, sigma_j=Particle_Size_j*(SphP[j].Density*All.cf_a3inv); int k_freq, k_angle;
+    double c_light_eff=C_LIGHT_CODE_REDUCED, rsol_fac=c_light_eff/C_LIGHT_CODE, V_i_invphys=All.cf_a3inv/V_i, V_j_invphys=All.cf_a3inv/V_j, vfluid_minus_vface_dotA=0, cminusv_n_dotA[N_RT_INTENSITY_BINS]={0}, sigma_j=Particle_Size_j*(SphP[j].Density*All.cf_a3inv); int k_freq, k_angle;
 #if defined(HYDRO_MESHLESS_FINITE_VOLUME) && (HYDRO_FIX_MESH_MOTION<5)
     double v_frame[3]={0}; for(k=0;k<3;k++) {vfluid_minus_vface_dotA+=0.5*((ParticleVel_j[k]+local.ParticleVel[k])-(local.Vel[k]+VelPred_j[k]))/All.cf_atime * Face_Area_Vec[k];} // frame velocity, not fluid velocity, is what appears here. physical units
 #endif
-    for(k_angle=0; k_angle<N_RT_INTENSITY_BINS; k_angle++) {for(k=0;k<3;k++) {cminusv_n_dotA[k_angle]+=(c_light*All.Rad_Intensity_Direction[k_angle][k]-0.5*(local.Vel[k]+VelPred_j[k])/All.cf_atime) * Face_Area_Vec[k];}} // face area dotted into 'residual' speed here [not actual velocity addition, just a mathematical trick here, hence no relativistic terms]. physical units
+    for(k_angle=0; k_angle<N_RT_INTENSITY_BINS; k_angle++) {for(k=0;k<3;k++) {cminusv_n_dotA[k_angle]+=(c_light_eff*All.Rad_Intensity_Direction[k_angle][k]-rsol_fac*0.5*(local.Vel[k]+VelPred_j[k])/All.cf_atime) * Face_Area_Vec[k];}} // face area dotted into 'residual' speed here [not actual velocity addition, just a mathematical trick here, hence no relativistic terms]. physical units
     
     for(k_freq=0; k_freq<N_RT_FREQ_BINS; k_freq++)
     {

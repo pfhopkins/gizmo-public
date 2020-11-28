@@ -33,7 +33,7 @@
 #include <sundials/sundials_types.h>
 #include <sunlinsol/sunlinsol_dense.h> 
 #include <sunmatrix/sunmatrix_dense.h> 
-#include "chimes_proto.h"
+#include "../../allvars.h"
 #include "chimes_vars.h"
 
 

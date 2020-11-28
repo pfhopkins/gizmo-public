@@ -827,7 +827,10 @@ int needs_new_treeforce(int n){
     if(P[n].Type > 0){ // in this implementation we only do the lazy updating for gas cells whose timesteps are otherwise constrained by multiphysics (e.g. radiation, feedback)
         return 1;
     } else {
-        if(P[n].time_since_last_treeforce >= P[n].tdyn_step_for_treeforce * ADAPTIVE_TREEFORCE_UPDATE) {return 1; }
+        if(P[n].time_since_last_treeforce >= P[n].tdyn_step_for_treeforce * ADAPTIVE_TREEFORCE_UPDATE) {return 1;}
+#ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
+        else if(P[n].time_since_last_treeforce >= P[n].min_bh_fb_time) {return 1;} // we want ejecta to re-calculate their feedback time so they don't get stuck on a short timestep
+#endif        
         else {return 0;}
     }
 }

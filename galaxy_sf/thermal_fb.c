@@ -30,8 +30,8 @@ void determine_where_addthermalFB_events_occur(void)
     int i; double check = 0;
     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
     {
-        if(P[i].Type != 4) continue;
-        if(P[i].Mass <= 0) continue;
+        if(P[i].Type != 4) {continue;}
+        if(P[i].Mass <= 0) {continue;}
         check += mechanical_fb_calculate_eventrates(i,1); // this should do the calculation and add to number of SNe as needed //
     } // for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) //
 }
@@ -60,7 +60,7 @@ struct INPUT_STRUCT_NAME
 /* define properties to be injected. these must be scalar-only -- the simple routine below will not conserve vector inputs/ejecta (e.g. momentum) */
 void particle2in_addthermalFB(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
 {
-    if((P[i].SNe_ThisTimeStep<=0)||(P[i].DensAroundStar<=0)) {in->Msne=0; return;} // trap for no sne
+    if((P[i].SNe_ThisTimeStep<=0)||(P[i].DensAroundStar<=0)||(P[i].Mass<=0)) {in->Msne=0; return;} // trap for no sne
     int k; in->Hsml=PPP[i].Hsml; in->wt_sum=P[i].DensAroundStar; for(k=0;k<3;k++) {in->Pos[k]=P[i].Pos[k];} // simple kernel-weighted deposition
     struct addFB_evaluate_data_in_ local; particle2in_addFB_fromstars(&local,i,0); // get feedback properties from generic routine //
     in->Msne = local.Msne; in->Esne = 0.5 * local.Msne * local.SNe_v_ejecta*local.SNe_v_ejecta; // assign mass and energy to be used below
@@ -78,18 +78,16 @@ struct OUTPUT_STRUCT_NAME
 
 void out2particle_addthermalFB(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration)
 {
-    P[i].Mass -= out->M_coupled;
-    if((P[i].Mass<0)||(isnan(P[i].Mass))) {P[i].Mass=0;}
+    if(P[i].Mass > 0) {P[i].Mass -= out->M_coupled; if((P[i].Mass<0)||(isnan(P[i].Mass))) {P[i].Mass=0;}}
 }
 
 
 int addthermalFB_evaluate_active_check(int i);
 int addthermalFB_evaluate_active_check(int i)
 {
-    if(P[i].Type != 4) return 0;
-    if(P[i].Mass <= 0) return 0;
-    if(PPP[i].Hsml <= 0) return 0;
-    if(PPP[i].NumNgb <= 0) return 0;
+    if(P[i].Type != 4) {return 0;} // note quantities used here must -not- change in the loop [hence not using mass here], b/c can change offsets for return from different processors, giving a negative mass and undefined behaviors
+    if(PPP[i].Hsml <= 0) {return 0;}
+    if(PPP[i].NumNgb <= 0) {return 0;}
     if(P[i].SNe_ThisTimeStep>0) {return 1;}
     return 0;
 }

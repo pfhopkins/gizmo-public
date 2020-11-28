@@ -490,6 +490,9 @@ struct addFB_evaluate_data_in_
 
 void particle2in_addFB_fromstars(struct addFB_evaluate_data_in_ *in, int i, int fb_loop_iteration);
 double mechanical_fb_calculate_eventrates(int i, double dt);
+#ifdef METALS
+void get_jet_yields(double *yields, int i);
+#endif
 #endif
 
 #ifdef SINGLE_STAR_FB_TIMESTEPLIMIT

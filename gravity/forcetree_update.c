@@ -388,11 +388,8 @@ void force_update_hmax(void)
             
             if(PPP[i].Hsml > Extnodes[no].hmax || divVel > Extnodes[no].divVmax)
             {
-                if(PPP[i].Hsml > Extnodes[no].hmax)
-                    Extnodes[no].hmax = PPP[i].Hsml;
-                
-                if(divVel > Extnodes[no].divVmax)
-                    Extnodes[no].divVmax = divVel;
+                if(PPP[i].Hsml > Extnodes[no].hmax) {Extnodes[no].hmax = PPP[i].Hsml;}
+                if(divVel > Extnodes[no].divVmax) {Extnodes[no].divVmax = divVel;}
                 
                 if(Nodes[no].u.d.bitflags & (1 << BITFLAG_TOPLEVEL))	/* we reached a top-level node */
                 {

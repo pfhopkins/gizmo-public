@@ -756,7 +756,6 @@ void hydro_final_operations_and_cleanup(void)
 
 
 
-
 #ifdef GALSF_SUBGRID_WINDS
             /* if we have winds, we decouple particles briefly if delaytime>0 */
             if(SphP[i].DelayTime > 0)

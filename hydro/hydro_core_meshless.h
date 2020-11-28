@@ -12,9 +12,9 @@
 #if (SLOPE_LIMITER_TOLERANCE==0)
 #define HYDRO_FACE_AREA_LIMITER // use more restrictive face-area limiter in the simulations [some applications this is useful, but unclear if we can generally apply it] //
 #endif
-#if !defined(PROTECT_FROZEN_FIRE) && !defined(HYDRO_FACE_AREA_LIMITER)
+//#if !defined(PROTECT_FROZEN_FIRE) && !defined(HYDRO_FACE_AREA_LIMITER)
 //#define HYDRO_FACE_VOLUME_RECONSTRUCTION_CORRECTION
-#endif
+//#endif
     
     double s_star_ij,s_i,s_j,v_frame[3],dummy_pressure,distance_from_i[3],distance_from_j[3],leak_vs_tol=0;
 #if !(defined(HYDRO_KERNEL_SURFACE_VOLCORR) || defined(EOS_ELASTIC))

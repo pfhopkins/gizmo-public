@@ -33,7 +33,7 @@
 #include <hdf5.h>
 #include <string.h> 
 #include <sundials/sundials_types.h>
-#include "chimes_proto.h"
+#include "../../allvars.h"
 #include "chimes_vars.h"
 
 

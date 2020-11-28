@@ -309,7 +309,12 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
 
         case IO_Z:			/* Gas and star metallicity */
 #ifdef METALS
-            for(n = 0; n < pc; n++) {for(k = 0; k < NUM_METAL_SPECIES; k++) {P[offset + n].Metallicity[k] = *fp++;}}
+            for(n = 0; n < pc; n++) {
+                int nmax=NUM_METAL_SPECIES;
+                if(RestartFlag==2 && All.ICFormat==3 && header.flag_metals<NUM_METAL_SPECIES && header.flag_metals>0) {nmax=header.flag_metals;} // special clause to catch cases where read-in snapshot did not use all the metals fields we want to read now
+                for(k=0;k<nmax;k++) {P[offset + n].Metallicity[k] = *fp++;} // normal read-in
+                if(nmax<NUM_METAL_SPECIES) {for(k=nmax;k<NUM_METAL_SPECIES;k++) {P[offset + n].Metallicity[k]=0;}} // any extra fields zero'd
+            }
 #endif
             break;
 
@@ -762,7 +767,6 @@ void read_file(char *fname, int readTask, int lastTask)
     nstart = N_gas;
 
 
-
     for(bnr = 0; bnr < 1000; bnr++)
     {
         blocknr = (enum iofields) bnr;
@@ -864,10 +868,12 @@ void read_file(char *fname, int readTask, int lastTask)
 #if (COSMIC_RAYS_EVOLVE_SPECTRUM_SPECIAL_SNAPSHOTRESTART==1)
             if(RestartFlag == 2 && blocknr == IO_COSMICRAY_ENERGY) {bytes_per_blockelement = (1) * sizeof(MyInputFloat);}
 #endif
+#ifdef METALS /* some trickery here to enable snapshot-restarts from runs with different numbers of metal species ?? */
+            if(blocknr==IO_Z && RestartFlag==2 && All.ICFormat==3 && header.flag_metals<NUM_METAL_SPECIES && header.flag_metals>0) {bytes_per_blockelement = (header.flag_metals) * sizeof(MyInputFloat);}
+#endif
 
             size_t MyBufferSize = All.BufferSize;
             blockmaxlen = (size_t) ((MyBufferSize * 1024 * 1024) / bytes_per_blockelement);
-
             npart = get_particles_in_block(blocknr, &typelist[0]);
 
             if(npart > 0)
@@ -898,8 +904,7 @@ void read_file(char *fname, int readTask, int lastTask)
                     if(typelist[type] == 0)
                     {
                         n_for_this_task = n_in_file / ntask;
-                        if((ThisTask - readTask) < (n_in_file % ntask))
-                            n_for_this_task++;
+                        if((ThisTask - readTask) < (n_in_file % ntask)) {n_for_this_task++;}
 
                         offset += n_for_this_task;
                     }
@@ -908,8 +913,7 @@ void read_file(char *fname, int readTask, int lastTask)
                         for(task = readTask; task <= lastTask; task++)
                         {
                             n_for_this_task = n_in_file / ntask;
-                            if((task - readTask) < (n_in_file % ntask))
-                                n_for_this_task++;
+                            if((task - readTask) < (n_in_file % ntask)) {n_for_this_task++;}
 
                             if(task == ThisTask)
                                 if(NumPart + n_for_this_task > All.MaxPart)
@@ -922,9 +926,7 @@ void read_file(char *fname, int readTask, int lastTask)
                             do
                             {
                                 pc = n_for_this_task;
-
-                                if(pc > (int)blockmaxlen)
-                                    pc = blockmaxlen;
+                                if(pc > (int)blockmaxlen) {pc = blockmaxlen;}
 
                                 if(ThisTask == readTask)
                                 {
@@ -945,6 +947,9 @@ void read_file(char *fname, int readTask, int lastTask)
 #if (COSMIC_RAYS_EVOLVE_SPECTRUM_SPECIAL_SNAPSHOTRESTART==1)
                                         if(RestartFlag == 2 && blocknr == IO_COSMICRAY_ENERGY) {dims[1] = 1;}
 #endif
+#ifdef METALS /* some trickery here to enable snapshot-restarts from runs with different numbers of metal species ?? */
+                                        if(blocknr==IO_Z && RestartFlag==2 && All.ICFormat==3 && header.flag_metals<NUM_METAL_SPECIES && header.flag_metals>0) {dims[1] = header.flag_metals;}
+#endif
                                         if(dims[1] == 1) {rank = 1;} else {rank = 2;}
                                         hdf5_dataspace_in_file = H5Screate_simple(rank, dims, NULL);
 
@@ -959,10 +964,12 @@ void read_file(char *fname, int readTask, int lastTask)
 #if (COSMIC_RAYS_EVOLVE_SPECTRUM_SPECIAL_SNAPSHOTRESTART==1)
                                         if(RestartFlag == 2 && blocknr == IO_COSMICRAY_ENERGY) {count[1] = 1;}
 #endif
+#ifdef METALS /* some trickery here to enable snapshot-restarts from runs with different numbers of metal species ?? */
+                                        if(blocknr==IO_Z && RestartFlag==2 && All.ICFormat==3 && header.flag_metals<NUM_METAL_SPECIES && header.flag_metals>0) {count[1] = header.flag_metals;}
+#endif
                                         pcsum += pc;
 
-                                        H5Sselect_hyperslab(hdf5_dataspace_in_file, H5S_SELECT_SET,
-                                                            start, NULL, count, NULL);
+                                        H5Sselect_hyperslab(hdf5_dataspace_in_file, H5S_SELECT_SET, start, NULL, count, NULL);
 
                                         switch(get_datatype_in_block(blocknr))
                                         {
@@ -991,9 +998,7 @@ void read_file(char *fname, int readTask, int lastTask)
                                                 break;
                                         }
 
-                                        H5Dread(hdf5_dataset, hdf5_datatype, hdf5_dataspace_in_memory,
-                                                hdf5_dataspace_in_file, H5P_DEFAULT, CommBuffer);
-
+                                        H5Dread(hdf5_dataset, hdf5_datatype, hdf5_dataspace_in_memory, hdf5_dataspace_in_file, H5P_DEFAULT, CommBuffer);
                                         H5Tclose(hdf5_datatype);
                                         H5Sclose(hdf5_dataspace_in_memory);
                                         H5Sclose(hdf5_dataspace_in_file);
@@ -1002,18 +1007,13 @@ void read_file(char *fname, int readTask, int lastTask)
 #endif
                                 }
 
-                                if(ThisTask == readTask && task != readTask && pc > 0)
-                                    MPI_Ssend(CommBuffer, bytes_per_blockelement * pc, MPI_BYTE, task,
-                                              TAG_PDATA, MPI_COMM_WORLD);
+                                if(ThisTask == readTask && task != readTask && pc > 0) {MPI_Ssend(CommBuffer, bytes_per_blockelement * pc, MPI_BYTE, task, TAG_PDATA, MPI_COMM_WORLD);}
 
-                                if(ThisTask != readTask && task == ThisTask && pc > 0)
-                                    MPI_Recv(CommBuffer, bytes_per_blockelement * pc, MPI_BYTE, readTask,
-                                             TAG_PDATA, MPI_COMM_WORLD, &status);
+                                if(ThisTask != readTask && task == ThisTask && pc > 0) {MPI_Recv(CommBuffer, bytes_per_blockelement * pc, MPI_BYTE, readTask, TAG_PDATA, MPI_COMM_WORLD, &status);}
 
                                 if(ThisTask == task)
                                 {
                                     empty_read_buffer(blocknr, nstart + offset, pc, type);
-
                                     offset += pc;
                                 }
 
@@ -1033,8 +1033,7 @@ void read_file(char *fname, int readTask, int lastTask)
                             if(blksize1 != blksize2)
                             {
                                 printf("incorrect block-sizes detected!\n");
-                                printf("Task=%d   blocknr=%d  blksize1=%d  blksize2=%d\n", ThisTask, bnr,
-                                       blksize1, blksize2);
+                                printf("Task=%d   blocknr=%d  blksize1=%d  blksize2=%d\n", ThisTask, bnr, blksize1, blksize2);
                                 if(blocknr == IO_ID)
                                 {
                                     printf
@@ -1052,27 +1051,19 @@ void read_file(char *fname, int readTask, int lastTask)
     for(type = 0; type < 6; type++)
     {
         n_in_file = header.npart[type];
-
         n_for_this_task = n_in_file / ntask;
-        if((ThisTask - readTask) < (n_in_file % ntask))
-            n_for_this_task++;
-
+        if((ThisTask - readTask) < (n_in_file % ntask)) {n_for_this_task++;}
         NumPart += n_for_this_task;
-
-        if(type == 0)
-            N_gas += n_for_this_task;
+        if(type == 0) {N_gas += n_for_this_task;}
     }
 
     if(ThisTask == readTask)
     {
-        if(All.ICFormat == 1 || All.ICFormat == 2)
-            fclose(fd);
+        if(All.ICFormat == 1 || All.ICFormat == 2) {fclose(fd);}
 #ifdef HAVE_HDF5
         if(All.ICFormat == 3)
         {
-            for(type = 5; type >= 0; type--)
-                if(header.npart[type] > 0)
-                    H5Gclose(hdf5_grp[type]);
+            for(type = 5; type >= 0; type--) {if(header.npart[type] > 0) {H5Gclose(hdf5_grp[type]);}}
             H5Fclose(hdf5_file);
         }
 #endif
@@ -1086,9 +1077,7 @@ void read_file(char *fname, int readTask, int lastTask)
  */
 int find_files(char *fname)
 {
-    FILE *fd;
-    char buf[200], buf1[200];
-    int dummy;
+    FILE *fd; char buf[200], buf1[200]; int dummy;
 
     sprintf(buf, "%s.%d", fname, 0);
     sprintf(buf1, "%s", fname);
@@ -1102,8 +1091,7 @@ int find_files(char *fname)
 #ifndef  HAVE_HDF5
     if(All.ICFormat == 3)
     {
-        if(ThisTask == 0)
-            printf("Code wasn't compiled with HDF5 support enabled!\n");
+        if(ThisTask == 0) {printf("Code wasn't compiled with HDF5 support enabled!\n");}
         endrun(0);
     }
 #endif
@@ -1129,18 +1117,15 @@ int find_files(char *fname)
                 my_fread(&dummy, sizeof(dummy), 1, fd);
             }
             fclose(fd);
-
 #ifdef HAVE_HDF5
-            if(All.ICFormat == 3)
-                read_header_attributes_in_hdf5(buf);
+            if(All.ICFormat == 3) {read_header_attributes_in_hdf5(buf);}
 #endif
         }
     }
 
     MPI_Bcast(&header, sizeof(header), MPI_BYTE, 0, MPI_COMM_WORLD);
 
-    if(header.num_files > 0)
-        return header.num_files;
+    if(header.num_files > 0) {return header.num_files;}
 
     if(ThisTask == 0)
     {
@@ -1161,20 +1146,16 @@ int find_files(char *fname)
                 my_fread(&dummy, sizeof(dummy), 1, fd);
             }
             fclose(fd);
-
 #ifdef HAVE_HDF5
-            if(All.ICFormat == 3)
-                read_header_attributes_in_hdf5(buf1);
+            if(All.ICFormat == 3) {read_header_attributes_in_hdf5(buf1);}
 #endif
-
             header.num_files = 1;
         }
     }
 
     MPI_Bcast(&header, sizeof(header), MPI_BYTE, 0, MPI_COMM_WORLD);
 
-    if(header.num_files > 0)
-        return header.num_files;
+    if(header.num_files > 0) {return header.num_files;}
 
     if(ThisTask == 0)
     {
@@ -1264,6 +1245,15 @@ void read_header_attributes_in_hdf5(char *fname)
     H5Aread(hdf5_attribute, H5T_NATIVE_INT, &header.flag_doubleprecision);
     H5Aclose(hdf5_attribute);
 
+#ifdef METALS /* some trickery here to enable snapshot-restarts from runs with different numbers of metal species */
+    if(RestartFlag==2)
+    {
+        hdf5_attribute = H5Aopen_name(hdf5_headergrp, "Flag_Metals");
+        H5Aread(hdf5_attribute, H5T_NATIVE_INT, &header.flag_metals);
+        H5Aclose(hdf5_attribute);
+    }
+#endif
+    
     H5Gclose(hdf5_headergrp);
     H5Fclose(hdf5_file);
 }

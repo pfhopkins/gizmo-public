@@ -288,9 +288,10 @@
 #endif
 
 
-#if defined(SINGLE_STAR_FB_WINDS) && !defined(GALSF_FB_MECHANICAL)
-#define GALSF_FB_MECHANICAL // we will use the FIRE wind module for low mass loss rate stars (spawning leads to issues)
+#if (defined(SINGLE_STAR_FB_WINDS) || defined(SINGLE_STAR_FB_SNE)) && !defined(GALSF_FB_MECHANICAL)
+#define GALSF_FB_MECHANICAL // we will use the mechanical wind module for low mass loss rate stars (spawning leads to issues). enable regardless if either the winds or sne module is active
 #endif
+
 
 #ifdef SINGLE_STAR_FB_SNE
 #if !(CHECK_IF_PREPROCESSOR_HAS_NUMERICAL_VALUE_(SINGLE_STAR_FB_SNE)) /* no numerical value is set, so set one as our 'default' */
@@ -314,10 +315,6 @@
 #if !defined(RT_DISABLE_RAD_PRESSURE)
 #define RT_DISABLE_RAD_PRESSURE // we only want the local short-ranged photon momentum, since SF sims can easily get into the badly non-photon-conserving limit where LEBRON fluxes are less accurate
 #endif
-#endif
-
-#if ((defined(SINGLE_STAR_FB_WINDS) || defined(SINGLE_STAR_FB_SNE)) && !defined(FLAG_NOT_IN_PUBLIC_CODE) && !defined(GALSF_FB_MECHANICAL))
-#define GALSF_FB_MECHANICAL // enable mechanical feedback from single stellar sources
 #endif
 
 #if defined(COOLING) && !defined(COOL_GRACKLE) // if not using grackle modules, need to make sure appropriate cooling is enabled
@@ -576,6 +573,10 @@
 #endif
 #endif
 
+
+#if defined(OUTPUT_POTENTIAL) && !defined(EVALPOTENTIAL)
+#define EVALPOTENTIAL
+#endif
 
 #if defined(BLACK_HOLES) && (defined(BH_REPOSITION_ON_POTMIN) || defined(BH_SEED_FROM_FOF))
 #ifndef EVALPOTENTIAL
@@ -1002,15 +1003,25 @@ typedef unsigned long long peanokey;
 #define NUM_AGE_TRACERS 0
 #endif
 
+#ifdef STARFORGE_FEEDBACK_TRACERS
+#define NUM_STARFORGE_FEEDBACK_TRACERS (STARFORGE_FEEDBACK_TRACERS)
+#else
+#define NUM_STARFORGE_FEEDBACK_TRACERS 0
+#endif
+
 #ifdef COOL_METAL_LINES_BY_SPECIES
 #define NUM_LIVE_SPECIES_FOR_COOLTABLES 10
 #else
 #define NUM_LIVE_SPECIES_FOR_COOLTABLES 0
 #endif
 
-#define NUM_METAL_SPECIES (1+NUM_LIVE_SPECIES_FOR_COOLTABLES+NUM_RPROCESS_SPECIES+NUM_AGE_TRACERS)
+#define NUM_METAL_SPECIES (1+NUM_LIVE_SPECIES_FOR_COOLTABLES+NUM_RPROCESS_SPECIES+NUM_AGE_TRACERS+NUM_STARFORGE_FEEDBACK_TRACERS)
 #endif // METALS //
 
+
+#if defined(FLAG_NOT_IN_PUBLIC_CODE_ALT_RSOL_FORM) && defined(FLAG_NOT_IN_PUBLIC_CODE_M1)
+#else
+#endif
 
 
 #ifndef FOF_PRIMARY_LINK_TYPES
