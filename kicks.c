@@ -119,6 +119,13 @@ void do_hermite_prediction(void)
 		tend = P[i].Ti_begstep + ti_step;    /* end of step */
 		double dt_grav = (tend - tstart) * All.Timebase_interval;
 		for(j=0; j<3; j++) {
+#ifdef PMGRID
+            //Add the long-range kick from the first half-step, if necessary (since we are overwriting the previous kick operations with the Hermite scheme)
+            if(All.PM_Ti_begstep == All.Ti_Current)	/* need to do long-range kick */
+            {
+                P[i].OldVel[j] += P[i].GravPM[j] * (All.PM_Ti_endstep - All.PM_Ti_begstep)/2 * All.Timebase_interval;
+            }
+#endif
 		    P[i].Pos[j] = P[i].OldPos[j] + dt_grav * (P[i].OldVel[j] + dt_grav/2 * (P[i].Hermite_OldAcc[j] + dt_grav/3 * P[i].OldJerk[j])) ;
 		    P[i].Vel[j] = P[i].OldVel[j] + dt_grav * (P[i].Hermite_OldAcc[j] + dt_grav/2 * P[i].OldJerk[j]);
 		}}}} // for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) 
@@ -137,6 +144,13 @@ void do_hermite_correction(void) // corrector step
                     for(j=0; j<3; j++) {
                         P[i].Vel[j] = P[i].OldVel[j] + dt_grav * 0.5*(P[i].Hermite_OldAcc[j] + P[i].GravAccel[j]) + (P[i].OldJerk[j] - P[i].GravJerk[j]) * dt_grav * dt_grav/12;
                         P[i].Pos[j] = P[i].OldPos[j] + dt_grav * 0.5*(P[i].Vel[j] + P[i].OldVel[j]) + (P[i].Hermite_OldAcc[j] - P[i].GravAccel[j]) * dt_grav * dt_grav/12;
+#ifdef PMGRID
+                        //Add the long-range kick from the second half-step, if necessary (since we are overwriting the previous kick operations with the Hermite scheme)
+                        if(All.PM_Ti_endstep == All.Ti_Current)	/* need to do long-range kick */
+                        {
+                            P[i].OldVel[j] += P[i].GravPM[j] * (All.PM_Ti_endstep - All.PM_Ti_begstep)/2 * All.Timebase_interval;
+                        }
+#endif
 		    }}}} //     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
 }
 #endif // HERMITE_INTEGRATION

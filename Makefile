@@ -332,6 +332,46 @@ OPT     += -DUSE_MPI_IN_PLACE -DNO_ISEND_IRECV_IN_DOMAIN -DHDF5_DISABLE_VERSION_
 endif
 
 
+#----------------------------------------------------------------------------------------------
+ifeq ($(SYSTYPE),"Bridges2")
+CC       = mpicc
+CXX      = mpic++
+FC       = mpif90  # gcc/clang
+#FC       = mpif90 -nofor_main  # intel
+OPTIMIZE = -O3
+OPTIMIZE += -march=znver1 -mfma -fvectorize -mfma -mavx2 -m3dnow -floop-unswitch-aggressive  # aocc/clang
+#OPTIMIZE += -march=znver1 -mtune=znver1 -mfma -mavx2 -m3dnow -fomit-frame-pointer  # gcc
+#OPTIMIZE += -march=core-avx2 -fma -ftz -fomit-frame-pointer  -ipo -funroll-loops -no-prec-div -fp-model fast=2  # intel
+ifeq (OPENMP,$(findstring OPENMP,$(CONFIGVARS)))
+OPTIMIZE += -fopenmp  # gcc/clang
+#OPTIMIZE += -qopenmp  # intel
+endif
+MKL_INCL = -I$(INCLUDE)
+MKL_LIBS = -L$(LIBRARY_PATH) -mkl=sequential
+GSL_INCL = -I$(INCLUDE)
+GSL_LIBS = -L$(LIBRARY_PATH)
+FFTW_INCL= -I$(INCLUDE)
+FFTW_LIBS= -L$(LIBRARY_PATH)
+HDF5INCL = -I$(INCLUDE) -DH5_USE_16_API
+HDF5LIB  = -L$(LIBRARY_PATH) -lhdf5 -lz
+MPICHLIB =
+OPT     += -DUSE_MPI_IN_PLACE
+## modules to load for aocc/clang:
+## module load aocc
+## module load openmpi/4.0.2-clang2.1
+## modules to load for gcc:
+## module load gcc
+## module load openmpi/3.1.6-gcc8.3.1
+## modules to load for intel:
+## module load intel
+## module load openmpi/4.0.2-intel20.4
+## additional modules to load for any compiler:
+## module load mkl
+## module load hdf5
+## module load fftw
+endif
+
+
 #----------------------------
 ifeq ($(SYSTYPE),"MacBookPro")
 CC       =  mpicc
@@ -915,10 +955,10 @@ CC       =  icc -lmpi
 CXX      =  icc -lmpi -lmpi++
 FC       =  ifort -nofor_main -lmpi
 ifeq ($(SYSTYPE),"Pleiades-Haswell")
-OPTIMIZE = -O3 -ip -funroll-loops -no-prec-div -fp-model fast=2 -xCORE-AVX2 # Haswell cores
+OPTIMIZE = -O3 -ip -funroll-loops -no-prec-div -fp-model fast=2 -xCORE-AVX2 -diag-disable 3180 # Haswell cores
 endif
 ifeq ($(SYSTYPE),"Pleiades-SIBridge")
-OPTIMIZE = -O3 -ip -funroll-loops -no-prec-div -fp-model fast=2 -xAVX # Sandy or Ivy-Bridge cores
+OPTIMIZE = -O3 -ip -funroll-loops -no-prec-div -fp-model fast=2 -xAVX -diag-disable 3180 # Sandy or Ivy-Bridge cores
 endif
 OPTIMIZE += -Wall # compiler warnings
 ifeq (OPENMP,$(findstring OPENMP,$(CONFIGVARS)))
@@ -950,8 +990,8 @@ endif
 ##      (matching what you used for the installation) so that the code can find fftw2
 ##   4. in your job submission file, it is recommended for certain core types that additional settings
 ##      are used. for Sandy Bridge, they recommend:
-##          setenv MPI_DSM_DISTRIBUTE 0
-##          setenv KMP_AFFINITY disabled
+##          export MPI_DSM_DISTRIBUTE=0
+##          export KMP_AFFINITY=disabled
 ##      before the actual lines submitting your job
 ##
 

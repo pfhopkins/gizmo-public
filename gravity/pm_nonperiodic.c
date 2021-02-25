@@ -57,7 +57,10 @@ typedef unsigned int large_array_offset;
 static rfftwnd_mpi_plan fft_forward_plan, fft_inverse_plan;
 #else 
 static fftw_plan fft_forward_plan, fft_inverse_plan;
-static fftw_plan fft_forward_kernel0_plan, fft_forward_kernel1_plan; 
+static fftw_plan fft_forward_kernel1_plan;
+#if !defined(BOX_PERIODIC)
+static fftw_plan fft_forward_kernel0_plan;
+#endif
 #ifdef DM_SCALARFIELD_SCREENING
 static fftw_plan fft_forward_kernel_scalarfield0_plan, fft_forward_kernel_scalarfield1_plan; 
 #endif
@@ -516,11 +519,9 @@ void pm_setup_nonperiodic_kernel(void)
   pm_init_nonperiodic_allocate();
 
 #if !defined(BOX_PERIODIC)
-  for(i = 0; i < fftsize; i++)	/* clear local density field */
-    kernel[0][i] = 0;
+    for(i = 0; i < fftsize; i++) {kernel[0][i] = 0;}	/* clear local density field */
 #ifdef DM_SCALARFIELD_SCREENING
-  for(i = 0; i < fftsize; i++)	/* clear local density field */
-    kernel_scalarfield[0][i] = 0;
+    for(i = 0; i < fftsize; i++) {kernel_scalarfield[0][i] = 0;}	/* clear local density field */
 #endif
 
   for(i = slabstart_x; i < (slabstart_x + nslab_x); i++)
@@ -531,36 +532,27 @@ void pm_setup_nonperiodic_kernel(void)
 	  yy = ((double) j) / GRID;
 	  zz = ((double) k) / GRID;
 
-	  if(xx >= 0.5)
-	    xx -= 1.0;
-	  if(yy >= 0.5)
-	    yy -= 1.0;
-	  if(zz >= 0.5)
-	    zz -= 1.0;
+	  if(xx >= 0.5) {xx -= 1.0;}
+	  if(yy >= 0.5) {yy -= 1.0;}
+	  if(zz >= 0.5) {zz -= 1.0;}
 
 	  r = sqrt(xx * xx + yy * yy + zz * zz);
-
 	  u = 0.5 * r / (((double) PM_ASMTH) / GRID);
-
 	  fac = 1 - erfc(u);
 
 	  if(r > 0)
-	    kernel[0][GRID * GRID2 * (i - slabstart_x) + GRID2 * j + k] = -fac / r;
+	    {kernel[0][GRID * GRID2 * (i - slabstart_x) + GRID2 * j + k] = -fac / r;}
 	  else
-	    kernel[0][GRID * GRID2 * (i - slabstart_x) + GRID2 * j + k] =
-	      -1 / (sqrt(M_PI) * (((double) PM_ASMTH) / GRID));
+	    {kernel[0][GRID * GRID2 * (i - slabstart_x) + GRID2 * j + k] = -1 / (sqrt(M_PI) * (((double) PM_ASMTH) / GRID));}
 #ifdef DM_SCALARFIELD_SCREENING
 	  if(r > 0)
-	    kernel_scalarfield[0][GRID * GRID2 * (i - slabstart_x) + GRID2 * j + k] =
-	      -fac * All.ScalarBeta * exp(-r / All.ScalarScreeningLength) / r;
+	    {kernel_scalarfield[0][GRID * GRID2 * (i - slabstart_x) + GRID2 * j + k] = -fac * All.ScalarBeta * exp(-r / All.ScalarScreeningLength) / r;}
 	  else
-	    kernel_scalarfield[0][GRID * GRID2 * (i - slabstart_x) + GRID2 * j + k] =
-	      -1 / (sqrt(M_PI) * (((double) PM_ASMTH) / GRID));
+	    {kernel_scalarfield[0][GRID * GRID2 * (i - slabstart_x) + GRID2 * j + k] = -1 / (sqrt(M_PI) * (((double) PM_ASMTH) / GRID));}
 #endif
 	}
 
   /* do the forward transform of the kernel */
-
 #ifndef USE_FFTW3
   rfftwnd_mpi(fft_forward_plan, 1, kernel[0], workspace, FFTW_TRANSPOSED_ORDER);
 #ifdef DM_SCALARFIELD_SCREENING

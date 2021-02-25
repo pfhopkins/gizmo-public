@@ -232,9 +232,9 @@
                 if(f_direct != 0)
                 {
                     thold_hll = (0.5*hlle_wtfac_u) * fabs(cmag); // add hll term but flux-limited //
-#ifndef RT_ENHANCED_NUMERICAL_DIFFUSION
+//#ifndef RT_ENHANCED_NUMERICAL_DIFFUSION
                     if(fabs(f_direct) > thold_hll) {f_direct *= thold_hll/fabs(f_direct);}
-#endif
+//#endif
                     cmag += f_direct;
                 }
                 // enforce a flux limiter for stability (to prevent overshoot) //
@@ -243,9 +243,11 @@
                 thold_hll = 0.25 * DMAX(fabs(sVi-sVj), DMAX(fabs(sVi), fabs(sVj)));
 #ifdef RT_ENHANCED_NUMERICAL_DIFFUSION
                 thold_hll *= 2.0; // allow this term to be more generous //
-#else
-                if(sign_c0 < 0) {thold_hll *= 1.e-2;} // if opposing signs, restrict this term //
 #endif
+
+//#ifndef RT_ENHANCED_NUMERICAL_DIFFUSION
+                if(sign_c0 < 0) {thold_hll *= 1.e-2;} // if opposing signs, restrict this term //
+//#endif
                 if(fabs(cmag)>thold_hll) {cmag *= thold_hll/fabs(cmag);}
                 cmag /= dt_hydrostep;
                 Fluxes_Rad_E_gamma[k_freq] += cmag; // returned in physical units //

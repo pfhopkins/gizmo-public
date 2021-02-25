@@ -204,7 +204,7 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
 #endif                    
 
 #ifdef RT_REPROCESS_INJECTED_PHOTONS // conserving photon energy, put only the un-absorbed component of the current band into that band, putting the rest in its "donation" bin (ionizing->optical, all others->IR). This would happen anyway during the routine for resolved absorption, but this may more realistically handle situations where e.g. your dust destruction front is at totally unresolved scales and you don't want to spuriously ionize stuff on larger scales. Assume isotropic re-radiation, so inject only energy for the donated bin and not net flux/momentum.
-		    double dE_donation=0; int donation_bin=rt_get_donation_target_bin(k), do_donation=1;
+		    double dE_donation=0; int donation_bin=rt_get_donation_target_bin(k), do_donation=0; if(donation_bin > -1){do_donation = 1;}
 #ifdef RT_CHEM_PHOTOION  // figure out if we have enough photons to carve a Stromgren sphere through this cell. If yes, inject ionizing radiation, otherwise more accurate to downgrade it to model an unresolved HII region
                     if(k==RT_FREQ_BIN_H0) {
                         double stellum=0; if(local.Dt > 0) {stellum = local.Luminosity[k] / (C_LIGHT_CODE_REDUCED/C_LIGHT_CODE) / local.Dt * UNIT_LUM_IN_CGS;}

@@ -1,4 +1,4 @@
-# Select Target Computer 
+# Select Target Computer
 #
 # Please copy this file to Makefile.systype and uncomment your
 # system. Don't commit changes to this file unless you add support for
@@ -8,6 +8,7 @@
 
 SYSTYPE="Frontera"
 #SYSTYPE="Stampede2"
+#SYSTYPE="Bridges2"
 #SYSTYPE="Wheeler"
 #SYSTYPE="MacBookPro"
 #SYSTYPE="Quest"
@@ -32,7 +33,7 @@ SYSTYPE="Frontera"
 #SYSTYPE="OpenSuse"
 #SYSTYPE="OpenSuse64"
 #SYSTYPE="HLRB2"
-#SYSTYPE="MPA"	
+#SYSTYPE="MPA"
 #SYSTYPE="VIP"
 #SYSTYPE="Ubuntu"
 #SYSTYPE="MBM"

@@ -169,7 +169,7 @@ double rt_kappa(int i, int k_freq)
 #endif
 
     
-#ifdef RT_FREEFREE /* pure (grey, non-relativistic) Thompson scattering opacity + free-free absorption opacity */
+#ifdef RT_FREEFREE /* pure (grey, non-relativistic) Thompson scattering opacity + free-free absorption opacity. standard expressions here from Rybicki & Lightman. */
     if(k_freq==RT_FREQ_BIN_FREEFREE)
     {
         double T_eff=0.59*(GAMMA(i)-1.)*U_TO_TEMP_UNITS*SphP[i].InternalEnergyPred, rho=SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_CGS; // we're assuming fully-ionized gas with a simple equation-of-state here, nothing fancy, to get the temperature //
@@ -178,28 +178,28 @@ double rt_kappa(int i, int k_freq)
     }
 #endif
 #ifdef RT_HARD_XRAY
-    /* opacity comes from H+He (Thompson) + metal ions */
+    /* opacity comes from H+He (Thompson) + metal ions. expressions here for metal ions come from integrating over the standard Morrison & McCammmon 1983 metal cross-sections for a standard slope gamma in the band */
     if(k_freq==RT_FREQ_BIN_HARD_XRAY) {return (0.53 + 0.27*Zfac) * fac;}
 #endif
 #ifdef RT_SOFT_XRAY
-    /* opacity comes from H+He (Thompson) + metal ions */
+    /* opacity comes from H+He (Thompson) + metal ions. expressions here for metal ions come from integrating over the standard Morrison & McCammmon 1983 metal cross-sections for a standard slope gamma in the band */
     if(k_freq==RT_FREQ_BIN_SOFT_XRAY) {return (127. + 50.0*Zfac) * fac;}
 #endif
 #ifdef RT_PHOTOELECTRIC
-    /* opacity comes primarily from dust (ignoring H2 molecular opacities here) */
-    if(k_freq==RT_FREQ_BIN_PHOTOELECTRIC) {return 2000. * DMAX(1.e-4,Zfac * dust_to_metals_vs_standard) * fac;}
+    /* opacity comes primarily from dust (ignoring H2 molecular opacities here). band is 8-13.6 eV [0.091-0.155 micron] (note overlap with LW band) */
+    if(k_freq==RT_FREQ_BIN_PHOTOELECTRIC) {return 720.*DMAX(1.e-4,Zfac * dust_to_metals_vs_standard) * fac;} // depends rather sensitively on assumed input spectrum+dust composition (e.g. MW vs SMC-like), using 2007+ Draine+Li MW-like dust results here, weighted over a flat spectrum with 1/2 of the weight for the portion of the band which overlaps with LW.
 #endif
 #ifdef RT_LYMAN_WERNER
-    /* opacity from molecular H2 and dust (dominant at higher-metallicity) should be included */
-    if(k_freq==RT_FREQ_BIN_LYMAN_WERNER) {return 2400.*Zfac * fac * dust_to_metals_vs_standard;} // just dust term for now
+    /* opacity from molecular H2 and dust (dominant at higher-metallicity) should be included. band is 11.2-13.6 eV [0.111-0.155 micron] */
+    if(k_freq==RT_FREQ_BIN_LYMAN_WERNER) {return 900.*Zfac * fac * dust_to_metals_vs_standard;} // just dust term for now, depends rather sensitively on assumed input spectrum+dust composition (e.g. MW vs SMC-like). using 2007+ Draine+Li MW-like dust results here, weighted by the LW cross-section and a flat spectrum in the range.
 #endif
 #ifdef RT_NUV
-    /* opacity comes primarily from dust */
-    if(k_freq==RT_FREQ_BIN_NUV) {return 1800.*Zfac * fac * dust_to_metals_vs_standard;}
+    /* opacity comes primarily from dust. effective waveband is 0.16-0.36 micron [~3.444-8 eV] */
+    if(k_freq==RT_FREQ_BIN_NUV) {return 480.*Zfac * fac * dust_to_metals_vs_standard;} // depends rather sensitively on assumed input spectrum+dust composition (e.g. MW vs SMC-like), using 2007+ Draine+Li MW-like dust results here
 #endif
 #ifdef RT_OPTICAL_NIR
-    /* opacity comes primarily from dust */
-    if(k_freq==RT_FREQ_BIN_OPTICAL_NIR) {return 180.*Zfac * fac * dust_to_metals_vs_standard;}
+    /* opacity comes primarily from dust. effective waveband is 0.36-3 microns [~0.4133-3.444 eV], e.g. between U-K+ band  */
+    if(k_freq==RT_FREQ_BIN_OPTICAL_NIR) {return 180.*Zfac * fac * dust_to_metals_vs_standard;} // this is close to the specific opacity at R-band, which you can treat very crudely as a sort of 'effective wavelength' for this
 #endif
 #ifdef RT_INFRARED
     /* IR with dust opacity */
@@ -516,7 +516,7 @@ int rt_get_lum_band_singlestar(int i, int mode, double *lum)
 double rt_absorption_rate(int i, int k_freq)
 {
     /* should be equal to (c_reduced * Kappa_opacity * rho) */
-    return C_LIGHT_CODE_REDUCED * rt_absorb_frac_albedo(i, k_freq) * rt_kappa(i,k_freq) * SphP[i].Density*All.cf_a3inv;
+    return (C_LIGHT_CODE_REDUCED) * rt_absorb_frac_albedo(i,k_freq) * (rt_kappa(i,k_freq) * SphP[i].Density*All.cf_a3inv);
 }
 #endif 
 
@@ -876,6 +876,7 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
     } // finite timestep requirement
 #else
     double mom_fac = 1. - total_erad_emission_minus_absorption / (P[i].Mass * C_LIGHT_CODE*C_LIGHT_CODE_REDUCED); // back-reaction on gas from emission, which is isotropic in the fluid frame but anisotropic in the lab frame. this effect is only important in actually semi-relativistic problems so we use "real" C here, not a RSOL, and match the corresponding term above in the radiation flux equation (if that is evolved explicitly). careful checking-through gives the single termm here, not both
+    if(fabs(mom_fac - 1) > 0.1) {printf("WARNING: Large radiation backreaction for cell %d (mom_fac=%g), check the RT solver stability if this is not a relativistic problem.\n",i,mom_fac);}
     {int k_dir; for(k_dir=0;k_dir<3;k_dir++) {if(mode==0) {P[i].Vel[k_dir] *= mom_fac;} else {SphP[i].VelPred[k_dir] *= mom_fac;}}}
 #endif
 
@@ -933,7 +934,13 @@ void rt_set_simple_inits(int RestartFlag)
                 SphP[i].Rad_Flux_Limiter[k] = 1;
 #endif
 #ifdef RT_INFRARED
-                if(k==RT_FREQ_BIN_INFRARED) {SphP[i].Rad_E_gamma[RT_FREQ_BIN_INFRARED] = (4.*5.67e-5 / C_LIGHT) * pow(DMIN(All.InitGasTemp,100.),4.) / UNIT_PRESSURE_IN_CGS * P[i].Mass / (SphP[i].Density*All.cf_a3inv);}
+                if(k==RT_FREQ_BIN_INFRARED) {
+#ifdef SINGLE_STAR_FB_RAD // for GMC simulations, initialize to the energy density of the dust emission component observed ISRF - 0.31eV/cm^3 (Draine 2011)
+                    SphP[i].Rad_E_gamma[RT_FREQ_BIN_INFRARED] = RT_ISRF_BACKGROUND * 0.31 * ELECTRONVOLT_IN_ERGS / UNIT_PRESSURE_IN_CGS * P[i].Mass / (SphP[i].Density*All.cf_a3inv);
+#else
+                    SphP[i].Rad_E_gamma[RT_FREQ_BIN_INFRARED] = (4.*5.67e-5 / C_LIGHT) * pow(DMIN(All.InitGasTemp,100.),4.) / UNIT_PRESSURE_IN_CGS * P[i].Mass / (SphP[i].Density*All.cf_a3inv);
+#endif
+                }
 #endif
 #ifdef RT_EVOLVE_ENERGY
                 SphP[i].Rad_E_gamma_Pred[k] = SphP[i].Rad_E_gamma[k]; SphP[i].Dt_Rad_E_gamma[k] = 0;

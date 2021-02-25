@@ -414,14 +414,14 @@ integertime get_timestep(int p,		/*!< particle index */
 #ifdef PIC_MHD
         if(P[p].Grain_SubType==3)
         {
-            double lorentz_units = UNIT_B_IN_GAUSS; // code B to Gauss
-            lorentz_units *= UNIT_VEL_IN_CGS * (ELECTRONCHARGE/(PROTONMASS*C_LIGHT)); // code velocity to CGS, times base units e/(mp*c)
-            lorentz_units /= UNIT_VEL_IN_CGS / UNIT_TIME_IN_CGS; // convert 'back' to code-units acceleration
-            double reduced_C = PIC_SPEEDOFLIGHT_REDUCTION * C_LIGHT_CODE;
-            double charge_to_mass_ratio_dimensionless = All.PIC_Charge_to_Mass_Ratio;
-            double v2=0, B2=0; for(k=0;k<3;k++) {v2=P[p].Vel[k]*P[p].Vel[k]; B2+=P[p].Gas_B[k]*P[p].Gas_B[k];}
-            double gamma=1/sqrt(1-v2/(reduced_C*reduced_C));
-            double dt_courant_pic = 0.5 * gamma / (charge_to_mass_ratio_dimensionless * sqrt(B2) * lorentz_units); /* dt = 0.5/omega_g */
+            double lorentz_units = UNIT_B_IN_GAUSS * UNIT_VEL_IN_CGS * (ELECTRONCHARGE/(PROTONMASS*C_LIGHT)) / (UNIT_VEL_IN_CGS/UNIT_TIME_IN_CGS); // code velocity to CGS and B to Gauss, times base units e/(mp*c), then convert 'back' to code-units acceleration
+            double reduced_C = PIC_SPEEDOFLIGHT_REDUCTION * C_LIGHT_CODE, charge_to_mass_ratio_dimensionless = All.PIC_Charge_to_Mass_Ratio;
+#ifdef PIC_MHD_NEW_RSOL_METHOD
+            lorentz_units *= PIC_SPEEDOFLIGHT_REDUCTION; // the rsol enters by slowing down the forces here, acts as a unit shift for time
+#endif
+            double beta2=0,B2; for(k=0;k<3;k++) {double b=P[i].Gas_B[k]*All.cf_a2inv, v=P[p].Vel[k]/(All.cf_atime*reduced_C); B2+=b*b; beta2+=v*v;;} /* get magnitude and unit vector for B, and vector beta [-true- beta here] */
+            double gamma_lorentz = 1./sqrt(DMAX(1.-DMAX(DMIN(beta2,1.),0.),MIN_REAL_NUMBER)); // calculate lorentz factor (with safety factors included to prevent accidental nan here //
+            double dt_courant_pic = 0.5 / ((charge_to_mass_ratio_dimensionless/gamma_lorentz) * sqrt(B2) * lorentz_units); /* dt = 0.5/omega_gyro*/
             if(dt_courant_pic < dt_courant) dt_courant = dt_courant_pic;
         }
 #endif

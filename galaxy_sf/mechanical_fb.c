@@ -607,7 +607,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                     pnorm += pvec[k]*pvec[k];
                 }
                 pnorm = sqrt(pnorm); // this (vector norm) is the new 'weight function' for our purposes
-                pnorm *= pnorm_sum; for(k=0;k<3;k++) {pvec[k] *= pnorm_sum;} // ??? normalize following sum [10] to ensure faces sum to unity
+                pnorm *= pnorm_sum; for(k=0;k<3;k++) {pvec[k] *= pnorm_sum;} // normalize following sum [10] to ensure faces sum to unity
                 dM_ejecta_in = pnorm * local.Msne;
                 double mj_preshock, massratio_ejecta;
                 mj_preshock = Mass_j;

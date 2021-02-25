@@ -353,14 +353,17 @@ void Riemann_solver(struct Input_vec_Riemann Riemann_vec, struct Riemann_outputs
     if((Riemann_out->P_M<=0)||(isnan(Riemann_out->P_M))) /* check if it failed, if so compute HLLC instead */
 #endif
     HLLC_Riemann_solver(Riemann_vec, Riemann_out, n_unit, v_line_L, v_line_R, cs_L, cs_R, h_L, h_R, press_tot_limiter);
+    /* check if HLLC failed: if so, compute the KT flux instead */
+    if((Riemann_out->P_M<0)||(isnan(Riemann_out->P_M)))
+       Riemann_solver_KurganovTadmor_PWK(Riemann_vec, Riemann_out, n_unit, v_line_L, v_line_R, cs_L, cs_R, h_L, h_R);
 #ifdef EOS_GENERAL
-    /* check if HLLC failed: if so, compute the Rusanov flux instead */
-    if((Riemann_out->P_M<=0)||(isnan(Riemann_out->P_M)))
+    /* check if HLLC+KT failed: if so, compute the Rusanov flux instead */
+    if((Riemann_out->P_M<0)||(isnan(Riemann_out->P_M)))
         Riemann_solver_Rusanov(Riemann_vec, Riemann_out, n_unit, v_line_L, v_line_R, cs_L, cs_R, h_L, h_R);
 #else
 #if !defined(COOLING) && !defined(GALSF)
     /* go straight to the expensive but exact solver (only for hydro with polytropic eos!) */
-    if((Riemann_out->P_M<=0)||(isnan(Riemann_out->P_M))||(Riemann_out->P_M>press_tot_limiter))
+    if((Riemann_out->P_M<0)||(isnan(Riemann_out->P_M))||(Riemann_out->P_M>press_tot_limiter))
     {
         Riemann_solver_exact(Riemann_vec, Riemann_out, n_unit, v_line_L, v_line_R, cs_L, cs_R, h_L, h_R);
 #ifdef SAVE_FACE_DENSITY
@@ -401,9 +404,12 @@ void HLLC_Riemann_solver(struct Input_vec_Riemann Riemann_vec, struct Riemann_ou
     get_wavespeeds_and_pressure_star(Riemann_vec, Riemann_out, n_unit,  v_line_L, v_line_R, cs_L, cs_R, h_L, h_R, &S_L, &S_R, press_tot_limiter);
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
     /* check if we have a valid solution, and if so, compute the fluxes */
-    if((Riemann_out->P_M>0)&&(!isnan(Riemann_out->P_M)))
+    if((Riemann_out->P_M>=0)&&(!isnan(Riemann_out->P_M)))
         HLLC_fluxes(Riemann_vec, Riemann_out, n_unit,  v_line_L, v_line_R, cs_L, cs_R, h_L, h_R, S_L, S_R);
 #else
+    Riemann_out->Fluxes.rho = 0; /* vanishes by definition in this frame */
+    int k; for(k=0;k<3;k++) {Riemann_out->Fluxes.v[k] = Riemann_out->P_M * n_unit[k];} /* becomes extremely simple for MFM in this frame */
+    Riemann_out->Fluxes.p = Riemann_out->P_M * Riemann_out->S_M; /* becomes extremely simple for MFM in this frame */
 #ifdef SAVE_FACE_DENSITY
     if((Riemann_out->S_M==0) || ((Riemann_out->P_M<=0)&&(!isnan(Riemann_out->P_M))))
     {
@@ -425,28 +431,40 @@ void HLLC_Riemann_solver(struct Input_vec_Riemann Riemann_vec, struct Riemann_ou
 void Riemann_solver_Rusanov(struct Input_vec_Riemann Riemann_vec, struct Riemann_outputs *Riemann_out, double n_unit[3],
                             double v_line_L, double v_line_R, double cs_L, double cs_R, double h_L, double h_R)
 {
-    /* estimate wave speed and simplest-average intermediate state
-     (Primitive Variable Riemann Solvers approximate Riemann solver from Toro) */
-    double S_L, S_R, S_plus, rho_csnd_hat, P_M, S_M;
-    S_plus = DMAX(DMAX(fabs(v_line_L - cs_L), fabs(v_line_R - cs_R)), DMAX(fabs(v_line_L + cs_L), fabs(v_line_R + cs_R)));
-    S_L=-S_plus; S_R=S_plus; rho_csnd_hat=0.5*(Riemann_vec.L.rho+Riemann_vec.R.rho) * 0.5*(cs_L+cs_R);
-    P_M = 0.5 * ((Riemann_vec.L.p + Riemann_vec.R.p) + (v_line_L-v_line_R) * rho_csnd_hat);
-    S_M = 0.5 * ((v_line_R+v_line_L) + (Riemann_vec.L.p-Riemann_vec.R.p) / (rho_csnd_hat));
-    Riemann_out->P_M = P_M;
-    Riemann_out->S_M = S_M;
-#ifdef HYDRO_MESHLESS_FINITE_VOLUME
+    /* estimate wave speed and simplest-average intermediate state (Primitive Variable Riemann Solvers approximate Riemann solver from Toro) */
+    double S_L, S_R, S_plus, P_M, S_M;
+    if((v_line_R - v_line_L) > DMAX(cs_L,cs_R)) // first check for vacuum solution, which is not accounted for in this
+    {
+        Riemann_out->P_M = P_M = MIN_REAL_NUMBER; Riemann_out->S_M = S_L = S_R = S_plus = S_M = 0;
+    } else {
+        S_plus = DMAX(DMAX(fabs(v_line_L - cs_L), fabs(v_line_R - cs_R)), DMAX(fabs(v_line_L + cs_L), fabs(v_line_R + cs_R)));
+        S_L=-S_plus; S_R=S_plus;
+        double rho_csnd_hat=0.5*(Riemann_vec.L.rho+Riemann_vec.R.rho) * 0.5*(cs_L+cs_R);
+        //P_M = 0.5 * ((Riemann_vec.L.p + Riemann_vec.R.p) + (v_line_L-v_line_R) * rho_csnd_hat);
+        //S_M = 0.5 * ((v_line_R+v_line_L) + (Riemann_vec.L.p-Riemann_vec.R.p) / (rho_csnd_hat));
+        S_M = ((v_line_L*Riemann_vec.L.rho + v_line_R*Riemann_vec.R.rho) + S_plus*(Riemann_vec.L.rho - Riemann_vec.R.rho)) / (Riemann_vec.L.rho + Riemann_vec.R.rho);
+        P_M = 0.5 * (Riemann_vec.L.p + Riemann_vec.R.p + (v_line_L - v_line_R) * ((2.*S_plus + v_line_L - v_line_R) * Riemann_vec.L.rho * Riemann_vec.R.rho / (Riemann_vec.L.rho + Riemann_vec.R.rho)));
+        Riemann_out->P_M = P_M;
+        Riemann_out->S_M = S_M;
+    }
     int k;
+#ifdef HYDRO_MESHLESS_FINITE_VOLUME
     if((P_M > 0)&&(!isnan(P_M)))
     {
         /* flux = (1/2) * ( F_L + F_R ) - (S_plus/2) * (Q_R - Q_L) */
         double f_rho_left = Riemann_vec.L.rho * (v_line_L + S_plus);
         double f_rho_right = Riemann_vec.R.rho * (v_line_R - S_plus);
         Riemann_out->Fluxes.rho = 0.5 * (f_rho_left + f_rho_right);
-        for(k=0;k<3;k++)
-            Riemann_out->Fluxes.v[k] = 0.5 * (f_rho_left * Riemann_vec.L.v[k] + f_rho_right * Riemann_vec.R.v[k] +
-                                              (Riemann_vec.L.p + Riemann_vec.R.p) * n_unit[k]);
+        for(k=0;k<3;k++) {Riemann_out->Fluxes.v[k] = 0.5 * (f_rho_left * Riemann_vec.L.v[k] + f_rho_right * Riemann_vec.R.v[k] +
+                                                            (Riemann_vec.L.p + Riemann_vec.R.p) * n_unit[k]);}
         Riemann_out->Fluxes.p = 0.5 * (f_rho_left * h_L + f_rho_right * h_R + S_plus * (Riemann_vec.R.p - Riemann_vec.L.p));
     }
+#else
+    double f_rho_left = (2.*S_plus + v_line_L - v_line_R) * Riemann_vec.L.rho * Riemann_vec.R.rho / (Riemann_vec.L.rho + Riemann_vec.R.rho); // using solution for frame co-moving w contact discontinuity
+    double f_rho_right = -f_rho_left; Riemann_out->Fluxes.rho = 0; // by definition in this frame
+    for(k=0;k<3;k++) {Riemann_out->Fluxes.v[k] = 0.5 * (f_rho_left * Riemann_vec.L.v[k] + f_rho_right * Riemann_vec.R.v[k] +
+                                                        (Riemann_vec.L.p + Riemann_vec.R.p) * n_unit[k]);}
+    Riemann_out->Fluxes.p = 0.5 * (f_rho_left * h_L + f_rho_right * h_R + S_plus * (Riemann_vec.R.p - Riemann_vec.L.p));
 #endif
 #ifdef SAVE_FACE_DENSITY
     Riemann_out->Face_Density = 0.5 * (Riemann_vec.L.rho*(S_L-v_line_L)/(S_L-Riemann_out->S_M) +
@@ -668,7 +686,7 @@ void Riemann_solver_exact(struct Input_vec_Riemann Riemann_vec, struct Riemann_o
                        double v_line_L, double v_line_R, double cs_L, double cs_R, double h_L, double h_R)
 {
     /* first, we need to check for all the special/exceptional cases that will cause things to go haywire */
-    if((Riemann_vec.L.p == 0 && Riemann_vec.L.p == 0) || (Riemann_vec.L.rho==0 && Riemann_vec.R.rho==0))
+    if((Riemann_vec.L.p == 0 && Riemann_vec.R.p == 0) || (Riemann_vec.L.rho==0 && Riemann_vec.R.rho==0))
     {
         /* we're in a Vaccuum! */
         Riemann_out->P_M = Riemann_out->S_M = 0;

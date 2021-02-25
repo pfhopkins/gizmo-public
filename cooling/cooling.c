@@ -129,8 +129,8 @@ void do_the_cooling_for_particle(int i)
 
         
 #ifdef RT_INFRARED /* assume (for now) that all radiated/absorbed energy comes from the IR bin [not really correct, this should just be the dust term] */
-        double nHcgs = HYDROGEN_MASSFRAC * UNIT_DENSITY_IN_CGS * SphP[i].Density / PROTONMASS;	/* hydrogen number dens in cgs units */
-        double ratefact = (C_LIGHT_CODE_REDUCED/C_LIGHT_CODE) * nHcgs * nHcgs / (SphP[i].Density * UNIT_DENSITY_IN_CGS); /* need to account for RSOL factors in emission/absorption rates */
+        double nHcgs = HYDROGEN_MASSFRAC * UNIT_DENSITY_IN_CGS * SphP[i].Density * All.cf_a3inv / PROTONMASS;	/* hydrogen number dens in cgs units */
+        double ratefact = (C_LIGHT_CODE_REDUCED/C_LIGHT_CODE) * nHcgs * nHcgs / (SphP[i].Density * All.cf_a3inv * UNIT_DENSITY_IN_CGS); /* need to account for RSOL factors in emission/absorption rates */
         double de_u = -SphP[i].LambdaDust * ratefact * (dtime*UNIT_TIME_IN_CGS) / (UNIT_SPECEGY_IN_CGS) * P[i].Mass; /* energy gained by gas needs to be subtracted from radiation */
         if(de_u<=-0.99*SphP[i].Rad_E_gamma[RT_FREQ_BIN_INFRARED]) {de_u=-0.99*SphP[i].Rad_E_gamma[RT_FREQ_BIN_INFRARED]; unew=DMAX(0.01*SphP[i].InternalEnergy , SphP[i].InternalEnergy-de_u/P[i].Mass);}
         SphP[i].Rad_E_gamma[RT_FREQ_BIN_INFRARED] += de_u; /* energy gained by gas is lost here */
@@ -452,7 +452,7 @@ double find_abundances_and_rates(double logT, double rho, int target, double shi
 
     if(logT <= Tmin)		/* everything neutral */
     {
-        nH0 = 1.0; nHe0 = yhelium(target); nHp = 0; nHep = 0; nHepp = 0; n_elec = 0;
+        nH0 = 1.0; nHe0 = yhelium(target); nHp = 0; nHep = 0; nHepp = 0; n_elec = 1.e-22;
         *nH0_guess=nH0; *nHe0_guess=nHe0; *nHp_guess=nHp; *nHep_guess=nHep; *nHepp_guess=nHepp; *ne_guess=n_elec;
         *mu_guess=Get_Gas_Mean_Molecular_Weight_mu(pow(10.,logT), rho, nH0_guess, ne_guess, 0, target);
         return 0;
@@ -624,6 +624,9 @@ double find_abundances_and_rates(double logT, double rho, int target, double shi
 
         neold = n_elec;
         n_elec = nHp + nHep + 2 * nHepp;	/* eqn (38) */
+#ifdef COOL_LOW_TEMPERATURES
+        n_elec += return_electron_fraction_from_heavy_ions(target, pow(10.,logT), rho, n_elec);
+#endif
         necgs = n_elec * nHcgs;
 
         if(J_UV == 0) break;
@@ -862,23 +865,23 @@ double CoolingRate(double logT, double rho, double n_elec_guess, int target)
         
         if(LambdaCompton<0) {Heat -= LambdaCompton;} /* Compton heating rather than cooling */
 
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(RT_PHOTOELECTRIC) || defined(RT_FUV_BACKGROUND)
+#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(RT_PHOTOELECTRIC) || defined(RT_ISRF_BACKGROUND)
         /* Photoelectric heating following Bakes & Thielens 1994 (also Wolfire 1995); now with 'update' from Wolfire 2005 for PAH [fudge factor 0.5 below] */
         if((target >= 0) && (T < 1.0e6))
         {
-            double photoelec;
+            double photoelec = 0;
 #ifdef RT_PHOTOELECTRIC
-            photoelec = SphP[target].Rad_E_gamma[RT_FREQ_BIN_PHOTOELECTRIC] * (SphP[target].Density*All.cf_a3inv/P[target].Mass) * UNIT_PRESSURE_IN_CGS / 3.9e-14; // convert to Habing field //
-            if(photoelec > 0) {if(photoelec > 1.e4) {photoelec = 1.e4;}}
+            photoelec += SphP[target].Rad_E_gamma[RT_FREQ_BIN_PHOTOELECTRIC] * (SphP[target].Density*All.cf_a3inv/P[target].Mass) * UNIT_PRESSURE_IN_CGS / 3.9e-14; // convert to Habing field //
 #endif
-#ifdef RT_FUV_BACKGROUND // add a constant assumed FUV background, for isolated ISM simulations that don't get FUV from local sources self-consistently
+#ifdef RT_ISRF_BACKGROUND // add a constant assumed FUV background, for isolated ISM simulations that don't get FUV from local sources self-consistently
             double column = evaluate_NH_from_GradRho(P[target].GradRho,PPP[target].Hsml,SphP[target].Density,PPP[target].NumNgb,1,target) * UNIT_SURFDEN_IN_CGS; // converts to cgs            
-            photoelec += RT_FUV_BACKGROUND * 1.7 * exp(-DMAX(P[target].Metallicity[0]/All.SolarAbundances[0],1e-4) * column * 2000.); // RT_IRSF_BACKGROUND rescales the overal IRSF, factor of 1.7 gives Draine 1978 field in Habing units, extinction factor assumes the same FUV band-integrated dust opacity as RT module
+            photoelec += RT_ISRF_BACKGROUND * 1.7 * exp(-DMAX(P[target].Metallicity[0]/All.SolarAbundances[0],1e-4) * column * 500.); // RT_ISRF_BACKGROUND rescales the overal ISRF, factor of 1.7 gives Draine 1978 field in Habing units, extinction factor assumes the same FUV band-integrated dust opacity as RT module
 #endif
+            if(photoelec > 0) {if(photoelec > 1.e4) {photoelec = 1.e4;}}
 
             if(photoelec > 0)
             {
-                double LambdaPElec = 1.3e-24 * photoelec / nHcgs * P[target].Metallicity[0]/All.SolarAbundances[0];
+                double LambdaPElec = 1.3e-24 * photoelec / nHcgs * (P[target].Metallicity[0]/All.SolarAbundances[0]);
                 double x_photoelec = photoelec * sqrt(T) / (0.5 * (1.0e-12+n_elec) * nHcgs);
                 LambdaPElec *= 0.049/(1+pow(x_photoelec/1925.,0.73)) + 0.037*pow(T/1.0e4,0.7)/(1+x_photoelec/5000.);
                 Heat += LambdaPElec;
@@ -1512,6 +1515,9 @@ double get_equilibrium_dust_temperature_estimate(int i, double shielding_factor_
     double e_CMB=0.262*All.cf_a3inv/All.cf_atime, T_cmb=2.73/All.cf_atime; // CMB [energy in eV/cm^3, T in K]
     double e_IR=0.31, Tdust_ext=DMAX(30.,T_cmb); // Milky way ISRF from Draine (2011), assume peak of dust emission at ~100 microns
     double e_HiEgy=0.66, T_hiegy=5800.; // Milky way ISRF from Draine (2011), assume peak of stellar emission at ~0.6 microns [can still have hot dust, this effect is pretty weak]
+#ifdef RT_ISRF_BACKGROUND
+    e_IR *= RT_ISRF_BACKGROUND; e_HiEgy *= RT_ISRF_BACKGROUND; // need to re-scale the assumed ISRF components
+#endif
     if(i >= 0)
     {
 #if defined(RADTRANSFER) || defined(RT_USE_GRAVTREE_SAVE_RAD_ENERGY) // use actual explicitly-evolved radiation field, if possible
@@ -1532,6 +1538,39 @@ double get_equilibrium_dust_temperature_estimate(int i, double shielding_factor_
         double T0=2.92, q=pow(T0*e_IR,0.25), y=(T_cmb*e_CMB + T_hiegy*e_HiEgy)/(T0*e_IR*q); if(y<=1) {Tdust_eqm=T0*q*(0.8+sqrt(0.04+0.1*y));} else {double y5=pow(y,0.2), y5_3=y5*y5*y5, y5_4=y5_3*y5; Tdust_eqm=T0*q*(1.+15.*y5_4+sqrt(1.+30.*y5_4+25.*y5_4*y5_4))/(20.*y5_3);} // this gives an extremely accurate and exactly-joined solution to the full quintic equation assuming T_rad_IR=T_dust
     }
     return DMAX(DMIN(Tdust_eqm , 2000.) , 1.); // limit at sublimation temperature or some very low temp //
+}
+
+
+
+/* this function estimates the free electron fraction from heavy ions, assuming a simple mix of cold molecular gas, Mg, and dust, with the ions from singly-ionized Mg, to prevent artificially low free electron fractions */
+double return_electron_fraction_from_heavy_ions(int target, double temperature, double density_cgs, double n_elec_HHe)
+{
+    if(All.ComovingIntegrationOn) {double rhofac=density_cgs/(1000.*COSMIC_BARYON_DENSITY_CGS); if(rhofac<0.2) {return 0;}} // ignore these reactions in the IGM
+    double zeta_cr=1.0e-17, f_dustgas=0.01, n_ion_max=4.1533e-5, XH=HYDROGEN_MASSFRAC; // cosmic ray ionization rate (fixed as constant for non-CR runs) and dust-to-gas ratio
+#ifdef METALS
+    if(target>=0) {f_dustgas=0.5*P[target].Metallicity[0];} // constant dust-to-metals ratio
+#ifdef COOL_METAL_LINES_BY_SPECIES
+    if(target>=0) {n_ion_max = (All.SolarAbundances[6]/24.3)/XH;} // limit, to avoid over-ionization at low metallicities
+#endif
+#endif
+    /* Regime I: highly/photo-ionized, any contributions here would be negligible -- no need to continue */
+    if(n_elec_HHe > 0.01) {return n_ion_max;} // contribute something negligible, doesn't matter here //
+    double a_grain_micron=0.1, m_ion=24.305*PROTONMASS, mu_eff=2.38, m_neutrals=mu_eff*PROTONMASS, m_grain=4.189e-12*(2.4)*a_grain_micron*a_grain_micron*a_grain_micron, ngrain_ngas=(m_neutrals/m_grain)*f_dustgas; // effective size of grains that matter at these densities, and ions [here Mg] that dominate
+    double k_ei=9.77e-8, y=sqrt(m_ion/ELECTRONMASS), ln_y=log(y), psi_0=-ln_y+(1.+ln_y)*log(1.+ln_y)/(2.+ln_y), k_eg_00=0.0195*a_grain_micron*a_grain_micron*sqrt(temperature), k_eg_0=k_eg_00*exp(psi_0), n_crit=k_ei*zeta_cr/(k_eg_0*ngrain_ngas*k_eg_0*ngrain_ngas), n_eff=density_cgs/m_neutrals;
+
+    /* Regime II: CR-ionized with high enough ionization fraction that gas-phase recombinations dominate */
+    if(n_eff < 0.01*n_crit) {return DMIN(n_ion_max , sqrt(zeta_cr / (k_ei * n_eff)) / (XH*mu_eff) );} // CR-dominated off gas with recombination -- put into appropriate units here
+    if(n_eff < 100.*n_crit) {return DMIN(n_ion_max , 0.5 * (sqrt(4.*n_crit/n_eff + 1.) - 1.) * (k_eg_0*ngrain_ngas)/(k_ei*XH*mu_eff));} // interpolates between gas-recombination and dust-dominated regimes
+    
+    /* Regime III: recombination dominated by dust, but dust has a 'normal' efficiency of absorbing grains */
+    double psi_fac=16.71/(a_grain_micron*temperature), alpha=zeta_cr*psi_fac/(k_eg_00 * ngrain_ngas*ngrain_ngas * n_eff), alpha_min=0.02, alpha_max=10.; /* Z*psi_fac = Z*e^2/(a_grain*kB*T) to dimensionless [psi] units; alpha=prefactor in charge equation: psi = alpha*(exp[-psi] - y/(1-psi)) */
+    if(alpha > alpha_max) {return DMIN(n_ion_max , zeta_cr / (k_eg_0*ngrain_ngas * XH*mu_eff*n_eff ) );}
+    
+    /* Regime IV: recombination dominated by dust and grains dominate the charge, strongly suppressing the free charges */
+    if(alpha < 1.e-4) {return DMIN(n_ion_max , zeta_cr / (k_eg_00*ngrain_ngas * XH*mu_eff*n_eff) );} // psi->small, negligible correction here
+    if(alpha < alpha_min) {double psi=0.5*(1.-sqrt(1.+4.*y*alpha)); return DMIN(n_ion_max , zeta_cr / (k_eg_00*exp(psi)*ngrain_ngas * XH*mu_eff*n_eff) );} // small-psi-limit
+    double psi_xmin=0.5*(1.-sqrt(1.+4.*y*alpha_min)), psi=psi_0 + (psi_xmin-psi_0)*2./(1.+alpha_min/alpha); // this interpolates between the asymptotic limmits at low and high alpha, where we can obtain high-accuracy solutions here
+    return DMIN(n_ion_max , zeta_cr / (k_eg_00*exp(psi)*ngrain_ngas * XH*mu_eff*n_eff));
 }
 
 

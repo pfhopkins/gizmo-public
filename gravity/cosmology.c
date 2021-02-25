@@ -30,11 +30,11 @@ void set_cosmo_factors_for_current_time(void)
         /* All.cf_a3inv * Density_code = Density_physical */
         All.cf_a3inv = 1 / (All.Time * All.Time * All.Time);
         /* Pressure_code/Density_code = All.cf_afac1 * Pressure_physical/Density_physical */
-        All.cf_afac1 = 1;
+         All.cf_afac1 = 1; // -- no longer explicitly needed -- retained only for historical compatibility reasons with users importing from gadget/arepo
         /* All.cf_afac2 * Pressure_code/Density_code * 1/r_code = Pressure_physical/Density_physical * 1/r_physical */
         All.cf_afac2 = 1 / (All.Time * All.cf_afac1);
         /* All.cf_afac3 * sqrt(Pressure_code/Density_code) = sqrt(Pressure_phys/Density_phys) = cs_physical */
-        All.cf_afac3 = 1 / sqrt(All.cf_afac1);
+        All.cf_afac3 = 1 / sqrt(All.cf_afac1); // -- no longer explicitly needed -- retained only for historical compatibility reasons with users importing from gadget/arepo
         /* time units: proper time dt_phys = 1/hubble_function(a) * dz/(1+z) = dlna / hubble_function(a)
             code time unit in comoving is dlna, so dt_phys = dt_code / All.cf_hubble_a   */
         All.cf_hubble_a = hubble_function(All.Time); /* hubble_function(a) = H(a) = H(z) */

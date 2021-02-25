@@ -62,6 +62,13 @@ void restart(int modus)
         {
             sprintf(buf, "%s/restartfiles/%s.%d", All.OutputDir, All.RestartFile, i_Task_iter);
             sprintf(buf_bak, "%s/restartfiles/%s.%d.bak", All.OutputDir, All.RestartFile, i_Task_iter);
+#ifdef REDUNDANT_BACKUP_RESTARTFILE_FREQUENCY
+            if( (((int)(CPUThisRun/All.CpuTimeBetRestartFile)) % ((int)REDUNDANT_BACKUP_RESTARTFILE_FREQUENCY)) == 0)
+            {
+                char buf_bak2[200]; sprintf(buf_bak2, "%s/restartfiles/%s.%d.bak2", All.OutputDir, All.RestartFile, i_Task_iter);
+                rename(buf_bak,buf_bak2); // move old backup restart files to .bak2 files //
+            }
+#endif
             rename(buf,buf_bak); // move old restart files to .bak files //
         }
 #endif
