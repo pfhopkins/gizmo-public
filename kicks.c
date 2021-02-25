@@ -547,9 +547,6 @@ void apply_special_boundary_conditions(int i, double mass_for_dp, int mode)
 #ifdef RT_EVOLVE_FLUX
                 if(P[i].Type==0) {int kf; for(kf=0;kf<N_RT_FREQ_BINS;kf++) {if(SphP[i].Rad_Flux[kf][j]<0) {SphP[i].Rad_Flux[kf][j]=-SphP[i].Rad_Flux[kf][j]; SphP[i].Rad_Flux_Pred[kf][j]=SphP[i].Rad_Flux[kf][j];}}}
 #endif
-#ifdef COSMIC_RAYS_M1
-                if(P[i].Type==0) {int kf; for(kf=0;kf<N_CR_PARTICLE_BINS;kf++) {if(SphP[i].CosmicRayFlux[kf][j]<0) {SphP[i].CosmicRayFlux[kf][j]=-SphP[i].CosmicRayFlux[kf][j]; SphP[i].CosmicRayFluxPred[kf][j]=SphP[i].CosmicRayFlux[kf][j];}}}
-#endif
             }
             if(special_boundary_condition_xyz_def_outflow[j] == 0 || special_boundary_condition_xyz_def_outflow[j] == -1) {P[i].Mass=0; if(mode==1) {P[i].dp[0]=P[i].dp[1]=P[i].dp[2]=0;}}
         }
@@ -561,9 +558,6 @@ void apply_special_boundary_conditions(int i, double mass_for_dp, int mode)
                 P[i].Pos[j]=box_upper[j]*(1.-((double)P[i].ID)*1.e-9);
 #ifdef RT_EVOLVE_FLUX
                 if(P[i].Type==0) {int kf; for(kf=0;kf<N_RT_FREQ_BINS;kf++) {if(SphP[i].Rad_Flux[kf][j]>0) {SphP[i].Rad_Flux[kf][j]=-SphP[i].Rad_Flux[kf][j]; SphP[i].Rad_Flux_Pred[kf][j]=SphP[i].Rad_Flux[kf][j];}}}
-#endif
-#ifdef COSMIC_RAYS_M1
-                if(P[i].Type==0) {int kf; for(kf=0;kf<N_CR_PARTICLE_BINS;kf++) {if(SphP[i].CosmicRayFlux[kf][j]>0) {SphP[i].CosmicRayFlux[kf][j]=-SphP[i].CosmicRayFlux[kf][j]; SphP[i].CosmicRayFluxPred[kf][j]=SphP[i].CosmicRayFlux[kf][j];}}}
 #endif
             }
             if(special_boundary_condition_xyz_def_outflow[j] == 0 || special_boundary_condition_xyz_def_outflow[j] == 1) {P[i].Mass=0; if(mode==1) {P[i].dp[0]=P[i].dp[1]=P[i].dp[2]=0;}}

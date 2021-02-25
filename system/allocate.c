@@ -80,6 +80,17 @@ void allocate_memory(void)
       if(ThisTask == 0)
 	printf("Allocated %g MByte for storage of hydro data.\n", bytes_tot / (1024.0 * 1024.0));
 
+#ifdef CHIMES 
+      if (!(ChimesGasVars = (struct gasVariables *) mymalloc("gasVars", bytes = All.MaxPartSph * sizeof(struct gasVariables)))) 
+	{
+	  printf("failed to allocate memory for 'ChimesGasVars' (%g MB).\n", bytes / (1024.0 * 1024.0));
+	  endrun(1); 
+	}
+      bytes_tot += bytes; 
+
+      if(ThisTask == 0)
+	printf("Allocated %g MByte for storage of ChimesGasVars data.\n", bytes_tot / (1024.0 * 1024.0));
+#endif
     }
 
 

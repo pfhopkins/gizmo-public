@@ -226,9 +226,6 @@ void begrun(void)
     init_geofactor_table();
 #endif
 
-#if defined(FLAG_NOT_IN_PUBLIC_CODE_EVOLVE_SPECTRUM)
-    CR_initialize_multibin_quantities(); // initialize the global variables and look-up tables //
-#endif
     
   All.TimeLastRestartFile = CPUThisRun;
 
@@ -262,6 +259,9 @@ void begrun(void)
       All.ErrTolIntAccuracy = all.ErrTolIntAccuracy;
       All.MinGasHsmlFractional = all.MinGasHsmlFractional;
       All.MinGasTemp = all.MinGasTemp;
+#ifdef CHIMES
+      All.ChimesThermEvolOn = all.ChimesThermEvolOn;
+#endif
 
         /* allow softenings to be modified during the run */
         if(All.ComovingIntegrationOn)
@@ -711,6 +711,9 @@ void read_parameter_file(char *fname)
   char alternate_tag[MAXTAGS][50];
   int pnum, errorFlag = 0;
 
+#ifdef CHIMES
+  double Tdust_buf, Tmol_buf, relTol_buf, absTol_buf, expTol_buf, z_reion_buf;
+#endif
 
   if(sizeof(long long) != 8)
     {
@@ -1680,6 +1683,137 @@ void read_parameter_file(char *fname)
          */
 #endif
 
+#ifdef CHIMES
+      strcpy(tag[nt], "Chimes_data_path");
+      addr[nt] = ChimesDataPath;
+      id[nt++] = STRING;
+
+      strcpy(tag[nt], "PhotoIonTable");
+      addr[nt] = ChimesPhotoIonTable;
+      id[nt++] = STRING;
+
+      strcpy(tag[nt], "EqAbundanceTable");
+      addr[nt] = ChimesEqAbundanceTable;
+      id[nt++] = STRING;
+
+      strcpy(tag[nt], "Thermal_Evolution_On");
+      addr[nt] = &All.ChimesThermEvolOn;
+      id[nt++] = INT;
+
+      strcpy(tag[nt], "Chemistry_eqm");
+      addr[nt] = &ChimesEqmMode;
+      id[nt++] = INT;
+
+      strcpy(tag[nt], "redshift_dependent_UVB_mode");
+      addr[nt] = &ChimesUVBMode;
+      id[nt++] = INT;
+
+      strcpy(tag[nt], "InitIonState");
+      addr[nt] = &ChimesInitIonState;
+      id[nt++] = INT;
+
+      strcpy(tag[nt], "StaticMolCooling");
+      addr[nt] = &ChimesGlobalVars.StaticMolCooling;
+      id[nt++] = INT;
+
+      strcpy(tag[nt], "CellSelfShielding_On");
+      addr[nt] = &ChimesGlobalVars.cellSelfShieldingOn;
+      id[nt++] = INT;
+
+      strcpy(tag[nt], "Shielding_length_factor");
+      addr[nt] = &shielding_length_factor;
+      id[nt++] = REAL;
+
+      strcpy(tag[nt], "Grain_Temperature");
+      addr[nt] = &Tdust_buf;
+      id[nt++] = REAL;
+
+      strcpy(tag[nt], "CR_rate");
+      addr[nt] = &cr_rate;
+      id[nt++] = REAL;
+
+      strcpy(tag[nt], "max_mol_temperature");
+      addr[nt] = &Tmol_buf;
+      id[nt++] = REAL;
+
+      strcpy(tag[nt], "rad_field_norm_factor");
+      addr[nt] = &chimes_rad_field_norm_factor;
+      id[nt++] = REAL;
+
+      strcpy(tag[nt], "relativeTolerance");
+      addr[nt] = &relTol_buf;
+      id[nt++] = REAL;
+
+      strcpy(tag[nt], "absoluteTolerance");
+      addr[nt] = &absTol_buf;
+      id[nt++] = REAL;
+
+      strcpy(tag[nt], "explicitTolerance");
+      addr[nt] = &expTol_buf;
+      id[nt++] = REAL;
+
+      strcpy(tag[nt], "reionisation_redshift");
+      addr[nt] = &z_reion_buf;
+      id[nt++] = REAL;
+
+      strcpy(tag[nt], "scale_metal_tolerances");
+      addr[nt] = &ChimesGlobalVars.scale_metal_tolerances;
+      id[nt++] = INT;
+
+      strcpy(tag[nt], "IncludeCarbon");
+      addr[nt] = &ChimesGlobalVars.element_included[0];
+      id[nt++] = INT;
+
+      strcpy(tag[nt], "IncludeNitrogen");
+      addr[nt] = &ChimesGlobalVars.element_included[1];
+      id[nt++] = INT;
+
+      strcpy(tag[nt], "IncludeOxygen");
+      addr[nt] = &ChimesGlobalVars.element_included[2];
+      id[nt++] = INT;
+
+      strcpy(tag[nt], "IncludeNeon");
+      addr[nt] = &ChimesGlobalVars.element_included[3];
+      id[nt++] = INT;
+
+      strcpy(tag[nt], "IncludeMagnesium");
+      addr[nt] = &ChimesGlobalVars.element_included[4];
+      id[nt++] = INT;
+
+      strcpy(tag[nt], "IncludeSilicon");
+      addr[nt] = &ChimesGlobalVars.element_included[5];
+      id[nt++] = INT;
+
+      strcpy(tag[nt], "IncludeSulphur");
+      addr[nt] = &ChimesGlobalVars.element_included[6];
+      id[nt++] = INT;
+
+      strcpy(tag[nt], "IncludeCalcium");
+      addr[nt] = &ChimesGlobalVars.element_included[7];
+      id[nt++] = INT;
+
+      strcpy(tag[nt], "IncludeIron");
+      addr[nt] = &ChimesGlobalVars.element_included[8];
+      id[nt++] = INT;
+
+      strcpy(tag[nt], "N_chimes_full_output_freq");
+      addr[nt] = &N_chimes_full_output_freq;
+      id[nt++] = INT;
+
+      strcpy(tag[nt], "chimes_debug");
+      addr[nt] = &ChimesGlobalVars.chimes_debug;
+      id[nt++] = INT;
+
+#ifdef CHIMES_STELLAR_FLUXES
+      strcpy(tag[nt], "Chimes_f_esc_ion");
+      addr[nt] = &All.Chimes_f_esc_ion;
+      id[nt++] = REAL;
+
+      strcpy(tag[nt], "Chimes_f_esc_G0");
+      addr[nt] = &All.Chimes_f_esc_G0;
+      id[nt++] = REAL;
+#endif
+#endif  // CHIMES
 
         if((fd = fopen(fname, "r")))
         {
@@ -1865,6 +1999,28 @@ void read_parameter_file(char *fname)
 
     /* now communicate the relevant parameters to the other processes */
     MPI_Bcast(&All, sizeof(struct global_data_all_processes), MPI_BYTE, 0, MPI_COMM_WORLD);
+#ifdef CHIMES
+    if (ThisTask == 0)
+      {
+	ChimesGlobalVars.grain_temperature = (ChimesFloat) Tdust_buf;
+	ChimesGlobalVars.T_mol = (ChimesFloat) Tmol_buf;
+	ChimesGlobalVars.relativeTolerance = (ChimesFloat) relTol_buf;
+	ChimesGlobalVars.absoluteTolerance = (ChimesFloat) absTol_buf;
+	ChimesGlobalVars.explicitTolerance = (ChimesFloat) expTol_buf;
+	ChimesGlobalVars.reionisation_redshift = (ChimesFloat) z_reion_buf;
+      }
+    MPI_Bcast(&ChimesGlobalVars, sizeof(struct globalVariables), MPI_BYTE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&ChimesDataPath, 256 * sizeof(char), MPI_BYTE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&ChimesEqAbundanceTable, 196 * sizeof(char), MPI_BYTE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&ChimesPhotoIonTable, 196 * sizeof(char), MPI_BYTE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&chimes_rad_field_norm_factor, sizeof(double), MPI_BYTE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&shielding_length_factor, sizeof(double), MPI_BYTE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&cr_rate, sizeof(double), MPI_BYTE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&N_chimes_full_output_freq, sizeof(int), MPI_BYTE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&ChimesEqmMode, sizeof(int), MPI_BYTE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&ChimesUVBMode, sizeof(int), MPI_BYTE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&ChimesInitIonState, sizeof(int), MPI_BYTE, 0, MPI_COMM_WORLD);
+#endif
 
 
     /* ok, -NOW- we can properly read the "All" variables; we should do any if/then checks on

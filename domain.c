@@ -390,17 +390,21 @@ double domain_particle_cost_multiplier(int i)
     } // end gas check
 
 #if defined(GALSF) /* with star formation active, we will up-weight star particles which are active feedback sources */
+#ifndef CHIMES /* With CHIMES, the chemistry dominates the cost, so we boost (dense) gas but not stars. */
     if(((P[i].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[i].Type == 2)||(P[i].Type==3))))&&(P[i].Mass>0))
     {
         double star_age = evaluate_stellar_age_Gyr(P[i].StellarAge);
         if(star_age>0.1) {multiplier = 3.125;} else {if(star_age>0.035) {multiplier = 5.;} else {multiplier = 10.;}}
     }
+#endif 
 #endif
 
-    
-#ifdef COSMIC_RAYS_EVOLVE_SPECTRUM // again, cost totally dominated by dense gas here, this helps significantly
-    if(P[i].Type == 0) {double nH_cgs = SphP[i].Density * All.cf_a3inv * UNIT_DENSITY_IN_NHCGS; if(nH_cgs > 1) {multiplier *= 100.;} else {multiplier *= 10.;}}
+#ifdef CHIMES 
+    /* With CHIMES, cost is dominated by the chemistry, particularly in dense gas.
+       We therefore boost the cost factor of gas particles with nH >~ 1 cm^-3. */
+    if(P[i].Type == 0) {double nH_cgs = SphP[i].Density * All.cf_a3inv * UNIT_DENSITY_IN_NHCGS; if(nH_cgs > 1) {multiplier = 10.0;}}
 #endif
+    
     
     return multiplier;
 }
@@ -796,6 +800,15 @@ void domain_exchange(void)
 
   partBuf = (struct particle_data *) mymalloc("partBuf", count_togo * sizeof(struct particle_data));
   sphBuf = (struct sph_particle_data *) mymalloc("sphBuf", count_togo_sph * sizeof(struct sph_particle_data));
+#ifdef CHIMES 
+  struct gasVariables *sphChimesBuf; 
+  ChimesFloat *sphAbundancesBuf, *sphAbundancesRecvBuf, *tempAbundanceArray; 
+  int abunIndex; 
+  sphChimesBuf = (struct gasVariables *) mymalloc("chiBuf", count_togo_sph * sizeof(struct gasVariables));
+  sphAbundancesBuf = (ChimesFloat *) mymalloc("abunBuf", count_togo_sph * ChimesGlobalVars.totalNumberOfSpecies * sizeof(ChimesFloat));
+  sphAbundancesRecvBuf = (ChimesFloat *) mymalloc("xRecBuf", count_get_sph * ChimesGlobalVars.totalNumberOfSpecies * sizeof(ChimesFloat));
+  tempAbundanceArray = (ChimesFloat *) malloc(ChimesGlobalVars.totalNumberOfSpecies * sizeof(ChimesFloat));
+#endif
   keyBuf = (peanokey *) mymalloc("keyBuf", count_togo * sizeof(peanokey));
 
   for(i = 0; i < NTask; i++)
@@ -826,6 +839,15 @@ void domain_exchange(void)
 	    {
 	      partBuf[offset_sph[target] + count_sph[target]] = P[n];
 	      keyBuf[offset_sph[target] + count_sph[target]] = Key[n];
+#ifdef CHIMES 
+	      for(i = 0; i < ChimesGlobalVars.totalNumberOfSpecies; i++) {sphAbundancesBuf[((offset_sph[target] + count_sph[target]) * ChimesGlobalVars.totalNumberOfSpecies) + i] = ChimesGasVars[n].abundances[i];}
+	      free_gas_abundances_memory(&(ChimesGasVars[n]), &ChimesGlobalVars); 
+	      ChimesGasVars[n].abundances = NULL; 
+	      ChimesGasVars[n].isotropic_photon_density = NULL; 
+	      ChimesGasVars[n].G0_parameter = NULL; 
+	      ChimesGasVars[n].H2_dissocJ = NULL; 
+	      sphChimesBuf[offset_sph[target] + count_sph[target]] = ChimesGasVars[n];
+#endif 
 	      sphBuf[offset_sph[target] + count_sph[target]] = SphP[n];
 	      count_sph[target]++;
 	    }
@@ -851,6 +873,22 @@ void domain_exchange(void)
 	      SphP[n] = SphP[N_gas - 1];
 	      Key[n] = Key[N_gas - 1];
 
+#ifdef CHIMES 
+	      if (n < N_gas - 1)
+		{
+		  for(abunIndex = 0; abunIndex < ChimesGlobalVars.totalNumberOfSpecies; abunIndex++)
+		    tempAbundanceArray[abunIndex] = ChimesGasVars[N_gas - 1].abundances[abunIndex];
+		  free_gas_abundances_memory(&(ChimesGasVars[N_gas - 1]), &ChimesGlobalVars); 
+		  ChimesGasVars[N_gas - 1].abundances = NULL; 
+		  ChimesGasVars[N_gas - 1].isotropic_photon_density = NULL; 
+		  ChimesGasVars[N_gas - 1].G0_parameter = NULL; 
+		  ChimesGasVars[N_gas - 1].H2_dissocJ = NULL; 
+		  ChimesGasVars[n] = ChimesGasVars[N_gas - 1]; 
+		  allocate_gas_abundances_memory(&(ChimesGasVars[n]), &ChimesGlobalVars); 
+		  for (abunIndex = 0; abunIndex < ChimesGlobalVars.totalNumberOfSpecies; abunIndex++)
+		    ChimesGasVars[n].abundances[abunIndex] = tempAbundanceArray[abunIndex];
+		}
+#endif 
 
 	      P[N_gas - 1] = P[NumPart - 1];
 	      Key[N_gas - 1] = Key[NumPart - 1];
@@ -883,6 +921,9 @@ void domain_exchange(void)
 	}
     }
 
+#ifdef CHIMES 
+  free(tempAbundanceArray); 
+#endif 
 
   long count_totget;
 
@@ -937,6 +978,9 @@ void domain_exchange(void)
 #endif
 
 
+#ifdef CHIMES 
+  max_requests += 4; 
+#endif 
 
   requests = (MPI_Request *) mymalloc("requests", max_requests * NTask * sizeof(MPI_Request));
 
@@ -957,6 +1001,21 @@ void domain_exchange(void)
 	      MPI_Irecv(SphP + offset_recv_sph[target],
 			count_recv_sph[target] * sizeof(struct sph_particle_data), MPI_BYTE, target,
 			TAG_SPHDATA, MPI_COMM_WORLD, &requests[n_requests++]);
+#ifdef CHIMES 
+	      MPI_Irecv(ChimesGasVars + offset_recv_sph[target],
+			count_recv_sph[target] * sizeof(struct gasVariables), MPI_BYTE, target,
+			TAG_CHIMESDATA, MPI_COMM_WORLD, &requests[n_requests++]); 
+
+#ifdef CHIMES_USE_DOUBLE_PRECISION
+	      MPI_Irecv(sphAbundancesRecvBuf + ((offset_recv_sph[target] - offset_recv_sph[0]) * ChimesGlobalVars.totalNumberOfSpecies),
+			count_recv_sph[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_DOUBLE, target, TAG_ABUNDATA, 
+			MPI_COMM_WORLD, &requests[n_requests++]); 
+#else 
+	      MPI_Irecv(sphAbundancesRecvBuf + ((offset_recv_sph[target] - offset_recv_sph[0]) * ChimesGlobalVars.totalNumberOfSpecies),
+			count_recv_sph[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_FLOAT, target, TAG_ABUNDATA, 
+			MPI_COMM_WORLD, &requests[n_requests++]); 
+#endif
+#endif 
 	    }
 
 #ifdef SEPARATE_STELLARDOMAINDECOMP
@@ -1004,6 +1063,20 @@ void domain_exchange(void)
 
 	      MPI_Isend(sphBuf + offset_sph[target], count_sph[target] * sizeof(struct sph_particle_data),
 			MPI_BYTE, target, TAG_SPHDATA, MPI_COMM_WORLD, &requests[n_requests++]);
+#ifdef CHIMES 
+	      MPI_Isend(sphChimesBuf + offset_sph[target], count_sph[target] * sizeof(struct gasVariables),
+			MPI_BYTE, target, TAG_CHIMESDATA, MPI_COMM_WORLD, &requests[n_requests++]);
+
+#ifdef CHIMES_USE_DOUBLE_PRECISION
+	      MPI_Isend(sphAbundancesBuf + (offset_sph[target] * ChimesGlobalVars.totalNumberOfSpecies), 
+			count_sph[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_DOUBLE, target, 
+			TAG_ABUNDATA, MPI_COMM_WORLD, &requests[n_requests++]);
+#else 
+	      MPI_Isend(sphAbundancesBuf + (offset_sph[target] * ChimesGlobalVars.totalNumberOfSpecies), 
+			count_sph[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_FLOAT, target, 
+			TAG_ABUNDATA, MPI_COMM_WORLD, &requests[n_requests++]);
+#endif 
+#endif 
 	    }
 
 #ifdef SEPARATE_STELLARDOMAINDECOMP
@@ -1058,6 +1131,26 @@ void domain_exchange(void)
 			   SphP + offset_recv_sph[target],
 			   count_recv_sph[target] * sizeof(struct sph_particle_data), MPI_BYTE, target,
 			   TAG_SPHDATA, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+#ifdef CHIMES 
+	      MPI_Sendrecv(sphChimesBuf + offset_sph[target], count_sph[target] * sizeof(struct gasVariables),
+			   MPI_BYTE, target, TAG_CHIMESDATA, ChimesGasVars + offset_recv_sph[target],
+			   count_recv_sph[target] * sizeof(struct gasVariables), MPI_BYTE, target,
+			   TAG_CHIMESDATA, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+#ifdef CHIMES_USE_DOUBLE_PRECISION
+	      MPI_Sendrecv(sphAbundancesBuf + (offset_sph[target] * ChimesGlobalVars.totalNumberOfSpecies), 
+			   count_sph[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_DOUBLE, target, TAG_ABUNDATA, 
+			   sphAbundancesRecvBuf + ((offset_recv_sph[target] - offset_recv_sph[0]) * ChimesGlobalVars.totalNumberOfSpecies), 
+			   count_recv_sph[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_DOUBLE, target, 
+			   TAG_ABUNDATA, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+#else 
+	      MPI_Sendrecv(sphAbundancesBuf + (offset_sph[target] * ChimesGlobalVars.totalNumberOfSpecies), 
+			   count_sph[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_FLOAT, target, TAG_ABUNDATA, 
+			   sphAbundancesRecvBuf + ((offset_recv_sph[target] - offset_recv_sph[0]) * ChimesGlobalVars.totalNumberOfSpecies), 
+			   count_recv_sph[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_FLOAT, target, 
+			   TAG_ABUNDATA, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+#endif 
+#endif 
 
 	      MPI_Sendrecv(keyBuf + offset_sph[target], count_sph[target] * sizeof(peanokey),
 			   MPI_BYTE, target, TAG_KEY_SPH,
@@ -1100,6 +1193,22 @@ void domain_exchange(void)
 
 #endif
 
+#ifdef CHIMES 
+  /* Loop through received SphP particles 
+   * and read in abundances from the buffer. */ 
+  for (target = 0; target < NTask; target++)
+    {
+      if(count_recv_sph[target] > 0)
+	{
+	  for (i = 0; i < count_recv_sph[target]; i++)
+	    {
+	      allocate_gas_abundances_memory(&(ChimesGasVars[offset_recv_sph[target] + i]), &ChimesGlobalVars); 
+	      for (abunIndex = 0; abunIndex < ChimesGlobalVars.totalNumberOfSpecies; abunIndex++)
+		ChimesGasVars[offset_recv_sph[target] + i].abundances[abunIndex] = sphAbundancesRecvBuf[((offset_recv_sph[target] - offset_recv_sph[0] + i) * ChimesGlobalVars.totalNumberOfSpecies) + abunIndex];
+	    }
+	}
+    }
+#endif 
 
   NumPart += count_get;
   N_gas += count_get_sph;
@@ -1119,6 +1228,11 @@ void domain_exchange(void)
 
 
   myfree(keyBuf);
+#ifdef CHIMES 
+  myfree(sphAbundancesRecvBuf); 
+  myfree(sphAbundancesBuf); 
+  myfree(sphChimesBuf); 
+#endif 
   myfree(sphBuf);
   myfree(partBuf);
 

@@ -94,7 +94,7 @@ void init(void)
     set_cosmo_factors_for_current_time();
 
 
-#if defined(COOLING) && !defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if defined(COOLING) && !defined(CHIMES)
     IonizeParams();
 #endif
 
@@ -373,7 +373,45 @@ void init(void)
             if(NUM_LIVE_SPECIES_FOR_COOLTABLES>=10) P[i].Metallicity[1]=(1.-HYDROGEN_MASSFRAC)+(All.SolarAbundances[1]-(1.-HYDROGEN_MASSFRAC))*P[i].Metallicity[0]/All.SolarAbundances[0];
         } // if(RestartFlag == 0)
 
+#ifdef CHIMES
+#ifdef COOL_METAL_LINES_BY_SPECIES
+	if (P[i].Type == 0)
+	  {
+	    double H_mass_fraction = 1.0 - (P[i].Metallicity[0] + P[i].Metallicity[1]);
+	    ChimesGasVars[i].element_abundances[0] = (ChimesFloat) (P[i].Metallicity[1] / (4.0 * H_mass_fraction));   // He
+	    ChimesGasVars[i].element_abundances[1] = (ChimesFloat) (P[i].Metallicity[2] / (12.0 * H_mass_fraction));  // C
+	    ChimesGasVars[i].element_abundances[2] = (ChimesFloat) (P[i].Metallicity[3] / (14.0 * H_mass_fraction));  // N
+	    ChimesGasVars[i].element_abundances[3] = (ChimesFloat) (P[i].Metallicity[4] / (16.0 * H_mass_fraction));  // O
+	    ChimesGasVars[i].element_abundances[4] = (ChimesFloat) (P[i].Metallicity[5] / (20.0 * H_mass_fraction));  // Ne
+	    ChimesGasVars[i].element_abundances[5] = (ChimesFloat) (P[i].Metallicity[6] / (24.0 * H_mass_fraction));  // Mg
+	    ChimesGasVars[i].element_abundances[6] = (ChimesFloat) (P[i].Metallicity[7] / (28.0 * H_mass_fraction));  // Si
+	    ChimesGasVars[i].element_abundances[7] = (ChimesFloat) (P[i].Metallicity[8] / (32.0 * H_mass_fraction));  // S
+	    ChimesGasVars[i].element_abundances[8] = (ChimesFloat) (P[i].Metallicity[9] / (40.0 * H_mass_fraction));  // Ca
+	    ChimesGasVars[i].element_abundances[9] = (ChimesFloat) (P[i].Metallicity[10] / (56.0 * H_mass_fraction)); // Fe
+
+	    ChimesGasVars[i].metallicity = (ChimesFloat) (P[i].Metallicity[0] / 0.0129);  // In Zsol. CHIMES uses Zsol = 0.0129.
+	    ChimesGasVars[i].dust_ratio = ChimesGasVars[i].metallicity;
+	  }
 #else
+	if (ThisTask == 0)
+	  {
+	    printf("ERROR: Config flags CHIMES and METALS are switched on, but COOL_METAL_LINES_BY_SPECIES is switched off. \n");
+	    printf("If you want to include metals with CHIMES, you will also need to switch on COOL_METAL_LINES_BY_SPECIES. Aborting. \n");
+	    endrun(202);
+	  }
+#endif // COOL_METAL_LINES_BY_SPECIES
+#endif // CHIMES
+#else
+#ifdef CHIMES
+	if (P[i].Type == 0)
+	  {
+	    double H_mass_fraction = HYDROGEN_MASSFRAC;
+	    ChimesGasVars[i].element_abundances[0] = (ChimesFloat) ((1.0 - H_mass_fraction) / (4.0 * H_mass_fraction));  // He
+	    for (j = 1; j < 10; j++) {ChimesGasVars[i].element_abundances[j] = 0.0;}
+	    ChimesGasVars[i].metallicity = 0.0;
+	    ChimesGasVars[i].dust_ratio = 0.0;
+	  }
+#endif // CHIMES
 #endif // METALS
 
 
@@ -516,7 +554,9 @@ void init(void)
 #endif
             SphP[i].Density = -1;
 #ifdef COOLING
+#ifndef CHIMES
             SphP[i].Ne = 1.0;
+#endif
 #if defined(COOL_MOLECFRAC_NONEQM)
 	    double nHcgs = HYDROGEN_MASSFRAC * UNIT_DENSITY_IN_CGS * SphP[i].Density * All.cf_a3inv / PROTONMASS;
 	    if(nHcgs > 10){ // dense ISM starts molecular - very approximate cutoff

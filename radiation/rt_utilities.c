@@ -1204,7 +1204,7 @@ double stellar_lum_in_band(int i, double E_lower, double E_upper)
 
 
 
-#if defined(FLAG_NOT_IN_PUBLIC_CODE_STELLAR_FLUXES) && (defined(RADTRANSFER) || defined(RT_USE_GRAVTREE))
+#if defined(CHIMES_STELLAR_FLUXES) && (defined(RADTRANSFER) || defined(RT_USE_GRAVTREE))
 /* The following routines are fitting functions that are used to obtain the luminosities in the 6-13.6 eV energy band (i.e. G0)
  * and the >13.6 eV band (i.e. H-ionising), which will be used by CHIMES. These functions were fit to Starburst99 models
  * that used the Geneva 2012/13 tracks with v=0.4 rotation and Z=0.014 metallicity. These are separated because CHIMES uses its special age-bins isntead of freq-bins */

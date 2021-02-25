@@ -314,7 +314,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             break;
 
         case IO_NE:		/* electron abundance */
-#if (defined(COOLING) || defined(RT_CHEM_PHOTOION)) && !defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if (defined(COOLING) || defined(RT_CHEM_PHOTOION)) && !defined(CHIMES)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
@@ -325,7 +325,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             break;
 
         case IO_NH:		/* neutral hydrogen fraction */
-#if (defined(COOLING) || defined(RT_CHEM_PHOTOION)) && !defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if (defined(COOLING) || defined(RT_CHEM_PHOTOION)) && !defined(CHIMES)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
@@ -541,10 +541,27 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             break;
 
         case IO_CHIMES_ABUNDANCES:
+#ifdef CHIMES
+            for (n = 0; n < pc; pindex++)
+                if (P[pindex].Type == type)
+                {
+                    for (k = 0; k < ChimesGlobalVars.totalNumberOfSpecies; k++) {fp[k] = (MyOutputFloat) ChimesGasVars[pindex].abundances[k];}
+                    fp += ChimesGlobalVars.totalNumberOfSpecies;
+                    n++;
+                }
+#endif
             break;
 
 
         case IO_CHIMES_MU:
+#ifdef CHIMES
+            for (n = 0; n < pc; pindex++)
+                if (P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) calculate_mean_molecular_weight(&(ChimesGasVars[pindex]), &ChimesGlobalVars);
+                    n++;
+                }
+#endif
             break;
 
         case IO_CHIMES_REDUCED:
@@ -563,7 +580,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             break;
 
         case IO_CHIMES_NH:
-#if defined(FLAG_NOT_IN_PUBLIC_CODE_NH_OUTPUT)
+#if defined(CHIMES_NH_OUTPUT)
             for (n = 0; n < pc; pindex++)
                 if (P[pindex].Type == type)
                 {
@@ -574,7 +591,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             break;
 
         case IO_CHIMES_STAR_SIGMA:
-#if defined(FLAG_NOT_IN_PUBLIC_CODE_NH_OUTPUT) && defined(OUTPUT_DENS_AROUND_STAR)
+#if defined(CHIMES_NH_OUTPUT) && defined(OUTPUT_DENS_AROUND_STAR)
             for (n = 0; n < pc; pindex++)
                 if (P[pindex].Type == type)
                 {
@@ -776,15 +793,6 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             break;
 
         case IO_COSMICRAY_ALFVEN:    /* energy in the resonant (~gyro-radii) Alfven modes field, in the +/- (with respect to B) fields  */
-#ifdef COSMIC_RAYS_EVOLVE_SCATTERING_WAVES
-            for(n = 0; n < pc; pindex++)
-                if(P[pindex].Type == type)
-                {
-                    for(k=0;k<2;k++) {int k2; for(k2=0;k2<N_CR_PARTICLE_BINS;k2++) {fp[N_CR_PARTICLE_BINS*k + k2] = SphP[pindex].CosmicRayAlfvenEnergyPred[k2][k];}}
-                    fp += 2*N_CR_PARTICLE_BINS;
-                    n++;
-                }
-#endif
             break;
 
 
@@ -1665,12 +1673,6 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
             break;
 
         case IO_COSMICRAY_ALFVEN:
-#ifdef COSMIC_RAYS_EVOLVE_SCATTERING_WAVES
-            if(mode)
-                bytes_per_blockelement = (2 * N_CR_PARTICLE_BINS) * sizeof(MyInputFloat);
-            else
-                bytes_per_blockelement = (2 * N_CR_PARTICLE_BINS) * sizeof(MyOutputFloat);
-#endif
             break;
 
         case IO_IMF:
@@ -1711,6 +1713,12 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
             break;
 
         case IO_CHIMES_ABUNDANCES:
+#ifdef CHIMES
+            if(mode)
+                bytes_per_blockelement = ChimesGlobalVars.totalNumberOfSpecies * sizeof(MyInputFloat);
+            else
+                bytes_per_blockelement = ChimesGlobalVars.totalNumberOfSpecies * sizeof(MyOutputFloat);
+#endif
             break;
 
         case IO_CHIMES_REDUCED:
@@ -1722,6 +1730,12 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
 
         case IO_CHIMES_FLUX_G0:
         case IO_CHIMES_FLUX_ION:
+#if defined(CHIMES) && defined(CHIMES_STELLAR_FLUXES)
+            if(mode)
+                bytes_per_blockelement = CHIMES_LOCAL_UV_NBINS * sizeof(MyInputFloat);
+            else
+                bytes_per_blockelement = CHIMES_LOCAL_UV_NBINS * sizeof(MyOutputFloat);
+#endif
             break;
 
         case IO_CBE_MOMENTS:
@@ -1912,9 +1926,6 @@ int get_values_per_blockelement(enum iofields blocknr)
             break;
 
         case IO_COSMICRAY_ALFVEN:
-#ifdef COSMIC_RAYS_EVOLVE_SCATTERING_WAVES
-            values = (2*N_CR_PARTICLE_BINS);
-#endif
             break;
 
         case IO_CBE_MOMENTS:
@@ -1939,6 +1950,9 @@ int get_values_per_blockelement(enum iofields blocknr)
             break;
 
         case IO_CHIMES_ABUNDANCES:
+#ifdef CHIMES
+            values = ChimesGlobalVars.totalNumberOfSpecies;
+#endif
             break;
 
         case IO_CHIMES_REDUCED:
@@ -2213,7 +2227,7 @@ int blockpresent(enum iofields blocknr)
 
         case IO_NE:
         case IO_NH:
-#if (defined(COOLING) || defined(RADTRANSFER)) && !defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if (defined(COOLING) || defined(RADTRANSFER)) && !defined(CHIMES)
             return 1;
 #endif
             break;
@@ -2262,15 +2276,23 @@ int blockpresent(enum iofields blocknr)
             break;
 
         case IO_CHIMES_ABUNDANCES:
-#if defined(FLAG_NOT_IN_PUBLIC_CODE_REDUCED_OUTPUT)
+#if defined(CHIMES_REDUCED_OUTPUT)
             if(Chimes_incl_full_output == 1) {return 1;} else {return 0;}
+#elif defined(CHIMES)
+            return 1;
 #endif
             break;
 
         case IO_CHIMES_MU:
+#ifdef CHIMES
+            return 1;
+#endif
             break;
 
         case IO_CHIMES_REDUCED:
+#if defined(CHIMES) && defined(CHIMES_REDUCED_OUTPUT)
+            if(Chimes_incl_full_output == 0) {return 1;} else {return 0;}
+#endif
             break;
 
         case IO_CHIMES_NH:
@@ -2280,7 +2302,7 @@ int blockpresent(enum iofields blocknr)
             break;
 
         case IO_CHIMES_STAR_SIGMA:
-#if defined(FLAG_NOT_IN_PUBLIC_CODE_NH_OUTPUT) && defined(OUTPUT_DENS_AROUND_STAR)
+#if defined(CHIMES_NH_OUTPUT) && defined(OUTPUT_DENS_AROUND_STAR)
             return 1;
 #endif
             break;
@@ -2410,9 +2432,6 @@ int blockpresent(enum iofields blocknr)
             break;
 
         case IO_COSMICRAY_ALFVEN:
-#ifdef COSMIC_RAYS_EVOLVE_SCATTERING_WAVES
-            return 1;
-#endif
             break;
 
         case IO_ABVC:
@@ -3972,59 +3991,6 @@ void write_header_attributes_in_hdf5(hid_t handle)
     H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.ScalarScreeningLength); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 #endif
 
-#if defined(FLAG_NOT_IN_PUBLIC_CODE_EVOLVE_SPECTRUM)
-    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_CR_PARTICLE_SPECIES}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
-    hdf5_attribute = H5Acreate(handle, "CR_Active_Species_ID_List", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, CR_species_ID_active_list); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
-
-    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_CR_PARTICLE_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
-    hdf5_attribute = H5Acreate(handle, "CR_Bin_Species_ID", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, CR_species_ID_in_bin); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
-
-    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_CR_PARTICLE_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
-    hdf5_attribute = H5Acreate(handle, "CR_Bin_Charge", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, CR_global_charge_in_bin); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
-
-    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_CR_PARTICLE_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
-    hdf5_attribute = H5Acreate(handle, "CR_Bin_Min_Rigidity_GV", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, CR_global_min_rigidity_in_bin); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
-
-    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_CR_PARTICLE_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
-    hdf5_attribute = H5Acreate(handle, "CR_Bin_Med_Rigidity_GV", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, CR_global_rigidity_at_bin_center); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
-
-    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_CR_PARTICLE_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
-    hdf5_attribute = H5Acreate(handle, "CR_Bin_Max_Rigidity_GV", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, CR_global_max_rigidity_in_bin); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
-
-    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_CR_PARTICLE_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
-    hdf5_attribute = H5Acreate(handle, "CR_Bin_Max_Rigidity_GV", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, CR_global_max_rigidity_in_bin); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
-
-    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[2]={N_CR_PARTICLE_BINS,N_CR_SPECTRUM_LUT}; H5Sset_extent_simple(hdf5_dataspace, 2, tmp_dim, NULL);
-    hdf5_attribute = H5Acreate(handle, "CR_Bin_Energy_vs_Number_GlobalLookupTable", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, CR_global_slope_lut); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
-
-    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[2]={N_CR_PARTICLE_SPECIES,N_CR_PARTICLE_SPECIES}; H5Sset_extent_simple(hdf5_dataspace, 2, tmp_dim, NULL);
-    hdf5_attribute = H5Acreate(handle, "CR_Primary_to_Secondary_Products_List", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, CR_secondary_species_listref); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
-
-    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_CR_PARTICLE_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
-    hdf5_attribute = H5Acreate(handle, "CR_Bin_Radioactive_Decay_Rate_persecond", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, CR_rad_decay_coeff); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
-
-    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_CR_PARTICLE_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
-    hdf5_attribute = H5Acreate(handle, "CR_Bin_Total_Fragmentation_Rate_cmcubedpersecond", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, CR_frag_coeff); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
-
-    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[2]={N_CR_PARTICLE_BINS,N_CR_PARTICLE_SPECIES}; H5Sset_extent_simple(hdf5_dataspace, 2, tmp_dim, NULL);
-    hdf5_attribute = H5Acreate(handle, "CR_Bin_Secondary_Product_TargetBins", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, CR_secondary_target_bin); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
-
-    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[2]={N_CR_PARTICLE_BINS,N_CR_PARTICLE_SPECIES}; H5Sset_extent_simple(hdf5_dataspace, 2, tmp_dim, NULL);
-    hdf5_attribute = H5Acreate(handle, "CR_Bin_Fragmentation_Coefficients_To_Secondaries", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
-    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, CR_frag_secondary_coeff); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
-#endif
 
 #ifdef RT_EVOLVE_INTENSITIES
     {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[2]={N_RT_INTENSITY_BINS,3}; H5Sset_extent_simple(hdf5_dataspace, 2, tmp_dim, NULL);
@@ -4032,6 +3998,10 @@ void write_header_attributes_in_hdf5(hid_t handle)
     H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, All.Rad_Intensity_Direction); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
 #endif
 
+#ifdef CHIMES
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Flag_CHIMES_Thermal_Evolution_On", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &All.ChimesThermEvolOn); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
 
 #ifdef RT_LEBRON
     hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "LEBRON_PhotonMomentum_Coupled_Fraction", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);

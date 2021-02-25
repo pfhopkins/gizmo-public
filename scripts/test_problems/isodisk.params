@@ -21,7 +21,9 @@
 % you should see the users guide - there are many combinations of 
 %   parameters (of varying degrees of complexity) you can enable.
 %   These are just examples, not even necessarily intended to be
-%   run together, just given for examples.
+%   run together, just given for examples. be sure to set appropriate
+%   parameters below, e.g. set the correct force softening parameters
+%   depending on whether you use adaptive force softening or not!
 %
 % for the version of this problem with MHD, additionally enable:
 %        MAGNETIC
@@ -96,7 +98,7 @@ MinGasHsmlFractional    0.01    % minimum kernel length relative to gas force so
 %----- Softening lengths per particle type. If ADAPTIVE_GRAVSOFT is set, these  
 %-------- are the minimum softening allowed for each type ------- 
 %-------- (units are co-moving for cosmological integrations)
-SofteningGas    0.001    % gas (type=0) (in units above, =1 pc softening)
+SofteningGas    1.0e-4   % gas (type=0) (in units above, =1 pc softening) [make ~10pc for fixed softening]
 SofteningHalo   0.050    % dark matter/collisionless particles (type=1)
 SofteningDisk   0.020    % collisionless particles (type=2)
 SofteningBulge  0.020    % collisionless particles (type=3)

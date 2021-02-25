@@ -337,6 +337,12 @@ void split_particle_i(int i, int n_particles_split, int i_nearest)
     P[j] = P[i];
     //memcpy(P[j],P[i],sizeof(struct particle_data)); // safer copy to make sure we don't just end up with a pointer re-direct
 
+#ifdef CHIMES
+    int abunIndex;
+    ChimesGasVars[j] = ChimesGasVars[i];
+    allocate_gas_abundances_memory(&(ChimesGasVars[j]), &ChimesGlobalVars);
+    for (abunIndex = 0; abunIndex < ChimesGlobalVars.totalNumberOfSpecies; abunIndex++) {ChimesGasVars[j].abundances[abunIndex] = ChimesGasVars[i].abundances[abunIndex];}
+#endif
 
     // need to assign new particle a unique ID:
     // new method: preserve the original "ID" field, but assign a unique -child- ID: this is unique up to ~32 *GENERATIONS* of repeated splitting!
@@ -691,6 +697,17 @@ void merge_particles_ij(int i, int j)
 #endif
     }
 #endif
+#ifdef CHIMES
+    double wt_h_i, wt_h_j; // Ratio of hydrogen mass fractions.
+#ifdef COOL_METAL_LINES_BY_SPECIES
+    wt_h_i = 1.0 - (P[i].Metallicity[0] + P[i].Metallicity[1]);
+    wt_h_j = 1.0 - (P[j].Metallicity[0] + P[j].Metallicity[1]);
+#else
+    wt_h_i = 1.0;
+    wt_h_j = 1.0;
+#endif
+    for (k = 0; k < ChimesGlobalVars.totalNumberOfSpecies; k++) {ChimesGasVars[j].abundances[k] = (ChimesFloat) ((ChimesGasVars[j].abundances[k] * wt_j * wt_h_j) + (ChimesGasVars[i].abundances[k] * wt_i * wt_h_i));}
+#endif // CHIMES
 #ifdef METALS
     for(k=0;k<NUM_METAL_SPECIES;k++) {P[j].Metallicity[k] = wt_j*P[j].Metallicity[k] + wt_i*P[i].Metallicity[k];} /* metal-mass conserving */
 #endif
@@ -799,6 +816,9 @@ void rearrange_particle_sequence(void)
     int count_elim, count_gaselim, count_bhelim, tot_elim, tot_gaselim, tot_bhelim;
     struct particle_data psave;
     struct sph_particle_data sphsave;
+#ifdef CHIMES
+    struct gasVariables gasVarsSave;
+#endif
 
     int do_loop_check = 0;
     if(Gas_split>0)
@@ -840,6 +860,12 @@ void rearrange_particle_sequence(void)
 #ifdef MAINTAIN_TREE_IN_REARRANGE
                 swap_treewalk_pointers(i,j);
 #endif
+#ifdef CHIMES /* swap chimes-specific 'gasvars' structure which is separate from SphP */
+                gasVarsSave = ChimesGasVars[i]; ChimesGasVars[i] = ChimesGasVars[j]; ChimesGasVars[j] = gasVarsSave;
+                /* Old particle (now at position j) is no longer a gas particle, so delete its abundance array. */
+                free_gas_abundances_memory(&(ChimesGasVars[j]), &ChimesGlobalVars);
+                ChimesGasVars[j].abundances = NULL; ChimesGasVars[j].isotropic_photon_density = NULL; ChimesGasVars[j].G0_parameter = NULL; ChimesGasVars[j].H2_dissocJ = NULL;
+#endif /* CHIMES */
 
                 /* ok we've now swapped the ordering so the gas particle is still inside the block */
                 flag = 1;
@@ -867,6 +893,11 @@ void rearrange_particle_sequence(void)
                 swap_treewalk_pointers(i, N_gas-1);
 #endif
                 /* swap with properties of last gas particle (i-- below will force a check of this so its ok) */
+#ifdef CHIMES
+                free_gas_abundances_memory(&(ChimesGasVars[i]), &ChimesGlobalVars);
+                ChimesGasVars[i] = ChimesGasVars[N_gas - 1];
+                ChimesGasVars[N_gas - 1].abundances = NULL; ChimesGasVars[N_gas - 1].isotropic_photon_density = NULL; ChimesGasVars[N_gas - 1].G0_parameter = NULL; ChimesGasVars[N_gas - 1].H2_dissocJ = NULL;
+#endif
 
                 P[N_gas - 1] = P[NumPart - 1]; /* redirect the final gas pointer to go to the final particle (BH) */
 #ifdef MAINTAIN_TREE_IN_REARRANGE

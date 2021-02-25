@@ -329,7 +329,20 @@
 #COOL_GRACKLE_CHEMISTRY=1       # choose Grackle cooling chemistry: (0)=tabular, (1)=Atomic, (2)=(1)+H2+H2I+H2II, (3)=(2)+DI+DII+HD. Modules with dust and/or metal-line cooling require METALS also
 #COOL_GRACKLE_APIVERSION=1      # set the version of the grackle api: =1 (default) is compatible with versions of grackle below 2.2. After 2.2 significant changes to the grackle api were made which require different input formats, which require setting this to =2 or larger. note newest grackle apis may not yet be compatible with the hooks here!
 ## ----------------------------------------------------------------------------------------------------
+# ---- CHIMES: alternative non-equilibrium chemical (ion+atomic+molecular) network, developed by Alex Richings. The core methods are laid out in 2014MNRAS.440.3349R, 2014MNRAS.442.2780R. These should be cited in any paper that uses the modules below.
+# ----   Per permission from Alex Richings, the CHIMES modules are now public (although some optional flags link to code developed by other authors that require their own permissions). However recall that Alex Richings is the lead developer of CHIMES, please contact Alex or Joop Schaye, or Ben Oppenheimer to obtain the relevant permissions to port beyond GIZMO or questions about CHIMES
+# ----   This implementation of CHIMES has additional hooks to use the various gizmo radiation fields if desired. The modules solve a large molecular and ion network, so can trace predictive chemistry for species in dense ISM gas in much greater detail than the other modules above (at additional CPU cost)
 ## ----------------------------------------------------------------------------------------------------
+#CHIMES                         # top-level switch to enable CHIMES. Requires COOLING above. Also, requires COOL_METAL_LINES_BY_SPECIES to include metals.
+#CHIMES_SOBOLEV_SHIELDING       # enables local self-shielding for different species, using a Sobolev-like length scale
+#CHIMES_STELLAR_FLUXES          # couple UV fluxes from the luminosity tree to CHIMES (requires FIRE modules for radiation transport/coupling: use permissions follow those modules)
+#CHIMES_TURB_DIFF_IONS          # turbulent diffusions of CHIMES abundances. Requires TURB_DIFF_METALS and TURB_DIFF_METALS_LOWORDER (see modules for metal diffusion above: use/citation policy follows those)
+#CHIMES_METAL_DEPLETION         # uses density-dependent metal depletion factors (Jenkins 2009, De Cia et al. 2016) to obtain gas-phase abundances for chemical network
+## ------------ CHIMES de-bugging and special behaviors ------------------------------------------------------------------------
+#CHIMES_HYDROGEN_ONLY           # hydrogen-only. This is ignored if METALS are also set.
+#CHIMES_REDUCED_OUTPUT          # full CHIMES abundance array only output in some snapshots
+#CHIMES_NH_OUTPUT               # write out column densities of gas particles to snapshots
+#CHIMES_INITIALISE_IN_EQM       # initialise CHIMES abundances in equilibrium at the start of the simulation
 ####################################################################################################
 
 

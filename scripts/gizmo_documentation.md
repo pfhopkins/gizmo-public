@@ -1792,7 +1792,7 @@ Grackle is an alternative chemical network using external libraries for solving 
 
 CHIMES is another alternative non-equilibrium chemical (ion+atomic+molecular) network, developed by Alex Richings. The core methods are laid out in 2014MNRAS.440.3349R, 2014MNRAS.442.2780R, but have been substantially extended in a number of ways in GIZMO to interact with additional fields that can be present. Unlike Grackle you do not have to install additional libraries here. However, you do have to download additional cooling tables for the code to use. 
 
-Per the CHIMES documentation and license, this module requires permission from the authors to use: please contact Alex Richings, Joop Schaye, or Ben Oppenheimer to obtain the relevant permissions. 
+Per permissions from the lead-developer of CHIMES, Alex Richings, CHIMES is now available as part of the public GIZMO code. Please note that some of the CHIMES sub-modules (optional flags below) couple to different parts of the code written by other authors, and a couple of these may be non-public code; these are designated below. Be sure to cite the papers above with the CHIMES methods in any publications that make use of these modules. For additional questions about CHIMES, and additional guidance about whether the modules can be ported into other codes (per their license), please contact Alex Richings to obtain the relevant permissions and or ask questions, as they are the developer.
 
 This has additional hooks to use the various gizmo radiation fields if desired. The modules solve a large molecular and ion network, so can trace predictive chemistry for species in dense ISM gas in much greater detail than the other modules above (at additional CPU cost). 
 

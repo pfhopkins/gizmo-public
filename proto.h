@@ -527,11 +527,13 @@ void thermal_fb_calc(void);
 #ifdef COOL_METAL_LINES_BY_SPECIES
 /*double GetMetalLambda(double, double);*/
 double getSpCoolTableVal(long i,long j,long k,long tblK);
+#ifndef CHIMES
 double GetCoolingRateWSpecies(double nHcgs, double logT, double *Z);
 double GetLambdaSpecies(long k_index, long index_x0y0, long index_x0y1, long index_x1y0, long index_x1y1, double dx, double dy, double dz, double mdz);
 void LoadMultiSpeciesTables(void);
 void ReadMultiSpeciesTables(int iT);
 char *GetMultiSpeciesFilename(int i, int hk);
+#endif
 #endif
 
 double bh_angleweight(double bh_lum_input, MyFloat bh_angle[3], double dx, double dy, double dz);
@@ -554,6 +556,23 @@ void disp_density(void);
 #endif
 
 
+#ifdef CHIMES
+double chimes_convert_u_to_temp(double u, double rho, int target);
+void chimes_update_gas_vars(int target);
+void chimes_gizmo_exit(void);
+#ifdef COOL_METAL_LINES_BY_SPECIES
+void chimes_update_element_abundances(int i);
+#endif
+#ifdef CHIMES_TURB_DIFF_IONS
+void chimes_update_turbulent_abundances(int i, int mode);
+#endif
+#ifdef CHIMES_METAL_DEPLETION
+void chimes_init_depletion_data(void);
+double chimes_jenkins_linear_fit(double nH, double T, double Ax, double Bx, double zx);
+void chimes_compute_depletions(double nH, double T, int thread_id);
+#endif
+#else
+#endif
 void cooling_parent_routine(void);
 void count_hot_phase(void);
 void delete_node(int i);

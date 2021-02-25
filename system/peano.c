@@ -105,6 +105,9 @@ void reorder_gas(void)
   struct particle_data Psave, Psource;
   struct sph_particle_data SphPsave, SphPsource;
   int idsource, idsave, dest;
+#ifdef CHIMES 
+  struct gasVariables gasVarsSave, gasVarsSource;
+#endif 
 
   for(i = 0; i < N_gas; i++)
     {
@@ -112,6 +115,9 @@ void reorder_gas(void)
 	{
 	  Psource = P[i];
 	  SphPsource = SphP[i];
+#ifdef CHIMES 
+	  gasVarsSource = ChimesGasVars[i];
+#endif
 	  idsource = Id[i];
 	  dest = Id[i];
 
@@ -119,10 +125,16 @@ void reorder_gas(void)
 	    {
 	      Psave = P[dest];
 	      SphPsave = SphP[dest];
+#ifdef CHIMES 
+	      gasVarsSave = ChimesGasVars[dest];
+#endif 
 	      idsave = Id[dest];
 
 	      P[dest] = Psource;
 	      SphP[dest] = SphPsource;
+#ifdef CHIMES 
+	      ChimesGasVars[dest] = gasVarsSource;
+#endif 
 	      Id[dest] = idsource;
 
 	      if(dest == i)
@@ -130,6 +142,9 @@ void reorder_gas(void)
 
 	      Psource = Psave;
 	      SphPsource = SphPsave;
+#ifdef CHIMES 
+	      gasVarsSource = gasVarsSave; 
+#endif 
 	      idsource = idsave;
 	      dest = idsource;
 	    }

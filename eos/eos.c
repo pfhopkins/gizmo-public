@@ -288,11 +288,15 @@ double INLINE_FUNC convert_internalenergy_soundspeed2(int i, double u)
 double Get_Gas_Ionized_Fraction(int i)
 {
 #ifdef COOLING
+#ifdef CHIMES 
+  return (double) ChimesGasVars[i].abundances[ChimesGlobalVars.speciesIndices[sp_HII]]; 
+#else 
     double ne=1, nh0=0, nHe0, nHepp, nhp, nHeII, temperature, mu_meanwt=1, rho=SphP[i].Density*All.cf_a3inv, u0=SphP[i].InternalEnergyPred;
     temperature = ThermalProperties(u0, rho, i, &mu_meanwt, &ne, &nh0, &nhp, &nHe0, &nHeII, &nHepp); // get thermodynamic properties
     double f_ion = DMIN(DMAX(DMAX(DMAX(1-nh0, nhp), ne/1.2), 1.e-8), 1.); // account for different measures above (assuming primordial composition)
     if((!isfinite(f_ion)) || (f_ion<0)) {f_ion=0;}
     return f_ion;
+#endif
 #endif
     return 1;
 }
@@ -302,6 +306,9 @@ double Get_Gas_Ionized_Fraction(int i)
 double Get_Gas_Molecular_Mass_Fraction(int i, double temperature, double neutral_fraction, double free_electron_ratio, double urad_from_uvb_in_G0)
 {
     /* if tracking chemistry explicitly, return the explicitly-evolved H2 fraction */
+#ifdef CHIMES // use the CHIMES molecular network for H2
+    return DMIN(1,DMAX(0, ChimesGasVars[i].abundances[ChimesGlobalVars.speciesIndices[sp_H2]] * 2.0)); // factor 2 converts to mass fraction in molecular gas, as desired
+#endif
     
 #if (COOL_GRACKLE_CHEMISTRY >= 2) // Use GRACKLE explicitly-tracked H2 [using the molecular network if this is valid]
     return DMIN(1,DMAX(0, SphP[i].grH2I + SphP[i].grH2II)); // include both states of H2 tracked
@@ -488,7 +495,9 @@ double yhelium(int target)
 /* return mean molecular weight, appropriate for the approximations of the user-selected chemical network[s] */
 double Get_Gas_Mean_Molecular_Weight_mu(double T_guess, double rho, double *xH0, double *ne_guess, double urad_from_uvb_in_G0, int target)
 {
-#if   defined(COOLING)
+#if defined(CHIMES)
+    return calculate_mean_molecular_weight(&(ChimesGasVars[target]), &ChimesGlobalVars);
+#elif defined(COOLING)
     double X=HYDROGEN_MASSFRAC, Y=1.-X, Z=0, fmol;
 #ifdef METALS
     if(target >= 0)
