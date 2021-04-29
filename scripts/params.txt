@@ -227,6 +227,16 @@ BAL_v_outflow                30000	    % velocity (code units) of BAL outflow (B
 BAL_internal_temperature     1.0e4      % internal temperature (K) of BAL outflow (BH_WIND_SPAWN)
 BAL_wind_particle_mass       1.e-10     % mass of 'virtual wind particles' in code units (BH_WIND_SPAWN)
 BH_CosmicRay_Injection_Efficiency 0.1   % fraction of accretion energy into cosmic rays (BH_COSMIC_RAYS)
+%------------------------------------------------------------------------------------------------------------
+%--- optional BH parameters if special options [debug/non-standard blackhole options] are enabled
+%------------------------------------------------------------------------------------------------------------
+BH_spawn_injection_radius    0.01       % manually set the spatial radius/injection scale for jet cell-spawning, in code units (if SPAWN_B_POL_TOR_SET_IN_PARAMS on)
+BH_spawn_poloidal_B          1e-4       % manually set poloidal magnetic field for spawned cells at the jet or angular momentum axis at r=BH_spawn_rinj in Gauss (positive means upward), if SPAWN_B_POL_TOR_SET_IN_PARAMS on
+BH_spawn_toroidal_B          1e-4       % manually set toroidal magnetic field for spawned cells in the plane perpendicular to the jet or angular momentum axis at r=BH_spawn_rinj in Gauss (positive means anti-clockwise), if SPAWN_B_POL_TOR_SET_IN_PARAMS on
+BH_fb_duty_cycle             1.0        % manually set fraction of the time that accretion/feedback is 'on', set=1 for constant accretion (if BH_DEBUG_FIX_MDOT on)
+BH_fb_period                 0.1        % manually set period for the duty cycle above, in time code units (time for entire on-off cycle, if BH_DEBUG_FIX_MDOT on)
+BH_jet_precession_degree     15         % manually set a precession angle in degrees (between 0 and 90; if BH_JET_PRECESSION_SET_IN_PARAMS on)
+BH_jet_precession_period     0.1        % manually set a precession period in code units (>0, in code units; if BH_JET_PRECESSION_SET_IN_PARAMS on)
 
 
 %-------------------------------------------------------------------------

@@ -670,6 +670,9 @@ void init(void)
     Flag_FullStep = 1;		/* to ensure that Peano-Hilbert order is done */
     TreeReconstructFlag = 1;
 
+#ifdef BH_WIND_SPAWN
+    MaxUnSpanMassBH     = 0;
+#endif
 
 #ifdef SHIFT_BY_HALF_BOX
     for(i = 0; i < NumPart; i++)

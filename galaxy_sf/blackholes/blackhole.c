@@ -318,6 +318,11 @@ void set_blackhole_mdot(int i, int n, double dt)
             double facc_which_hubber_mdot = DMIN(1, 1.75*sqrt(j_eff)/(m_eff*sqrt(All.G*(m_eff+P[n].Mass)*rmax_for_bhar))); /* disk fraction estimator */
             mdot = DMAX( BlackholeTempInfo[i].hubber_mdot_bondi_limiter , pow(hubber_mdot_from_vr_estimator,1-facc_which_hubber_mdot)*pow(hubber_mdot_disk_estimator,facc_which_hubber_mdot));
 #endif
+#ifdef BH_SIGMAMULTIPLIER
+            double sigma_crit = 3000. * (2.09e-4 / UNIT_SURFDEN_IN_CGS); // from MG's fit to isolated cloud sims [converts from Msun/pc^2 to code units]
+            double sigma_enc = (BlackholeTempInfo[i].Malt_in_Kernel + P[n].Mass) / (M_PI*rmax_for_bhar*rmax_for_bhar); // effective surface density [total gravitating mass / area]
+            mdot *= sigma_enc / (sigma_enc + sigma_crit);
+#endif
 #ifndef IO_REDUCED_MODE
             printf(" ..BH accretion kernel :: mdot %g Norm %g fdisk %g bh_8 %g fgas %g f0 %g mdisk_9 %g rmax_100 %g \n",
                    mdot,fac,f_disk_for_bhar,bh_mass_units,fgas_for_bhar,f0_for_bhar,mdisk_for_bhar_units,rmax_for_bhar_units);
@@ -427,7 +432,7 @@ void set_blackhole_mdot(int i, int n, double dt)
     /* if there -is- an alpha-disk, protect the alpha-disk not to be over-depleted (i.e. overshooting into negative alpha-disk masses) */
     if(dt>0)
     {
-#if defined(BH_WIND_CONTINUOUS) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_SPAWN)
         if(mdot > BPP(n).BH_Mass_AlphaDisk/dt*All.BAL_f_accretion) mdot = BPP(n).BH_Mass_AlphaDisk/dt*All.BAL_f_accretion;
 #else
         if(mdot > BPP(n).BH_Mass_AlphaDisk/dt) mdot = BPP(n).BH_Mass_AlphaDisk/dt;
@@ -439,7 +444,7 @@ void set_blackhole_mdot(int i, int n, double dt)
 
 #else // BH_ALPHADISK_ACCRETION
 
-#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK) || defined(BH_WIND_SPAWN)
     mdot *= All.BAL_f_accretion; /* if there is no alpha-disk, the BHAR defined above is really an mdot into the accretion disk. the rate -to the hole- should be corrected for winds */
 #endif
 #endif // BH_ALPHADISK_ACCRETION
@@ -496,7 +501,7 @@ void set_blackhole_new_mass(int i, int n, double dt)
     if(BPP(n).BH_Mass_AlphaDisk<0) {BPP(n).BH_Mass_AlphaDisk=0;}
     if(P[n].Mass<0) {P[n].Mass=0;}
 #else // #ifdef BH_ALPHADISK_ACCRETION
-#if defined(BH_WIND_CONTINUOUS) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_SPAWN)
     BPP(n).BH_Mass += BPP(n).BH_Mdot * dt / All.BAL_f_accretion; // accrete the winds first, then remove the wind mass in the final loop
 #else
     BPP(n).BH_Mass += BPP(n).BH_Mdot * dt;
@@ -732,9 +737,13 @@ void blackhole_final_operations(void)
         /* always substract the radiation energy from BPP(n).BH_Mass && P[n].Mass */
         dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(n);
         double dm = BPP(n).BH_Mdot * dt;
+#ifdef BH_DEBUG_FIX_MDOT
+        dm=0; double period_bh=All.BH_fb_period/UNIT_TIME_IN_GYR, period_bh_on=All.BH_fb_duty_cycle*period_bh;
+        if(All.BH_fb_duty_cycle>=1) {dm=BH_DEBUG_FIX_MDOT*dt;} else {if(fmod(All.Time, period_bh) < period_bh_on) {dm = 2.*(BH_DEBUG_FIX_MDOT/All.BH_fb_duty_cycle) *  pow(sin(M_PI*All.Time/period_bh_on),2) * dt;}}
+#endif
         double radiation_loss = All.BlackHoleRadiativeEfficiency * dm;
         if(radiation_loss > DMIN(P[n].Mass,BPP(n).BH_Mass)) radiation_loss = DMIN(P[n].Mass,BPP(n).BH_Mass);
-#ifndef BH_DEBUG_FIX_MASS
+#ifndef BH_DEBUG_FIX_MDOT
         P[n].Mass -= radiation_loss; BPP(n).BH_Mass -= radiation_loss;
 #endif
         /* subtract the BAL wind mass from P[n].Mass && (BPP(n).BH_Mass || BPP(n).BH_Mass_AlphaDisk) // DAA: note that the mass loss in winds for BH_WIND_KICK has already been taken into account */
@@ -747,7 +756,7 @@ void blackhole_final_operations(void)
         BPP(n).BH_Mass_AlphaDisk -= dm_wind;
 #else
         if(dm_wind > BPP(n).BH_Mass) {dm_wind = BPP(n).BH_Mass;}
-#ifndef BH_DEBUG_FIX_MASS
+#ifndef BH_DEBUG_FIX_MDOT
         P[n].Mass -= dm_wind; BPP(n).BH_Mass -= dm_wind;
 #endif
 #endif
@@ -761,6 +770,22 @@ void blackhole_final_operations(void)
         P[n].BH_SurroundingGasVel = sqrt(P[n].BH_SurroundingGasVel);
 #endif
 
+#ifdef BH_WIND_SPAWN
+        /* DAA: for wind spawning, we only need to subtract the BAL wind mass from BH_Mass (or BH_Mass_AlphaDisk) --> wind mass subtracted from P.Mass in blackhole_spawn_particle_wind_shell()  */
+        double dm_wind = (1.-All.BAL_f_accretion) / All.BAL_f_accretion * dm;
+        if(dm_wind > P[n].Mass) {dm_wind = P[n].Mass;}
+#if defined(BH_ALPHADISK_ACCRETION)
+        if(dm_wind > BPP(n).BH_Mass_AlphaDisk) {dm_wind = BPP(n).BH_Mass_AlphaDisk;}
+        BPP(n).BH_Mass_AlphaDisk -= dm_wind;
+#else
+        if(dm_wind > BPP(n).BH_Mass) {dm_wind = BPP(n).BH_Mass;}
+#ifndef BH_DEBUG_FIX_MDOT
+        BPP(n).BH_Mass -= dm_wind;
+#endif
+#endif
+        BPP(n).unspawned_wind_mass += dm_wind;
+        if(BPP(n).unspawned_wind_mass>MaxUnSpanMassBH) {MaxUnSpanMassBH=BPP(n).unspawned_wind_mass;}
+#endif
 
 #ifdef RT_BH_ANGLEWEIGHT_PHOTON_INJECTION
         P[n].KernelSum_Around_RT_Source = BlackholeTempInfo[i].BH_angle_weighted_kernel_sum;

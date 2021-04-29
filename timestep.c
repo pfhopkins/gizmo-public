@@ -419,7 +419,7 @@ integertime get_timestep(int p,		/*!< particle index */
 #ifdef PIC_MHD_NEW_RSOL_METHOD
             lorentz_units *= PIC_SPEEDOFLIGHT_REDUCTION; // the rsol enters by slowing down the forces here, acts as a unit shift for time
 #endif
-            double beta2=0,B2; for(k=0;k<3;k++) {double b=P[i].Gas_B[k]*All.cf_a2inv, v=P[p].Vel[k]/(All.cf_atime*reduced_C); B2+=b*b; beta2+=v*v;;} /* get magnitude and unit vector for B, and vector beta [-true- beta here] */
+            double beta2=0,B2=0; for(k=0;k<3;k++) {double b=P[p].Gas_B[k]*All.cf_a2inv, v=P[p].Vel[k]/(All.cf_atime*reduced_C); B2+=b*b; beta2+=v*v;;} /* get magnitude and unit vector for B, and vector beta [-true- beta here] */
             double gamma_lorentz = 1./sqrt(DMAX(1.-DMAX(DMIN(beta2,1.),0.),MIN_REAL_NUMBER)); // calculate lorentz factor (with safety factors included to prevent accidental nan here //
             double dt_courant_pic = 0.5 / ((charge_to_mass_ratio_dimensionless/gamma_lorentz) * sqrt(B2) * lorentz_units); /* dt = 0.5/omega_gyro*/
             if(dt_courant_pic < dt_courant) dt_courant = dt_courant_pic;
@@ -809,6 +809,9 @@ integertime get_timestep(int p,		/*!< particle index */
 #endif // SINGLE_STAR_TIMESTEPPING
     } // if(P[p].Type == 5)
 
+#if defined(SPAWN_B_POL_TOR_SET_IN_PARAMS) /* KYSu: here for de-bugging jet injection model right now */
+    if((P[p].Type==5) || (P[p].Type==0 && P[p].ID==All.AGNWindID && SphP[p].IniDen<0)) {if(dt>All.BH_spawn_rinj/All.BAL_v_outflow) {dt=All.BH_spawn_rinj/All.BAL_v_outflow;}}
+#endif
 #endif // BLACK_HOLES
     
 

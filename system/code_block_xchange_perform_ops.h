@@ -33,6 +33,7 @@ be copy-pasted and can be generically optimized in a single place */
             {
                 PRINT_WARNING("NextParticle == save_NextParticle condition (the buffer appears too small to hold a single particle): NextParticle=%d save_NextParticle=%d last_nextparticle=%d ProcessedFlag[NextParticle]=%d NextActiveParticle[NextParticle]=%d NumPart=%d N_gas=%d NTaskTimesNumPart=%llu maxThreads=%d All.BunchSize=%ld All.BufferSize=%llu Nexport=%ld ndone=%d ndone_flag=%d NTask=%d",NextParticle,save_NextParticle,last_nextparticle,ProcessedFlag[NextParticle],NextActiveParticle[NextParticle],NumPart,N_gas,(unsigned long long)NTaskTimesNumPart,maxThreads,All.BunchSize,(unsigned long long)All.BufferSize,Nexport,ndone,ndone_flag,NTask);
                 if(NextParticle >= 0) {PRINT_WARNING("This is a live particle: NextParticle=%d ID=%llu Mass=%g Type=%d",NextParticle,(unsigned long long)P[NextParticle].ID,P[NextParticle].Mass,P[NextParticle].Type);}
+                printf("Extended Debug: Printing Processed Flag for Entire Active Particle Chain on This Task: \n"); int nj=0; for(j=FirstActiveParticle;j>=0;j=NextActiveParticle[j]) {printf("nj=%d j=%d ProcFlag[j]=%d \n",nj,j,ProcessedFlag[j]); nj++; fflush(stdout);} fflush(stdout);
                 endrun(113312);
             } /* in this case, the buffer is too small to process even a single particle */
             

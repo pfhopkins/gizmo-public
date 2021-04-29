@@ -375,7 +375,40 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                 }
 #endif
             break;
-
+            
+        case IO_INIB:
+#if defined(SPAWN_B_POL_TOR_SET_IN_PARAMS) && defined(BH_DEBUG_SPAWN_JET_TEST)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    for(k=0;k<3;k++) {*fp++ = SphP[pindex].IniB[k];}
+                    n++;
+                }
+#endif               
+            break;
+            
+        case IO_IDEN:
+#if defined(SPAWN_B_POL_TOR_SET_IN_PARAMS) && defined(BH_DEBUG_SPAWN_JET_TEST)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = SphP[pindex].IniDen;
+                    n++;
+                }
+#endif                
+            break;
+            
+        case IO_UNSPMASS:
+#if defined(BH_WIND_SPAWN) && defined(BH_DEBUG_SPAWN_JET_TEST)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = P[pindex].unspawned_wind_mass;
+                    n++;
+                }
+#endif           
+            break;
+            
         case IO_CRATE:
 #if defined(OUTPUT_COOLRATE_DETAIL) && defined(COOLING)
             for(n = 0; n < pc; pindex++)
@@ -445,7 +478,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {   /* units convert to solar masses per yr */
-                    *fp++ = get_starformation_rate(pindex) * UNIT_MASS_IN_SOLAR / UNIT_TIME_IN_YR;
+                    *fp++ = get_starformation_rate(pindex, 1) * UNIT_MASS_IN_SOLAR / UNIT_TIME_IN_YR;
                     n++;
                 }
 #endif
@@ -1553,6 +1586,7 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_PARTVEL:
         case IO_ACCEL:
         case IO_BFLD:
+        case IO_INIB:
         case IO_GRADPHI:
         case IO_RAD_ACCEL:
         case IO_VORT:
@@ -1571,6 +1605,9 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
 
         case IO_GENERATION_ID:
             bytes_per_blockelement = sizeof(int);
+#ifdef BH_WIND_SPAWN  //we use this to store progenitor info so this needs to be able to handle any valid ID, rather than the usual 0-32
+            bytes_per_blockelement = sizeof(MyIDType);
+#endif
             break;
 
         case IO_BHPROGS:
@@ -1590,6 +1627,8 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_HII:
         case IO_HeI:
         case IO_HeII:
+        case IO_IDEN:
+        case IO_UNSPMASS:
         case IO_CRATE:
         case IO_HRATE:
         case IO_NHRATE:
@@ -1792,7 +1831,11 @@ int get_datatype_in_block(enum iofields blocknr)
             break;
 
         case IO_GENERATION_ID:
+#if defined(BH_WIND_SPAWN) && defined(LONGIDS) //we use this to store progenitor info so this needs to be able to handle any valid ID, rather than the usual 0-32
+            typekey = 2;		/* native long long */
+#else
             typekey = 0;		/* native int */
+#endif
             break;
 
         case IO_BHPROGS:
@@ -1819,6 +1862,7 @@ int get_values_per_blockelement(enum iofields blocknr)
     {
         case IO_POS:
         case IO_VEL:
+        case IO_INIB:
         case IO_PARTVEL:
         case IO_ACCEL:
         case IO_BFLD:
@@ -1842,6 +1886,8 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_HII:
         case IO_HeI:
         case IO_HeII:
+        case IO_IDEN:
+        case IO_UNSPMASS:
         case IO_CRATE:
         case IO_HRATE:
         case IO_NHRATE:
@@ -2002,9 +2048,13 @@ int get_values_per_blockelement(enum iofields blocknr)
  */
 long get_particles_in_block(enum iofields blocknr, int *typelist)
 {
-    long i, nall, nsel, ntot_withmasses, ngas, nstars, nngb;
-    nall = 0; nsel = 0; ntot_withmasses = 0;
+    long i, nall, nsel, ntot_withmasses, ngas, nstars, nngb, nstars_tot;
+    nall = 0; nsel = 0; ntot_withmasses = 0; nstars_tot=0;
 
+    int valid_star_types=16; if(All.ComovingIntegrationOn==0) {valid_star_types+=4+8;} /* used in e.g. ages block below, not for all, but easier to define here */
+#ifdef BLACK_HOLES
+    valid_star_types += 32;
+#endif
     for(i = 0; i < 6; i++)
     {
         typelist[i] = 0;
@@ -2012,11 +2062,13 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         {
             nall += header.npart[i];
             typelist[i] = 1;
+            if((1 << i) & (valid_star_types)) {nstars_tot += header.npart[i];}
         }
         if(All.MassTable[i] == 0) {ntot_withmasses += header.npart[i];}
     }
     ngas = header.npart[0];
     nstars = header.npart[4];
+
 
     switch (blocknr)
     {
@@ -2059,6 +2111,8 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_HII:
         case IO_HeI:
         case IO_HeII:
+        case IO_INIB:
+        case IO_IDEN:
         case IO_CRATE:
         case IO_HRATE:
         case IO_NHRATE:
@@ -2118,13 +2172,8 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
             break;
 
         case IO_AGE:
-#ifdef BLACK_HOLES
-            for(i = 0; i < 6; i++) {if(i != 4 && i != 5) {typelist[i] = 0;}}
-            return nstars + header.npart[5];
-#else
-            for(i = 0; i < 6; i++) {if(i != 4) {typelist[i] = 0;}}
-            return nstars;
-#endif
+            for(i=0; i<6; i++) {if(!((1 << i) & (valid_star_types))) {typelist[i]=0;}}
+            return nstars_tot;
             break;
 
         case IO_OSTAR:
@@ -2168,6 +2217,7 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_BHDUSTMASS:
         case IO_BHMASSALPHA:
         case IO_BH_ANGMOM:
+        case IO_UNSPMASS:
         case IO_ACRB:
         case IO_SINKRAD:
         case IO_BHMDOT:
@@ -2351,6 +2401,19 @@ int blockpresent(enum iofields blocknr)
 #if defined(RT_CHEM_PHOTOION_HE)
             return 1;
 #endif
+            break;
+            
+        case IO_IDEN:
+        case IO_INIB:
+#if defined(SPAWN_B_POL_TOR_SET_IN_PARAMS) && defined(BH_DEBUG_SPAWN_JET_TEST)
+            return 1;
+#endif         
+            break;
+
+        case IO_UNSPMASS:
+#if defined(BH_WIND_SPAWN) && defined(BH_DEBUG_SPAWN_JET_TEST)
+            return 1;
+#endif   
             break;
 
         case IO_CRATE:
@@ -2745,6 +2808,15 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
         case IO_HeII:
             strncpy(label, "HeII", 4);
             break;
+        case IO_INIB:
+            strncpy(label, "INIB", 4);
+            break;
+        case IO_IDEN:
+            strncpy(label, "IDEN", 4);
+            break; 
+        case IO_UNSPMASS:
+            strncpy(label, "USPM", 4);
+            break;     
         case IO_CRATE:
             strncpy(label, "CRATE", 4);
             break;
@@ -3110,6 +3182,15 @@ void get_dataset_name(enum iofields blocknr, char *buf)
         case IO_HeII:
             strcpy(buf, "HeII");
             break;
+        case IO_IDEN:
+            strcpy(buf, "IniDen");
+            break;
+        case IO_INIB:
+            strcpy(buf, "IniB");
+            break;    
+        case IO_UNSPMASS:
+            strcpy(buf, "Unspawned_Wind_Mass");
+            break;     
         case IO_CRATE:
             strcpy(buf, "CoolingRate");
             break;
@@ -3858,6 +3939,9 @@ void write_header_attributes_in_hdf5(hid_t handle)
 {
     hsize_t adim[1] = { 6 }; hid_t hdf5_dataspace, hdf5_attribute;
 
+    {int tmp=GIZMO_VERSION; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "GIZMO_version", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+        H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &tmp); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+    
     hdf5_dataspace = H5Screate(H5S_SIMPLE); H5Sset_extent_simple(hdf5_dataspace, 1, adim, NULL);
     hdf5_attribute = H5Acreate(handle, "NumPart_ThisFile", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
     H5Awrite(hdf5_attribute, H5T_NATIVE_INT, header.npart); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
@@ -4097,6 +4181,8 @@ void write_header_attributes_in_hdf5(hid_t handle)
 #endif
 #endif
 
+
+
 #ifdef GALSF_FB_FIRE_AGE_TRACERS
     {int holder=NUM_AGE_TRACERS; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "AgeTracer_NumberOfBins", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
     H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &holder); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
@@ -4118,9 +4204,68 @@ void write_header_attributes_in_hdf5(hid_t handle)
     {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={NUM_METAL_SPECIES}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
     hdf5_attribute = H5Acreate(handle, "Solar_Abundances_Adopted", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
     H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, All.SolarAbundances); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+
+    /* assign labels for all metal species for reference in outputs */
+    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={NUM_METAL_SPECIES}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
+        hdf5_attribute = H5Acreate(handle, "Metals_Atomic_Number_Or_Key", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+        int zkey[NUM_METAL_SPECIES],k; zkey[0]=0; /* all metals */ for(k=1;k<NUM_METAL_SPECIES;k++) {zkey[k]=-20;}
+        if(NUM_LIVE_SPECIES_FOR_COOLTABLES==10) {zkey[1]=2; zkey[2]=6; zkey[3]=7; zkey[4]=8; zkey[5]=10; zkey[6]=12; zkey[7]=14; zkey[8]=16; zkey[9]=20; zkey[10]=26;} /* He,C,N,O,Ne,Mg,Si,S,Ca,Fe */
+        for(k=0;k<NUM_RPROCESS_SPECIES;k++) {zkey[1+NUM_LIVE_SPECIES_FOR_COOLTABLES+k]=-1;}
+        for(k=0;k<NUM_AGE_TRACERS;k++) {zkey[1+NUM_LIVE_SPECIES_FOR_COOLTABLES+NUM_RPROCESS_SPECIES+k]=-2;}
+        for(k=0;k<NUM_STARFORGE_FEEDBACK_TRACERS;k++) {zkey[1+NUM_LIVE_SPECIES_FOR_COOLTABLES+NUM_RPROCESS_SPECIES+NUM_AGE_TRACERS+k]=-3;}
+        H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, zkey); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
 #endif
 
-#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if defined(RADTRANSFER) || defined(RT_USE_GRAVTREE)
+    {
+        int k; double numin[N_RT_FREQ_BINS], numax[N_RT_FREQ_BINS]; for(k=0;k<N_RT_FREQ_BINS;k++) {numin[k]=-20; numax[k]=-20;}
+#ifdef RT_CHEM_PHOTOION
+#if defined(RT_PHOTOION_MULTIFREQUENCY)
+        int i_vec[4] = {RT_FREQ_BIN_H0, RT_FREQ_BIN_He0, RT_FREQ_BIN_He1, RT_FREQ_BIN_He2};
+        numin[i_vec[3]]=rt_ion_nu_min[i_vec[3]]; numax[i_vec[3]]=500; for(k=0;k<3;k++) {numin[i_vec[k]]=rt_ion_nu_min[i_vec[k]]; numax[i_vec[k]]=rt_ion_nu_min[i_vec[k+1]];}
+#else
+        k=RT_FREQ_BIN_H0; numin[k]=13.6; numax[k]=500;
+#endif
+#endif
+#ifdef RT_SOFT_XRAY
+        k=RT_FREQ_BIN_SOFT_XRAY; numin[k]=500; numax[k]=2000;
+#endif
+#ifdef RT_HARD_XRAY
+        k=RT_FREQ_BIN_HARD_XRAY; numin[k]=2000; numax[k]=10000;
+#endif
+#ifdef RT_PHOTOELECTRIC
+        k=RT_FREQ_BIN_PHOTOELECTRIC; numin[k]=8; numax[k]=13.6;
+#endif
+#ifdef RT_LYMAN_WERNER
+        k=RT_FREQ_BIN_LYMAN_WERNER; numin[k]=11.2; numax[k]=13.6;
+#endif
+#ifdef RT_NUV
+        k=RT_FREQ_BIN_NUV; numin[k]=3.444; numax[k]=8.;
+#endif
+#ifdef RT_OPTICAL_NIR
+        k=RT_FREQ_BIN_OPTICAL_NIR; numin[k]=0.4133; numax[k]=3.444;
+#endif
+#ifdef RT_GENERIC_USER_FREQ
+        k=RT_FREQ_BIN_GENERIC_USER_FREQ; numin[k]=-1; numax[k]=-1;
+#endif
+#ifdef RT_INFRARED
+        k=RT_FREQ_BIN_INFRARED; numin[k]=0.001; numax[k]=0.4133;
+#endif
+#ifdef RT_FREEFREE
+        k=RT_FREQ_BIN_FREEFREE; numin[k]=-2; numax[k]=-2;
+#endif
+        
+        {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_RT_FREQ_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
+            hdf5_attribute = H5Acreate(handle, "Radiation_RHD_Min_Bin_Freq_in_eV", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+            H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, numin); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+        {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_RT_FREQ_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
+            hdf5_attribute = H5Acreate(handle, "Radiation_RHD_Max_Bin_Freq_in_eV", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+            H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, numax); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+    }
+#endif
+
+    
+#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK) || defined(BH_WIND_SPAWN)
     hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BAL_f_accretion", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
     H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BAL_f_accretion); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
     hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BAL_v_outflow", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
@@ -4228,6 +4373,14 @@ void write_header_attributes_in_hdf5(hid_t handle)
 #ifdef BH_SEED_FROM_FOF
     hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "MinFoFMassForNewSeed", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
     H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.MinFoFMassForNewSeed); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+#ifdef BH_WIND_SPAWN
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BAL_wind_particle_mass", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BAL_wind_particle_mass); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BAL_internal_temperature", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BAL_internal_temperature); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+    {unsigned long long holder = (unsigned long long) All.AGNWindID; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Spawned_Cell_ID", H5T_NATIVE_ULLONG, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_ULLONG, &holder); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
 #endif
 #endif
 

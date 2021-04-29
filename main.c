@@ -60,7 +60,7 @@ int main(int argc, char **argv)
       timeinfo = localtime ( &rawtime );
 
       printf("\nSystem time: %s", asctime(timeinfo) );
-      printf("This is GIZMO, version %s, running on %s as %s.\n",
+      printf("This is GIZMO, version %d, running on %s as %s.\n",
               GIZMO_VERSION,
               have_hn == 0 ? hostname : "?",
               username ? username : "?"

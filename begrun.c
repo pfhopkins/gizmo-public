@@ -339,12 +339,16 @@ void begrun(void)
 #ifdef BH_SEED_FROM_FOF
         All.MinFoFMassForNewSeed = all.MinFoFMassForNewSeed;
 #endif
-#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK) || defined(BH_WIND_SPAWN)
         All.BAL_f_accretion = all.BAL_f_accretion;
         All.BAL_v_outflow = all.BAL_v_outflow;
 #endif
 #if defined(BH_COSMIC_RAYS)
         All.BH_CosmicRay_Injection_Efficiency = all.BH_CosmicRay_Injection_Efficiency;
+#endif
+#ifdef BH_WIND_SPAWN
+        All.BAL_internal_temperature = all.BAL_internal_temperature;
+        All.BAL_wind_particle_mass = all.BAL_wind_particle_mass; // dangeous to change this, as it is also part of the merger criterion!
 #endif
 #endif // blackholes
 #ifdef RT_LEBRON
@@ -492,7 +496,10 @@ void set_units(void)
   /* for historical reasons, we need to convert to "All.MaxSfrTimescale", defined as the SF timescale in code units at the critical physical
      density given above. use the dimensionless SfEffPerFreeFall (which has been read in) to calculate this. This must be done -BEFORE- calling set_units_sfr) */
 #ifndef GALSF_EFFECTIVE_EQS
-    All.MaxSfrTimescale = (1/All.MaxSfrTimescale) * sqrt(3.*M_PI / (32. * All.G * (All.CritPhysDensity * meanweight / UNIT_DENSITY_IN_NHCGS)));
+    All.MaxSfrTimescale = (1/All.MaxSfrTimescale) * sqrt(3.*M_PI / (32. * All.G * (All.CritPhysDensity / UNIT_DENSITY_IN_NHCGS)));
+#ifdef PROTECT_FROZEN_FIRE
+    All.MaxSfrTimescale /= sqrt(meanweight);
+#endif
 #endif
     set_units_sfr();
 #endif
@@ -1330,7 +1337,7 @@ void read_parameter_file(char *fname)
         id[nt++] = REAL;
 #endif
 
-#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK) || defined(BH_WIND_SPAWN)
         strcpy(tag[nt],"BAL_f_accretion");
         addr[nt] = &All.BAL_f_accretion;
         id[nt++] = REAL;
@@ -1348,6 +1355,15 @@ void read_parameter_file(char *fname)
 #endif
 
 
+#ifdef BH_WIND_SPAWN
+        strcpy(tag[nt], "BAL_internal_temperature");
+        addr[nt] = &All.BAL_internal_temperature;
+        id[nt++] = REAL;
+
+        strcpy(tag[nt], "BAL_wind_particle_mass");
+        addr[nt] = &All.BAL_wind_particle_mass;
+        id[nt++] = REAL;
+#endif
 
 
 #endif /* BLACK_HOLES */
@@ -1508,6 +1524,38 @@ void read_parameter_file(char *fname)
       id[nt++] = REAL;
 #endif
 #endif /* MAGNETIC */
+
+#ifdef SPAWN_B_POL_TOR_SET_IN_PARAMS
+      strcpy(tag[nt], "BH_spawn_injection_radius");
+      addr[nt] = &All.BH_spawn_rinj;
+      id[nt++] = REAL;
+
+      strcpy(tag[nt], "BH_spawn_poloidal_B");
+      addr[nt] = &All.B_spawn_pol;
+      id[nt++] = REAL;
+
+      strcpy(tag[nt], "BH_spawn_toroidal_B");
+      addr[nt] = &All.B_spawn_tor;
+      id[nt++] = REAL;
+#endif
+#ifdef BH_JET_PRECESSION_SET_IN_PARAMS
+      strcpy(tag[nt], "BH_jet_precession_degree");
+      addr[nt] = &All.BH_jet_precess_degree;
+      id[nt++] = REAL;
+
+      strcpy(tag[nt], "BH_jet_precession_period");
+      addr[nt] = &All.BH_jet_precess_period;
+      id[nt++] = REAL;
+#endif
+#ifdef BH_DEBUG_FIX_MDOT
+      strcpy(tag[nt], "BH_fb_duty_cycle");
+      addr[nt] = &All.BH_fb_duty_cycle;
+      id[nt++] = REAL;
+
+      strcpy(tag[nt], "BH_fb_period");
+      addr[nt] = &All.BH_fb_period;
+      id[nt++] = REAL;
+#endif
 
 #ifdef EOS_TABULATED
         strcpy(tag[nt], "EosTable");
@@ -2107,6 +2155,9 @@ void read_parameter_file(char *fname)
     if(All.AGS_MaxNumNgbDeviation < 0.05) All.AGS_MaxNumNgbDeviation = 0.05;
 #endif
 #endif // closes DEVELOPER_MODE check //
+#ifdef BH_WIND_SPAWN
+    All.AGNWindID = 1913298393;       // this seems weird, but is the bitshifted version of 1234568912345 for not long IDs.
+#endif
 
 #ifdef GALSF
     All.CritOverDensity = 1000.0;
@@ -2121,7 +2172,7 @@ void read_parameter_file(char *fname)
     /* determines tree cell-opening criterion: 0 for Barnes-Hut, 1 for relative criterion: this
      should only be changed if you -really- know what you're doing! */
 
-#if defined(MAGNETIC) || defined(HYDRO_MESHLESS_FINITE_VOLUME) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if defined(MAGNETIC) || defined(HYDRO_MESHLESS_FINITE_VOLUME) || defined(BH_WIND_SPAWN)
     if(All.CourantFac > 0.2) {All.CourantFac = 0.2;}
     /* (PFH) safety factor needed for MHD calc, because people keep using the same CFac as hydro! */
 #endif

@@ -52,16 +52,11 @@ void run(void)
 
         write_cpu_log();		/* output some CPU usage log-info (accounts for everything needed up to the current sync-point) */
 
-        if(All.Ti_Current >= TIMEBASE)	/* check whether we reached the final time */
+        if((All.Ti_Current >= TIMEBASE) || (All.Time > All.TimeMax)) /* check whether we reached the final time */
         {
-            if(ThisTask == 0)
-                printf("\nFinal time=%g reached. Simulation ends.\n", All.TimeMax);
-
-            restart(0);		/* write a restart file to allow continuation of the run for a larger value of TimeMax */
-
-            if(All.Ti_lastoutput != All.Ti_Current)	/* make a snapshot at the final time in case none has produced at this time */
-                savepositions(All.SnapshotFileCount++);	/* this will be overwritten if All.TimeMax is increased and the run is continued */
-
+            if(ThisTask == 0) {printf("\nFinal time=%g reached. Simulation ends.\n", All.TimeMax);}
+            restart(0); /* write a restart file to allow continuation of the run for a larger value of TimeMax */
+            if(All.Ti_lastoutput != All.Ti_Current) {savepositions(All.SnapshotFileCount++);} /* make a snapshot at the final time in case none has produced at this time; this will be overwritten if All.TimeMax is increased and the run is continued */
             break;
         }
 
@@ -251,6 +246,16 @@ void calculate_non_standard_physics(void)
 #ifdef BLACK_HOLES /***** black hole accretion and feedback *****/
     CPU_Step[CPU_MISC] += measure_time();
     blackhole_accretion();
+#ifdef BH_WIND_SPAWN
+    double MaxUnSpanMassBH_global;
+    MPI_Allreduce(&MaxUnSpanMassBH, &MaxUnSpanMassBH_global, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    if(MaxUnSpanMassBH_global > (BH_WIND_SPAWN)*All.BAL_wind_particle_mass)
+    {
+        spawn_bh_wind_feedback();
+        rearrange_particle_sequence();
+        MaxUnSpanMassBH=MaxUnSpanMassBH_global=0.;
+    }
+#endif
     MPI_Barrier(MPI_COMM_WORLD); CPU_Step[CPU_BLACKHOLES] += measure_time();
 #endif
 

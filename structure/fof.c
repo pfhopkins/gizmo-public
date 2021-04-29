@@ -1849,6 +1849,9 @@ void fof_make_black_holes(void)
 #ifdef BH_ALPHADISK_ACCRETION
         BPP(import_indices[n]).BH_Mass_AlphaDisk = All.SeedAlphaDiskMass;
 #endif
+#ifdef BH_WIND_SPAWN
+        BPP(import_indices[n]).unspawned_wind_mass = 0;
+#endif
 #ifdef BH_COUNTPROGS
         BPP(import_indices[n]).BH_CountProgs = 1;
 #endif

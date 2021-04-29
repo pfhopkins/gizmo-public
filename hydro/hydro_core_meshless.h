@@ -107,6 +107,9 @@
         
         /* now we do the reconstruction (second-order reconstruction at the face) */
         int recon_mode = 1; // default to 'normal' reconstruction: some special physics will set this to zero for low-order reconstructions
+#ifdef BH_WIND_SPAWN
+        if((P[j].ID==All.AGNWindID)||(local.ConditionNumber<0)) {recon_mode = 0;} // one of the particles is a wind particle: use a low-order reconstruction for safety
+#endif
 #if defined(GALSF) || defined(COOLING)
         if(fabs(vdotr2_phys)*UNIT_VEL_IN_KMS > 1000.) {recon_mode = 0;} // particle approach/recession velocity > 1000 km/s: be extra careful here!
 #endif

@@ -1,0 +1,34 @@
+# Template C++ Application
+
+# This template allows you to validate your C++ application.
+
+# The workflow allows running tests and code linting on the default branch.
+
+image: ubuntu:20.04
+
+pipelines:
+
+  default:
+
+    - parallel:
+
+        - step:
+
+            name: Build and Run
+
+            script:
+
+              # Install deps
+
+              - apt-get update && DEBIAN_FRONTEND="noninteractive" TZ="America/New_York" apt-get install -y --no-install-recommends gosu wget ca-certificates git build-essential libopenmpi-dev libgsl-dev libhdf5-dev hdf5-tools
+
+              - id -u build &>/dev/null || useradd --user-group --create-home --shell /bin/false build
+
+              # Build and run
+
+              - gosu build sh scripts/pipelines/run_isodisk_testprob.sh
+
+              # Compare with reference solution
+
+              - gosu build sh scripts/pipelines/compare_isodisk_output.sh
+              

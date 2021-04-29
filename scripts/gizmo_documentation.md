@@ -2024,7 +2024,7 @@ These flags govern snapshot outputs (what is saved and how it is saved).
 
 **IO\_DISABLE\_HDF5**: If this is set, the code will be compiled without support for input and output in the HDF5 format. You need to have the HDF5 libraries and headers installed on your computer for the code to compile otherwise (which you should do). The HDF5 format format is normally format "3" in the parameterfile. Without it, the code will resort to the un-formatted fortran binary as the only option (format "1"), which is not recommended.
 
-**OUTPUT\_ADDITIONAL\_RUNINFO**: This enables various outputs that are disabled by default. This includes outputs like 'cpu.txt' every timestep instead of only on the super-steps, far more output in the stdout outputs, checking for 'stop' files for checkpointing every timestep, outputing the extended blackhole\_details.txt files, etc. On machines with slow I/O, this can be a major slow-down and bottleneck for the code. On machines with fast I/O, this is much less of an issue. It depends strongly on the run. But most of the extra output is only needed for de-bugging.
+**OUTPUT\_ADDITIONAL\_RUNINFO**: This enables various outputs that are disabled by default. This includes outputs like 'cpu.txt' every timestep instead of only on the super-steps, far more output in the stdout outputs, checking for 'stop' files for checkpointing every timestep, outputing the extended `blackhole_details.txt` files, etc. On machines with slow I/O, this can be a major slow-down and bottleneck for the code. On machines with fast I/O, this is much less of an issue. It depends strongly on the run. But most of the extra output is only needed for de-bugging.
 
 **OUTPUT\_IN\_DOUBLEPRECISION**: Snapshots written in double-precision (single is default, even though the code uses double; this is purely to save on storage).
 
@@ -3099,15 +3099,51 @@ All files include a header block with (at minimum) the following quantities/flag
     HubbleParam = hubble parameter "h" for the run 
     Redshift = redshift of snapshot
 
+Newer versions of the code include a wide range of additional flags in the header, provided the appropriate physics is enabled at compile time (and that you are using HDF5). This makes it easier to figure out exactly how your run was set up, if you only have the snapshots. This includes, for example:
+
+    GIZMO_version = version (year) of GIZMO code
+    
+    ComovingIntegrationOn = was this simulation run in co-moving/cosmological form (1=yes)
+    Omega_Matter = cosmological omega matter (if ComovingIntegrationOn)
+    Omega_Lambda = cosmological omega lambda (if ComovingIntegrationOn)
+    Omega_Baryon = cosmological omega baryon (if ComovingIntegrationOn)
+    Omega_Radiation = cosmological omega radiation (if ComovingIntegrationOn)
+
+    UnitMass_In_CGS = user-specified unit mass in cgs (from parameterfile)
+    UnitVelocity_In_CGS = user-specified unit velocity in cgs (from parameterfile)
+    UnitLength_In_CGS = user-specified unit length in cgs (from parameterfile)
+    Internal_UnitB_In_Gauss = internal code B-units (not what is in the snapshot, but useful to check if desired setup is actually done, if MAGNETIC on) 
+    Gravitational_Constant_In_Code_Inits = gravity constant G in code units
+    
+    Minimum_Mass_For_Cell_Merge = minimum mass below which cells are merged
+    Maximum_Mass_For_Cell_Split = maximum mass above which cells are split
+    
+    Fixed_ForceSoftening_Keplerian_Kernel_Extent = 6-element table with the in-code kernel-radius-of-compact-supprt of the gravitational force softening value for each particle type, at the time of the snapshot
+    Kernel_Function_ID = value of KERNEL_FUNCTION, specifying the kernel function
+    Effective_Kernel_NeighborNumber = target effective number of cells inside the radius of compact support of one kernel
+    
+    Subfind_FOFLink_NeighborNumber = neighbor number for FOF linking for subfind (if SUBFIND is enabled)
+    
+    Solar_Abundances_Adopted = value of solar abundances assumed in code for the list of metals evolved (METALS on)
+    Metals_Atomic_Number_Or_Key = atomic number of each metals species evolved explicitly in-code; values <1 correspond to special keys, i.e. 0=all/total metallicity, -1=R-process tracer fields, -2=age-tracer fields, -3=starforge feedback tracer fields
+    
+    Radiation_RHD_Min_Bin_Freq_in_eV = if radiation-hydrodynamics is enabled, with outputs saved, this saves the minimim frequency of the explicitly-evolved radiation 'bins' which are actually saved in the code/snapshot outputs (should match the number of elements saved there, so you have a 1-to-1 correspondence), in units of eV (so this is h*nu). note a couple special keys: -1 is for RT_GENERIC_USER_FREQ, since this has no defined frequency range, and -2 for RT_FREEFREE, which evolves the bolometric (all-wavelength-integrated) free-free
+    Radiation_RHD_Max_Bin_Freq_in_eV = as Radiation_RHD_Min_Bin_Freq_in_eV, but the upper limits of the bins/intervals (same special keys)
+    
+    ... and many more, depending on the physics enabled ...
+    
+In the current versions of the code, almost every parameter of interest specified in the parameterfile will be saved to the header (e.g. if you enable cosmic rays and specify the diffusion coefficient in the parameterfile, that is saved here as `CosmicRayDiffusionCoeff_at_GV_CodeUnits`). Other useful information includes e.g. for spectrally-resolved cosmic ray methods the properties (species, charge, rigidity, etc) of each bin, or the age range of each bin for the stellar age tracer modules, etc. Please check the header files for your simulation outputs, they contain a tremendous amount of useful information!
+    
+
 Then, for *each* particle type, there are a set of structures/arrays; these are sub-divided by PARTICLE TYPE. particle type=0 is *always* gas resolution elements (we really shouldn't call them 'particles' since the code treats them as finite volume elements or even explicit, traditional fixed-grid 'cells' in some modes, but for the sake of simplicity, since the N-body particles are indeed 'particles', I'll use that term throughout this guide). The other particle types are not gas. What we chose them to represent is arbitrary and depends on the compile-time flags in the code. For the default example we are discussing here:
 
-    0 = gas
-    1 = high-resolution dark matter
-    2,3 = 'dummy' collisionless particles (low-res dark-matter particles in cosmological runs; pre-existing "disk" and "bulge" star particles in the non-cosmological runs)
-    4 = stars formed during the simulation
-    5 = black holes (usually) -- *some* of our runs use this as another reservoir for 'dummy collisionless particles'
+    0 = gas/fluid (the cells that feel local fluid-dynamic forces)
+    1 = high-resolution dark matter (in e.g. galaxy/cosmological simulations)
+    2,3 = 'dummy' collisionless particles (e.g. low-res dark-matter particles in cosmological runs; pre-existing "disk" and "bulge" star particles in the non-cosmological runs, dust grains or cosmic ray particles in simulations with explicit grain dynamics or MHD-PIC simulations)
+    4 = stars formed during the simulation (in e.g. simulations with non-sink 'star particle' formation like galaxy sims, otherwise another collisionless species)
+    5 = sink particles (e.g. black holes in galaxy simulations, or protostars or star particles in simulations with sink-particle star formation, or if no label is given, this is another dummy collisionless particle)
 
-For each particle, then, there are a wide range of data the routine will attempt to read. See the routine itself to see how these are embedded in the snapshots and extracted. Here we will outline what each quantity is. Each entry in **bold** below refers to the name of the HDF5 block, containing the data. The term in parentheses (P['x']) denotes the name of the block (usually some shorthand) which is returned by the routine `readsnap.py` (this can be trivially modified by the user). If you use `load_from_snapshot.py`, each data structure can be retrieved by asking for it with the proper name used by the HDF5 file. Here we give the description of what youre looking at.
+For each particle/cell, then, there are a wide range of data the routine will attempt to read. See the routine itself to see how these are embedded in the snapshots and extracted. Here we will outline what each quantity is. Each entry in **bold** below refers to the name of the HDF5 block, containing the data. The term in parentheses (P['x']) denotes the name of the block (usually some shorthand) which is returned by the routine `readsnap.py` (this can be trivially modified by the user). If you use `load_from_snapshot.py`, each data structure can be retrieved by asking for it with the proper name used by the HDF5 file. Here we give the description of what youre looking at.
 
 **Coordinates** (output by `readsnap.py` routine as P['p']): a [N,3] array where N is the number of particles (of the given type). Elements [i,0], [i,1], [i,3] give the x, y, z (respectively) coordinate positions of particle "i" in code units
 
@@ -3203,35 +3239,48 @@ All the above are only *some* examples of the different quantities saved, which 
 
 The code will write to standard error in general only when there is an error which is not handled by a "clean" exit/code termination within the code (so it you see a bunch of outputs to stderr, you should try to find out whats happening!). The code will output a very large amount of information to stdout. This is generally channeled through a single 'lead' process ("Task 0"), to avoid slowing down processes, but all processes are capable of writing to stdout. It is recommended that you route this to a named file so that you can track it. An example from a single timestep might look like:
 
-    Sync-Point 325, Time: 0.0204468, Systemstep: 6.10352e-05 
-    Occupied timebins: non-cells     cells       dt                 cumulative A D    avg-time  cpu-frac 
-        bin=17          193055       48133     0.000244140625           337592   *        3.75     27.9% 
-        bin=16           85365       11031     0.000122070312            96404   *        1.85     27.5% 
-     X  bin=15               1           7     0.000061035156                8 <          0.02      0.6% 
-                   ------------------------ 
-    Total active:            1           7    Sum:          8 
-    kicks will prepare for dynamic update of tree 
-    I exchange kick momenta for 6019 top-level nodes out of 14463 
-    Tree has been updated dynamically. 
-    Start gravity force computation... 
-    Begin tree force.  (presently allocated=148.246 MB) 
-    All.BunchSize=302473 
-    tree is done. 
-    gravity force computation done. 
-    Start density & tree-update computation... 
-    Hmax exchange: 0 topleaves out of 14463 
-    density & tree-update computation... 
-    Start gradient computation... 
-    gradient computation done. 
-    Start hydro-force computation... 
-    hydro force computation done. 
-    Beginning black-hole accretion 
-    Start swallowing of gas particles and black holes 
-    Accretion done: 0 gas particles swallowed, 0 BH particles swallowed 
-    predicting next timestep: 6.10352e-05 
-    0000000000 particles woken up. 
+    Sync-Point 1136365, Time: 0.168474, Redshift: 4.93562, Systemstep: 1.64792e-07, Dloga: 9.78146e-07
+    Occupied timebins: non-cells     cells       dt                 cumulative A D    avg-time  cpu-frac
+        bin=28         6761427      974907     0.002003243831         11683119   *       19.57     14.8%
+        bin=27          474946     2175185     0.001001621915          3946785   *       12.45      9.4%
+        bin=26           86245      739536     0.000500810958          1296654   *        4.56      6.9%
+        bin=25           26163      238404     0.000250405479           470873   *        2.54      7.7%
+        bin=24           10514      114898     0.000125202739           206306   *        1.85     11.2%
+        bin=23            3232       54415     0.000062601370            80894   *        1.72     20.8%
+        bin=22               7       17988     0.000031300685            23247            0.15      3.5%
+        bin=21               5        3672     0.000015650342             5252            0.07      3.1%
+        bin=20               4         870     0.000007825171             1575            0.04      3.8%
+        bin=19               3         400     0.000003912586              701            0.03      6.0%
+        bin=18               0         248     0.000001956293              298            0.02      6.6%
+     X  bin=17               0          50     0.000000978146               50 <          0.01      6.2%
+                   ------------------------
+    Total active:            0          50    Sum:         50
 
-The top section shows the distribution of particles in different timebins (as in timebin.txt discussed below), then the file notes as it goes through different stages of calculation (updating the tree, walking the tree to calculate gravitational forces, entering the density computation, hydrodynamic gradients calculation, hydrodynamic forces, black hole-specific calculations, calculating the next timestep and checking if particles need to be activated, etc). You should always monitor this output. This will be written every timestep regardless of the output options. However the amount of output will be much more extensive if the compile-time flag **OUTPUT\_ADDITIONAL\_RUNINFO** is enabled. The extra output will be things like entering/exiting of different sub-routines, most of which is not important information (but can be useful for debugging).
+    Kick-subroutine will prepare for dynamic update of tree
+     ..exchanged kick momenta for 138 top-level nodes out of 234697
+     ..Tree has been updated dynamically
+    Start gravity force computation...
+     ..Begin tree force. (presently allocated=2687.14 MB)
+     ..gravity force computation done
+    Start hydrodynamics computation...
+     ..Hmax exchange: 13 topleaves out of 234697
+     ..density & tree-update computation done...
+     ..gradient computation done.
+     ..hydro force computation done.
+    Start mechanical feedback computation...
+     ..mechanical feedback loop: iteration -2
+     ..mechanical feedback loop: iteration -1
+     ..mechanical feedback loop: iteration 0
+     ..mechanical feedback loop: iteration 1
+    Local HII-Region photo-heating/ionization calculation
+    Local Radiation-Pressure acceleration calculation
+     ..completed local Radiation-Pressure acceleration
+    Black-hole operations begin...
+     ..closing black-hole operations
+    Cooling and Chemistry update
+    Predicting next timestep: 9.78146e-07
+
+The top section shows the distribution of particles in different timebins (as in timebin.txt discussed below), then the file notes as it goes through different stages of calculation (updating the tree, walking the tree to calculate gravitational forces, entering the density computation, hydrodynamic gradients calculation, hydrodynamic forces, black hole-specific calculations, calculating the next timestep and checking if particles need to be activated, etc). You should always monitor this output. This will be written regularly regardless of the output options. However the amount of output will be much more extensive if the compile-time flag **OUTPUT\_ADDITIONAL\_RUNINFO** is enabled (the example above included this). The extra output will be things like entering/exiting of different sub-routines, most of which is not important information (but can be useful for debugging).
 
 
 ## info.txt (only output if **OUTPUT\_ADDITIONAL\_RUNINFO** is enabled)
@@ -3270,42 +3319,35 @@ The first line of the block generated for each step informs you about the number
 
 In the file 'cpu.txt', you get some statistics about the total CPU consumption measured in various parts of the code while it is running. A typical output looks like this:
 
-    Step 436425, Time: 1, CPUs: 72 
-    total          543053.65  100.0% 
-    treegrav       295931.05   54.5% 
-       treebuild    29901.28    5.5% 
-       treeupdate       0.00    0.0% 
-       treewalk     60590.63   11.2% 
-       treecomm     74375.49   13.7% 
-       treeimbal    99989.17   18.4% 
-    pmgrav           1021.37    0.2% 
-    hydro           84947.04   15.6% 
-       density       6051.09    1.1% 
-       denscomm     35305.18    6.5% 
-       densimbal    11076.00    2.0% 
-       hydrofrc      5980.64    1.1% 
-       hydcomm       7340.81    1.4% 
-       hydmisc       5179.58    1.0% 
-       hydnetwork       0.00    0.0% 
-       hydimbal      4004.45    0.7% 
-       hmaxupdate     216.51    0.0% 
-    domain          99211.71   18.3% 
-    potential           0.00    0.0% 
-    predict            12.23    0.0% 
-    kicks            1819.29    0.3% 
-    i/o               639.50    0.1% 
-    peano            5688.99    1.0% 
-    sfrcool          5698.84    1.0% 
-    blackholes          0.00    0.0% 
-    fof/subfind         0.00    0.0% 
-    dummy               0.00    0.0% 
-    gas_return       5701.38    1.0% 
-    snII_fb_loop    29457.75    5.4% 
-    hII_fb_loop       761.69    0.1% 
-    localwindkik     2525.29    0.5% 
-    pre_sf_misc         0.00    0.0% 
-    cooling             0.00    0.0% 
-    misc             9637.50    1.8% 
+    Step 1146466, Time: 0.169055, CPUs: 224
+    Nactive=18, Imbal(Max/Mean)=1.17634 
+    total           44927.08  100.0%
+    tree+gravity     6913.13   15.4%
+       treebuild     1493.23    3.3%
+       treewalk      1538.67    3.4%
+       treecomm       534.70    1.2%
+       treeimbal     2858.32    6.4%
+    pm-gravity        558.37    1.2%
+    hydro/fluids    13765.43   30.6%
+       dens+grad      965.28    2.1%
+       denscomm      1713.23    3.8%
+       densimbal     2471.50    5.5%
+       hydrofrc      1872.59    4.2%
+       hydcomm       2106.64    4.7%
+       hydimbal      3287.75    7.3%
+       hmaxupdate     105.58    0.2%
+       hydmisc       1242.87    2.8%
+    domain           5736.25   12.8%
+    peano             327.15    0.7%
+    drift/splitmg    1641.10    3.7%
+    kicks             268.89    0.6%
+    io/snapshots       49.81    0.1%
+    cooling+chem     6706.17   14.9%
+    blackholes       1412.80    3.1%
+    mech_fb_loop     2656.93    5.9%
+    hII_fb_loop      1946.22    4.3%
+    localwindkik      204.51    0.5%
+    misc             2740.33    6.1%
 
 For each timestep, there is a large "block" printed out (actually this is only output on every top-level-timestep unless the **OUTPUT\_ADDITIONAL\_RUNINFO** flag is enabled). The top of the block specifies the current timestep number, simulation time, and number of CPUs used. Then for each item in the block, there is a name (specifying the task) and two numbers. The first number is the cumulative CPU consumption (**per MPI task**) for that task of the code up to this point (wallclock times in seconds), and the second is the percent of the total CPU time this corresponds to. 
 
@@ -3313,43 +3355,51 @@ The blocks shown include:
 
 **total**: Total consumption
 
-**treegrav**: Gravitational force tree computation (including tree building/construction, update/drifting, walking to find neighbors/do the interactions, communication, and the imbalance calculated as the time wasted while CPUs wait for other CPUs to finish their tree operations before the code can move forward).
+**tree+gravity**: Gravitational force tree computation. This larger category is divided into various sub-categories, including tree building/construction and update/drifting (`treebuild`), walking to find neighbors/do the interactions (`treewalk`), communication (`treecomm`), and the imbalance (`treeimbal`) calculated as the time wasted while CPUs wait for other CPUs to finish their tree operations before the code can move forward.
 
-**pmgrav**: Gravitational force computation from the PM grid on large scales (when hybrid Tree-PM mode is used)
-
-**hydro**: Hydrodynamics. This has two subsets: the "density" section includes the initial density calculation, kernel length determination, and gradients calculations. This is divided into the computation (density), communication (denscomm), and imbalance (densimbal). The "hydro" section includes the calculation of hydrodynamic forces (hydrofrc), communication, imbalance, miscellanrous, and network costs (for nuclear networks). hmaxupdate traces the cost of updating kernel lengths in the tree from the density computations.
+**hydro/fluids**: Hydrodynamics and all other related fluid dynamics, elastics, radiation-hydrodynamics, etc, calculations. This has two subsets: the "density" section includes the initial density calculation, kernel length determination, and gradients calculations. This is divided into the computation (`dens+grad`), communication (`denscomm`), and imbalance (`densimbal`). The "hydro" section includes the calculation of hydrodynamic forces and all other work in the hydro loop, such as radiation transfer between cells (`hydrofrc`), communication (`hydcomm`), imbalance (`hydimbal`), miscellaneous (`hydmisc`), and network costs (for nuclear networks). The value `hmaxupdate` traces the cost of updating kernel lengths in the tree from the density computations.
 
 **domain**: Domain decomposition.
 
-**potential**: Potential energy computation (for the energy statistics).
-
-**predict**: Drifting the particle set.
-
-**kicks**: Timestep determination and ‘kicking’ of particles.
-
-**i/o**: Writing of snapshot files.
-
 **peano**: Time needed to establish Peano-Hilbert order.
+
+**drift/splitmg**: Drifting the particle set and performing cell merge/split operations.
+
+**kicks**: Timestep determination and 'kicking' of particles.
+
+**io/snapshots**: Writing of snapshot files.
 
 **misc**: Anything that doesnt fit in the above.
 
+
 Various optional physics modules will add their own blocks to the table here, so you can diagnose how expensive the routines are. Some examples are:
 
-**cooling**: Cooling routines (only used when star formation is inactive, otherwise this is combined in sfrcool)
+**pm-gravity**: Gravitational force computation from the PM grid on large scales (when hybrid Tree-PM mode is used).
+
+**potentialeval**: Potential energy computation (for the energy statistics). If any flags are on which require "normal" evaluation of the potential throughout the run, then this is not included, because this potential calculation is done directly alongside gravity (costs included above). But if `OUTPUT_POTENTIAL` is enabled and this is not done otherwise a special call must be made before snapshots to compute this, leading to this entry appearing.
+
+**ags-nongas**: Routines which require kernel density calculations for non-fluid elements (e.g. adaptive gravitational softening for stars, self-interacting dark matter, etc) must evaluate a density-like loop, whose costs are summed here, broken up like hydro costs into the main density/kernel loop (`agsdensity`), communications (`agscomm`), imbalance (`agsimbal`), and miscellaneous (`agsmisc`).
+
+**dyndiff** and **velsmooth**: Dynamic diffusion (`TURB_DIFF_DYNAMIC`) flags will activate these, with the multi-kernel dynamic diffusion tensor calculation and smoothed velocity field construction broken into compute costs (`compute`), communication (`comm`), imbalances (`wait`), and miscellaneous (`misc`)
+
+**fof/subfind**: Cost for on-the-fly friends-of-friends structure or substructure finding (if e.g. `FOF` or `SUBFIND` is active).
+
+**cooling+chem**: Cooling routines and astro-chemical libraries (`COOLING` active). If `CHIMES` is active, an additional diagnostic of imbalance (`coolchmimbal`) is added since the large network solve can lead to large imbalances this can help diagnose.
+
+**blackholes**: Black hole physics (neighbor finding, accretion, and feedback routines), if `BLACK_HOLES` active.
+
+**grains**: Grain/dust/cosmic ray MHD-PIC dynamics (Lorentz force, drag, collisions, and other calculations specific to these flags).
 
 **sfrcool**: Time spent in cooling and star formation routines.
 
-**blackholes**: Black hole physics (neighbor finding, accretion, and feedback routines)
+**mech\_fb\_loop**: Mechanical feedback routines (e.g. supernovae, stellar mass-loss, from stellar sources, if `GALSF_FB_MECHANICAL` or `GALSF_FB_THERMAL` is active).
 
-**fof/subfind**: On-the-fly friends-of-friends group finding
+**hII\_fb\_loop**: FIRE HII photo-ionization routines (`GALSF_FB_FIRE_RT_HIIHEATING`).
 
-**gas\_return**: FIRE gas recycling/stellar wind feedback routines
+**localwindkik**: FIRE local radiation pressure calculation (`GALSF_FB_FIRE_RT_LOCALRP`).
 
-**snII\_fb\_loop**: FIRE SNe/mechanical feedback routines
+**rt\_nonfluxops**: Collects radiation-hydrodynamics operations (with `RADTRANSFER` active) not included already in the hydrodynamics solvers total above (those contain the cell-cell fluxes) and basic drift/kick operations (also already included above).
 
-**hII\_fb\_loop**: FIRE hII photo-ionization routines
-
-**localwindkik**: FIRE local radiation pressure calculation 
 
 
 ## energy.txt (only output if **OUTPUT\_ADDITIONAL\_RUNINFO** is enabled)
@@ -3383,7 +3433,7 @@ The top line shows the current timestep number (sync-point), time, corresponding
 
 ## balance.txt
 
-This is a very technical and hard-to-parse file containing the balance information for each processor at each timestep. Consult the GADGET users guide if you need it, but you usually shouldnt. In newer versions of GIZMO, this file is not output.
+This is a rather technical and hard-to-parse file containing the balance information for each processor at each timestep. Consult the GADGET users guide if you need it, but you usually shouldnt. The opening of the file contains a key which labels each of the different categories of CPU flags, and details over each timestep the fraction of time spent in each as the code works its way through. It is more detailed than what you get from cpu.txt, but less useful often than what you would get from using code profiling tools (which is recommended for real optimization, this is more of a useful tool for debugging). In newer versions of GIZMO, this file is not output by default unless additional outputs are enabled. 
 
 
 
@@ -3398,38 +3448,43 @@ Models with star formation (`GALSF` on) will output this file. An output looks l
     0.999991 4.72152e-06 2.92239 1.09686 0 
     0.999996 7.30842e-06 3.70939 1.69782 0 
 
-Columns are: (1) simulation time, (2) expectation value of mass in stars the SF should form that timestep, (3) total SFR in code units, (4) discretized stellar mass/timestep in solar masses per year (this is here just for numerical checks), (5) total mass in stars actually spawned (new particles) that timestep. Unless **OUTPUT\_ADDITIONAL\_RUNINFO** is enabled, this is only output on top-level or domain-level timesteps.
+Columns are: (1) simulation time, (2) expectation value of mass in stars the SF should form that timestep, (3) total SFR in code units, (4) discretized total stellar mass/timestep in solar masses per year, (5) total mass in stars actually spawned (new particles) that timestep. Unless **OUTPUT\_ADDITIONAL\_RUNINFO** is enabled, this is only output on top-level or domain-level timesteps.
 
 
 ### HIIheating.txt
 
 Models with local photoionization heating (`GALSF_FB_FIRE_RT_HIIHEATING`) will write 'HIIheating.txt'
 
-    0.999982 40 9.5362e+42 0.00970138 0.314071  
+    0.0442866 1 3.04398e+52 1 267105 1.25796 
 
-Columns are (1) simulation time, (2) number of sources emitting ionizing photons (very young stars active that timestep), (3) total ionizing photon luminosity in erg/s, (4) total gas mass ionized by those stars, (5) average size of the HII regions being created (distance from source to ionized gas element)
+Columns are (1) simulation time, (2) number of sources emitting ionizing photons (very young stars active that timestep), (3) total ionizing photon emission in photons/s, (4) total number of gas cells ionized (all or in part) by those stars, (5) total gas mass (in solar) ionized, (6) average size of the HII regions being created (distance from source to ionized gas element, in code units)
 
 
 ### MomWinds.txt
 
-Models with local radiation pressure (`GALSF_FB_FIRE_RT_LOCALRP`) will write 'MomWinds.txt'
+Models with the short-range local radiation pressure (`GALSF_FB_FIRE_RT_LOCALRP`) will write 'MomWinds.txt'
 
     0.00476074 1197 0.0362811 0.0333008 1.5 0.00392942  
 
-Columns are (1) simulation time, (2) number of particles affected by radiation pressure, (3) total photon momentum ("$dt\,L / c$") of the active stars for which the radiation pressure is being calculated (code units) for the timestep (4) total momentum actually coupled to gas (5) average velocity of the discretized "kicks" assigned to gas particles (acceleration $*$ dt) from the momentum, (6) mean infrared optical depth $\tau_{\rm IR}$ of the incident gas being illuminated (directly calculated from the IR opacity, metallicity, density of the gas). 
+Columns are (1) simulation time, (2) number of cells affected by short-range radiation pressure, (3) total photon momentum ("$dt\,L / c$") of the active stars for which the radiation pressure is being calculated (code units) for the timestep (4) total momentum actually coupled to gas (5) average velocity of the discretized "kicks" assigned to gas particles (acceleration $*$ dt) from the momentum, (6) mean infrared optical depth $\tau_{\rm IR}$ of the incident gas being illuminated (directly calculated from the IR opacity, metallicity, density of the gas). 
 
 
 ### SNeIIheating.txt
 
 Models with mechanical feedback from SNe and stellar winds (`GALSF_FB_MECHANICAL`) will write 'SNeIIheating.txt'
 
-    0.00469971 2536 7 7 6.07408 5.7401e-05 1.53389e-06  
-    0.00473022 304 0 0 0.0107007 3.05176e-05 5.32971e-08  
-    0.00476074 223674 11075 22962 22753 0.000121335 2.55594e-05  
-    0.00479126 320 1 1 0.161066 3.05176e-05 8.39359e-07  
     0.00482178 2546 9 9 7.00321 5.71995e-05 1.74019e-06  
 
-Columns are (1) simulation time, (2) number of particles active which could (potentially) have SNe, (3) total number of SNe this timestep, (4) total number of particles hosting SNe (which can be smaller than the number of SNe if there are multiple SNe per particle), (5) mean timestep of the active star particles (dt), (6), mean SNe rate of the active star particles at this time.
+Columns are (1) simulation time, (2) number of (star) particles active which could (potentially) have SNe (or stellar wind mass ejection event), (3) total number of particles which actually have at least one SNe (or event), (4) total number of SNe (or events) this timestep (this can be larger than the number of host stars if the timestep is long enough), (5) exact (non-integer) integral of the rate functions over the timestep for all events, which should equal the expectation value of the number of discrete events, given in the previous column, (6) mean timestep of the active star particles (dt), (7), mean SNe rate of the active star particles at this time.
+
+
+### blackholes.txt
+
+Models with black holes or sink particles active (`BLACK_HOLES`) will write 'blackholes.txt'
+
+    0.16714 33 0.000221363 0.000365694 0.00373909 0.00103651 0.336703
+
+Columns are (1) simulation time, (2) total number of black holes/sinks (BHs) in the simulation, (3) total mass (in code units) of all BHs (note this uses the `BH_Mass` flag, not the total dynamical mass or the reservoir mass for BH particles, but the mass nominally fully associated with the sink/BH itself), (4 ) total accretion rate (code units) summed over all BHs (again, this uses the accretion rate onto the BHs themselves, if the alpha-disk or reservoir model is turned on, not the accretion rate into said reservoir, which can be a series of delta functions depending on the accretion model employed), (5) total accretion rate in solar masses per year, (6) total of all the dynamical masses of all BH particles (i.e. including the full particle dynamical mass, plus reservoir, plus BH, which can in principle be larger than the BH by a large margin), (7) mean Eddington ratio $\langle \dot{M}_{\rm BH} / \dot{M}_{\rm Edd}(M_{\rm BH}) \rangle$ of all the BHs (note that the mean weighted by mass, or $\langle \dot{M}_{\rm BH} \rangle / \langle \dot{M}_{\rm Edd}(M_{\rm BH}) \rangle$ can be directly calculated from the information in the other columns here).
 
 ***
 

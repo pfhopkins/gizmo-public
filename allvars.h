@@ -38,7 +38,7 @@
 
 #include "GIZMO_config.h"
 /*------- Things that are always recommended (this must follow loading GIZMO_config.h!) -------*/
-#define GIZMO_VERSION   "2020"  /*!< code version string */
+#define GIZMO_VERSION     2021  /*!< code version (should be an int corresponding to the year) */
 #define DOUBLEPRECISION         /* using double (not floating-point) precision */
 #define PEANOHILBERT            /* sort particles on a Peano-Hilbert curve (huge optimization) */
 #define WALLCLOCK               /* track timing of different routines */
@@ -342,6 +342,7 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 #endif
 
 #if defined(FLAG_NOT_IN_PUBLIC_CODE) || ((defined(SINGLE_STAR_FB_WINDS) || defined(SINGLE_STAR_FB_SNE)) && defined(FLAG_NOT_IN_PUBLIC_CODE))
+#define BH_WIND_SPAWN (2) // leverage the BHFB model already developed within the FIRE-BHs framework. gives accurate launching of arbitrarily-structured jets.
 #define MAINTAIN_TREE_IN_REARRANGE // don't rebuild the domains/tree every time a particle is spawned - salvage the existing one by redirecting pointers as needed
 #endif
 
@@ -1516,6 +1517,9 @@ extern int N_gas;		/*!< number of gas particles on the LOCAL processor  */
 #ifdef SEPARATE_STELLARDOMAINDECOMP
 extern int N_stars;
 #endif
+#ifdef BH_WIND_SPAWN
+extern double MaxUnSpanMassBH;
+#endif
 
 extern long long Ntype[6];	/*!< total number of particles of each type */
 extern int NtypeLocal[6];	/*!< local number of particles of each type */
@@ -1867,14 +1871,14 @@ extern struct global_data_all_processes
 #ifdef COOL_GRACKLE
     char GrackleDataFile[100];
 #endif
-  /*! table with desired output times */
-  double OutputListTimes[MAXLEN_OUTPUTLIST];
-  char OutputListFlag[MAXLEN_OUTPUTLIST];
-  int OutputListLength;		/*!< number of times stored in table of desired output times */
+    /*! table with desired output times */
+    double OutputListTimes[MAXLEN_OUTPUTLIST];
+    char OutputListFlag[MAXLEN_OUTPUTLIST];
+    int OutputListLength;		/*!< number of times stored in table of desired output times */
 
 #ifdef RADTRANSFER
-  integertime Radiation_Ti_begstep;
-  integertime Radiation_Ti_endstep;
+    integertime Radiation_Ti_begstep;
+    integertime Radiation_Ti_endstep;
 #endif
 #ifdef RT_EVOLVE_INTENSITIES
     double Rad_Intensity_Direction[N_RT_INTENSITY_BINS][3];
@@ -1986,7 +1990,7 @@ extern struct global_data_all_processes
     double InitStellarAgeinGyr;
 #endif
 
-#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK) || defined(BH_WIND_SPAWN)
     double BAL_f_accretion;
     double BAL_v_outflow;
 #endif
@@ -2082,6 +2086,11 @@ extern struct global_data_all_processes
 #ifdef BH_ALPHADISK_ACCRETION
   double SeedAlphaDiskMass;         /*!< Seed alpha disk mass */
 #endif
+#ifdef BH_WIND_SPAWN
+  double BAL_wind_particle_mass;        /*!< target mass for feedback particles to be spawned */
+  double BAL_internal_temperature;
+  MyIDType AGNWindID;
+#endif
 #ifdef BH_SEED_FROM_FOF
   double MinFoFMassForNewSeed;      /*!< Halo mass required before new seed is put in */
 #endif
@@ -2123,6 +2132,21 @@ extern struct global_data_all_processes
 #if defined(COOLING) && defined(COOL_GRACKLE)
     code_units GrackleUnits;
 #endif
+
+#if defined(SPAWN_B_POL_TOR_SET_IN_PARAMS)
+  double BH_spawn_rinj;
+  double B_spawn_pol;
+  double B_spawn_tor;
+#endif
+#ifdef BH_JET_PRECESSION_SET_IN_PARAMS
+  double BH_jet_precess_degree;
+  double BH_jet_precess_period;
+#endif
+#ifdef BH_DEBUG_FIX_MDOT
+  double BH_fb_duty_cycle;
+  double BH_fb_period;
+#endif
+
 }
 All;
 
@@ -2137,7 +2161,11 @@ extern ALIGN(32) struct particle_data
     short int TimeBin;
     MyIDType ID;                    /*! < unique ID of particle (assigned at beginning of the simulation) */
     MyIDType ID_child_number;       /*! < child number for particles 'split' from main (retain ID, get new child number) */
+#ifndef BH_WIND_SPAWN
     int ID_generation;              /*! < generation (need to track for particle-splitting to ensure each 'child' gets a unique child number */
+#else
+    MyIDType ID_generation;
+#endif
 
     integertime Ti_begstep;         /*!< marks start of current timestep of particle on integer timeline */
     integertime Ti_current;         /*!< current time of the particle */
@@ -2279,6 +2307,9 @@ extern ALIGN(32) struct particle_data
 #if defined(BLACK_HOLES)
     MyIDType SwallowID;
     int IndexMapToTempStruc;   /*!< allows for mapping to BlackholeTempInfo struc */
+#ifdef BH_WIND_SPAWN
+    MyFloat unspawned_wind_mass;    /*!< tabulates the wind mass which has not yet been spawned */
+#endif
 #ifdef BH_COUNTPROGS
     int BH_CountProgs;
 #endif
@@ -2573,6 +2604,10 @@ extern struct sph_particle_data
     MyFloat MaxSignalVel;           /*!< maximum signal velocity (needed for time-stepping) */
 
 
+#if defined(SPAWN_B_POL_TOR_SET_IN_PARAMS) 
+    MyDouble IniDen;
+    MyDouble IniB[3];
+#endif     
 
 #ifdef CHIMES_STELLAR_FLUXES
     double Chimes_G0[CHIMES_LOCAL_UV_NBINS];            /*!< 6-13.6 eV flux, in Habing units */
@@ -3066,6 +3101,9 @@ enum iofields
   IO_HII,
   IO_HeI,
   IO_HeII,
+  IO_IDEN,
+  IO_INIB,
+  IO_UNSPMASS,
   IO_CRATE,
   IO_HRATE,
   IO_NHRATE,

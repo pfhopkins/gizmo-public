@@ -87,6 +87,7 @@ int rt_sourceinjection_active_check(int i)
     if(PPP[i].NumNgb <= 0) return 0;
     if(PPP[i].Hsml <= 0) return 0;
     if(P[i].Mass <= 0) return 0;
+    if(P[i].KernelSum_Around_RT_Source <= 0) return 0;
     double lum[N_RT_FREQ_BINS];
     return rt_get_source_luminosity(i,-1,lum);
 }
@@ -153,6 +154,9 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
                 if((All.TimeStep > 0) && (r2>=h2) && (r2 >= PPP[j].Hsml*PPP[j].Hsml)) {continue;} // outside kernel //
 #else
                 if(r2>=h2) {continue;} // outside kernel //
+#endif
+#ifdef BH_WIND_SPAWN
+		if(P[j].StellarAge==All.Time) {continue;} // This is a wind cell that was just spawned, and is not yet part of the volume partition, so don't inject // 
 #endif
                 r = sqrt(r2); // useful variables for below
                 
