@@ -934,7 +934,7 @@ void rt_set_simple_inits(int RestartFlag)
                 SphP[i].Rad_Flux_Limiter[k] = 1;
 #endif
 #ifdef RT_INFRARED
-                if(k==RT_FREQ_BIN_INFRARED) {
+		if(RestartFlag==0 && k==RT_FREQ_BIN_INFRARED){ // only initialize the IR energy if starting a new run, otherwise use what's in the snapshot
 #ifdef SINGLE_STAR_FB_RAD // for GMC simulations, initialize to the energy density of the dust emission component observed ISRF - 0.31eV/cm^3 (Draine 2011)
                     SphP[i].Rad_E_gamma[RT_FREQ_BIN_INFRARED] = RT_ISRF_BACKGROUND * 0.31 * ELECTRONVOLT_IN_ERGS / UNIT_PRESSURE_IN_CGS * P[i].Mass / (SphP[i].Density*All.cf_a3inv);
 #else

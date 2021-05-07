@@ -37,6 +37,9 @@ int density_isactive(int n)
     if((1 << P[n].Type) & (GRAIN_PTYPES)) {return 1;} /* any of the particle types flagged as a valid grain-type is active here */
 #endif
 
+#if defined(BH_INTERACT_ON_GAS_TIMESTEP)
+    if(P[n].Type == 5){if(!P[n].do_gas_search_this_timestep && All.Ti_Current > 0) return 0;} /* not enough time has elapsed since the last gas interaction */
+#endif
 #if defined(RT_SOURCE_INJECTION)
     if((1 << P[n].Type) & (RT_SOURCES))
     {

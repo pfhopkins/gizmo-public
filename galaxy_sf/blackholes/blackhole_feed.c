@@ -61,6 +61,9 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
     in->BH_Mass_AlphaDisk = BPP(i).BH_Mass_AlphaDisk;
 #endif
     in->Dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i);
+#ifdef BH_INTERACT_ON_GAS_TIMESTEP
+    if(P[i].Type == 5){in->Dt = P[i].dt_since_last_gas_search;}
+#endif
 #ifdef BH_ACCRETE_NEARESTFIRST
     in->BH_dr_to_NearestGasNeighbor = P[i].BH_dr_to_NearestGasNeighbor;
 #endif

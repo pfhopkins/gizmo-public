@@ -54,6 +54,9 @@ void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
     double dt = 1; // make this do nothing unless flags below are set:
 #if defined(RT_INJECT_PHOTONS_DISCRETELY)
     dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i);
+#ifdef BH_INTERACT_ON_GAS_TIMESTEP
+    if(P[i].Type == 5){dt = P[i].dt_since_last_gas_search;}
+#endif
 #if defined(RT_EVOLVE_FLUX)
     for(k=0; k<3; k++) {if(P[i].Type==0) {in->Vel[k] = SphP[i].VelPred[k];} else {in->Vel[k] = P[i].Vel[k];}}
 #endif
@@ -88,6 +91,9 @@ int rt_sourceinjection_active_check(int i)
     if(PPP[i].Hsml <= 0) return 0;
     if(P[i].Mass <= 0) return 0;
     if(P[i].KernelSum_Around_RT_Source <= 0) return 0;
+#ifdef BH_INTERACT_ON_GAS_TIMESTEP
+    if(P[i].Type == 5 && !P[i].do_gas_search_this_timestep) return 0;
+#endif
     double lum[N_RT_FREQ_BINS];
     return rt_get_source_luminosity(i,-1,lum);
 }

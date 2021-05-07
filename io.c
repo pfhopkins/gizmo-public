@@ -711,7 +711,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             break;
 
         case IO_BH_DIST:
-#ifdef BH_CALC_DISTANCES
+#if defined(BH_CALC_DISTANCES) && defined(OUTPUT_BH_DISTANCES)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
@@ -830,7 +830,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
 
 
         case IO_DIVB:		/* divergence of magnetic field  */
-#ifdef MAGNETIC
+#if defined(MAGNETIC) && defined(OUTPUT_BFIELD_DIVCLEAN_INFO)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 { /* divB is saved in physical units */
@@ -864,7 +864,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             break;
 
         case IO_PHI:		/* divBcleaning fuction of particle  */
-#ifdef DIVBCLEANING_DEDNER
+#if defined(DIVBCLEANING_DEDNER) && defined(OUTPUT_BFIELD_DIVCLEAN_INFO)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
@@ -875,7 +875,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             break;
 
         case IO_GRADPHI:		/* divBcleaning fuction of particle  */
-#ifdef DIVBCLEANING_DEDNER
+#if defined(DIVBCLEANING_DEDNER) && defined(OUTPUT_BFIELD_DIVCLEAN_INFO)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
@@ -2458,8 +2458,13 @@ int blockpresent(enum iofields blocknr)
             break;
 
         case IO_BFLD:
+#if defined(MAGNETIC)
+            return 1;
+#endif
+            break;
+            
         case IO_DIVB:
-#ifdef MAGNETIC
+#if defined(MAGNETIC) && defined(OUTPUT_BFIELD_DIVCLEAN_INFO)
             return 1;
 #endif
             break;
@@ -2511,7 +2516,7 @@ int blockpresent(enum iofields blocknr)
 
         case IO_PHI:
         case IO_GRADPHI:
-#ifdef DIVBCLEANING_DEDNER
+#if defined(DIVBCLEANING_DEDNER) && defined(OUTPUT_BFIELD_DIVCLEAN_INFO)
             return 1;
 #endif
             break;
@@ -2578,7 +2583,7 @@ int blockpresent(enum iofields blocknr)
             break;
 
         case IO_BH_DIST:
-#ifdef BH_CALC_DISTANCES
+#if defined(BH_CALC_DISTANCES) && defined(OUTPUT_BH_DISTANCES)
             return 1;
 #endif
             break;

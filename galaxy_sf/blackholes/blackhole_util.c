@@ -151,6 +151,9 @@ void blackhole_properties_loop(void) /* Note, normalize_temp_info_struct is now 
     {
         n = BlackholeTempInfo[i].index;
         dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(n);
+#ifdef BH_INTERACT_ON_GAS_TIMESTEP
+        if(P[i].Type == 5){dt = P[i].dt_since_last_gas_search;}
+#endif
         BPP(n).BH_Mdot=0;  /* always initialize/default to zero accretion rate */
         set_blackhole_long_range_rp(i, n);
         set_blackhole_mdot(i, n, dt);

@@ -543,6 +543,11 @@ void star_formation_parent_routine(void)
 #ifdef BH_COUNTPROGS
                 P[i].BH_CountProgs = 1;
 #endif
+#ifdef BH_INTERACT_ON_GAS_TIMESTEP
+		P[i].dt_since_last_gas_search = 0;
+		P[i].do_gas_search_this_timestep = 1;
+		P[i].BH_TimeBinGasNeighbor = P[i].TimeBin;
+#endif
                 P[i].BH_Mdot = 0;
                 P[i].DensAroundStar = SphP[i].Density;
 

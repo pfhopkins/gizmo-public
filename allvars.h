@@ -298,6 +298,7 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 #define GALSF // top-level switch needed to enable various frameworks
 #define METALS  // metals should be active for stellar return
 #define BLACK_HOLES // need to have black holes active since these are our sink particles
+//#define BH_INTERACT_ON_GAS_TIMESTEP // BH-gas interactions (feedback and accretion) occur with frequency set by the gas timestep - remains beta for now
 #define BH_CALC_DISTANCES // calculate distance to nearest sink in gravity tree
 
 
@@ -2316,6 +2317,10 @@ extern ALIGN(32) struct particle_data
     MyFloat BH_Mass;
 #if defined(BH_GRAVCAPTURE_FIXEDSINKRADIUS)
     MyFloat SinkRadius;
+#endif
+#ifdef BH_INTERACT_ON_GAS_TIMESTEP
+    MyFloat dt_since_last_gas_search; /* keep track of time since the sink's last neighbor search and gas interaction (for feedback/accretion) */
+    short int do_gas_search_this_timestep; /* flag for deciding whether to do gas stuff for a given timestep */
 #endif
 #ifdef GRAIN_FLUID
     MyFloat BH_Dust_Mass;

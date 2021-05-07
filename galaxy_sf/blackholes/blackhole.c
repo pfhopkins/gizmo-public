@@ -95,8 +95,6 @@ double bh_vesc(int j, double mass, double r_code, double bh_softening)
     return sqrt(fac*fabs(kernel_gravity(r_code*hinv,hinv,hinv*hinv*hinv,-1)) + cs_to_add*cs_to_add); // accounts for softening [non-Keplerian inside softening]
 }
 
-
-
 /* check whether a particle is sufficiently bound to the BH to qualify for 'gravitational capture' */
 int bh_check_boundedness(int j, double vrel, double vesc, double dr_code, double sink_radius) // need to know the sink radius, which can be distinct from both the softening and search radii
 {
@@ -638,6 +636,9 @@ int bhsink_isactive(int i)
     if(P[i].Type != 5) {return 0;} // only sinks
     if(PPP[i].Hsml <= 0) {return 0;} // only H>0, i.e. found neighbors
     if(P[i].Mass <= 0) {return 0;} // only mass>0, i.e. not already marked for deletion
+#ifdef BH_INTERACT_ON_GAS_TIMESTEP
+    if(!P[i].do_gas_search_this_timestep) {return 0;} // only do loops if we have actually done the density pass
+#endif
     return 1; // otherwise yes, we are active
 }
 
@@ -657,6 +658,9 @@ void blackhole_final_operations(void)
                 double fac_bh_shift=0;
 #if (BH_REPOSITION_ON_POTMIN == 2)
                 dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(n);
+#ifdef BH_INTERACT_ON_GAS_TIMESTEP
+		if(P[i].Type == 5){dt = P[i].dt_since_last_gas_search;}
+#endif
                 double dr_min=0; for(k=0;k<3;k++) {dr_min+=(BPP(n).BH_MinPotPos[k]-P[n].Pos[k])*(BPP(n).BH_MinPotPos[k]-P[n].Pos[k]);}
                 if(dr_min > 0 && dt > 0)
                 {
@@ -736,6 +740,9 @@ void blackhole_final_operations(void)
         /* Correct for the mass loss due to radiation and BAL winds */
         /* always substract the radiation energy from BPP(n).BH_Mass && P[n].Mass */
         dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(n);
+#ifdef BH_INTERACT_ON_GAS_TIMESTEP
+        if(P[i].Type == 5){dt = P[i].dt_since_last_gas_search;}
+#endif
         double dm = BPP(n).BH_Mdot * dt;
 #ifdef BH_DEBUG_FIX_MDOT
         dm=0; double period_bh=All.BH_fb_period/UNIT_TIME_IN_GYR, period_bh_on=All.BH_fb_duty_cycle*period_bh;

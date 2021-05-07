@@ -21,6 +21,9 @@ int addFB_evaluate_active_check(int i, int fb_loop_iteration)
     if(P[i].Type <= 1) {return 0;} // note quantities used here must -not- change in the loop [hence not using mass here], b/c can change offsets for return from different processors, giving a negative mass and undefined behaviors
     if(PPP[i].Hsml <= 0) {return 0;}
     if(PPP[i].NumNgb <= 0) {return 0;}
+#ifdef BH_INTERACT_ON_GAS_TIMESTEP
+    if(P[i].Type == 5 && !P[i].do_gas_search_this_timestep) {return 0;}
+#endif
     if(P[i].SNe_ThisTimeStep>0) {if(fb_loop_iteration<0 || fb_loop_iteration==0) {return 1;}}
     return 0;
 }
@@ -47,6 +50,9 @@ void determine_where_SNe_occur(void)
 #endif
         if(P[i].Mass<=0) {continue;}
         dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i);
+#ifdef BH_INTERACT_ON_GAS_TIMESTEP
+	if(P[i].Type == 5){dt = P[i].dt_since_last_gas_search;}
+#endif
         if(dt<=0) {continue;} // no time, no events
         star_age = evaluate_stellar_age_Gyr(P[i].StellarAge);
         if(star_age<=0) {continue;} // unphysical age, no events
