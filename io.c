@@ -4212,13 +4212,13 @@ void write_header_attributes_in_hdf5(hid_t handle)
 
     /* assign labels for all metal species for reference in outputs */
     {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={NUM_METAL_SPECIES}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
-        hdf5_attribute = H5Acreate(handle, "Metals_Atomic_Number_Or_Key", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+        hdf5_attribute = H5Acreate(handle, "Metals_Atomic_Number_Or_Key", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
         int zkey[NUM_METAL_SPECIES],k; zkey[0]=0; /* all metals */ for(k=1;k<NUM_METAL_SPECIES;k++) {zkey[k]=-20;}
         if(NUM_LIVE_SPECIES_FOR_COOLTABLES==10) {zkey[1]=2; zkey[2]=6; zkey[3]=7; zkey[4]=8; zkey[5]=10; zkey[6]=12; zkey[7]=14; zkey[8]=16; zkey[9]=20; zkey[10]=26;} /* He,C,N,O,Ne,Mg,Si,S,Ca,Fe */
         for(k=0;k<NUM_RPROCESS_SPECIES;k++) {zkey[1+NUM_LIVE_SPECIES_FOR_COOLTABLES+k]=-1;}
         for(k=0;k<NUM_AGE_TRACERS;k++) {zkey[1+NUM_LIVE_SPECIES_FOR_COOLTABLES+NUM_RPROCESS_SPECIES+k]=-2;}
         for(k=0;k<NUM_STARFORGE_FEEDBACK_TRACERS;k++) {zkey[1+NUM_LIVE_SPECIES_FOR_COOLTABLES+NUM_RPROCESS_SPECIES+NUM_AGE_TRACERS+k]=-3;}
-        H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, zkey); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+        H5Awrite(hdf5_attribute, H5T_NATIVE_INT, zkey); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
 #endif
 
 #if defined(RADTRANSFER) || defined(RT_USE_GRAVTREE)

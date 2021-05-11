@@ -1654,316 +1654,313 @@ void domain_findSplit_load_balanced(int ncpu, int ndomain)
  */
 int domain_countToGo(size_t nlimit)
 {
-  int n, no, ret, retsum; size_t package;
+    int n, no, ret, retsum; size_t package;
 
-  for(n = 0; n < NTask; n++)
+    for(n = 0; n < NTask; n++)
     {
-      toGo[n] = 0;
-      toGoSph[n] = 0;
+        toGo[n] = 0;
+        toGoSph[n] = 0;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-      toGoStars[n] = 0;
+        toGoStars[n] = 0;
 #endif
     }
 
-  package = (sizeof(struct particle_data) + sizeof(struct sph_particle_data) + sizeof(peanokey));
-  if(package >= nlimit) {endrun(212);}
+    package = (sizeof(struct particle_data) + sizeof(struct sph_particle_data) + sizeof(peanokey));
+    if(package >= nlimit) {endrun(212);}
 
-  for(n = 0; n < NumPart && package < nlimit; n++)
+    for(n = 0; n < NumPart && package < nlimit; n++)
     {
 #ifdef SUBFIND
-      if(GrNr >= 0 && P[n].GrNr != GrNr) {continue;}
+        if(GrNr >= 0 && P[n].GrNr != GrNr) {continue;}
 #endif
-      if(P[n].Type & 32)
-	{
-	  no = 0;
-	  while(topNodes[no].Daughter >= 0) {no = topNodes[no].Daughter + (Key[n] - topNodes[no].StartKey) / (topNodes[no].Size / 8);}
-	  no = topNodes[no].Leaf;
-
-	  if(DomainTask[no] != ThisTask)
-	    {
-	      toGo[DomainTask[no]] += 1;
-	      nlimit -= sizeof(struct particle_data) + sizeof(peanokey);
-
-	      if((P[n].Type & 15) == 0)
-		{
-		  toGoSph[DomainTask[no]] += 1;
-		  nlimit -= sizeof(struct sph_particle_data);
-		}
-#ifdef SEPARATE_STELLARDOMAINDECOMP
-	      if((P[n].Type & 15) == 4) {toGoStars[DomainTask[no]] += 1;}
-#endif
-	      P[n].Type |= 16;	/* flag this particle for export */
-	    }
-	}
-    }
-
-  MPI_Alltoall(toGo, 1, MPI_INT, toGet, 1, MPI_INT, MPI_COMM_WORLD);
-  MPI_Alltoall(toGoSph, 1, MPI_INT, toGetSph, 1, MPI_INT, MPI_COMM_WORLD);
-#ifdef SEPARATE_STELLARDOMAINDECOMP
-  MPI_Alltoall(toGoStars, 1, MPI_INT, toGetStars, 1, MPI_INT, MPI_COMM_WORLD);
-#endif
-
-  if(package >= nlimit) {ret = 1;} else {ret = 0;}
-  MPI_Allreduce(&ret, &retsum, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-
-  if(retsum)
-    {
-      /* in this case, we are not guaranteed that the temporary state after
-         the partial exchange will actually observe the particle limits on all
-         processors... we need to test this explicitly and rework the exchange
-         such that this is guaranteed. This is actually a rather non-trivial constraint. */
-
-      MPI_Allgather(&NumPart, 1, MPI_INT, list_NumPart, 1, MPI_INT, MPI_COMM_WORLD);
-      MPI_Allgather(&N_gas, 1, MPI_INT, list_N_gas, 1, MPI_INT, MPI_COMM_WORLD);
-#ifdef SEPARATE_STELLARDOMAINDECOMP
-      MPI_Allgather(&N_stars, 1, MPI_INT, list_N_stars, 1, MPI_INT, MPI_COMM_WORLD);
-#endif
-
-      int flag, flagsum, ntoomany, ta, i, target;
-      int count_togo, count_toget, count_togo_sph, count_toget_sph;
-#ifdef SEPARATE_STELLARDOMAINDECOMP
-      int ntoomanystars, count_togo_stars, count_toget_stars;
-#endif
-
-      do
-	{
-	  flagsum = 0;
-
-	  do
-	    {
-	      flag = 0;
+        if(P[n].Type & 32)
+        {
+            no = 0;
+            while(topNodes[no].Daughter >= 0) {no = topNodes[no].Daughter + (Key[n] - topNodes[no].StartKey) / (topNodes[no].Size / 8);}
+            no = topNodes[no].Leaf;
             
-	      for(ta = 0; ta < NTask; ta++)
-		{
-		  if(ta == ThisTask)
-		    {
-		      count_togo = count_toget = 0;
-		      count_togo_sph = count_toget_sph = 0;
+            if(DomainTask[no] != ThisTask)
+            {
+                toGo[DomainTask[no]] += 1;
+                nlimit -= sizeof(struct particle_data) + sizeof(peanokey);
+                
+                if((P[n].Type & 15) == 0)
+                {
+                    toGoSph[DomainTask[no]] += 1;
+                    nlimit -= sizeof(struct sph_particle_data);
+                }
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-		      count_togo_stars = count_toget_stars = 0;
+                if((P[n].Type & 15) == 4) {toGoStars[DomainTask[no]] += 1;}
 #endif
-		      for(i = 0; i < NTask; i++)
-			{
-			  count_togo += toGo[i];
-			  count_toget += toGet[i];
-			  count_togo_sph += toGoSph[i];
-			  count_toget_sph += toGetSph[i];
-#ifdef SEPARATE_STELLARDOMAINDECOMP
-			  count_togo_stars += toGoStars[i];
-			  count_toget_stars += toGetStars[i];
-#endif
-			}
-		    }
-		  MPI_Bcast(&count_togo, 1, MPI_INT, ta, MPI_COMM_WORLD);
-		  MPI_Bcast(&count_toget, 1, MPI_INT, ta, MPI_COMM_WORLD);
-		  MPI_Bcast(&count_togo_sph, 1, MPI_INT, ta, MPI_COMM_WORLD);
-		  MPI_Bcast(&count_toget_sph, 1, MPI_INT, ta, MPI_COMM_WORLD);
-#ifdef SEPARATE_STELLARDOMAINDECOMP
-		  MPI_Bcast(&count_togo_stars, 1, MPI_INT, ta, MPI_COMM_WORLD);
-		  MPI_Bcast(&count_toget_stars, 1, MPI_INT, ta, MPI_COMM_WORLD);
-#endif
-
-		  int ifntoomany;
-		  ntoomany = list_N_gas[ta] + count_toget_sph - count_togo_sph - All.MaxPartSph;
-		  ifntoomany = (ntoomany > 0);
-#ifdef SEPARATE_STELLARDOMAINDECOMP
-		  ntoomanystars = list_N_stars[ta] + count_toget_stars - count_togo_stars - All.MaxPart;
-		  ifntoomany = ifntoomany || (ntoomanystars > 0);
-#endif
-
-		  if(ifntoomany)
-		    {
-		      if(ThisTask == 0)
-			{
-			  if(ntoomany > 0)
-			    {
-			      printf("exchange needs to be modified because I can't receive %d SPH-particles on task=%d\n", ntoomany, ta);
-			      if(flagsum > 25) {printf("list_N_gas[ta=%d]=%d  count_toget_sph=%d count_togo_sph=%d MaxPartSPH=%d\n", ta, list_N_gas[ta], count_toget_sph, count_togo_sph,All.MaxPartSph);}
-			      fflush(stdout);
-			    }
-#ifdef SEPARATE_STELLARDOMAINDECOMP
-			  if(ntoomanystars > 0)
-			    {
-			      printf("exchange needs to be modified because I can't receive %d STAR-particles on task=%d\n", ntoomanystars, ta);
-			      if(flagsum > 25) {printf("list_N_stars[ta=%d]=%d  count_toget_stars=%d count_togo_stars=%d MaxPartStars=%d\n", ta, list_N_stars[ta], count_toget_stars, count_togo_stars, All.MaxPart);}
-			      fflush(stdout);
-			    }
-#endif
-			}
-
-		      flag = 1;
-		      i = flagsum % NTask;
-
-		      while(ifntoomany)
-			{
-			  if(i == ThisTask)
-			    {
-			      if(toGoSph[ta] > 0)
-				if(ntoomany > 0)
-				  {
-				    toGoSph[ta]--;
-				    count_toget_sph--;
-				    count_toget--;
-				    ntoomany--;
-				  }
-#ifdef SEPARATE_STELLARDOMAINDECOMP
-			      if(toGoStars[ta] > 0 && ntoomanystars > 0)
-				{
-				  toGoStars[ta]--;
-				  count_toget_stars--;
-				  count_toget--;
-				  ntoomanystars--;
-				}
-#endif
-			    }
-
-			  MPI_Bcast(&ntoomany, 1, MPI_INT, i, MPI_COMM_WORLD);
-			  MPI_Bcast(&count_toget, 1, MPI_INT, i, MPI_COMM_WORLD);
-			  MPI_Bcast(&count_toget_sph, 1, MPI_INT, i, MPI_COMM_WORLD);
-#ifdef SEPARATE_STELLARDOMAINDECOMP
-			  MPI_Bcast(&count_toget_stars, 1, MPI_INT, i, MPI_COMM_WORLD);
-#endif
-			  i++;
-			  if(i >= NTask) {i = 0;}
-
-			  ifntoomany = (ntoomany > 0);
-#ifdef SEPARATE_STELLARDOMAINDECOMP
-			  ifntoomany = ifntoomany || (ntoomanystars > 0);
-#endif
-			}
-		    }
-
-		  if((ntoomany = list_NumPart[ta] + count_toget - count_togo - All.MaxPart) > 0)
-		    {
-		      if(ThisTask == 0)
-			{
-			  printf("exchange needs to be modified because I can't receive %d particles on task=%d\n", ntoomany, ta);
-			  if(flagsum > 25) {printf("list_NumPart[ta=%d]=%d  count_toget=%d count_togo=%d MaxPart=%d\n", ta, list_NumPart[ta], count_toget, count_togo, All.MaxPart);}
-			  fflush(stdout);
-			}
-
-		      flag = 1;
-		      i = flagsum % NTask;
-		      while(ntoomany)
-			{
-			  if(i == ThisTask)
-			    {
-			      if(toGo[ta] > 0)
-				{
-				  toGo[ta]--;
-				  count_toget--;
-				  ntoomany--;
-				}
-			    }
-
-			  MPI_Bcast(&ntoomany, 1, MPI_INT, i, MPI_COMM_WORLD);
-			  MPI_Bcast(&count_toget, 1, MPI_INT, i, MPI_COMM_WORLD);
-
-			  i++;
-			  if(i >= NTask) {i = 0;}
-			}
-		    }
-		}
-	      flagsum += flag;
-
-	      if(ThisTask == 0)
-		{
-		  printf("flagsum = %d\n", flagsum);
-		  fflush(stdout);
-		  if(flagsum > 100) {endrun(1013);}
-		}
-	    }
-	  while(flag);
-
-	  if(flagsum)
-	    {
-	      int *local_toGo, *local_toGoSph;
-	      local_toGo = (int *) mymalloc("	      local_toGo", NTask * sizeof(int));
-	      local_toGoSph = (int *) mymalloc("	      local_toGoSph", NTask * sizeof(int));
-#ifdef SEPARATE_STELLARDOMAINDECOMP
-	      int *local_toGoStars;
-	      local_toGoStars = (int *) mymalloc("	      local_toGoStars", NTask * sizeof(int));
-#endif
-
-	      for(n = 0; n < NTask; n++)
-		{
-		  local_toGo[n] = 0;
-		  local_toGoSph[n] = 0;
-#ifdef SEPARATE_STELLARDOMAINDECOMP
-		  local_toGoStars[n] = 0;
-#endif
-		}
-
-	      for(n = 0; n < NumPart; n++)
-		{
-		  if(P[n].Type & 32)
-		    {
-		      P[n].Type &= (15 + 32);	/* clear 16 */
-
-		      no = 0;
-
-		      while(topNodes[no].Daughter >= 0) {no = topNodes[no].Daughter + (Key[n] - topNodes[no].StartKey) / (topNodes[no].Size / 8);}
-
-		      no = topNodes[no].Leaf;
-		      target = DomainTask[no];
-
-		      if((P[n].Type & 15) == 0)
-			{
-			  if(local_toGoSph[target] < toGoSph[target] && local_toGo[target] < toGo[target])
-			    {
-			      local_toGo[target] += 1;
-			      local_toGoSph[target] += 1;
-			      P[n].Type |= 16;
-			    }
-			}
-#ifdef SEPARATE_STELLARDOMAINDECOMP
-		      else if((P[n].Type & 15) == 4)
-			{
-			  if(local_toGoStars[target] < toGoStars[target] && local_toGo[target] < toGo[target])
-			    {
-			      local_toGo[target] += 1;
-			      local_toGoStars[target] += 1;
-			      P[n].Type |= 16;
-			    }
-			}
-#endif
-		      else
-			{
-			  if(local_toGo[target] < toGo[target])
-			    {
-			      local_toGo[target] += 1;
-			      P[n].Type |= 16;
-			    }
-			}
-		    }
-		}
-
-	      for(n = 0; n < NTask; n++)
-		{
-		  toGo[n] = local_toGo[n];
-		  toGoSph[n] = local_toGoSph[n];
-#ifdef SEPARATE_STELLARDOMAINDECOMP
-		  toGoStars[n] = local_toGoStars[n];
-#endif
-		}
-
-	      MPI_Alltoall(toGo, 1, MPI_INT, toGet, 1, MPI_INT, MPI_COMM_WORLD);
-	      MPI_Alltoall(toGoSph, 1, MPI_INT, toGetSph, 1, MPI_INT, MPI_COMM_WORLD);
-
-#ifdef SEPARATE_STELLARDOMAINDECOMP
-	      MPI_Alltoall(toGoStars, 1, MPI_INT, toGetStars, 1, MPI_INT, MPI_COMM_WORLD);
-	      myfree(local_toGoStars);
-#endif
-	      myfree(local_toGoSph);
-	      myfree(local_toGo);
-	    }
-	}
-      while(flagsum);
-
-      return 1;
+                P[n].Type |= 16;    /* flag this particle for export */
+            }
+        }
     }
-  else
-    return 0;
+
+    MPI_Alltoall(toGo, 1, MPI_INT, toGet, 1, MPI_INT, MPI_COMM_WORLD);
+    MPI_Alltoall(toGoSph, 1, MPI_INT, toGetSph, 1, MPI_INT, MPI_COMM_WORLD);
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+    MPI_Alltoall(toGoStars, 1, MPI_INT, toGetStars, 1, MPI_INT, MPI_COMM_WORLD);
+#endif
+
+    if(package >= nlimit) {ret = 1;} else {ret = 0;}
+    MPI_Allreduce(&ret, &retsum, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+
+    if(retsum)
+    {
+        /* in this case, we are not guaranteed that the temporary state after the partial exchange will actually observe the particle limits on all
+         processors... we need to test this explicitly and rework the exchange such that this is guaranteed. This is actually a rather non-trivial constraint. */
+        
+        MPI_Allgather(&NumPart, 1, MPI_INT, list_NumPart, 1, MPI_INT, MPI_COMM_WORLD);
+        MPI_Allgather(&N_gas, 1, MPI_INT, list_N_gas, 1, MPI_INT, MPI_COMM_WORLD);
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+        MPI_Allgather(&N_stars, 1, MPI_INT, list_N_stars, 1, MPI_INT, MPI_COMM_WORLD);
+#endif
+        int flag, flagsum, ntoomany, ta, i, target;
+        int count_togo, count_toget, count_togo_sph, count_toget_sph;
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+        int ntoomanystars, count_togo_stars, count_toget_stars;
+#endif
+        
+        do
+        {
+            flagsum = 0;
+            do
+            {
+                flag = 0;
+                for(ta = 0; ta < NTask; ta++)
+                {
+                    if(ta == ThisTask)
+                    {
+                        count_togo = count_toget = 0;
+                        count_togo_sph = count_toget_sph = 0;
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+                        count_togo_stars = count_toget_stars = 0;
+#endif
+                        for(i = 0; i < NTask; i++)
+                        {
+                            count_togo += toGo[i];
+                            count_toget += toGet[i];
+                            count_togo_sph += toGoSph[i];
+                            count_toget_sph += toGetSph[i];
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+                            count_togo_stars += toGoStars[i];
+                            count_toget_stars += toGetStars[i];
+#endif
+                        }
+                    }
+                    MPI_Bcast(&count_togo, 1, MPI_INT, ta, MPI_COMM_WORLD);
+                    MPI_Bcast(&count_toget, 1, MPI_INT, ta, MPI_COMM_WORLD);
+                    MPI_Bcast(&count_togo_sph, 1, MPI_INT, ta, MPI_COMM_WORLD);
+                    MPI_Bcast(&count_toget_sph, 1, MPI_INT, ta, MPI_COMM_WORLD);
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+                    MPI_Bcast(&count_togo_stars, 1, MPI_INT, ta, MPI_COMM_WORLD);
+                    MPI_Bcast(&count_toget_stars, 1, MPI_INT, ta, MPI_COMM_WORLD);
+#endif
+                    
+                    int ifntoomany;
+                    ntoomany = list_N_gas[ta] + count_toget_sph - count_togo_sph - All.MaxPartSph;
+                    ifntoomany = (ntoomany > 0);
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+                    ntoomanystars = list_N_stars[ta] + count_toget_stars - count_togo_stars - All.MaxPart;
+                    ifntoomany = ifntoomany || (ntoomanystars > 0);
+#endif
+                    
+                    if(ifntoomany)
+                    {
+                        if(ThisTask == 0)
+                        {
+                            if(ntoomany > 0)
+                            {
+                                printf("exchange needs to be modified because I can't receive %d SPH-particles on task=%d\n", ntoomany, ta);
+                                if(flagsum > 25) {printf("list_N_gas[ta=%d]=%d  count_toget_sph=%d count_togo_sph=%d MaxPartSPH=%d\n", ta, list_N_gas[ta], count_toget_sph, count_togo_sph,All.MaxPartSph);}
+                                fflush(stdout);
+                            }
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+                            if(ntoomanystars > 0)
+                            {
+                                printf("exchange needs to be modified because I can't receive %d STAR-particles on task=%d\n", ntoomanystars, ta);
+                                if(flagsum > 25) {printf("list_N_stars[ta=%d]=%d  count_toget_stars=%d count_togo_stars=%d MaxPartStars=%d\n", ta, list_N_stars[ta], count_toget_stars, count_togo_stars, All.MaxPart);}
+                                fflush(stdout);
+                            }
+#endif
+                        }
+                        
+                        flag = 1;
+                        i = flagsum % NTask;
+                        
+                        while(ifntoomany)
+                        {
+                            if(i == ThisTask)
+                            {
+                                if(toGoSph[ta] > 0)
+                                    if(ntoomany > 0)
+                                    {
+                                        toGoSph[ta]--;
+                                        count_toget_sph--;
+                                        count_toget--;
+                                        ntoomany--;
+                                    }
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+                                if(toGoStars[ta] > 0 && ntoomanystars > 0)
+                                {
+                                    toGoStars[ta]--;
+                                    count_toget_stars--;
+                                    count_toget--;
+                                    ntoomanystars--;
+                                }
+#endif
+                            }
+                            
+                            MPI_Bcast(&ntoomany, 1, MPI_INT, i, MPI_COMM_WORLD);
+                            MPI_Bcast(&count_toget, 1, MPI_INT, i, MPI_COMM_WORLD);
+                            MPI_Bcast(&count_toget_sph, 1, MPI_INT, i, MPI_COMM_WORLD);
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+                            MPI_Bcast(&count_toget_stars, 1, MPI_INT, i, MPI_COMM_WORLD);
+#endif
+                            i++;
+                            if(i >= NTask) {i = 0;}
+                            
+                            ifntoomany = (ntoomany > 0);
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+                            ifntoomany = ifntoomany || (ntoomanystars > 0);
+#endif
+                        }
+                    }
+                    
+                    ntoomany = list_NumPart[ta] + count_toget - count_togo - All.MaxPart;
+                    ifntoomany = (ntoomany > 0);
+                    if(ifntoomany) {
+                        if(ThisTask == 0) {
+                            if(ntoomany > 0) {
+                                printf("exchange needs to be modified because I can't receive %d particles on task=%d\n", ntoomany, ta);
+                                if(flagsum > 25) {printf("list_NumPart[ta=%d]=%d  count_toget=%d count_togo=%d MaxPart=%d\n", ta, list_NumPart[ta], count_toget, count_togo, All.MaxPart);}
+                                fflush(stdout);
+                            }
+                        }
+                    }
+                    flag = 1;
+                    i = flagsum % NTask;
+                    while(ifntoomany) {
+                        if(i == ThisTask) {
+                            if(toGo[ta] > 0) {
+                                if(ntoomany>0) {
+                                    toGo[ta]--;
+                                    count_toget--;
+                                    ntoomany--;
+                                }
+                            }
+                        }
+                        
+                        MPI_Bcast(&ntoomany, 1, MPI_INT, i, MPI_COMM_WORLD);
+                        MPI_Bcast(&count_toget, 1, MPI_INT, i, MPI_COMM_WORLD);
+                        
+                        i++;
+                        if(i >= NTask) {i = 0;}
+                        
+                        ifntoomany = (ntoomany > 0);
+                    }
+                }
+                flagsum += flag;
+                
+                if(ThisTask == 0)
+                {
+                    printf("flagsum = %d\n", flagsum);
+                    fflush(stdout);
+                    if(flagsum > 100) {endrun(1013);}
+                }
+            }
+            while(flag);
+            
+            if(flagsum)
+            {
+                int *local_toGo, *local_toGoSph;
+                local_toGo = (int *) mymalloc("          local_toGo", NTask * sizeof(int));
+                local_toGoSph = (int *) mymalloc("          local_toGoSph", NTask * sizeof(int));
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+                int *local_toGoStars;
+                local_toGoStars = (int *) mymalloc("          local_toGoStars", NTask * sizeof(int));
+#endif
+                
+                for(n = 0; n < NTask; n++)
+                {
+                    local_toGo[n] = 0;
+                    local_toGoSph[n] = 0;
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+                    local_toGoStars[n] = 0;
+#endif
+                }
+                
+                for(n = 0; n < NumPart; n++)
+                {
+                    if(P[n].Type & 32)
+                    {
+                        P[n].Type &= (15 + 32);    /* clear 16 */
+                        
+                        no = 0;
+                        
+                        while(topNodes[no].Daughter >= 0) {no = topNodes[no].Daughter + (Key[n] - topNodes[no].StartKey) / (topNodes[no].Size / 8);}
+                        
+                        no = topNodes[no].Leaf;
+                        target = DomainTask[no];
+                        
+                        if((P[n].Type & 15) == 0)
+                        {
+                            if(local_toGoSph[target] < toGoSph[target] && local_toGo[target] < toGo[target])
+                            {
+                                local_toGo[target] += 1;
+                                local_toGoSph[target] += 1;
+                                P[n].Type |= 16;
+                            }
+                        }
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+                        else if((P[n].Type & 15) == 4)
+                        {
+                            if(local_toGoStars[target] < toGoStars[target] && local_toGo[target] < toGo[target])
+                            {
+                                local_toGo[target] += 1;
+                                local_toGoStars[target] += 1;
+                                P[n].Type |= 16;
+                            }
+                        }
+#endif
+                        else
+                        {
+                            if(local_toGo[target] < toGo[target])
+                            {
+                                local_toGo[target] += 1;
+                                P[n].Type |= 16;
+                            }
+                        }
+                    }
+                }
+                
+                for(n = 0; n < NTask; n++)
+                {
+                    toGo[n] = local_toGo[n];
+                    toGoSph[n] = local_toGoSph[n];
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+                    toGoStars[n] = local_toGoStars[n];
+#endif
+                }
+                
+                MPI_Alltoall(toGo, 1, MPI_INT, toGet, 1, MPI_INT, MPI_COMM_WORLD);
+                MPI_Alltoall(toGoSph, 1, MPI_INT, toGetSph, 1, MPI_INT, MPI_COMM_WORLD);
+                
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+                MPI_Alltoall(toGoStars, 1, MPI_INT, toGetStars, 1, MPI_INT, MPI_COMM_WORLD);
+                myfree(local_toGoStars);
+#endif
+                myfree(local_toGoSph);
+                myfree(local_toGo);
+            }
+        }
+        while(flagsum);
+        
+        return 1;
+    }
+    else
+        {return 0;}
 }
 
 
