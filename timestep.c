@@ -179,7 +179,7 @@ void find_timesteps(void)
 		P[i].do_gas_search_this_timestep = 1;
 	    } else {
 	        P[i].dt_since_last_gas_search += GET_PHYSICAL_TIMESTEP_FROM_TIMEBIN(P[i].TimeBin);
-		if(P[i].dt_since_last_gas_search > 0.51 * GET_PHYSICAL_TIMESTEP_FROM_TIMEBIN(P[i].BH_TimeBinGasNeighbor)){ 
+		if(P[i].dt_since_last_gas_search > 0.49 * GET_PHYSICAL_TIMESTEP_FROM_TIMEBIN(P[i].BH_TimeBinGasNeighbor)){ 
 		    P[i].do_gas_search_this_timestep = 1; 
                 } else {P[i].do_gas_search_this_timestep = 0;}
 	    }
@@ -824,7 +824,7 @@ integertime get_timestep(int p,		/*!< particle index */
 #endif // SINGLE_STAR_TIMESTEPPING
     } // if(P[p].Type == 5)
 
-#if defined(SPAWN_B_POL_TOR_SET_IN_PARAMS) /* KYSu: here for de-bugging jet injection model right now */
+#if defined(BH_WIND_SPAWN_SET_BFIELD_POLTOR) /* KYSu: here for de-bugging jet injection model right now */
     if((P[p].Type==5) || (P[p].Type==0 && P[p].ID==All.AGNWindID && SphP[p].IniDen<0)) {if(dt>All.BH_spawn_rinj/All.BAL_v_outflow) {dt=All.BH_spawn_rinj/All.BAL_v_outflow;}}
 #endif
 #endif // BLACK_HOLES

@@ -675,7 +675,7 @@ void get_wind_spawn_magnetic_field(int j, int mode, double *ny, double *nz,  dou
     SphP[j].DtPhi = SphP[j].PhiPred = SphP[j].Phi = 0;
 #endif
 
-#ifdef SPAWN_B_POL_TOR_SET_IN_PARAMS /* user manually sets the poloidal and toroidal components here */
+#ifdef BH_WIND_SPAWN_SET_BFIELD_POLTOR /* user manually sets the poloidal and toroidal components here */
     double inj_scale=All.BH_spawn_rinj/All.cf_atime, Bfield[3]={0}, nx[3]={ny[1]*nz[2]-ny[2]*nz[1], ny[2]*nz[0]-ny[0]*nz[2], ny[0]*nz[1]-ny[1]*nz[0]};
     double cos_theta=nz[0]*dpdir[0]+nz[1]*dpdir[1]+nz[2]*dpdir[2], sin_theta=sqrt(1-cos_theta*cos_theta), cos_phi=(nx[0]*dpdir[0]+nx[1]*dpdir[1]+nx[2]*dpdir[2])/sin_theta, sin_phi=(ny[0]*dpdir[0]+ny[1]*dpdir[1]+ny[2]*dpdir[2])/sin_theta;
     /* initialize poloidal component, in the nx,ny,nz coordinate frame */
@@ -747,7 +747,7 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_sph_i_to_clone, int nu
 #ifndef SELFGRAVITY_OFF
     d_r = DMAX(d_r , 2.0*EPSILON_FOR_TREERND_SUBNODE_SPLITTING * All.ForceSoftening[0]);
 #endif
-#ifdef SPAWN_B_POL_TOR_SET_IN_PARAMS
+#ifdef BH_WIND_SPAWN_SET_BFIELD_POLTOR
     d_r = DMIN(d_r , All.BH_spawn_rinj/All.cf_atime); /* KYSu: sets spawn scale manually */
 #endif
 #ifdef BH_GRAVCAPTURE_FIXEDSINKRADIUS
@@ -787,7 +787,7 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_sph_i_to_clone, int nu
     if(mode == 3){ // if doing an angular grid, need some fixed coordinates to orient it, but want to switch em up each time to avoid artifacts
         get_random_orthonormal_basis(P[i].ID_child_number, jx, jy, jz);
     }
-#ifdef BH_JET_PRECESSION_SET_IN_PARAMS /* rotate the jet angle according to the explicitly-included precession parameters */
+#ifdef BH_WIND_SPAWN_SET_JET_PRECESSION /* rotate the jet angle according to the explicitly-included precession parameters */
     double degree = All.BH_jet_precess_degree, period = All.BH_jet_precess_period/UNIT_TIME_IN_GYR, new_dir[3];
     new_dir[0]= jx[0]*cos(degree/180.*M_PI)-jx[2]*sin(degree/180.*M_PI); new_dir[1]= 1.0*jx[1]; new_dir[2]= jx[0]*sin(degree/180.*M_PI)+jx[2]*cos(degree/180.*M_PI);
     jx[0]= new_dir[0]*cos(2.*M_PI/period*All.Time)-new_dir[1]*sin(2.*M_PI/period*All.Time); jx[1]= new_dir[0]*sin(2.*M_PI/period*All.Time)+new_dir[1]*cos(2.*M_PI/period*All.Time); jx[2]= new_dir[2];
@@ -902,7 +902,7 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_sph_i_to_clone, int nu
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
         SphP[j].MassTrue = P[j].Mass;
 #endif
-#ifndef BH_DEBUG_FIX_MDOT
+#ifndef BH_DEBUG_FIX_MDOT_MBH
         P[i].Mass -= P[j].Mass; /* make sure the operation is mass conserving! */
 #endif
         BPP(i).unspawned_wind_mass -= P[j].Mass; /* remove the mass successfully spawned, to update the remaining unspawned mass */
@@ -928,7 +928,7 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_sph_i_to_clone, int nu
 #ifdef BH_DEBUG_SPAWN_JET_TEST
         PPP[j].Hsml=5.*d_r; SphP[j].Density=mass_of_new_particle/pow(KERNEL_CORE_SIZE*PPP[j].Hsml,NUMDIMS); /* PFH: need to write this in a way that does not make assumptions about units/problem structure */
 #endif
-#if defined(SPAWN_B_POL_TOR_SET_IN_PARAMS) 
+#if defined(BH_WIND_SPAWN_SET_BFIELD_POLTOR) 
         SphP[j].IniDen = -1. * SphP[j].Density; /* this is essentially acting like a bitflag, to signal to the code that the density needs to be recalculated because a spawn event just occurred */
 #endif
 #ifdef MAGNETIC

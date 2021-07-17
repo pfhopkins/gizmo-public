@@ -233,11 +233,8 @@ void hydrokerneldensity_out2particle(struct OUTPUT_STRUCT_NAME *out, int i, int 
 #endif
 
 #ifdef DO_DENSITY_AROUND_STAR_PARTICLES
-    if(P[i].Type != 0)
-    {
-        ASSIGN_ADD(P[i].DensAroundStar, out->Rho, mode);
-        for(k = 0; k<3; k++) {ASSIGN_ADD(P[i].GradRho[k], out->GradRho[k], mode);}
-    }
+    ASSIGN_ADD(P[i].DensAroundStar, out->Rho, mode);
+    for(k = 0; k<3; k++) {ASSIGN_ADD(P[i].GradRho[k], out->GradRho[k], mode);}
 #endif
 
 #if defined(RT_SOURCE_INJECTION)
@@ -414,17 +411,6 @@ void density_evaluate_extra_physics_gas(struct INPUT_STRUCT_NAME *local, struct 
         }
 #endif // BLACK_HOLES
         
-
-#ifdef DO_DENSITY_AROUND_STAR_PARTICLES
-        /* this is here because for the models of BH growth and self-shielding of stars, we
-         just need a quick-and-dirty, single-pass approximation for the gradients (the error from
-         using this as opposed to the higher-order gradient estimators is small compared to the
-         Sobolev approximation): use only for -non-gas- particles */
-        out->GradRho[0] += kernel->mj_dwk_r * kernel->dp[0];
-        out->GradRho[1] += kernel->mj_dwk_r * kernel->dp[1];
-        out->GradRho[2] += kernel->mj_dwk_r * kernel->dp[2];
-#endif
-
     } else { /* local.Type == 0 */
 
 #if defined(TURB_DRIVING)
@@ -457,6 +443,17 @@ void density_evaluate_extra_physics_gas(struct INPUT_STRUCT_NAME *local, struct 
 #endif
 
     } // Type = 0 check
+
+#ifdef DO_DENSITY_AROUND_STAR_PARTICLES
+    /* this is here because for the models of BH growth and self-shielding of stars, we
+     just need a quick-and-dirty, single-pass approximation for the gradients (the error from
+     using this as opposed to the higher-order gradient estimators is small compared to the
+     Sobolev approximation): use only for -non-gas- particles */
+    out->GradRho[0] += kernel->mj_dwk_r * kernel->dp[0];
+    out->GradRho[1] += kernel->mj_dwk_r * kernel->dp[1];
+    out->GradRho[2] += kernel->mj_dwk_r * kernel->dp[2];
+#endif
+
 }
 
 
@@ -1060,7 +1057,7 @@ void density(void)
 
         } // density_isactive(i)
 
-#if defined(SPAWN_B_POL_TOR_SET_IN_PARAMS) /* re-assign magnetic fields after getting the correct density for newly-spawned cells when these options are enabled */
+#if defined(BH_WIND_SPAWN_SET_BFIELD_POLTOR) /* re-assign magnetic fields after getting the correct density for newly-spawned cells when these options are enabled */
         if(P[i].Type==0) {if(P[i].ID==All.AGNWindID && SphP[i].IniDen<0) {SphP[i].IniDen=SphP[i].Density; int k; for(k=0;k<3;k++) {SphP[i].BPred[k]=SphP[i].B[k]=SphP[i].IniB[k]*(All.UnitMagneticField_in_gauss/UNIT_B_IN_GAUSS)*(P[i].Mass/(All.cf_a2inv*SphP[i].Density));}}}
 #endif
 

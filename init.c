@@ -563,13 +563,8 @@ void init(void)
 #endif
 #if defined(COOL_MOLECFRAC_NONEQM)
 	    double nHcgs = HYDROGEN_MASSFRAC * UNIT_DENSITY_IN_CGS * SphP[i].Density * All.cf_a3inv / PROTONMASS;
-	    if(nHcgs > 10){ // dense ISM starts molecular - very approximate cutoff
-	        SphP[i].MolecularMassFraction = 1.0;
-		SphP[i].MolecularMassFraction_perNeutralH = 1.0;
-	    } else { // otherwise start atomic
-	        SphP[i].MolecularMassFraction = 0.0;
-		SphP[i].MolecularMassFraction_perNeutralH = 0.0;
-	    }
+        if(nHcgs > 10) {SphP[i].MolecularMassFraction = 1.0; SphP[i].MolecularMassFraction_perNeutralH = 1.0;} // dense ISM starts molecular - very approximate cutoff
+            else {SphP[i].MolecularMassFraction = 0.0; SphP[i].MolecularMassFraction_perNeutralH = 0.0;} // otherwise start atomic
 #endif
 #endif
 #ifdef CHIMES_STELLAR_FLUXES
@@ -755,6 +750,9 @@ void init(void)
 #endif
         //SphP[i].dInternalEnergy = 0;//manifest-indiv-timestep-debug//
         SphP[i].DtInternalEnergy = 0;
+#if defined(COOLING) && !defined(COOLING_OPERATOR_SPLIT)
+        SphP[i].CoolingIsOperatorSplitThisTimestep = 1; /* default to more conservative split */
+#endif
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
         SphP[i].dMass = 0;
         SphP[i].DtMass = 0;

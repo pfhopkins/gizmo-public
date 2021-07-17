@@ -244,7 +244,6 @@
 
 
 
-
 #if defined(COOL_GRACKLE)
 #if !defined(COOLING)
 #define COOLING
@@ -298,7 +297,7 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 #define GALSF // top-level switch needed to enable various frameworks
 #define METALS  // metals should be active for stellar return
 #define BLACK_HOLES // need to have black holes active since these are our sink particles
-//#define BH_INTERACT_ON_GAS_TIMESTEP // BH-gas interactions (feedback and accretion) occur with frequency set by the gas timestep - remains beta for now
+#define BH_INTERACT_ON_GAS_TIMESTEP // BH-gas interactions (feedback and accretion) occur with frequency set by the gas timestep
 #define BH_CALC_DISTANCES // calculate distance to nearest sink in gravity tree
 
 
@@ -372,8 +371,12 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 #endif // SINGLE_STAR_SINK_DYNAMICS
 
 
-#if (SINGLE_STAR_SINK_FORMATION & 1) // figure out flags needed for the chosen sink formation model [note these CAN be used even if single-star top-level flag is off, as additional SF/sink formation criteria for e.g. GALSF sims]
+#if (SINGLE_STAR_SINK_FORMATION & 1) || (SINGLE_STAR_SINK_FORMATION & 2048) // figure out flags needed for the chosen sink formation model [note these CAN be used even if single-star top-level flag is off, as additional SF/sink formation criteria for e.g. GALSF sims]
+#if (SINGLE_STAR_SINK_FORMATION & 2048)
 #define GALSF_SFR_VIRIAL_SF_CRITERION 2
+#else
+#define GALSF_SFR_VIRIAL_SF_CRITERION 1
+#endif
 #endif
 #if (SINGLE_STAR_SINK_FORMATION & 16)
 #ifndef SINGLE_STAR_TIMESTEPPING
@@ -1063,6 +1066,7 @@ typedef unsigned long long peanokey;
 
 
 
+#define CosmicRayFluid_RSOL_Corrfac(k) (1.0) // this is always unity, macro is trivial
 
 
 #ifndef FOF_PRIMARY_LINK_TYPES
@@ -1898,12 +1902,6 @@ extern struct global_data_all_processes
 #ifdef GRAIN_FLUID
 #define GRAIN_PTYPES 8 /* default to allowed particle type for grains == 3, only, but can make this a more extended list as desired */
 #ifdef GRAIN_RDI_TESTPROBLEM
-#if !defined(GRAIN_RDI_TESTPROBLEM_SET_ABSFRAC)
-#define GRAIN_RDI_TESTPROBLEM_SET_ABSFRAC (0.5)
-#endif
-#if !defined(GRAIN_RDI_TESTPROBLEM_Q_AT_GRAIN_MAX)
-#define GRAIN_RDI_TESTPROBLEM_Q_AT_GRAIN_MAX (1.0)
-#endif
 #if(NUMDIMS==3)
 #define GRAV_DIRECTION_RDI 2
 #else
@@ -1917,11 +1915,17 @@ extern struct global_data_all_processes
 #ifdef BOX_SHEARING
     double Pressure_Gradient_Accel;
 #endif
+#ifdef RT_OPACITY_FROM_EXPLICIT_GRAINS
+    double Grain_Q_at_MaxGrainSize;
+#endif
 #endif // GRAIN_RDI_TESTPROBLEM
     double Grain_Internal_Density;
     double Grain_Size_Min;
     double Grain_Size_Max;
     double Grain_Size_Spectrum_Powerlaw;
+#endif
+#if defined(RT_OPACITY_FROM_EXPLICIT_GRAINS) && defined(RT_GENERIC_USER_FREQ)
+    double Grain_Absorbed_Fraction_vs_Total_Extinction;
 #endif
 
 #ifdef PIC_MHD
@@ -1971,7 +1975,7 @@ extern struct global_data_all_processes
 #endif
 #endif // GALSF_SUBGRID_WINDS //
 
-
+    
 #ifdef GALSF_FB_FIRE_AGE_TRACERS
     double AgeTracerRateNormalization;              /* Determines Fraction of time to do age tracer deposition (with checks depending on time bin width for current star) */
 #ifdef GALSF_FB_FIRE_AGE_TRACERS_CUSTOM
@@ -2000,6 +2004,7 @@ extern struct global_data_all_processes
 #if defined(BH_COSMIC_RAYS)
     double BH_CosmicRay_Injection_Efficiency;
 #endif
+    
 
 #ifdef METALS
     double SolarAbundances[NUM_METAL_SPECIES];
@@ -2134,16 +2139,16 @@ extern struct global_data_all_processes
     code_units GrackleUnits;
 #endif
 
-#if defined(SPAWN_B_POL_TOR_SET_IN_PARAMS)
+#if defined(BH_WIND_SPAWN_SET_BFIELD_POLTOR)
   double BH_spawn_rinj;
   double B_spawn_pol;
   double B_spawn_tor;
 #endif
-#ifdef BH_JET_PRECESSION_SET_IN_PARAMS
+#ifdef BH_WIND_SPAWN_SET_JET_PRECESSION
   double BH_jet_precess_degree;
   double BH_jet_precess_period;
 #endif
-#ifdef BH_DEBUG_FIX_MDOT
+#ifdef BH_DEBUG_FIX_MDOT_MBH
   double BH_fb_duty_cycle;
   double BH_fb_period;
 #endif
@@ -2609,7 +2614,7 @@ extern struct sph_particle_data
     MyFloat MaxSignalVel;           /*!< maximum signal velocity (needed for time-stepping) */
 
 
-#if defined(SPAWN_B_POL_TOR_SET_IN_PARAMS) 
+#if defined(BH_WIND_SPAWN_SET_BFIELD_POLTOR) 
     MyDouble IniDen;
     MyDouble IniB[3];
 #endif     
@@ -2637,8 +2642,11 @@ extern struct sph_particle_data
 #endif
 
 #ifdef COOLING
+#if !defined(COOLING_OPERATOR_SPLIT)
+    int CoolingIsOperatorSplitThisTimestep; /* flag to tell us if cooling is operator split or not on a given timestep */
+#endif
 #ifndef CHIMES
-  MyFloat Ne;  /*!< electron fraction, expressed as local electron number
+    MyFloat Ne;  /*!< electron fraction, expressed as local electron number
 		    density normalized to the hydrogen number density. Gives
 		    indirectly ionization state and mean molecular weight. */
 #endif
@@ -2778,6 +2786,7 @@ extern struct sph_particle_data
     MyFloat Rad_Flux[N_RT_FREQ_BINS][3];
 #define Rad_Flux_Pred Rad_Flux
 #endif
+    
 
 
 #ifdef EOS_GENERAL
@@ -2907,14 +2916,11 @@ extern struct gravdata_in
 #if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE) || defined(SINGLE_STAR_TIMESTEPPING)
     MyFloat Mass;
 #endif
-#if defined(SINGLE_STAR_TIMESTEPPING) || defined(COMPUTE_JERK_IN_GRAVTREE) || defined(BH_DYNFRICTION_FROMTREE)
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(COMPUTE_JERK_IN_GRAVTREE) || defined(FLAG_NOT_IN_PUBLIC_CODE)
     MyFloat Vel[3];
 #endif
     int Type;
-#if defined(BH_DYNFRICTION_FROMTREE)
-    MyFloat BH_Mass;
-#endif
-#if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE) || defined(SINGLE_STAR_TIMESTEPPING)
+#if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE) || defined(SINGLE_STAR_TIMESTEPPING) || defined(FLAG_NOT_IN_PUBLIC_CODE)
     MyFloat Soft;
 #if defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(ADAPTIVE_GRAVSOFT_FORALL)
     MyFloat AGS_zeta;
@@ -3287,6 +3293,7 @@ extern ALIGN(32) struct NODE
 #endif
 #endif
 
+    
 
 #ifdef BH_CALC_DISTANCES
   MyFloat bh_mass;      /*!< holds the BH mass in the node.  Used for calculating tree based dist to closest bh */

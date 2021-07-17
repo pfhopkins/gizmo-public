@@ -401,10 +401,6 @@ void calculate_interact_kick(double dV[3], double kick[3], double m)
 
 #if defined(RT_OPACITY_FROM_EXPLICIT_GRAINS)
 
-#if !defined(GRAIN_RDI_TESTPROBLEM_Q_AT_GRAIN_MAX)
-#define GRAIN_RDI_TESTPROBLEM_Q_AT_GRAIN_MAX 1 /* needed for radiation problems below, default to unity */
-#endif
-
 #define CORE_FUNCTION_NAME interpolate_fluxes_opacities_gasgrains_evaluate /* name of the 'core' function doing the actual inter-neighbor operations. this MUST be defined somewhere as "int CORE_FUNCTION_NAME(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)" */
 #define CONDITIONFUNCTION_FOR_EVALUATION if(((1 << P[i].Type) & (GRAIN_PTYPES+1))&&(P[i].TimeBin>=0)&&(P[i].Mass>0)) /* function for which elements will be 'active' and allowed to undergo operations. can be a function call, e.g. 'density_is_active(i)', or a direct function call like 'if(P[i].Mass>0)' */
 #include "../system/code_block_xchange_initialize.h" /* pre-define all the ALL_CAPS variables we will use below, so their naming conventions are consistent and they compile together, as well as defining some of the function calls needed */
@@ -534,7 +530,7 @@ double return_grain_extinction_efficiency_Q(int i, int k_freq)
 {
     double Q = 1; /* default to geometric opacity */
 #if defined(GRAIN_RDI_TESTPROBLEM)
-    Q *= GRAIN_RDI_TESTPROBLEM_Q_AT_GRAIN_MAX; // this needs to be set by-hand, Q for the maximum sized grains. irrelevant for the scale-free problem (degenerate with flux), but important here */
+    Q *= All.Grain_Q_at_MaxGrainSize; // this needs to be set by-hand, Q for the maximum sized grains. irrelevant for the scale-free problem (degenerate with flux), but important here */
 #if !defined(GRAIN_RDI_TESTPROBLEM_ACCEL_DEPENDS_ON_SIZE)
     Q *= P[i].Grain_Size / All.Grain_Size_Max;
 #endif

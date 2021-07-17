@@ -106,6 +106,7 @@ double get_pressure(int i)
     
     
     
+    
 #ifdef RT_RADPRESSURE_IN_HYDRO /* add radiation pressure in the Riemann problem directly */
     int k_freq; double gamma_rad=4./3., fluxlim=1; double soundspeed2 = gamma_eos_index*(gamma_eos_index-1) * SphP[i].InternalEnergyPred;
     if(P[i].Mass>0 && SphP[i].Density>0) {for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++)
@@ -151,7 +152,9 @@ double gamma_eos(int i)
     if(i >= 0) {
         if(P[i].Type==0) {
             double fH = HYDROGEN_MASSFRAC, f = SphP[i].MolecularMassFraction, xe = SphP[i].Ne; // use the variables below to update the EOS as needed
-            return 1. + (fH*((1.-f)/1. + f/2.) + (1.-fH)/4.) / (fH*((1.-f + xe)/(1.*(5./3.-1.)) + f/(2.*(7./5.-1.))) + (1.-fH)/(4.*(5./3.-1.))); // assume He is atomic, H has a mass fraction f molecular
+            double f_mono = fH*(xe + 1.-f) + (1.-fH)/4., f_di = fH*f/2., gamma_mono=5./3., gamma_di=7./5.; // sum e-, H or p, He, which act monotomic, and molecular, by number
+            return 1. + (f_mono + f_di) / (f_mono/(gamma_mono-1.) + f_di/(gamma_di-1.)); // weighted sum by number to compute effective EOS
+            //return 1. + (fH*((1.-f)/1. + f/2.) + (1.-fH)/4.) / (fH*((1.-f + xe)/(1.*(5./3.-1.)) + f/(2.*(7./5.-1.))) + (1.-fH)/(4.*(5./3.-1.))); // assume He is atomic, H has a mass fraction f molecular
         }
     }
 #endif
@@ -343,7 +346,7 @@ double Get_Gas_Molecular_Mass_Fraction(int i, double temperature, double neutral
 #endif
         
     
-#if defined(COOL_MOLECFRAC_LOCALEQM)
+#if defined(COOL_MOLECFRAC_LOCALEQM) // ??? -- update to match noneqm fancier cooling functions --
     /* estimate local equilibrium molecular fraction actually using the real formation and destruction rates. expressions for the different rate terms
         as used here are collected in Nickerson, Teyssier, & Rosdahl et al. 2018. Expression for the line self-shielding here
         including turbulent and cell line blanketing terms comes from Gnedin & Draine 2014. below solves this all exactly, using the temperature, metallicity,
@@ -461,8 +464,8 @@ double Get_Gas_Molecular_Mass_Fraction(int i, double temperature, double neutral
     double nHalf = n_star * Lambda_incident / g_eff; // intermediate variable
     double w_x = 0.8 + sqrt(Lambda_incident) / pow(S_slab, 1./3.); // intermediate variable
     double x_f = w_x * log(nH_cgs / nHalf); // intermediate variable
-    fH2 = 1./(1. + exp(-x_f*(1.-0.02*x_f+0.001*x_f*x_f)));
-    return xH0 * fH2;
+    double fH2_gd = 1./(1. + exp(-x_f*(1.-0.02*x_f+0.001*x_f*x_f)));
+    return xH0 * fH2_gd;
 #endif
     
     

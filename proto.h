@@ -277,6 +277,10 @@ double INLINE_FUNC Get_Gas_density_for_energy_i(int i);
 double INLINE_FUNC Get_Particle_Expected_Area(double h);
 double get_cell_Bfield_in_microGauss(int i);
 double Get_Gas_Ionized_Fraction(int i);
+double CR_calculate_adiabatic_gasCR_exchange_term(int i, double dt_entr, double gamma_minus_eCR_tmp, int mode);
+double INLINE_FUNC Get_CosmicRayEnergyDensity_cgs(int i);
+double CR_gas_heating(int target, double n_elec, double nH0, double nHcgs);
+double Get_CosmicRayIonizationRate_cgs(int i);
 #ifdef EOS_ELASTIC
 void elastic_body_update_driftkick(int i, double dt_entr, int mode);
 #endif
@@ -526,6 +530,8 @@ double particle_ionizing_luminosity_in_cgs(long i);
 #ifdef GALSF_FB_MECHANICAL
 void determine_where_SNe_occur(void);
 void mechanical_fb_calc(int fb_loop_iteration);
+void mechanical_fb_calc_toplevel(void);
+void verify_and_assign_local_mechfb_integrals(void);
 #endif
 
 #ifdef GALSF_FB_THERMAL
@@ -563,6 +569,8 @@ void disp_setup_smoothinglengths(void);
 void disp_density(void);
 #endif
 #endif
+
+
 
 
 #ifdef CHIMES
@@ -727,6 +735,10 @@ void rt_set_simple_inits(int RestartFlag);
 void rt_init_intensity_directions(void);
 #endif
 void rt_get_lum_gas(int target, double *je);
+#ifdef RT_ISRF_BACKGROUND
+void rt_apply_boundary_conditions(int i);
+void get_background_isrf_urad(int i, double *urad);
+#endif
 double slab_averaging_function(double x);
 double blackbody_lum_frac(double E_lower, double E_upper, double T_eff);
 double stellar_lum_in_band(int i, double E_lower, double E_upper);

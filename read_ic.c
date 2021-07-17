@@ -474,13 +474,13 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
             break; 
             
         case IO_IDEN:
-#if defined(SPAWN_B_POL_TOR_SET_IN_PARAMS) && defined(BH_DEBUG_SPAWN_JET_TEST)
+#if defined(BH_WIND_SPAWN_SET_BFIELD_POLTOR) && defined(BH_DEBUG_SPAWN_JET_TEST)
              for(n = 0; n < pc; n++) {SphP[offset + n].IniDen = *fp++;}
 #endif
             break;
             
         case IO_INIB:        
-#if defined(SPAWN_B_POL_TOR_SET_IN_PARAMS) && defined(BH_DEBUG_SPAWN_JET_TEST)
+#if defined(BH_WIND_SPAWN_SET_BFIELD_POLTOR) && defined(BH_DEBUG_SPAWN_JET_TEST)
              for(n = 0; n < pc; n++) {for(k=0;k<3;k++) {SphP[offset + n].IniB[k] = *fp++;}}
 #endif      
             break;  
@@ -865,9 +865,9 @@ void read_file(char *fname, int readTask, int lastTask)
 #endif
 #endif
             
-#ifdef COSMIC_RAYS_EVOLVE_SPECTRUM_SPECIAL_SNAPSHOTRESTART
+#ifdef CRFLUID_ALT_SPECTRUM_SPECIALSNAPRESTART
             if(RestartFlag == 2 && blocknr == IO_COSMICRAY_SLOPES) {continue;}
-#if (COSMIC_RAYS_EVOLVE_SPECTRUM_SPECIAL_SNAPSHOTRESTART==2)
+#if (CRFLUID_ALT_SPECTRUM_SPECIALSNAPRESTART==2)
             if(RestartFlag == 2 && blocknr == IO_COSMICRAY_ENERGY) {continue;}
 #endif
 #endif
@@ -895,7 +895,7 @@ void read_file(char *fname, int readTask, int lastTask)
 
             bytes_per_blockelement = get_bytes_per_blockelement(blocknr, 1);
             
-#if (COSMIC_RAYS_EVOLVE_SPECTRUM_SPECIAL_SNAPSHOTRESTART==1)
+#if (CRFLUID_ALT_SPECTRUM_SPECIALSNAPRESTART==1)
             if(RestartFlag == 2 && blocknr == IO_COSMICRAY_ENERGY) {bytes_per_blockelement = (1) * sizeof(MyInputFloat);}
 #endif
 #ifdef METALS /* some trickery here to enable snapshot-restarts from runs with different numbers of metal species */
@@ -974,7 +974,7 @@ void read_file(char *fname, int readTask, int lastTask)
 
                                         dims[0] = header.npart[type];
                                         dims[1] = get_values_per_blockelement(blocknr);
-#if (COSMIC_RAYS_EVOLVE_SPECTRUM_SPECIAL_SNAPSHOTRESTART==1)
+#if (CRFLUID_ALT_SPECTRUM_SPECIALSNAPRESTART==1)
                                         if(RestartFlag == 2 && blocknr == IO_COSMICRAY_ENERGY) {dims[1] = 1;}
 #endif
 #ifdef METALS /* some trickery here to enable snapshot-restarts from runs with different numbers of metal species */
@@ -991,7 +991,7 @@ void read_file(char *fname, int readTask, int lastTask)
 
                                         count[0] = pc;
                                         count[1] = get_values_per_blockelement(blocknr);
-#if (COSMIC_RAYS_EVOLVE_SPECTRUM_SPECIAL_SNAPSHOTRESTART==1)
+#if (CRFLUID_ALT_SPECTRUM_SPECIALSNAPRESTART==1)
                                         if(RestartFlag == 2 && blocknr == IO_COSMICRAY_ENERGY) {count[1] = 1;}
 #endif
 #ifdef METALS /* some trickery here to enable snapshot-restarts from runs with different numbers of metal species */

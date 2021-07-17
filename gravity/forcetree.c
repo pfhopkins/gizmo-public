@@ -510,9 +510,7 @@ void force_insert_pseudo_particles(void)
 void force_update_node_recursive(int no, int sib, int father)
 {
     int j, jj, k, p, pp, nextsib, suns[8], count_particles, multiple_flag;
-    MyFloat hmax, vmax, v;
-    MyFloat divVmax, divVel;
-    MyFloat s[3], vs[3], mass;
+    MyFloat hmax, vmax, v, divVmax, divVel, s[3], vs[3], mass;
     struct particle_data *pa;
 
 #ifdef DM_SCALARFIELD_SCREENING
@@ -1600,7 +1598,7 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #endif
     double pos_x, pos_y, pos_z, aold;
 
-#if defined(SINGLE_STAR_TIMESTEPPING) || defined(COMPUTE_JERK_IN_GRAVTREE) || defined(BH_DYNFRICTION_FROMTREE)
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(COMPUTE_JERK_IN_GRAVTREE) || defined(FLAG_NOT_IN_PUBLIC_CODE)
     double vel_x, vel_y, vel_z;
 #endif
 #ifdef PMGRID
@@ -1664,10 +1662,7 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #ifdef DM_SCALARFIELD_SCREENING
     double dx_dm = 0, dy_dm = 0, dz_dm = 0, mass_dm = 0;
 #endif
-#if defined(BH_DYNFRICTION_FROMTREE)
-    double bh_mass = 0;
-#endif
-#if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE) || defined(SINGLE_STAR_TIMESTEPPING)
+#if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE) || defined(SINGLE_STAR_TIMESTEPPING) || defined(FLAG_NOT_IN_PUBLIC_CODE)
     double soft=0, pmass;
 #if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS)
     double h_p_inv=0, h_p3_inv=0, u_p=0, zeta, zeta_sec=0;
@@ -1709,16 +1704,13 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE) || defined(SINGLE_STAR_TIMESTEPPING)
         pmass = P[target].Mass;
 #endif
-#if defined(SINGLE_STAR_TIMESTEPPING) || defined(COMPUTE_JERK_IN_GRAVTREE) || defined(BH_DYNFRICTION_FROMTREE)
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(COMPUTE_JERK_IN_GRAVTREE) || defined(FLAG_NOT_IN_PUBLIC_CODE)
         vel_x = P[target].Vel[0];
         vel_y = P[target].Vel[1];
         vel_z = P[target].Vel[2];
 #endif
-#if defined(BH_DYNFRICTION_FROMTREE)
-        if(ptype==5) {bh_mass = P[target].BH_Mass;}
-#endif
         aold = All.ErrTolForceAcc * P[target].OldAcc;
-#if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE) || defined(SINGLE_STAR_TIMESTEPPING)
+#if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE) || defined(SINGLE_STAR_TIMESTEPPING) || defined(FLAG_NOT_IN_PUBLIC_CODE)
         soft = All.ForceSoftening[ptype];
 #endif
 #if defined(ADAPTIVE_GRAVSOFT_FORGAS)
@@ -1749,17 +1741,14 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE) || defined(SINGLE_STAR_TIMESTEPPING)
         pmass = GravDataGet[target].Mass;
 #endif
-#if defined(SINGLE_STAR_TIMESTEPPING) || defined(COMPUTE_JERK_IN_GRAVTREE) || defined(BH_DYNFRICTION_FROMTREE)
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(COMPUTE_JERK_IN_GRAVTREE) || defined(FLAG_NOT_IN_PUBLIC_CODE)
         vel_x = GravDataGet[target].Vel[0];
         vel_y = GravDataGet[target].Vel[1];
         vel_z = GravDataGet[target].Vel[2];
 #endif
         ptype = GravDataGet[target].Type;
-#if defined(BH_DYNFRICTION_FROMTREE)
-        if(ptype==5) {bh_mass = GravDataGet[target].BH_Mass;}
-#endif
         aold = All.ErrTolForceAcc * GravDataGet[target].OldAcc;
-#if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE) || defined(SINGLE_STAR_TIMESTEPPING)
+#if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE) || defined(SINGLE_STAR_TIMESTEPPING) || defined(FLAG_NOT_IN_PUBLIC_CODE)
         soft = GravDataGet[target].Soft;
 #if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS)
         zeta = GravDataGet[target].AGS_zeta;
@@ -1805,7 +1794,6 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
     h_inv = 1.0 / h;
     h3_inv = h_inv * h_inv * h_inv;
 #endif
-
 
 
 #ifdef RT_USE_GRAVTREE
@@ -1860,7 +1848,7 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                 dx = P[no].Pos[0] - pos_x;
                 dy = P[no].Pos[1] - pos_y;
                 dz = P[no].Pos[2] - pos_z;
-#if defined(COMPUTE_JERK_IN_GRAVTREE) || defined(BH_DYNFRICTION_FROMTREE)
+#if defined(COMPUTE_JERK_IN_GRAVTREE) || defined(FLAG_NOT_IN_PUBLIC_CODE)
                 dvx = P[no].Vel[0] - vel_x;
                 dvy = P[no].Vel[1] - vel_y;
                 dvz = P[no].Vel[2] - vel_z;
@@ -1930,7 +1918,7 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                 }
 #endif
 
-
+                    
 #ifdef RT_USE_GRAVTREE
                 if(valid_gas_particle_for_rt)	/* we have a (valid) gas particle as target */
                 {
@@ -2078,7 +2066,7 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                 dx = nop->u.d.s[0] - pos_x;
                 dy = nop->u.d.s[1] - pos_y;
                 dz = nop->u.d.s[2] - pos_z;
-#if defined(COMPUTE_JERK_IN_GRAVTREE) || defined(BH_DYNFRICTION_FROMTREE)
+#if defined(COMPUTE_JERK_IN_GRAVTREE) || defined(FLAG_NOT_IN_PUBLIC_CODE)
                 dvx = Extnodes[no].vs[0] - vel_x;
                 dvy = Extnodes[no].vs[1] - vel_y;
                 dvz = Extnodes[no].vs[2] - vel_z;
@@ -2086,6 +2074,7 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                 GRAVITY_NEAREST_XYZ(dx,dy,dz,-1);
                 r2 = dx * dx + dy * dy + dz * dz;
 
+                
 #ifdef RT_USE_GRAVTREE
                 if(valid_gas_particle_for_rt)	/* we have a (valid) gas particle as target */
                 {
@@ -2200,7 +2189,7 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #endif
                 {
                     /* force node to open if we are within the gravitational softening length */
-#if !(defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE))
+#if !(defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE) || defined(FLAG_NOT_IN_PUBLIC_CODE))
                     double soft = All.ForceSoftening[ptype];
 #endif
                     if((r2 < (soft+0.6*nop->len)*(soft+0.6*nop->len)) || (r2 < (nop->maxsoft+0.6*nop->len)*(nop->maxsoft+0.6*nop->len)))
@@ -2466,21 +2455,6 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                 acc_z += FLT(dz * fac);
 
 
-#if defined(BH_DYNFRICTION_FROMTREE)
-                if(ptype==5)
-                {
-                    double dv2=dvx*dvx+dvy*dvy+dvz*dvz;
-                    if(dv2 > 0)
-                    {
-                        double dv0=sqrt(dv2),dvx_h=dvx/dv0,dvy_h=dvy/dv0,dvz_h=dvz_h,rdotvhat=dx*dvx_h+dy*dvy_h+dz*dvz_h;
-                        double bx_im=dx-rdotvhat*dvx_h,by_im=dy-rdotvhat*dvy_h,bz_im=dz-rdotvhat*dvz_h,b_impact=sqrt(bx_im*bx_im+by_im*by_im+bz_im*bz_im);
-                        double a_im=(b_impact*All.cf_atime)*(dv2*All.cf_a2inv)/(All.G*bh_mass), fac_df=b_impact*a_im/(1.+a_im*a_im); // need to convert to fully-physical units to ensure this is appropriately dimensionless
-                        acc_x += fac_df * dvx_h;
-                        acc_y += fac_df * dvy_h;
-                        acc_z += fac_df * dvz_h;
-                    }
-                }
-#endif
 
 
 #ifdef COMPUTE_TIDAL_TENSOR_IN_GRAVTREE

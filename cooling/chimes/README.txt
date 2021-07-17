@@ -100,7 +100,7 @@ There are some Config flags that CHIMES does not currently work with, or its beh
   - RT_CHEM_PHOTOION - this is currently incompatible with CHIMES, as it uses its own routines to compute chemistry 
     abundances for the radiative transport. 
   - OUTPUTCOOLRATE - not currently compatible with CHIMES. 
-  - COSMIC_RAYS - not currently compatible with CHIMES. 
+  - COSMIC_RAY_FLUID - not currently compatible with CHIMES. 
   - Hydro methods: CHIMES is currently only compatible with Lagrangian methods (i.e. SPH or MFM), because the 
     chemical species are 'fixed' to the particles. If you run with e.g. MFV or moving mesh, the species would 
     need to be advected between cells, which is not currently implemented. Also, CHIMES is incompatible with 

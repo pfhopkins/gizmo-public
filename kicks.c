@@ -245,7 +245,7 @@ void do_the_kick(int i, integertime tstart, integertime tend, integertime tcurre
 #endif
             double du_tot = SphP[i].DtInternalEnergy * dt_hydrokick + dEnt_Gravity;
 #if defined(COOLING) && !defined(COOLING_OPERATOR_SPLIT)
-            if(mode == 1) {du_tot = 0;}
+            if(SphP[i].CoolingIsOperatorSplitThisTimestep==0) {du_tot=0;} /* cooling in unsplit, so zero contribution here */
 #endif
             double dEnt = SphP[i].InternalEnergy + du_tot;
             

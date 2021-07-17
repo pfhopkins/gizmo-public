@@ -234,9 +234,6 @@ void calculate_non_standard_physics(void)
     apply_excision();
 #endif
 
-#ifdef GALSF /* PFH set of feedback routines */
-    compute_stellar_feedback();
-#endif
 
 #if defined(TURB_DRIVING) && defined(TURB_DRIVING_SPECTRUMGRID)
     if(All.Time >= All.TimeNextTurbSpectrum) {powerspec_turb(All.FileNumberTurbSpectrum++); All.TimeNextTurbSpectrum += All.TimeBetTurbSpectrum;}

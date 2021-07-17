@@ -139,7 +139,7 @@ BulkViscosityCoeff      1.0     % set/multiply bulk viscosity coefficient
 %---- Turbulent Diffusion Top-level Switch (TURB_DIFFUSION on)
 TurbDiffusionCoefficient 1.0    % Normalizes diffusion rates relative to Smagorinsky-Lilly theory (~0.5-2)
 
-%--- Cosmic Ray + Gas Fluids (COSMIC_RAYS)
+%--- Cosmic Ray + Gas Fluids (COSMIC_RAY_FLUID)
 CosmicRayDiffusionCoeff     1.0     % multiplies anisotropic diffusion/streaming coefficients
 
 

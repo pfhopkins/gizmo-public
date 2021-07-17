@@ -1673,7 +1673,7 @@ int domain_countToGo(size_t nlimit)
 #ifdef SUBFIND
         if(GrNr >= 0 && P[n].GrNr != GrNr) {continue;}
 #endif
-        if(P[n].Type & 32)
+        //if(P[n].Type & 32)
         {
             no = 0;
             while(topNodes[no].Daughter >= 0) {no = topNodes[no].Daughter + (Key[n] - topNodes[no].StartKey) / (topNodes[no].Size / 8);}
@@ -1765,30 +1765,28 @@ int domain_countToGo(size_t nlimit)
                     ntoomanystars = list_N_stars[ta] + count_toget_stars - count_togo_stars - All.MaxPart;
                     ifntoomany = ifntoomany || (ntoomanystars > 0);
 #endif
-                    
                     if(ifntoomany)
                     {
-                        if(ThisTask == 0)
+                        if(ntoomany > 0 && ThisTask==0)
                         {
-                            if(ntoomany > 0)
-                            {
-                                printf("exchange needs to be modified because I can't receive %d SPH-particles on task=%d\n", ntoomany, ta);
-                                if(flagsum > 25) {printf("list_N_gas[ta=%d]=%d  count_toget_sph=%d count_togo_sph=%d MaxPartSPH=%d\n", ta, list_N_gas[ta], count_toget_sph, count_togo_sph,All.MaxPartSph);}
-                                fflush(stdout);
+                            if(flagsum < 25) {PRINT_STATUS(" ..domain exchange must be modified - cannot receive %d gas elements on task=%d (iter=%d)", ntoomany, ta, flagsum+1);}
+                            else {
+                                printf(" ..domain exchange must be modified - cannot receive %d gas elements on task=%d (iter=%d)\n", ntoomany, ta, flagsum+1);
+                                printf(" ..list_N_gas[ta=%d]=%d  count_toget_gas=%d count_togo_gas=%d MaxPartGas=%d NTask=%d flagsum=%d\n", ta, list_N_gas[ta], count_toget_sph, count_togo_sph,All.MaxPartSph,NTask,flagsum); fflush(stdout);
                             }
-#ifdef SEPARATE_STELLARDOMAINDECOMP
-                            if(ntoomanystars > 0)
-                            {
-                                printf("exchange needs to be modified because I can't receive %d STAR-particles on task=%d\n", ntoomanystars, ta);
-                                if(flagsum > 25) {printf("list_N_stars[ta=%d]=%d  count_toget_stars=%d count_togo_stars=%d MaxPartStars=%d\n", ta, list_N_stars[ta], count_toget_stars, count_togo_stars, All.MaxPart);}
-                                fflush(stdout);
-                            }
-#endif
                         }
-                        
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+                        if(ntoomanystars > 0 && ThisTask==0)
+                        {
+                            if(flagsum < 25) {PRINT_STATUS(" ..domain exchange must be modified - cannot receive %d star particles on task=%d (iter=%d)", ntoomanystars, ta, flagsum+1);}
+                            else {
+                                printf(" ..domain exchange must be modified - cannot receive %d star particles on task=%d (iter=%d)\n", ntoomanystars, ta, flagsum+1);
+                                printf(" ..list_N_stars[ta=%d]=%d  count_toget_stars=%d count_togo_stars=%d MaxPartStars=%d\n", ta, list_N_stars[ta], count_toget_stars, count_togo_stars, All.MaxPart); fflush(stdout);
+                            }
+                        }
+#endif
                         flag = 1;
                         i = flagsum % NTask;
-                        
                         while(ifntoomany)
                         {
                             if(i == ThisTask)
@@ -1831,44 +1829,41 @@ int domain_countToGo(size_t nlimit)
                     ntoomany = list_NumPart[ta] + count_toget - count_togo - All.MaxPart;
                     ifntoomany = (ntoomany > 0);
                     if(ifntoomany) {
-                        if(ThisTask == 0) {
-                            if(ntoomany > 0) {
-                                printf("exchange needs to be modified because I can't receive %d particles on task=%d\n", ntoomany, ta);
-                                if(flagsum > 25) {printf("list_NumPart[ta=%d]=%d  count_toget=%d count_togo=%d MaxPart=%d\n", ta, list_NumPart[ta], count_toget, count_togo, All.MaxPart);}
-                                fflush(stdout);
+                        if(ntoomany > 0 && ThisTask==0) {
+                            if(flagsum < 25) {PRINT_STATUS(" ..domain exchange must be modified - cannot receive %d elements on task=%d (iter=%d)", ntoomany, ta, flagsum+1);}
+                            else {
+                                printf(" ..domain exchange must be modified - cannot receive %d elements on task=%d (iter=%d)\n", ntoomany, ta, flagsum+1);
+                                printf(" ..list_NumPart[ta=%d]=%d count_toget=%d count_togo=%d MaxPart=%d NTask=%d flagsum=%d \n", ta, list_NumPart[ta], count_toget, count_togo, All.MaxPart, NTask, flagsum); fflush(stdout);
                             }
                         }
-                    }
-                    flag = 1;
-                    i = flagsum % NTask;
-                    while(ifntoomany) {
-                        if(i == ThisTask) {
-                            if(toGo[ta] > 0) {
-                                if(ntoomany>0) {
+                    
+                        flag = 1;
+                        i = flagsum % NTask;
+                        while(ntoomany)
+                        {
+                            if(i == ThisTask)
+                            {
+                                if(toGo[ta] > 0)
+                                {
                                     toGo[ta]--;
                                     count_toget--;
                                     ntoomany--;
                                 }
                             }
+                            
+                            MPI_Bcast(&ntoomany, 1, MPI_INT, i, MPI_COMM_WORLD);
+                            MPI_Bcast(&count_toget, 1, MPI_INT, i, MPI_COMM_WORLD);
+                            
+                            i++;
+                            if(i >= NTask) {i = 0;}
                         }
-                        
-                        MPI_Bcast(&ntoomany, 1, MPI_INT, i, MPI_COMM_WORLD);
-                        MPI_Bcast(&count_toget, 1, MPI_INT, i, MPI_COMM_WORLD);
-                        
-                        i++;
-                        if(i >= NTask) {i = 0;}
-                        
-                        ifntoomany = (ntoomany > 0);
                     }
                 }
                 flagsum += flag;
                 
-                if(ThisTask == 0)
-                {
-                    printf("flagsum = %d\n", flagsum);
-                    fflush(stdout);
-                    if(flagsum > 100) {endrun(1013);}
-                }
+                if(flagsum > 100) {if(ThisTask==0) {printf("Failed to converge in domain.c, flagsum=%d",flagsum); fflush(stdout); endrun(1013);}}
+                MPI_Alltoall(toGo, 1, MPI_INT, toGet, 1, MPI_INT, MPI_COMM_WORLD);
+                MPI_Alltoall(toGoSph, 1, MPI_INT, toGetSph, 1, MPI_INT, MPI_COMM_WORLD);
             }
             while(flag);
             
@@ -1893,7 +1888,7 @@ int domain_countToGo(size_t nlimit)
                 
                 for(n = 0; n < NumPart; n++)
                 {
-                    if(P[n].Type & 32)
+                    //if(P[n].Type & 32)
                     {
                         P[n].Type &= (15 + 32);    /* clear 16 */
                         
@@ -1946,7 +1941,6 @@ int domain_countToGo(size_t nlimit)
                 
                 MPI_Alltoall(toGo, 1, MPI_INT, toGet, 1, MPI_INT, MPI_COMM_WORLD);
                 MPI_Alltoall(toGoSph, 1, MPI_INT, toGetSph, 1, MPI_INT, MPI_COMM_WORLD);
-                
 #ifdef SEPARATE_STELLARDOMAINDECOMP
                 MPI_Alltoall(toGoStars, 1, MPI_INT, toGetStars, 1, MPI_INT, MPI_COMM_WORLD);
                 myfree(local_toGoStars);

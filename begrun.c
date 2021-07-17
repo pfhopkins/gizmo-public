@@ -975,6 +975,12 @@ void read_parameter_file(char *fname)
         addr[nt] = &All.Pressure_Gradient_Accel;
         id[nt++] = REAL;
 #endif
+        
+#ifdef RT_OPACITY_FROM_EXPLICIT_GRAINS
+        strcpy(tag[nt],"Grain_Q_at_MaxGrainSize");
+        addr[nt] = &All.Grain_Q_at_MaxGrainSize;
+        id[nt++] = REAL;
+#endif
 
 #endif
 #if !defined(PIC_MHD) || defined(GRAIN_FLUID_AND_PIC_BOTH_DEFINED)
@@ -996,6 +1002,12 @@ void read_parameter_file(char *fname)
 #endif
 #endif
 
+#if defined(RT_OPACITY_FROM_EXPLICIT_GRAINS) && defined(RT_GENERIC_USER_FREQ)
+        strcpy(tag[nt],"Grain_Absorbed_vs_Total_Extinction");
+        addr[nt] = &All.Grain_Absorbed_Fraction_vs_Total_Extinction;
+        id[nt++] = REAL;
+#endif
+
 #ifdef PIC_MHD
         strcpy(tag[nt],"PIC_Charge_to_Mass_Ratio");
         addr[nt] = &All.PIC_Charge_to_Mass_Ratio;
@@ -1015,6 +1027,9 @@ void read_parameter_file(char *fname)
 #endif
 
 
+        
+        
+        
 
 
 
@@ -1525,7 +1540,7 @@ void read_parameter_file(char *fname)
 #endif
 #endif /* MAGNETIC */
 
-#ifdef SPAWN_B_POL_TOR_SET_IN_PARAMS
+#ifdef BH_WIND_SPAWN_SET_BFIELD_POLTOR
       strcpy(tag[nt], "BH_spawn_injection_radius");
       addr[nt] = &All.BH_spawn_rinj;
       id[nt++] = REAL;
@@ -1538,7 +1553,7 @@ void read_parameter_file(char *fname)
       addr[nt] = &All.B_spawn_tor;
       id[nt++] = REAL;
 #endif
-#ifdef BH_JET_PRECESSION_SET_IN_PARAMS
+#ifdef BH_WIND_SPAWN_SET_JET_PRECESSION
       strcpy(tag[nt], "BH_jet_precession_degree");
       addr[nt] = &All.BH_jet_precess_degree;
       id[nt++] = REAL;
@@ -1547,7 +1562,7 @@ void read_parameter_file(char *fname)
       addr[nt] = &All.BH_jet_precess_period;
       id[nt++] = REAL;
 #endif
-#ifdef BH_DEBUG_FIX_MDOT
+#ifdef BH_DEBUG_FIX_MDOT_MBH
       strcpy(tag[nt], "BH_fb_duty_cycle");
       addr[nt] = &All.BH_fb_duty_cycle;
       id[nt++] = REAL;
@@ -2048,15 +2063,15 @@ void read_parameter_file(char *fname)
     /* now communicate the relevant parameters to the other processes */
     MPI_Bcast(&All, sizeof(struct global_data_all_processes), MPI_BYTE, 0, MPI_COMM_WORLD);
 #ifdef CHIMES
-    if (ThisTask == 0)
-      {
-	ChimesGlobalVars.grain_temperature = (ChimesFloat) Tdust_buf;
-	ChimesGlobalVars.T_mol = (ChimesFloat) Tmol_buf;
-	ChimesGlobalVars.relativeTolerance = (ChimesFloat) relTol_buf;
-	ChimesGlobalVars.absoluteTolerance = (ChimesFloat) absTol_buf;
-	ChimesGlobalVars.explicitTolerance = (ChimesFloat) expTol_buf;
-	ChimesGlobalVars.reionisation_redshift = (ChimesFloat) z_reion_buf;
-      }
+    if(ThisTask == 0)
+    {
+        ChimesGlobalVars.grain_temperature = (ChimesFloat) Tdust_buf;
+        ChimesGlobalVars.T_mol = (ChimesFloat) Tmol_buf;
+        ChimesGlobalVars.relativeTolerance = (ChimesFloat) relTol_buf;
+        ChimesGlobalVars.absoluteTolerance = (ChimesFloat) absTol_buf;
+        ChimesGlobalVars.explicitTolerance = (ChimesFloat) expTol_buf;
+        ChimesGlobalVars.reionisation_redshift = (ChimesFloat) z_reion_buf;
+    }
     MPI_Bcast(&ChimesGlobalVars, sizeof(struct globalVariables), MPI_BYTE, 0, MPI_COMM_WORLD);
     MPI_Bcast(&ChimesDataPath, 256 * sizeof(char), MPI_BYTE, 0, MPI_COMM_WORLD);
     MPI_Bcast(&ChimesEqAbundanceTable, 196 * sizeof(char), MPI_BYTE, 0, MPI_COMM_WORLD);

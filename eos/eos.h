@@ -4,7 +4,7 @@
 #include "../GIZMO_config.h"
 
 
-#if (defined(EOS_TILLOTSON) || defined(EOS_ELASTIC) || defined(EOS_HELMHOLTZ) || defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(RT_RADPRESSURE_IN_HYDRO) || defined(EOS_TRUELOVE_PRESSURE) || defined(TRUELOVE_CRITERION_PRESSURE) || defined(EOS_GMC_BAROTROPIC)) && !defined(EOS_GENERAL)
+#if (defined(EOS_TILLOTSON) || defined(EOS_ELASTIC) || defined(EOS_HELMHOLTZ) || defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(RT_RADPRESSURE_IN_HYDRO) || defined(EOS_TRUELOVE_PRESSURE) || defined(TRUELOVE_CRITERION_PRESSURE) || defined(EOS_GMC_BAROTROPIC) || defined(FLAG_NOT_IN_PUBLIC_CODE)) && !defined(EOS_GENERAL)
 #define EOS_GENERAL
 #endif
 
