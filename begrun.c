@@ -217,6 +217,10 @@ void begrun(void)
     tillotson_eos_init();
 #endif
 
+#ifdef NUCLEAR_NETWORK
+    network_init(All.EosSpecies, All.NetworkRates, All.NetworkPartFunc, All.NetworkMasses, All.NetworkWeakrates, &All.nd);
+    network_workspace_init(&All.nd, &All.nw);
+#endif
 
 #ifdef TURB_DRIVING
     init_turb();
@@ -343,6 +347,9 @@ void begrun(void)
         All.BAL_f_accretion = all.BAL_f_accretion;
         All.BAL_v_outflow = all.BAL_v_outflow;
 #endif
+#if defined(SINGLE_STAR_FB_JETS)
+        All.BAL_f_launch_v = all.BAL_f_launch_v;
+#endif
 #if defined(BH_COSMIC_RAYS)
         All.BH_CosmicRay_Injection_Efficiency = all.BH_CosmicRay_Injection_Efficiency;
 #endif
@@ -350,9 +357,17 @@ void begrun(void)
         All.BAL_internal_temperature = all.BAL_internal_temperature;
         All.BAL_wind_particle_mass = all.BAL_wind_particle_mass; // dangeous to change this, as it is also part of the merger criterion!
 #endif
+#ifdef BH_PHOTONMOMENTUM
+        All.BH_Rad_MomentumFactor = all.BH_Rad_MomentumFactor;
+#endif
 #endif // blackholes
 #ifdef RT_LEBRON
         All.PhotonMomentum_Coupled_Fraction = all.PhotonMomentum_Coupled_Fraction;
+#endif
+#ifdef COSMIC_RAY_FLUID
+#if (CRFLUID_DIFFUSION_MODEL == 0)
+        All.CosmicRayDiffusionCoeff = all.CosmicRayDiffusionCoeff;
+#endif
 #endif
 
 #ifdef GALSF_FB_FIRE_AGE_TRACERS
@@ -397,6 +412,16 @@ void begrun(void)
         strcpy(All.EosTable, all.EosTable);
 #endif
 
+#ifdef NUCLEAR_NETWORK
+      strcpy(All.EosSpecies, all.EosSpecies);
+      strcpy(All.NetworkRates, all.NetworkRates);
+      strcpy(All.NetworkPartFunc, all.NetworkPartFunc);
+      strcpy(All.NetworkMasses, all.NetworkMasses);
+      strcpy(All.NetworkWeakrates, all.NetworkWeakrates);
+      All.nd = all.nd;
+      All.nw = all.nw;
+      All.NetworkTempThreshold = all.NetworkTempThreshold;
+#endif
 
       if(All.TimeMax != all.TimeMax) {readjust_timebase(All.TimeMax, all.TimeMax);}
     }
@@ -461,7 +486,7 @@ void begrun(void)
 void set_units(void)
 {
   /* convert some physical input parameters to internal units */
-  if(All.G <= 0) {All.G = GRAVITY_G * UNIT_MASS_IN_CGS / (UNIT_LENGTH_IN_CGS * UNIT_VEL_IN_CGS*UNIT_VEL_IN_CGS);}
+  if(All.G <= 0) {All.G = GRAVITY_G_CGS * UNIT_MASS_IN_CGS / (UNIT_LENGTH_IN_CGS * UNIT_VEL_IN_CGS*UNIT_VEL_IN_CGS);}
 #ifdef GR_TABULATED_COSMOLOGY_G
   All.Gini = All.G;
   All.G = All.Gini * dGfak(All.TimeBegin);
@@ -523,12 +548,12 @@ void set_units(void)
     All.ConductionCoeff *= coefficient;
 #endif
 #ifdef VISCOSITY_BRAGINSKII
-    All.ShearViscosityCoeff *= coefficient * 0.636396*sqrt(ELECTRONMASS/(PROTONMASS*meanweight_ion)); // the viscosity coefficient eta is identical in these units up to the order-unity constant, and multiplied by sqrt[m_electron/m_ion] //
+    All.ShearViscosityCoeff *= coefficient * 0.636396*sqrt(ELECTRONMASS_CGS/(PROTONMASS_CGS*meanweight_ion)); // the viscosity coefficient eta is identical in these units up to the order-unity constant, and multiplied by sqrt[m_electron/m_ion] //
     All.BulkViscosityCoeff = 0; // no bulk viscosity in the Braginskii-Spitzer formulation //
 #endif
     /* factor used for determining saturation */
     All.ElectronFreePathFactor = 8 * pow(3.0, 1.5) * pow((GAMMA_DEFAULT-1), 2) / pow(3 + 5 * HYDROGEN_MASSFRAC, 2)
-        / (1 + HYDROGEN_MASSFRAC) / sqrt(M_PI) / coulomb_log * pow(PROTONMASS, 3) / pow(ELECTRONCHARGE, 4) / (UNIT_DENSITY_IN_CGS) * pow(UNIT_SPECEGY_IN_CGS, 2);
+        / (1 + HYDROGEN_MASSFRAC) / sqrt(M_PI) / coulomb_log * pow(PROTONMASS_CGS, 3) / pow(ELECTRONCHARGE_CGS, 4) / (UNIT_DENSITY_IN_CGS) * pow(UNIT_SPECEGY_IN_CGS, 2);
 
   /* If the above value is multiplied with u^2/rho in code units (with rho being the physical density), then
    * one gets the electron mean free path in centimeters. Since we want to compare this with another length
@@ -983,7 +1008,7 @@ void read_parameter_file(char *fname)
 #endif
 
 #endif
-#if !defined(PIC_MHD) || defined(GRAIN_FLUID_AND_PIC_BOTH_DEFINED)
+#if !defined(PIC_MHD) || defined(FLAG_NOT_IN_PUBLIC_CODE)
         strcpy(tag[nt],"Grain_Internal_Density");
         addr[nt] = &All.Grain_Internal_Density;
         id[nt++] = REAL;
@@ -1287,6 +1312,13 @@ void read_parameter_file(char *fname)
 #endif
 
 
+#ifdef COSMIC_RAY_FLUID
+#if (CRFLUID_DIFFUSION_MODEL == 0)
+        strcpy(tag[nt], "CosmicRayDiffusionCoeff");
+        addr[nt] = &All.CosmicRayDiffusionCoeff;
+        id[nt++] = REAL;
+#endif
+#endif
 
 
 #if (defined(BLACK_HOLES) || defined(GALSF_SUBGRID_WINDS)) && defined(FOF)
@@ -1362,6 +1394,11 @@ void read_parameter_file(char *fname)
         id[nt++] = REAL;
 #endif
 
+#if defined(SINGLE_STAR_FB_JETS)
+        strcpy(tag[nt],"BAL_f_launch_v");
+        addr[nt] = &All.BAL_f_launch_v;
+        id[nt++] = REAL;
+#endif
 
 #if defined(BH_COSMIC_RAYS)
         strcpy(tag[nt],"BH_CosmicRay_Injection_Efficiency");
@@ -1380,6 +1417,12 @@ void read_parameter_file(char *fname)
         id[nt++] = REAL;
 #endif
 
+#ifdef BH_PHOTONMOMENTUM
+        strcpy(tag[nt],"BH_FluxMomentumFactor");
+        strcpy(alternate_tag[nt], "BH_Rad_MomentumFactor");
+        addr[nt] = &All.BH_Rad_MomentumFactor;
+        id[nt++] = REAL;
+#endif
 
 #endif /* BLACK_HOLES */
 
@@ -1631,6 +1674,31 @@ void read_parameter_file(char *fname)
 #endif
 
 
+#ifdef NUCLEAR_NETWORK
+      strcpy(tag[nt], "EosSpecies");
+      addr[nt] = All.EosSpecies;
+      id[nt++] = STRING;
+
+        strcpy(tag[nt], "NetworkRates");
+      addr[nt] = All.NetworkRates;
+      id[nt++] = STRING;
+
+      strcpy(tag[nt], "NetworkPartFunc");
+      addr[nt] = All.NetworkPartFunc;
+      id[nt++] = STRING;
+
+      strcpy(tag[nt], "NetworkMasses");
+      addr[nt] = All.NetworkMasses;
+      id[nt++] = STRING;
+
+      strcpy(tag[nt], "NetworkWeakrates");
+      addr[nt] = All.NetworkWeakrates;
+      id[nt++] = STRING;
+
+      strcpy(tag[nt], "NetworkTempThreshold");
+      addr[nt] = &All.NetworkTempThreshold;
+      id[nt++] = REAL;
+#endif
 
 #if defined(RT_CHEM_PHOTOION) && !(defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(GALSF))
         strcpy(tag[nt], "IonizingLuminosityPerSolarMass_cgs");
@@ -2192,7 +2260,7 @@ void read_parameter_file(char *fname)
     /* (PFH) safety factor needed for MHD calc, because people keep using the same CFac as hydro! */
 #endif
 
-#if defined(PIC_MHD) && !defined(GRAIN_FLUID_AND_PIC_BOTH_DEFINED)
+#if defined(PIC_MHD) && !defined(FLAG_NOT_IN_PUBLIC_CODE)
     All.Grain_Internal_Density=1; All.Grain_Size_Min=1; All.Grain_Size_Max=1; All.Grain_Size_Spectrum_Powerlaw=1; /* in this case these are never used, so we treat them as dummy variables */
 #endif
 

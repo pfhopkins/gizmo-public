@@ -284,7 +284,7 @@ void init(void)
         {
             int grain_subtype = 1; P[i].Grain_Size = 0; /* default assumption about particulate sub-type for operations below */
 #if defined(PIC_MHD)
-            grain_subtype = P[i].Grain_SubType; /* check if the 'grains' are really PIC elements */
+            grain_subtype = P[i].MHD_PIC_SubType; /* check if the 'grains' are really PIC elements */
 #endif
             /* Change grain mass to change the distribution of sizes.  Grain_Size_Spectrum_Powerlaw parameter sets d\mu/dln(R_d) ~ R_d^Grain_Size_Spectrum_Powerlaw */
             if(grain_subtype <= 2)
@@ -304,6 +304,14 @@ void init(void)
 #ifdef GRAIN_RDI_TESTPROBLEM_ACCEL_DEPENDS_ON_SIZE
                 a0 *= All.Grain_Size_Max / P[i].Grain_Size;
 #endif
+#ifdef GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION
+                double q_a = (0.75*All.Grain_Q_at_MaxGrainSize) / (All.Grain_Internal_Density*All.Grain_Size_Max), kappa_0 = All.Grain_Absorbed_Fraction_vs_Total_Extinction * q_a * All.Dust_to_Gas_Mass_Ratio;
+                double rho_base_setup = 1., H_scale_setup = 1.; // define in code units the -assumed- initial scaling of the base gas density and vertical scale-length (PROBLEM SPECIFIC HERE!)
+#ifdef GRAIN_RDI_TESTPROBLEM_ACCEL_DEPENDS_ON_SIZE
+                kappa_0 *= sqrt(All.Grain_Size_Max / All.Grain_Size_Min); // opacity must be corrected for dependence of Q on grainsize or lack thereof
+#endif
+                a0 *= exp(-kappa_0*rho_base_setup*H_scale_setup*(1.-exp(-P[i].Pos[2]/H_scale_setup))); // attenuate incident flux (and reduce acceleration) according to equilibrium expectation, if we're using single-scattering radiation pressure [otherwise comment this line out] //
+#endif
                 w0=sqrt((sqrt(1.+4.*agamma*a0*a0)-1.)/(2.*agamma)); // exact solution if no Lorentz forces and Epstein drag //
 #ifdef GRAIN_LORENTZFORCE
                 double Bmag, tL_i=0, tau2_0=0, f_tau_guess2=0; B[0]=All.BiniX; B[1]=All.BiniY; B[2]=All.BiniZ; Bmag=sqrt(B[0]*B[0]+B[1]*B[1]+B[2]*B[2]); B[0]/=Bmag; B[1]/=Bmag; B[2]/=Bmag;
@@ -318,9 +326,7 @@ void init(void)
 #endif
                 w0 /= sqrt((1.+tau2)*(1.+tau2*ct2)); // ensures normalization to unity with convention below //
                 A_cross_B[0]=A[1]*B[2]-A[2]*B[1]; A_cross_B[1]=A[2]*B[0]-A[0]*B[2]; A_cross_B[2]=A[0]*B[1]-A[1]*B[0];
-#if !defined(RT_OPACITY_FROM_EXPLICIT_GRAINS)
                 for(k=0;k<3;k++) {P[i].Vel[k]=w0*(A[k] + sqrt(tau2)*A_cross_B[k] + tau2*ct*B[k]);}
-#endif
 #ifdef BOX_SHEARING
                 // now add linearly the NHS drift solution for our shearing box setup
                 double v00 = -All.Pressure_Gradient_Accel / (2. * BOX_SHEARING_OMEGA_BOX_CENTER);
@@ -536,7 +542,7 @@ void init(void)
         SphP[i].Norm_hat = 0;
         SphP[i].Dynamic_numerator = 0;
         SphP[i].Dynamic_denominator = 0;
-#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
+#ifdef OUTPUT_TURB_DIFF_DYNAMIC_ERROR
         SphP[i].TD_DynDiffCoeff_error = 0;
 #endif
         for (u = 0; u < 3; u++) {
@@ -562,13 +568,14 @@ void init(void)
             SphP[i].Ne = 1.0;
 #endif
 #if defined(COOL_MOLECFRAC_NONEQM)
-	    double nHcgs = HYDROGEN_MASSFRAC * UNIT_DENSITY_IN_CGS * SphP[i].Density * All.cf_a3inv / PROTONMASS;
-        if(nHcgs > 10) {SphP[i].MolecularMassFraction = 1.0; SphP[i].MolecularMassFraction_perNeutralH = 1.0;} // dense ISM starts molecular - very approximate cutoff
-            else {SphP[i].MolecularMassFraction = 0.0; SphP[i].MolecularMassFraction_perNeutralH = 0.0;} // otherwise start atomic
+            SphP[i].MolecularMassFraction = 0.0; SphP[i].MolecularMassFraction_perNeutralH = 0.0; // start atomic
 #endif
 #endif
 #ifdef CHIMES_STELLAR_FLUXES
 	    int kc; for (kc = 0; kc < CHIMES_LOCAL_UV_NBINS; kc++) {SphP[i].Chimes_fluxPhotIon[kc] = 0; SphP[i].Chimes_G0[kc] = 0;}
+#endif
+#ifdef BH_COMPTON_HEATING
+            SphP[i].Rad_Flux_AGN = 0;
 #endif
         }
 #ifdef GALSF_SUBGRID_WINDS
@@ -585,6 +592,9 @@ void init(void)
 #if defined(GALSF_SFR_VIRIAL_CRITERION_TIMEAVERAGED)
         SphP[i].AlphaVirial_SF_TimeSmoothed = 0;
 #endif
+#endif
+#ifdef COSMIC_RAY_FLUID
+        if(RestartFlag == 0) {for(j=0;j<N_CR_PARTICLE_BINS;j++) {SphP[i].CosmicRayEnergy[j] = 0;}}
 #endif
 #ifdef MAGNETIC
 #if defined MHD_B_SET_IN_PARAMS
@@ -740,6 +750,18 @@ void init(void)
         for(j=0;j<3;j++) {SphP[i].B[j] = SphP[i].BPred[j] * P[i].Mass / SphP[i].Density;} // convert to the conserved unit V*B //
         for(j=0;j<3;j++) {SphP[i].BPred[j]=SphP[i].B[j]; SphP[i].DtB[j]=0;}
 #endif
+#ifdef COSMIC_RAY_FLUID
+        for(k=0;k<N_CR_PARTICLE_BINS;k++)
+        {
+            SphP[i].CosmicRayEnergyPred[k]=SphP[i].CosmicRayEnergy[k]; SphP[i].CosmicRayDiffusionCoeff[k]=0; SphP[i].DtCosmicRayEnergy[k]=0;
+#ifdef CRFLUID_M1
+            for(j=0;j<3;j++) {SphP[i].CosmicRayFlux[k][j]=0; SphP[i].CosmicRayFluxPred[k][j]=0;}
+#endif
+#ifdef CRFLUID_EVOLVE_SCATTERINGWAVES
+            for(j=0;j<2;j++) {SphP[i].CosmicRayAlfvenEnergy[k][j]=0; SphP[i].CosmicRayAlfvenEnergyPred[k][j]=0; SphP[i].DtCosmicRayAlfvenEnergy[k][j]=0;}
+#endif
+        }
+#endif
 #if defined(EOS_ELASTIC)
         if(RestartFlag != 1)
         {
@@ -770,6 +792,9 @@ void init(void)
 #ifdef SUPER_TIMESTEP_DIFFUSION
         SphP[i].Super_Timestep_Dt_Explicit = 0;
         SphP[i].Super_Timestep_j = 0;
+#endif
+#ifdef BH_COMPTON_HEATING
+        SphP[i].Rad_Flux_AGN = 0;
 #endif
 #if defined(RT_USE_GRAVTREE_SAVE_RAD_ENERGY)
         {int kf; for(kf=0;kf<N_RT_FREQ_BINS;kf++) {SphP[i].Rad_E_gamma[kf]=0;}}

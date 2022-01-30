@@ -240,6 +240,11 @@ void calculate_non_standard_physics(void)
 #endif
 
 
+#ifdef GALSF /* PFH set of feedback routines; here because for e.g. strong SNe, obtain better stability if they are coupled discretely just -before- the hydro force is computed */
+    //compute_stellar_feedback();
+#endif
+
+    
 #ifdef BLACK_HOLES /***** black hole accretion and feedback *****/
     CPU_Step[CPU_MISC] += measure_time();
     blackhole_accretion();
@@ -269,7 +274,9 @@ void calculate_non_standard_physics(void)
 #if !defined(RT_INJECT_PHOTONS_DISCRETELY)
     flag = Flag_FullStep; /* for continous injection, requires all sources and gas be active synchronously or else 2x-counts */
 #endif
-    if(flag) {rt_source_injection();} /* source injection into neighbor gas particles (only on full timesteps) */
+#if !defined(GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION)
+    if(flag) {rt_source_injection();} /* source injection into neighbor gas particles (only on full timesteps, if using non-discrete scheme) */
+#endif
 #endif
 #if defined(RT_DIFFUSION_CG) /* use the CG method to solve the RT diffusion equation implicitly for all particles; do only on full timesteps, requires synchronous timestepping right now */
     if(Flag_FullStep) {All.Radiation_Ti_endstep = All.Ti_Current; rt_diffusion_cg_solve(); All.Radiation_Ti_begstep = All.Radiation_Ti_endstep;}

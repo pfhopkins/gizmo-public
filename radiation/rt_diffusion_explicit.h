@@ -13,7 +13,7 @@
 #define RT_ENHANCED_NUMERICAL_DIFFUSION /* option which increases numerical diffusion, to get smoother solutions, if desired; akin to slopelimiters~0 model */
 {
     // first define some variables needed regardless //
-    double c_light_eff = C_LIGHT_CODE_REDUCED, rsol_corr = c_light_eff / C_LIGHT_CODE;
+    double c_light_eff = C_LIGHT_CODE_REDUCED, rsol_corr = RSOL_CORRECTION_FACTOR_FOR_VELOCITY_TERMS;
 #if defined(HYDRO_MESHLESS_FINITE_VOLUME)
     double v_frame[3]={0}; for(k=0;k<3;k++) {v_frame[k]=0.5*(ParticleVel_j[k] + local.ParticleVel[k])/All.cf_atime;} // frame velocity, not fluid velocity, is what appears here
 #else
@@ -140,7 +140,7 @@
         Fluxes_Rad_Flux[k_freq][0]=Fluxes_Rad_Flux[k_freq][1]=Fluxes_Rad_Flux[k_freq][2]=0;
         double scalar_i = local.Rad_E_gamma[k_freq] / V_i_phys; // volumetric photon number density in this frequency bin (E_phys/L_phys^3)//
         double scalar_j = SphP[j].Rad_E_gamma_Pred[k_freq] / V_j_phys;
-        if((scalar_i>0)&&(scalar_j>0)&&(local.Mass>0)&&(P[j].Mass>0)&&(dt_hydrostep>0)&&(Face_Area_Norm>0))
+        if((scalar_i+scalar_j>0)&&(local.Mass>0)&&(P[j].Mass>0)&&(dt_hydrostep>0)&&(Face_Area_Norm>0))
         {
             double d_scalar = scalar_i - scalar_j;
             double face_dot_flux=0., cmag=0., cmag_flux[3]={0}, grad_norm=0, flux_i[3]={0}, flux_j[3]={0}, thold_hll;

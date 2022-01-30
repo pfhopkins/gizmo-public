@@ -373,6 +373,7 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 #ifdef BH_GRAVCAPTURE_GAS
                         out_accreted_BH_Mass_alphaornot += FLT(f_accreted*Mass_j);
 #endif
+			double Mass_initial = Mass_j; // save this for possible IO below
                         Mass_j *= (1-f_accreted);
 #ifdef BH_WIND_KICK     /* BAL kicking operations. NOTE: we have two separate BAL wind models, particle kicking and smooth wind model. This is where we do the particle kicking BAL model. This should also work when there is alpha-disk. */
                         double v_kick=All.BAL_v_outflow, dir[3]; for(k=0;k<3;k++) {dir[k]=dpos[k];} // DAA: default direction is radially outwards
@@ -401,7 +402,7 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 #ifdef MAGNETIC
                         for(k=0;k<3;k++) {tempB[k]=Get_Gas_BField(j,k);} //use particle magnetic field
 #endif
-                        fprintf(FdBhSwallowDetails,"%g %llu %g %2.7f %2.7f %2.7f %llu %g %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f\n", All.Time, (unsigned long long)local.ID,local.Mass,local.Pos[0],local.Pos[1],local.Pos[2],  (unsigned long long)P[j].ID, Mass_j, (P[j].Pos[0]-local.Pos[0]),(P[j].Pos[1]-local.Pos[1]),(P[j].Pos[2]-local.Pos[2]), (Vel_j[0]-local.Vel[0]),(Vel_j[1]-local.Vel[1]),(Vel_j[2]-local.Vel[2]), SphP[j].InternalEnergy, tempB[0], tempB[1], tempB[2], SphP[j].Density); fflush(FdBhSwallowDetails);
+                        fprintf(FdBhSwallowDetails,"%g %llu %g %2.7f %2.7f %2.7f %llu %g %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f\n", All.Time, (unsigned long long)local.ID,local.Mass,local.Pos[0],local.Pos[1],local.Pos[2],  (unsigned long long)P[j].ID, Mass_initial, (P[j].Pos[0]-local.Pos[0]),(P[j].Pos[1]-local.Pos[1]),(P[j].Pos[2]-local.Pos[2]), (Vel_j[0]-local.Vel[0]),(Vel_j[1]-local.Vel[1]),(Vel_j[2]-local.Vel[2]), SphP[j].InternalEnergy, tempB[0], tempB[1], tempB[2], SphP[j].Density); fflush(FdBhSwallowDetails);
 #endif
                     }  // if(P[j].Type == 0)
                     //P[j].SwallowID = 0; /* DAA: make sure it is not accreted (or ejected) by the same BH again if inactive in the next timestep [PFH: no longer necessary with the new way we re-initialize the SwallowIDs] */
@@ -421,8 +422,12 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
                         mom_wt = bh_angleweight_localcoupling(j,norm,r,h_i) / local.BH_angle_weighted_kernel_sum;
                         if(local.BH_angle_weighted_kernel_sum<=0) {mom_wt=0;}
 
+#ifdef BH_PHOTONMOMENTUM /* inject radiation pressure: add initial L/c optical/UV coupling to the gas at the dust sublimation radius */
+                        double v_kick = All.BH_Rad_MomentumFactor * mom_wt * mom / Mass_j;
+                        for(k=0;k<3;k++) {Vel_j[k]+=v_kick*All.cf_atime*dir[k];}
+#endif
 #if defined(BH_COSMIC_RAYS) && defined(BH_WIND_CONTINUOUS) /* inject cosmic rays alongside continuous wind injection */
-                        double dEcr = All.BH_CosmicRay_Injection_Efficiency * mom_wt * C_LIGHT_CODE*C_LIGHT_CODE * local.Mdot*local.Dt;
+                        double dEcr = (evaluate_blackhole_cosmicray_efficiency(local.Mdot,local.BH_Mass,-1)) * mom_wt * C_LIGHT_CODE*C_LIGHT_CODE * local.Mdot*local.Dt;
                         inject_cosmic_rays(dEcr,All.BAL_v_outflow,5,j,dir);
 #endif
 #if defined(BH_WIND_CONTINUOUS) && !defined(BH_WIND_KICK) /* inject BAL winds, this is the more standard smooth feedback model */
@@ -762,7 +767,7 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_sph_i_to_clone, int nu
 
     double veldir[3], dpdir[3]; // velocity direction to spawn in - declare outside the loop so we remember it from the last iteration
     int mode = 0; // 0 if doing totally random directions, 1 if collimated, 2 for 3-axis isotropized, and 3 if using an angular grid,  4 old collimatation script, position isotropic velicity coliminated within certain open angle (might be useful to still keep this option owing to the free open angle choice and better sampling the magnetic field geometry)
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(JET_DIRECTION_FROM_KERNEL_AND_SINK) || defined(BH_FB_COLLIMATED)
+#if defined(SINGLE_STAR_FB_JETS) || defined(JET_DIRECTION_FROM_KERNEL_AND_SINK) || defined(BH_FB_COLLIMATED)
     mode = 1; // collimated mode
 #endif
 #if defined(BH_DEBUG_SPAWN_JET_TEST)
@@ -908,9 +913,12 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_sph_i_to_clone, int nu
         BPP(i).unspawned_wind_mass -= P[j].Mass; /* remove the mass successfully spawned, to update the remaining unspawned mass */
 
         double v_magnitude = All.BAL_v_outflow * All.cf_atime; // velocity of the jet: default mode is to set this manually to a specific value
+#ifdef SINGLE_STAR_FB_JETS
+        v_magnitude = single_star_jet_velocity(i); // get velocity from our more detailed function
+#endif
         
 
-#if defined(METALS) && (defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_FB_WINDS) || defined(SINGLE_STAR_FB_SNE))
+#if defined(METALS) && (defined(SINGLE_STAR_FB_JETS) || defined(SINGLE_STAR_FB_WINDS) || defined(SINGLE_STAR_FB_SNE))
         double yields[NUM_METAL_SPECIES]={0}; get_jet_yields(yields,i); // default to jet-type
         for(k=0;k<NUM_METAL_SPECIES;k++) {P[j].Metallicity[k]=yields[k];}  // update metallicity of spawned cell modules
 #endif
@@ -934,11 +942,23 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_sph_i_to_clone, int nu
 #ifdef MAGNETIC
         get_wind_spawn_magnetic_field(j, mode, jy, jz, dpdir, d_r);
 #endif
+#ifdef COSMIC_RAY_FLUID
+        int k_CRegy; for(k_CRegy=0;k_CRegy<N_CR_PARTICLE_BINS;k_CRegy++) /* initialize CR energy and other related terms to nil */
+        {
+            SphP[j].CosmicRayEnergyPred[k_CRegy]=SphP[j].CosmicRayEnergy[k_CRegy]=SphP[j].DtCosmicRayEnergy[k_CRegy]=0;
+#ifdef CRFLUID_M1
+            for(k=0;k<3;k++) {SphP[j].CosmicRayFlux[k_CRegy][k]=SphP[j].CosmicRayFluxPred[k_CRegy][k]=0;}
+#endif
+#ifdef CRFLUID_EVOLVE_SCATTERINGWAVES
+            for(k=0;k<3;k++) {SphP[j].CosmicRayAlfvenEnergy[k_CRegy][k]=SphP[j].CosmicRayAlfvenEnergyPred[k_CRegy][k]=SphP[j].DtCosmicRayAlfvenEnergy[k_CRegy][k]=0;}
+#endif        
+        } /* complete CR initialization to null */
+#endif
         SphP[j].InternalEnergy = All.BAL_internal_temperature / (  0.59 * (5./3.-1.) * U_TO_TEMP_UNITS ); /* internal energy, determined by desired wind temperature (assume fully ionized primordial gas with gamma=5/3) */
         SphP[j].InternalEnergyPred = SphP[j].InternalEnergy;
 
 #if defined(BH_COSMIC_RAYS) /* inject cosmic rays alongside wind injection */
-        double dEcr = All.BH_CosmicRay_Injection_Efficiency * P[j].Mass * (All.BAL_f_accretion/(1.-All.BAL_f_accretion)) * C_LIGHT_CODE*C_LIGHT_CODE;
+        double dEcr = evaluate_blackhole_cosmicray_efficiency(BPP(i).BH_Mdot,BPP(i).BH_Mass,i) * P[j].Mass * (All.BAL_f_accretion/(1.-All.BAL_f_accretion)) * C_LIGHT_CODE*C_LIGHT_CODE;
         inject_cosmic_rays(dEcr,All.BAL_v_outflow,5,j,veldir);
 #endif
         /* Note: New tree construction can be avoided because of  `force_add_star_to_tree()' */

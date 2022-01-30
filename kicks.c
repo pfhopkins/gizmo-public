@@ -245,6 +245,11 @@ void do_the_kick(int i, integertime tstart, integertime tend, integertime tcurre
 #endif
             double du_tot = SphP[i].DtInternalEnergy * dt_hydrokick + dEnt_Gravity;
 #if defined(COOLING) && !defined(COOLING_OPERATOR_SPLIT)
+            if((mode == 1) && (du_tot != 0) && (dt_hydrokick > 0)) { /* if about to consider second-halfstep kick (just after hydro), decide if we need to split this particular cell on this particular timestep, since this un-split solver can lead to energy conservation problems if the mechanical heating is much larger than cooling */
+                SphP[i].CoolingIsOperatorSplitThisTimestep=1; /* default to assume split */
+                double DtInternalEnergyEffCGS = (UNIT_SPECEGY_IN_CGS/UNIT_TIME_IN_CGS) * (PROTONMASS_CGS/HYDROGEN_MASSFRAC) * (du_tot/dt_hydrokick), DtInternalEnergyReference = 1.e-23*SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_NHCGS; /* define the effective work term in cgs and a reference typical cooling time */
+                if(DtInternalEnergyEffCGS < DtInternalEnergyReference) {SphP[i].CoolingIsOperatorSplitThisTimestep=0;} /* cooling is fast compared to the hydro work term, or the hydro term is negative [cooling], so un-split the operation */
+            }
             if(SphP[i].CoolingIsOperatorSplitThisTimestep==0) {du_tot=0;} /* cooling in unsplit, so zero contribution here */
 #endif
             double dEnt = SphP[i].InternalEnergy + du_tot;
@@ -418,6 +423,18 @@ void set_predicted_sph_quantities_for_extra_physics(int i)
 #endif
 #endif
 #endif
+#ifdef COSMIC_RAY_FLUID
+        for(kf=0;kf<N_CR_PARTICLE_BINS;kf++)
+        {
+            SphP[i].CosmicRayEnergyPred[kf] = SphP[i].CosmicRayEnergy[kf];
+#ifdef CRFLUID_M1
+            for(k=0;k<3;k++) {SphP[i].CosmicRayFluxPred[kf][k] = SphP[i].CosmicRayFlux[kf][k];}
+#endif
+#ifdef CRFLUID_EVOLVE_SCATTERINGWAVES
+            for(k=0;k<2;k++) {SphP[i].CosmicRayAlfvenEnergyPred[kf][k] = SphP[i].CosmicRayAlfvenEnergy[kf][k];}
+#endif
+        }
+#endif
         
 #if defined(RT_EVOLVE_ENERGY)
         for(kf=0;kf<N_RT_FREQ_BINS;kf++)
@@ -508,12 +525,19 @@ void do_sph_kick_for_extra_physics(int i, integertime tstart, integertime tend, 
 #endif
 #endif
     
+#ifdef NUCLEAR_NETWORK
+    for(j = 0; j < EOS_NSPECIES; j++) {SphP[i].xnuc[j] += SphP[i].dxnuc[j] * dt_entr * UNIT_TIME_IN_CGS;}    
+    network_normalize(SphP[i].xnuc, &SphP[i].InternalEnergy, &All.nd, &All.nw);
+#endif
     
+#ifdef COSMIC_RAY_FLUID
+    CosmicRay_Update_DriftKick(i,dt_entr,0);
+#endif
     
 #ifdef RADTRANSFER
     rt_update_driftkick(i,dt_entr,0);
 #ifdef GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION
-    if(P[i].Pos[2] > DMIN(18., DMAX(1.1*All.Time*C_LIGHT_CODE_REDUCED, DMIN(14.*boxSize_X + (All.Vertical_Grain_Accel*All.Dust_to_Gas_Mass_Ratio - All.Vertical_Gravity_Strength)*All.Time*All.Time/2., 18.)))) {for(j=0;j<N_RT_FREQ_BINS;j++) {SphP[i].Rad_E_gamma[j]*=0.5; SphP[i].Rad_E_gamma_Pred[j]*=0.5;
+    if(P[i].Pos[2] > DMIN(19., DMAX(1.1*All.Time*C_LIGHT_CODE_REDUCED, DMIN(18.*boxSize_X + (All.Vertical_Grain_Accel*All.Dust_to_Gas_Mass_Ratio - All.Vertical_Gravity_Strength)*All.Time*All.Time/2., 19.)))) {for(j=0;j<N_RT_FREQ_BINS;j++) {SphP[i].Rad_E_gamma[j]*=0.5; SphP[i].Rad_E_gamma_Pred[j]*=0.5;
 #ifdef RT_EVOLVE_FLUX
         if(SphP[i].Rad_Flux[j][2] < 0) {SphP[i].Rad_Flux[j][2]=-SphP[i].Rad_Flux[j][2]; SphP[i].Rad_Flux_Pred[j][2]=SphP[i].Rad_Flux[j][2];}
 #endif
@@ -540,12 +564,15 @@ void apply_special_boundary_conditions(int i, double mass_for_dp, int mode)
             if(special_boundary_condition_xyz_def_reflect[j] == 0 || special_boundary_condition_xyz_def_reflect[j] == -1)
             {
                 if(P[i].Vel[j]<0) {P[i].Vel[j]=-P[i].Vel[j]; if(P[i].Type==0) {SphP[i].VelPred[j]=P[i].Vel[j]; SphP[i].HydroAccel[j]=0;} if(mode==1) {P[i].dp[j]+=2*P[i].Vel[j]*mass_for_dp;}}
-                P[i].Pos[j]=(0.+((double)P[i].ID)*1.e-9)*box_upper[j];
+                P[i].Pos[j]=DMAX((0.+((double)P[i].ID)*2.e-8)*box_upper[j], 0.1*P[i].Pos[j]); // old  was 1e-9, safer on some problems, but can artificially lead to 'trapping' in some low-res tests
 #ifdef GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION
-                P[i].Pos[j]+=3.e-3*boxSize_X; /* special because of our wierd boundary condition for this problem, sorry to have so many hacks for this! */
+                P[i].Pos[j]+=3.e-3*boxSize_X; P[i].Vel[j] += 0.1; /* special because of our wierd boundary condition for this problem, sorry to have so many hacks for this! */
 #endif
 #ifdef RT_EVOLVE_FLUX
                 if(P[i].Type==0) {int kf; for(kf=0;kf<N_RT_FREQ_BINS;kf++) {if(SphP[i].Rad_Flux[kf][j]<0) {SphP[i].Rad_Flux[kf][j]=-SphP[i].Rad_Flux[kf][j]; SphP[i].Rad_Flux_Pred[kf][j]=SphP[i].Rad_Flux[kf][j];}}}
+#endif
+#ifdef CRFLUID_M1
+                if(P[i].Type==0) {int kf; for(kf=0;kf<N_CR_PARTICLE_BINS;kf++) {if(SphP[i].CosmicRayFlux[kf][j]<0) {SphP[i].CosmicRayFlux[kf][j]=-SphP[i].CosmicRayFlux[kf][j]; SphP[i].CosmicRayFluxPred[kf][j]=SphP[i].CosmicRayFlux[kf][j];}}}
 #endif
             }
             if(special_boundary_condition_xyz_def_outflow[j] == 0 || special_boundary_condition_xyz_def_outflow[j] == -1) {P[i].Mass=0; if(mode==1) {P[i].dp[0]=P[i].dp[1]=P[i].dp[2]=0;}}
@@ -555,9 +582,12 @@ void apply_special_boundary_conditions(int i, double mass_for_dp, int mode)
             if(special_boundary_condition_xyz_def_reflect[j] == 0 || special_boundary_condition_xyz_def_reflect[j] == 1)
             {
                 if(P[i].Vel[j]>0) {P[i].Vel[j]=-P[i].Vel[j]; if(P[i].Type==0) {SphP[i].VelPred[j]=P[i].Vel[j]; SphP[i].HydroAccel[j]=0;} if(mode==1) {P[i].dp[j]+=2*P[i].Vel[j]*mass_for_dp;}}
-                P[i].Pos[j]=box_upper[j]*(1.-((double)P[i].ID)*1.e-9);
+                P[i].Pos[j]=box_upper[j]*(1.-((double)P[i].ID)*2.e-8);
 #ifdef RT_EVOLVE_FLUX
                 if(P[i].Type==0) {int kf; for(kf=0;kf<N_RT_FREQ_BINS;kf++) {if(SphP[i].Rad_Flux[kf][j]>0) {SphP[i].Rad_Flux[kf][j]=-SphP[i].Rad_Flux[kf][j]; SphP[i].Rad_Flux_Pred[kf][j]=SphP[i].Rad_Flux[kf][j];}}}
+#endif
+#ifdef CRFLUID_M1
+                if(P[i].Type==0) {int kf; for(kf=0;kf<N_CR_PARTICLE_BINS;kf++) {if(SphP[i].CosmicRayFlux[kf][j]>0) {SphP[i].CosmicRayFlux[kf][j]=-SphP[i].CosmicRayFlux[kf][j]; SphP[i].CosmicRayFluxPred[kf][j]=SphP[i].CosmicRayFlux[kf][j];}}}
 #endif
             }
             if(special_boundary_condition_xyz_def_outflow[j] == 0 || special_boundary_condition_xyz_def_outflow[j] == 1) {P[i].Mass=0; if(mode==1) {P[i].dp[0]=P[i].dp[1]=P[i].dp[2]=0;}}

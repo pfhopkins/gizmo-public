@@ -26,6 +26,7 @@ void GravAccel_RayleighTaylorTest(void);
 void GravAccel_ShearingSheet(void);
 void GravAccel_PaczynskyWiita(void);
 void GravAccel_RDITestProblem(void);
+void GravAccel_GMCTurbInit(void);
 
 /* parent routine which decides which (if any) analytic gravitational forces are applied */
 void add_analytic_gravitational_forces()
@@ -43,6 +44,9 @@ void add_analytic_gravitational_forces()
     //GravAccel_GrowingDiskPotential();   // time-dependent (adiabatically growing) disk
     //GravAccel_StaticNFW();              // NFW profile sphere
     //GravAccel_PaczynskyWiita();         // Paczynsky-Wiita pseudo-Newtonian potential
+#endif
+#ifdef STARFORGE_GMC_TURBINIT
+    GravAccel_GMCTurbInit();              // uniform sphere harmonic potential + r^-3 halo outside to confine stirred turbulent gas
 #endif
 
 #ifdef BOX_SHEARING
@@ -81,6 +85,14 @@ void GravAccel_RDITestProblem()
             if(P[i].Type==0) {P[i].GravAccel[GRAV_DIRECTION_RDI]+=All.Dust_to_Gas_Mass_Ratio*mu_g;} else {P[i].GravAccel[GRAV_DIRECTION_RDI]-=mu_g;}
 #else
             P[i].GravAccel[GRAV_DIRECTION_RDI] -= All.Vertical_Gravity_Strength; /* everything feels same vertical gravity */
+#if defined(GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION) /* this is a hack for this problem to prevent the bottom boundary layer of gas from detachinng in a spurious way that prevents numerical flux from propagating in the z-direction */
+            if(P[i].Type==0) {
+                double h_exp = 0.05*(0.5+get_random_number(2*i+10+P[i].ID)) + 0.5 * (0.8*All.Vertical_Grain_Accel*All.Dust_to_Gas_Mass_Ratio) * All.Time*All.Time;
+                if(P[i].Pos[GRAV_DIRECTION_RDI] < h_exp) {P[i].GravAccel[GRAV_DIRECTION_RDI] = All.Vertical_Gravity_Strength * pow(1. - P[i].Pos[GRAV_DIRECTION_RDI]/h_exp, 8) + 1.;}
+                h_exp = 0.05*(0.5+get_random_number(2*i+10+P[i].ID)) + 0.5 * (1.0*All.Vertical_Grain_Accel*All.Dust_to_Gas_Mass_Ratio) * All.Time*All.Time;
+                if(P[i].Pos[GRAV_DIRECTION_RDI] < h_exp) {P[i].GravAccel[GRAV_DIRECTION_RDI] = All.Vertical_Gravity_Strength * (1.+2.*get_random_number(i+2+P[i].ID) -  P[i].Pos[2]/(0.5*h_exp));}
+            }
+#endif
 #endif
 #ifdef BOX_SHEARING
             if(P[i].Type==0) {P[i].GravAccel[0] += All.Pressure_Gradient_Accel;} /* gas feels pressure gradient force in radial direction as well */
@@ -190,6 +202,21 @@ void GravAccel_StaticIsothermalSphere()
         double m = ISO_Mmax; if(r < ISO_Rmax) {m *= r/ISO_Rmax;} /* mass enclosed ~r, until Rmax, where it cuts off and remains constant */
         for(k=0;k<3;k++) {P[i].GravAccel[k] += -All.G * m * dp[k]/(r2*r);}
     }
+}
+
+/* potential of a uniform sphere of mass M and radius R, plus a r^-3 density profile outside for a gentle infinite confining potential - used for initializing turbulence in isolated spheres */
+void GravAccel_GMCTurbInit()
+{
+#ifdef STARFORGE_GMC_TURBINIT
+    int i,k; for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
+    {
+        double dp[3]; for(k=0;k<3;k++) {dp[k]=P[i].Pos[k] - 0.5*All.BoxSize;}
+        double r2 = dp[0]*dp[0]+dp[1]*dp[1]+dp[2]*dp[2], r = sqrt(r2);
+	double M = 0.808 * All.TotN_gas * All.MeanGasParticleMass, R=All.BoxSize/10; // these are for the default settings of MakeCloud's uniform sphere IC, adjust for your problem!
+	double menc = DMIN(M,M*pow(r/R,3)) + DMAX(0,3*M*log(r/R)); // uniform sphere plus a r^-3 surrounding halo with density matched at the sphere radius
+        for(k=0;k<3;k++) {P[i].GravAccel[k] += -All.G * STARFORGE_GMC_ALPHA * menc * dp[k]/(r2*r);}
+    }
+#endif
 }
 
 

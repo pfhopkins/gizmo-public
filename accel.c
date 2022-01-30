@@ -80,6 +80,9 @@ void compute_hydro_densities_and_forces(void)
 #ifdef TURB_DIFF_DYNAMIC
         dynamic_diff_vel_calc(); /* This must be called between density and gradient calculations */
 #endif
+#if defined(RADTRANSFER) && defined(GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION)
+        rt_source_injection(); /* doing source injection here (just before interpolation and hydro gradients) is slightly more accurate for this setup, but not possible in total generality owing to dependence of some injection modules on quantities calculated below */
+#endif
 #if defined(RT_OPACITY_FROM_EXPLICIT_GRAINS)
         interpolate_fluxes_opacities_gasgrains(); /* this must be called here for the computation of opacities and radiative quantity gradients below to be correct */
 #endif

@@ -57,7 +57,7 @@ int does_particle_need_to_be_merged(int i)
         double lambda_J = Get_Gas_Fast_MHD_wavespeed_i(i) * sqrt(M_PI / (All.G * SphP[i].Density * All.cf_a3inv));
         if((lambda_J > 4. * PARTICLE_MERGE_SPLIT_TRUELOVE_REFINEMENT * Get_Particle_Size(i)*All.cf_atime) && (P[i].Mass < All.MaxMassForParticleSplit)) {return 1;} // de-refine
     }
-#endif    
+#endif
     if((P[i].Type>0) && (P[i].Mass > 0.5*All.MinMassForParticleMerger*target_mass_renormalization_factor_for_mergesplit(i))) {return 0;}
     if(P[i].Mass <= (All.MinMassForParticleMerger*target_mass_renormalization_factor_for_mergesplit(i))) {return 1;}
     return 0;
@@ -92,6 +92,12 @@ int does_particle_need_to_be_split(int i)
 double target_mass_renormalization_factor_for_mergesplit(int i)
 {
     double ref_factor=1.0;
+#if defined(SINGLE_STAR_AND_SSP_HYBRID_MODEL)
+    if(P[i].Type==0)
+    {
+        return 1; // need to determine appropriate desired refinement criterion, if resolution is not strictly pre-defined //
+    }
+#endif
 /*!
  #if defined(BH_CALC_DISTANCES) && !defined(GRAVITY_ANALYTIC_ANCHOR_TO_PARTICLE) && !defined(SINGLE_STAR_SINK_DYNAMICS)
     ref_factor = DMIN(1.,sqrt(P[i].min_dist_to_bh + 0.0001)); // this is an example of the kind of routine you could use to scale resolution with BH distance //
@@ -222,7 +228,7 @@ void merge_and_split_particles(void)
                                 double v2_tmp=0,vr_tmp=0; int ktmp=0; for(ktmp=0;ktmp<3;ktmp++) {v2_tmp+=(P[i].Vel[ktmp]-P[j].Vel[ktmp])*(P[i].Vel[ktmp]-P[j].Vel[ktmp]); vr_tmp+=(P[i].Vel[ktmp]-P[j].Vel[ktmp])*(P[i].Pos[ktmp]-P[j].Pos[ktmp]);}
                                 if(vr_tmp > 0) {do_allow_merger=0;}
                                 if(v2_tmp > 0) {v2_tmp=sqrt(v2_tmp*All.cf_a2inv);} else {v2_tmp=0;}
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_FB_WINDS)
+#if defined(SINGLE_STAR_FB_JETS) || defined(SINGLE_STAR_FB_WINDS)
                                 if(v2_tmp >  DMIN(Get_Gas_effective_soundspeed_i(i),Get_Gas_effective_soundspeed_i(j))) {do_allow_merger = 0;}
                                 if(P[j].ID == All.AGNWindID) {do_allow_merger = 0;} // wind particles can't intermerge
 #else
@@ -477,6 +483,28 @@ void split_particle_i(int i, int n_particles_split, int i_nearest)
         }
         SphP[j].MassTrue = mass_of_new_particle * SphP[i].MassTrue;
         SphP[i].MassTrue -= SphP[j].MassTrue;
+#endif
+#ifdef COSMIC_RAY_FLUID
+        int k_CRegy; for(k_CRegy=0;k_CRegy<N_CR_PARTICLE_BINS;k_CRegy++) {
+            SphP[j].CosmicRayEnergy[k_CRegy] = mass_of_new_particle * SphP[i].CosmicRayEnergy[k_CRegy]; SphP[i].CosmicRayEnergy[k_CRegy] -= SphP[j].CosmicRayEnergy[k_CRegy];
+            SphP[j].CosmicRayEnergyPred[k_CRegy] = mass_of_new_particle * SphP[i].CosmicRayEnergyPred[k_CRegy]; SphP[i].CosmicRayEnergyPred[k_CRegy] -= SphP[j].CosmicRayEnergyPred[k_CRegy];
+            SphP[j].DtCosmicRayEnergy[k_CRegy] = mass_of_new_particle * SphP[i].DtCosmicRayEnergy[k_CRegy]; SphP[i].DtCosmicRayEnergy[k_CRegy] -= SphP[j].DtCosmicRayEnergy[k_CRegy];
+#ifdef CRFLUID_M1
+            for(k=0;k<3;k++)
+            {
+                SphP[j].CosmicRayFlux[k_CRegy][k] = mass_of_new_particle * SphP[i].CosmicRayFlux[k_CRegy][k]; SphP[i].CosmicRayFlux[k_CRegy][k] -= SphP[j].CosmicRayFlux[k_CRegy][k];
+                SphP[j].CosmicRayFluxPred[k_CRegy][k] = mass_of_new_particle * SphP[i].CosmicRayFluxPred[k_CRegy][k]; SphP[i].CosmicRayFluxPred[k_CRegy][k] -= SphP[j].CosmicRayFluxPred[k_CRegy][k];
+            }
+#endif
+#ifdef CRFLUID_EVOLVE_SCATTERINGWAVES
+            for(k=0;k<2;k++)
+            {
+                SphP[j].CosmicRayAlfvenEnergy[k_CRegy][k] = mass_of_new_particle * SphP[i].CosmicRayAlfvenEnergy[k_CRegy][k]; SphP[i].CosmicRayAlfvenEnergy[k_CRegy][k] -= SphP[j].CosmicRayAlfvenEnergy[k_CRegy][k];
+                SphP[j].CosmicRayAlfvenEnergyPred[k_CRegy][k] = mass_of_new_particle * SphP[i].CosmicRayAlfvenEnergyPred[k_CRegy][k]; SphP[i].CosmicRayAlfvenEnergyPred[k_CRegy][k] -= SphP[j].CosmicRayAlfvenEnergyPred[k_CRegy][k];
+                SphP[j].DtCosmicRayAlfvenEnergy[k_CRegy][k] = mass_of_new_particle * SphP[i].DtCosmicRayAlfvenEnergy[k_CRegy][k]; SphP[i].DtCosmicRayAlfvenEnergy[k_CRegy][k] -= SphP[j].DtCosmicRayAlfvenEnergy[k_CRegy][k];
+            }
+#endif
+        }
 #endif
 
         /* use a better particle shift based on the moment of inertia tensor to place new particles in the direction which is less well-sampled */
@@ -748,6 +776,29 @@ void merge_particles_ij(int i, int j)
 #endif // CHIMES
 #ifdef METALS
     for(k=0;k<NUM_METAL_SPECIES;k++) {P[j].Metallicity[k] = wt_j*P[j].Metallicity[k] + wt_i*P[i].Metallicity[k];} /* metal-mass conserving */
+#endif
+#ifdef COSMIC_RAY_FLUID
+    int k_CRegy; for(k_CRegy=0;k_CRegy<N_CR_PARTICLE_BINS;k_CRegy++)
+    {
+        SphP[j].CosmicRayEnergy[k_CRegy] += SphP[i].CosmicRayEnergy[k_CRegy];
+        SphP[j].CosmicRayEnergyPred[k_CRegy] += SphP[i].CosmicRayEnergyPred[k_CRegy];
+        SphP[j].DtCosmicRayEnergy[k_CRegy] += SphP[i].DtCosmicRayEnergy[k_CRegy];
+#ifdef CRFLUID_M1
+        for(k=0;k<3;k++)
+        {
+            SphP[j].CosmicRayFlux[k_CRegy][k] += SphP[i].CosmicRayFlux[k_CRegy][k];
+            SphP[j].CosmicRayFluxPred[k_CRegy][k] += SphP[i].CosmicRayFluxPred[k_CRegy][k];
+        }
+#endif
+#ifdef CRFLUID_EVOLVE_SCATTERINGWAVES
+        for(k=0;k<3;k++)
+        {
+            SphP[j].CosmicRayAlfvenEnergy[k_CRegy][k] += SphP[i].CosmicRayAlfvenEnergy[k_CRegy][k];
+            SphP[j].CosmicRayAlfvenEnergyPred[k_CRegy][k] += SphP[i].CosmicRayAlfvenEnergyPred[k_CRegy][k];
+            SphP[j].DtCosmicRayAlfvenEnergy[k_CRegy][k] += SphP[i].DtCosmicRayAlfvenEnergy[k_CRegy][k];
+        }
+#endif
+    }
 #endif
 
     /* finally zero out the particle mass so it will be deleted */

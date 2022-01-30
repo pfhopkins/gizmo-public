@@ -645,7 +645,8 @@ void density(void)
                     if(desnumngb < 64.0) {desnumngb = 64.0;} // we do want a decent number to ensure the area around the particle is 'covered'
 #endif
 #ifdef GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION
-                    if(desnumngb < 128) {desnumngb = 128;} // we do want a decent number to ensure the area around the particle is 'covered'
+                    desnumngb = DMAX(desnumngb , 128); // we do want a decent number to ensure the area around the particle is 'covered'
+                    if(KERNEL_FUNCTION > 3) {desnumngb = DMAX(desnumngb, 256);}
 #endif
 #ifdef GALSF
                     if(desnumngb < 64.0) {desnumngb = 64.0;} // we do want a decent number to ensure the area around the particle is 'covered'

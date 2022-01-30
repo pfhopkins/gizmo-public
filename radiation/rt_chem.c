@@ -52,7 +52,7 @@ void rt_get_sigma(void)
     int i_vec[N_BINS_FOR_IONIZATION] = {RT_FREQ_BIN_H0, RT_FREQ_BIN_He0, RT_FREQ_BIN_He1, RT_FREQ_BIN_He2};
     
     int i, j, integral=10000;
-    double e, d_nu, e_start, e_end, sum_HI_sigma=0, sum_HI_G=0, hc=C_LIGHT*6.6262e-27, I_nu, sig, f, fac_two, T_eff, sum_egy_allbands=0;
+    double e, d_nu, e_start, e_end, sum_HI_sigma=0, sum_HI_G=0, hc=C_LIGHT_CGS*6.6262e-27, I_nu, sig, f, fac_two, T_eff, sum_egy_allbands=0;
 #if defined(GALSF)
     T_eff = 4.0e4;
 #else 
@@ -78,7 +78,7 @@ void rt_get_sigma(void)
         for(j = 0; j < integral; j++)
         {
             e = e_start + j * d_nu;
-            I_nu = 2.0 * pow(e * ELECTRONVOLT_IN_ERGS, 3) / (hc * hc) / (exp(e * ELECTRONVOLT_IN_ERGS / (BOLTZMANN * T_eff)) - 1.0);
+            I_nu = 2.0 * pow(e * ELECTRONVOLT_IN_ERGS, 3) / (hc * hc) / (exp(e * ELECTRONVOLT_IN_ERGS / (BOLTZMANN_CGS * T_eff)) - 1.0);
             sum_energy += d_nu * I_nu;
             n_photon_sum += d_nu * I_nu / e;
             if(rt_ion_nu_min[i] >= 13.6)
@@ -160,7 +160,7 @@ void rt_update_chemistry(void)
         {
             dtime = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i);
             rho = SphP[i].Density * All.cf_a3inv;
-            nH = HYDROGEN_MASSFRAC * rho / PROTONMASS * UNIT_MASS_IN_CGS;
+            nH = HYDROGEN_MASSFRAC * rho / PROTONMASS_CGS * UNIT_MASS_IN_CGS;
             temp = rt_photoion_chem_return_temperature(i,SphP[i].InternalEnergyPred);
             /* collisional ionization rate */
             gamma_HI = 5.85e-11 * sqrt(temp) * exp(-157809.1 / temp) / (1.0 + sqrt(temp / 1e5)) * fac;
@@ -272,7 +272,7 @@ void rt_update_chemistry(void)
             
             dtime = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i);
             rho = SphP[i].Density * All.cf_a3inv;
-            nH = HYDROGEN_MASSFRAC * rho / PROTONMASS * UNIT_MASS_IN_CGS;
+            nH = HYDROGEN_MASSFRAC * rho / PROTONMASS_CGS * UNIT_MASS_IN_CGS;
             temp = rt_photoion_chem_return_temperature(i,SphP[i].InternalEnergyPred);
             /* collisional ionization rate */
             gamma_HI = 5.85e-11 * sqrt(temp) * exp(-157809.1 / temp) / (1.0 + sqrt(temp / 1e5)) * fac;

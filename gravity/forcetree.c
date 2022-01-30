@@ -560,6 +560,9 @@ void force_update_node_recursive(int no, int sib, int father)
         rt_source_lum_s[1] = rt_source_lum_vs[1] = 0;
         rt_source_lum_s[2] = rt_source_lum_vs[2] = 0;
 #endif
+#ifdef BH_PHOTONMOMENTUM
+        MyFloat bh_lum,bh_lum_grad[3]; bh_lum=bh_lum_grad[0]=bh_lum_grad[1]=bh_lum_grad[2]=0;
+#endif
 #ifdef BH_CALC_DISTANCES
         MyFloat bh_mass=0, bh_pos_times_mass[3]={0,0,0};   /* position of each black hole in the node times its mass; divide by total mass at the end to get COM */
 #if defined(SINGLE_STAR_TIMESTEPPING) || defined(SINGLE_STAR_FIND_BINARIES)
@@ -643,6 +646,12 @@ void force_update_node_recursive(int no, int sib, int father)
                         rt_source_lum_vs[0] += (l_tot * Extnodes[p].rt_source_lum_vs[0]);
                         rt_source_lum_vs[1] += (l_tot * Extnodes[p].rt_source_lum_vs[1]);
                         rt_source_lum_vs[2] += (l_tot * Extnodes[p].rt_source_lum_vs[2]);
+#endif
+#ifdef BH_PHOTONMOMENTUM
+                        bh_lum += Nodes[p].bh_lum;
+                        bh_lum_grad[0] += Nodes[p].bh_lum * Nodes[p].bh_lum_grad[0];
+                        bh_lum_grad[1] += Nodes[p].bh_lum * Nodes[p].bh_lum_grad[1];
+                        bh_lum_grad[2] += Nodes[p].bh_lum * Nodes[p].bh_lum_grad[2];
 #endif
 #ifdef BH_CALC_DISTANCES
                         bh_mass += Nodes[p].bh_mass;
@@ -741,6 +750,21 @@ void force_update_node_recursive(int no, int sib, int father)
 
 
 
+#ifdef BH_PHOTONMOMENTUM
+                    if(pa->Type == 5)
+                    {
+                        if((pa->Mass>0)&&(pa->DensAroundStar>0)&&(pa->BH_Mdot>0))
+                        {
+                            double BHLum = bh_lum_bol(pa->BH_Mdot, pa->BH_Mass, p);
+                            bh_lum += BHLum;
+#if defined(BH_FOLLOW_ACCRETED_ANGMOM)
+                            for(k=0;k<3;k++) {bh_lum_grad[k] += BHLum * pa->BH_Specific_AngMom[k];}
+#else
+                            for(k=0;k<3;k++) {bh_lum_grad[k] += BHLum * pa->GradRho[k];}
+#endif
+                        }
+                    }
+#endif
 #ifdef BH_CALC_DISTANCES
                     if(pa->Type == 5)
                     {
@@ -844,6 +868,14 @@ void force_update_node_recursive(int no, int sib, int father)
             rt_source_lum_vs[2] = 0;
         }
 #endif
+#ifdef BH_PHOTONMOMENTUM
+        if(bh_lum)
+        {
+            bh_lum_grad[0] /= bh_lum; bh_lum_grad[1] /= bh_lum; bh_lum_grad[2] /= bh_lum;
+        } else {
+            bh_lum_grad[0]=bh_lum_grad[1]=0; bh_lum_grad[2]=1;
+        }
+#endif
 #ifdef DM_SCALARFIELD_SCREENING
         if(mass_dm)
         {
@@ -895,6 +927,12 @@ void force_update_node_recursive(int no, int sib, int father)
         Extnodes[no].rt_source_lum_dp[0] = 0;
         Extnodes[no].rt_source_lum_dp[1] = 0;
         Extnodes[no].rt_source_lum_dp[2] = 0;
+#endif
+#ifdef BH_PHOTONMOMENTUM
+        Nodes[no].bh_lum = bh_lum;
+        Nodes[no].bh_lum_grad[0] = bh_lum_grad[0];
+        Nodes[no].bh_lum_grad[1] = bh_lum_grad[1];
+        Nodes[no].bh_lum_grad[2] = bh_lum_grad[2];
 #endif
 #ifdef BH_CALC_DISTANCES
         Nodes[no].bh_mass = bh_mass;
@@ -1004,6 +1042,9 @@ void force_exchange_pseudodata(void)
         MyFloat rt_source_lum_s[3];
         MyFloat rt_source_lum_vs[3];
 #endif
+#ifdef BH_PHOTONMOMENTUM
+        MyFloat bh_lum,bh_lum_grad[3];
+#endif
 #ifdef BH_CALC_DISTANCES
         MyFloat bh_mass;
         MyFloat bh_pos[3];
@@ -1077,6 +1118,12 @@ void force_exchange_pseudodata(void)
             DomainMoment[i].rt_source_lum_vs[0] = Extnodes[no].rt_source_lum_vs[0];
             DomainMoment[i].rt_source_lum_vs[1] = Extnodes[no].rt_source_lum_vs[1];
             DomainMoment[i].rt_source_lum_vs[2] = Extnodes[no].rt_source_lum_vs[2];
+#endif
+#ifdef BH_PHOTONMOMENTUM
+            DomainMoment[i].bh_lum = Nodes[no].bh_lum;
+            DomainMoment[i].bh_lum_grad[0] = Nodes[no].bh_lum_grad[0];
+            DomainMoment[i].bh_lum_grad[1] = Nodes[no].bh_lum_grad[1];
+            DomainMoment[i].bh_lum_grad[2] = Nodes[no].bh_lum_grad[2];
 #endif
 #ifdef BH_CALC_DISTANCES
             DomainMoment[i].bh_mass = Nodes[no].bh_mass;
@@ -1170,6 +1217,12 @@ void force_exchange_pseudodata(void)
                     Extnodes[no].rt_source_lum_vs[1] = DomainMoment[i].rt_source_lum_vs[1];
                     Extnodes[no].rt_source_lum_vs[2] = DomainMoment[i].rt_source_lum_vs[2];
 #endif
+#ifdef BH_PHOTONMOMENTUM
+                    Nodes[no].bh_lum = DomainMoment[i].bh_lum;
+                    Nodes[no].bh_lum_grad[0] = DomainMoment[i].bh_lum_grad[0];
+                    Nodes[no].bh_lum_grad[1] = DomainMoment[i].bh_lum_grad[1];
+                    Nodes[no].bh_lum_grad[2] = DomainMoment[i].bh_lum_grad[2];
+#endif
 #ifdef BH_CALC_DISTANCES
                     Nodes[no].bh_mass = DomainMoment[i].bh_mass;
                     Nodes[no].bh_pos[0] = DomainMoment[i].bh_pos[0];
@@ -1235,6 +1288,9 @@ void force_treeupdate_pseudos(int no)
     rt_source_lum_vs[1] = 0;
     rt_source_lum_vs[2] = 0;
 #endif
+#ifdef BH_PHOTONMOMENTUM
+    MyFloat bh_lum,bh_lum_grad[3]; bh_lum=bh_lum_grad[0]=bh_lum_grad[1]=bh_lum_grad[2]=0;
+#endif
 #ifdef BH_CALC_DISTANCES
     MyFloat bh_mass=0;
     MyFloat bh_pos_times_mass[3]={0,0,0};
@@ -1296,6 +1352,12 @@ void force_treeupdate_pseudos(int no)
             rt_source_lum_vs[0] += (l_tot * Extnodes[p].rt_source_lum_vs[0]);
             rt_source_lum_vs[1] += (l_tot * Extnodes[p].rt_source_lum_vs[1]);
             rt_source_lum_vs[2] += (l_tot * Extnodes[p].rt_source_lum_vs[2]);
+#endif
+#ifdef BH_PHOTONMOMENTUM
+            bh_lum += Nodes[p].bh_lum;
+            bh_lum_grad[0] += Nodes[p].bh_lum * Nodes[p].bh_lum_grad[0];
+            bh_lum_grad[1] += Nodes[p].bh_lum * Nodes[p].bh_lum_grad[1];
+            bh_lum_grad[2] += Nodes[p].bh_lum * Nodes[p].bh_lum_grad[2];
 #endif
 #ifdef BH_CALC_DISTANCES
             bh_mass += Nodes[p].bh_mass;
@@ -1389,6 +1451,16 @@ void force_treeupdate_pseudos(int no)
         rt_source_lum_vs[2] = 0;
     }
 #endif
+#ifdef BH_PHOTONMOMENTUM
+    if(bh_lum)
+    {
+        bh_lum_grad[0] /= bh_lum; bh_lum_grad[1] /= bh_lum; bh_lum_grad[2] /= bh_lum;
+    }
+    else
+    {
+        bh_lum_grad[0]=bh_lum_grad[1]=0; bh_lum_grad[2]=1;
+    }
+#endif
 #ifdef DM_SCALARFIELD_SCREENING
     if(mass_dm)
     {
@@ -1435,6 +1507,12 @@ void force_treeupdate_pseudos(int no)
     Extnodes[no].rt_source_lum_vs[0] = rt_source_lum_vs[0];
     Extnodes[no].rt_source_lum_vs[1] = rt_source_lum_vs[1];
     Extnodes[no].rt_source_lum_vs[2] = rt_source_lum_vs[2];
+#endif
+#ifdef BH_PHOTONMOMENTUM
+    Nodes[no].bh_lum = bh_lum;
+    Nodes[no].bh_lum_grad[0] = bh_lum_grad[0];
+    Nodes[no].bh_lum_grad[1] = bh_lum_grad[1];
+    Nodes[no].bh_lum_grad[2] = bh_lum_grad[2];
 #endif
 #ifdef BH_CALC_DISTANCES
     Nodes[no].bh_mass = bh_mass;
@@ -1598,8 +1676,16 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #endif
     double pos_x, pos_y, pos_z, aold;
 
-#if defined(SINGLE_STAR_TIMESTEPPING) || defined(COMPUTE_JERK_IN_GRAVTREE) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(COMPUTE_JERK_IN_GRAVTREE) || defined(BH_DYNFRICTION_FROMTREE)
     double vel_x, vel_y, vel_z;
+#endif
+#ifdef GRAVITY_SPHERICAL_SYMMETRY
+    double r_source, r_target, center[3]={0};
+#ifdef BOX_PERIODIC
+    center[0] = 0.5 * boxSize_X;
+    center[1] = 0.5 * boxSize_Y;
+    center[2] = 0.5 * boxSize_Z;
+#endif    
 #endif
 #ifdef PMGRID
     int tabindex;
@@ -1636,6 +1722,12 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #endif
 #endif
 
+#ifdef BH_PHOTONMOMENTUM
+    double mass_bhlum=0; // convert bh luminosity to our tree units
+#endif
+#ifdef BH_COMPTON_HEATING
+    double incident_flux_agn=0;
+#endif
 #if defined(RT_USE_GRAVTREE_SAVE_RAD_ENERGY)
     double Rad_E_gamma[N_RT_FREQ_BINS]={0};
 #endif
@@ -1661,6 +1753,9 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 
 #ifdef DM_SCALARFIELD_SCREENING
     double dx_dm = 0, dy_dm = 0, dz_dm = 0, mass_dm = 0;
+#endif
+#if defined(BH_DYNFRICTION_FROMTREE)
+    double bh_mass = 0;
 #endif
 #if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE) || defined(SINGLE_STAR_TIMESTEPPING) || defined(FLAG_NOT_IN_PUBLIC_CODE)
     double soft=0, pmass;
@@ -1700,14 +1795,16 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
         pos_y = P[target].Pos[1];
         pos_z = P[target].Pos[2];
         ptype = P[target].Type;
-
 #if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE) || defined(SINGLE_STAR_TIMESTEPPING)
         pmass = P[target].Mass;
 #endif
-#if defined(SINGLE_STAR_TIMESTEPPING) || defined(COMPUTE_JERK_IN_GRAVTREE) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(COMPUTE_JERK_IN_GRAVTREE) || defined(BH_DYNFRICTION_FROMTREE)
         vel_x = P[target].Vel[0];
         vel_y = P[target].Vel[1];
         vel_z = P[target].Vel[2];
+#endif
+#if defined(BH_DYNFRICTION_FROMTREE)
+        if(ptype==5) {bh_mass = P[target].BH_Mass;}
 #endif
         aold = All.ErrTolForceAcc * P[target].OldAcc;
 #if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE) || defined(SINGLE_STAR_TIMESTEPPING) || defined(FLAG_NOT_IN_PUBLIC_CODE)
@@ -1741,12 +1838,15 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE) || defined(SINGLE_STAR_TIMESTEPPING)
         pmass = GravDataGet[target].Mass;
 #endif
-#if defined(SINGLE_STAR_TIMESTEPPING) || defined(COMPUTE_JERK_IN_GRAVTREE) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(COMPUTE_JERK_IN_GRAVTREE) || defined(BH_DYNFRICTION_FROMTREE)
         vel_x = GravDataGet[target].Vel[0];
         vel_y = GravDataGet[target].Vel[1];
         vel_z = GravDataGet[target].Vel[2];
 #endif
         ptype = GravDataGet[target].Type;
+#if defined(BH_DYNFRICTION_FROMTREE)
+        if(ptype==5) {bh_mass = GravDataGet[target].BH_Mass;}
+#endif
         aold = All.ErrTolForceAcc * GravDataGet[target].OldAcc;
 #if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE) || defined(SINGLE_STAR_TIMESTEPPING) || defined(FLAG_NOT_IN_PUBLIC_CODE)
         soft = GravDataGet[target].Soft;
@@ -1848,7 +1948,10 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                 dx = P[no].Pos[0] - pos_x;
                 dy = P[no].Pos[1] - pos_y;
                 dz = P[no].Pos[2] - pos_z;
-#if defined(COMPUTE_JERK_IN_GRAVTREE) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#ifdef GRAVITY_SPHERICAL_SYMMETRY
+		r_source = sqrt(pow(P[no].Pos[0] - center[0],2) + pow(P[no].Pos[1] - center[1],2) + pow(P[no].Pos[2] - center[2],2));
+#endif
+#if defined(COMPUTE_JERK_IN_GRAVTREE) || defined(BH_DYNFRICTION_FROMTREE)
                 dvx = P[no].Vel[0] - vel_x;
                 dvy = P[no].Vel[1] - vel_y;
                 dvz = P[no].Vel[2] - vel_z;
@@ -1937,6 +2040,18 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                     {
                         if(active_check) {chimes_mass_stellarlum_G0[kf] = chimes_lum_G0[kf]; chimes_mass_stellarlum_ion[kf] = chimes_lum_ion[kf];} else {chimes_mass_stellarlum_G0[kf] = 0; chimes_mass_stellarlum_ion[kf] = 0;}
                     }
+#endif
+#ifdef BH_PHOTONMOMENTUM
+                    mass_bhlum=0;
+		            if(P[no].Type == 5)
+		            {
+			            double bhlum_t = bh_lum_bol(P[no].BH_Mdot, P[no].BH_Mass, no);
+#if defined(BH_FOLLOW_ACCRETED_ANGMOM)
+                        mass_bhlum = bh_angleweight(bhlum_t, P[no].BH_Specific_AngMom, dx,dy,dz);
+#else
+			            mass_bhlum = bh_angleweight(bhlum_t, P[no].GradRho, dx,dy,dz);
+#endif
+		            }
 #endif
                 }
 #endif
@@ -2066,7 +2181,10 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                 dx = nop->u.d.s[0] - pos_x;
                 dy = nop->u.d.s[1] - pos_y;
                 dz = nop->u.d.s[2] - pos_z;
-#if defined(COMPUTE_JERK_IN_GRAVTREE) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#ifdef GRAVITY_SPHERICAL_SYMMETRY
+		r_source = sqrt(pow(nop->u.d.s[0] - center[0],2) + pow(nop->u.d.s[1] - center[1],2) + pow(nop->u.d.s[2] - center[2],2));
+#endif
+#if defined(COMPUTE_JERK_IN_GRAVTREE) || defined(BH_DYNFRICTION_FROMTREE)
                 dvx = Extnodes[no].vs[0] - vel_x;
                 dvy = Extnodes[no].vs[1] - vel_y;
                 dvz = Extnodes[no].vs[2] - vel_z;
@@ -2091,6 +2209,9 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                     GRAVITY_NEAREST_XYZ(dx_stellarlum,dy_stellarlum,dz_stellarlum,-1);
 #else
                     dx_stellarlum = dx; dy_stellarlum = dy; dz_stellarlum = dz;
+#endif
+#ifdef BH_PHOTONMOMENTUM
+                    mass_bhlum = bh_angleweight(nop->bh_lum, nop->bh_lum_grad, dx_stellarlum,dy_stellarlum,dz_stellarlum);
 #endif
                 }
 #endif
@@ -2309,7 +2430,7 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                 }
 #endif
             }
-
+	    	   
             if((r2 > 0) && (mass > 0)) // only go forward if mass positive and there is separation
             {
             r = sqrt(r2);
@@ -2450,11 +2571,37 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                 pot += FLT(mass * ewald_pot_corr(dx, dy, dz));
 #endif
 #endif
+#ifdef GRAVITY_SPHERICAL_SYMMETRY
+		r_target = sqrt(pow(pos_x - center[0],2) + pow(pos_y - center[1],2) + pow(pos_z - center[2],2)); // distance of target point from box center
+		if(r_source < r_target){
+		    dx = center[0] - pos_x;
+   		    dy = center[1] - pos_y;
+		    dz = center[2] - pos_z;
+		    fac = mass/pow(DMAX(GRAVITY_SPHERICAL_SYMMETRY,DMAX(r_target,h)),3);
+		} else {
+           	    fac = 0;
+		}
+#endif
                 acc_x += FLT(dx * fac);
                 acc_y += FLT(dy * fac);
                 acc_z += FLT(dz * fac);
 
 
+#if defined(BH_DYNFRICTION_FROMTREE)
+                if(ptype==5)
+                {
+                    double dv2=dvx*dvx+dvy*dvy+dvz*dvz;
+                    if(dv2 > 0)
+                    {
+                        double dv0=sqrt(dv2),dvx_h=dvx/dv0,dvy_h=dvy/dv0,dvz_h=dvz/dv0,rdotvhat=dx*dvx_h+dy*dvy_h+dz*dvz_h;
+                        double bx_im=dx-rdotvhat*dvx_h,by_im=dy-rdotvhat*dvy_h,bz_im=dz-rdotvhat*dvz_h,b_impact=sqrt(bx_im*bx_im+by_im*by_im+bz_im*bz_im);
+                        double a_im=(b_impact*All.cf_atime)*(dv2*All.cf_a2inv)/(All.G*bh_mass), fac_df=fac*b_impact*a_im/(1.+a_im*a_im); // need to convert to fully-physical units to ensure this has the correct dimensions
+                        acc_x += fac_df * dvx_h;
+                        acc_y += fac_df * dvy_h;
+                        acc_z += fac_df * dvz_h;
+                    }
+                }
+#endif
 
 
 #ifdef COMPUTE_TIDAL_TENSOR_IN_GRAVTREE
@@ -2464,6 +2611,13 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                  |Tyx Tyy Tyz| = |tidal_tensorps[1][0] tidal_tensorps[1][1] tidal_tensorps[1][2]|
                  |Tzx Tzy Tzz|   |tidal_tensorps[2][0] tidal_tensorps[2][1] tidal_tensorps[2][2]|
                  */
+#ifdef GRAVITY_SPHERICAL_SYMMETRY
+		if(r_source < r_target){
+		    fac2_tidal = 3 * mass / pow(DMAX(GRAVITY_SPHERICAL_SYMMETRY,DMAX(r_target,h)),5);
+		} else {
+   		    fac2_tidal = 0;
+		}
+#endif
 #ifdef PMGRID
                 tidal_tensorps[0][0] += ((-fac_tidal + dx * dx * fac2_tidal) * shortrange_table[tabindex]) +
                     dx * dx * fac2_tidal / 3.0 * shortrange_table_tidal[tabindex];
@@ -2540,6 +2694,14 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                     chimes_flux_ion[chimes_k] += chimes_fac * chimes_mass_stellarlum_ion[chimes_k]; // cm^-2 s^-1
                 }
 #endif 
+#ifdef BH_PHOTONMOMENTUM
+#if defined(RT_USE_GRAVTREE_SAVE_RAD_ENERGY)
+                Rad_E_gamma[RT_FREQ_BIN_FIRE_IR] += fac_intensity * mass_bhlum;
+#endif
+#ifdef BH_COMPTON_HEATING
+                incident_flux_agn += fac_intensity * mass_bhlum; // L/(4pi*r*r) analog
+#endif
+#endif
 
 #ifdef RT_OTVET
                 /* use the information we have here from the gravity tree (optically thin incident fluxes) to estimate the Eddington tensor */
@@ -2570,6 +2732,13 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                 for(kf_rt=0;kf_rt<N_RT_FREQ_BINS;kf_rt++) {Rad_Flux[kf_rt][0]+=mass_stellarlum[kf_rt]*fac_flux*dx_stellarlum; Rad_Flux[kf_rt][1]+=mass_stellarlum[kf_rt]*fac_flux*dy_stellarlum; Rad_Flux[kf_rt][2]+=mass_stellarlum[kf_rt]*fac_flux*dz_stellarlum;}
 #else /* simply apply an on-the-spot approximation and do the absorption and RP force now */
                 for(kf_rt=0;kf_rt<N_RT_FREQ_BINS;kf_rt++) {lum_force_fac += mass_stellarlum[kf_rt] * fac_stellum[kf_rt];} // add directly to forces. appropriate normalization (and sign) in 'fac_stellum'
+#endif
+#ifdef BH_PHOTONMOMENTUM /* divide out PhotoMom_coupled_frac here b/c we have our own BH_Rad_Mom factor, and don't want to double-count */
+#if defined(RT_USE_GRAVTREE_SAVE_RAD_FLUX)
+                Rad_Flux[RT_FREQ_BIN_FIRE_IR][0]+=mass_bhlum*fac_flux*dx_stellarlum; Rad_Flux[RT_FREQ_BIN_FIRE_IR][1]+=mass_bhlum*fac_flux*dy_stellarlum; Rad_Flux[RT_FREQ_BIN_FIRE_IR][2]+=mass_bhlum*fac_flux*dz_stellarlum;
+#elif !defined(RT_DISABLE_RAD_PRESSURE)
+                lum_force_fac += (All.BH_Rad_MomentumFactor / (MIN_REAL_NUMBER + All.PhotonMomentum_Coupled_Fraction)) * mass_bhlum * fac_stellum[N_RT_FREQ_BINS-1];
+#endif
 #endif
                 if(lum_force_fac>0) {acc_x += FLT(dx_stellarlum * fac*lum_force_fac); acc_y += FLT(dy_stellarlum * fac*lum_force_fac); acc_z += FLT(dz_stellarlum * fac*lum_force_fac);}
 #endif
@@ -2655,6 +2824,9 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #ifdef BH_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
         P[target].MencInRcrit = m_enc_in_rcrit;
 #endif
+#ifdef BH_COMPTON_HEATING
+        if(valid_gas_particle_for_rt) {SphP[target].Rad_Flux_AGN = incident_flux_agn;}
+#endif
 #if defined(RT_USE_GRAVTREE_SAVE_RAD_ENERGY)
         if(valid_gas_particle_for_rt) {int kf; for(kf=0;kf<N_RT_FREQ_BINS;kf++) {SphP[target].Rad_E_gamma[kf] = Rad_E_gamma[kf];}}
 #endif
@@ -2711,6 +2883,9 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #endif
 #ifdef BH_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
         GravDataResult[target].MencInRcrit = m_enc_in_rcrit;
+#endif
+#ifdef BH_COMPTON_HEATING
+        GravDataResult[target].Rad_Flux_AGN = incident_flux_agn;
 #endif
 #if defined(RT_USE_GRAVTREE_SAVE_RAD_ENERGY)
         {int kf; for(kf=0;kf<N_RT_FREQ_BINS;kf++) {GravDataResult[target].Rad_E_gamma[kf] = Rad_E_gamma[kf];}}

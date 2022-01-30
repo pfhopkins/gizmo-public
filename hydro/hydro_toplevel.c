@@ -121,6 +121,15 @@ struct Conserved_var_Riemann
     MyDouble phi;
 #endif
 #endif
+#ifdef COSMIC_RAY_FLUID
+    MyDouble CosmicRayPressure[N_CR_PARTICLE_BINS];
+#ifdef CRFLUID_M1
+    MyDouble CosmicRayFlux[N_CR_PARTICLE_BINS][3];
+#endif
+#ifdef CRFLUID_EVOLVE_SCATTERINGWAVES
+    MyDouble CosmicRayAlfvenEnergy[N_CR_PARTICLE_BINS][2];
+#endif
+#endif
 };
 
 
@@ -197,6 +206,9 @@ struct INPUT_STRUCT_NAME
 #ifdef DIVBCLEANING_DEDNER
         MyDouble Phi[3];
 #endif
+#endif
+#if defined(COSMIC_RAY_FLUID) && !defined(CRFLUID_M1)
+        MyDouble CosmicRayPressure[N_CR_PARTICLE_BINS][3];
 #endif
 #if defined(TURB_DIFF_METALS) && !defined(TURB_DIFF_METALS_LOWORDER)
         MyDouble Metallicity[NUM_METAL_SPECIES][3];
@@ -278,6 +290,16 @@ struct INPUT_STRUCT_NAME
 #endif
 #endif // MAGNETIC //
 
+#ifdef COSMIC_RAY_FLUID
+    MyDouble CosmicRayPressure[N_CR_PARTICLE_BINS];
+    MyDouble CosmicRayDiffusionCoeff[N_CR_PARTICLE_BINS];
+#ifdef CRFLUID_M1
+    MyDouble CosmicRayFlux[N_CR_PARTICLE_BINS][3];
+#endif
+#ifdef CRFLUID_EVOLVE_SCATTERINGWAVES
+    MyDouble CosmicRayAlfvenEnergy[N_CR_PARTICLE_BINS][2];
+#endif
+#endif
 
 #ifdef GALSF_SUBGRID_WINDS
     MyDouble DelayTime;
@@ -350,6 +372,13 @@ struct OUTPUT_STRUCT_NAME
 #endif
 #endif // MAGNETIC //
 
+#ifdef COSMIC_RAY_FLUID
+    MyDouble Face_DivVel_ForAdOps;
+    MyDouble DtCosmicRayEnergy[N_CR_PARTICLE_BINS];
+#ifdef CRFLUID_EVOLVE_SCATTERINGWAVES
+    MyDouble DtCosmicRayAlfvenEnergy[N_CR_PARTICLE_BINS][2];
+#endif
+#endif
 
 }
 *DATARESULT_NAME, *DATAOUT_NAME;
@@ -425,6 +454,9 @@ static inline void particle2in_hydra(struct INPUT_STRUCT_NAME *in, int i, int lo
         in->Gradients.Phi[k] = SphP[i].Gradients.Phi[k];
 #endif
 #endif
+#if defined(COSMIC_RAY_FLUID) && !defined(CRFLUID_M1)
+        for(j=0;j<N_CR_PARTICLE_BINS;j++) {in->Gradients.CosmicRayPressure[j][k] = SphP[i].Gradients.CosmicRayPressure[j][k];}
+#endif
 #if defined(TURB_DIFF_METALS) && !defined(TURB_DIFF_METALS_LOWORDER)
         for(j=0;j<NUM_METAL_SPECIES;j++) {in->Gradients.Metallicity[j][k] = SphP[i].Gradients.Metallicity[j][k];}
 #endif
@@ -498,6 +530,19 @@ static inline void particle2in_hydra(struct INPUT_STRUCT_NAME *in, int i, int lo
 #endif
 #endif // MAGNETIC //
 
+#ifdef COSMIC_RAY_FLUID
+    for(j=0;j<N_CR_PARTICLE_BINS;j++)
+    {
+        in->CosmicRayPressure[j] = Get_Gas_CosmicRayPressure(i,j);
+        in->CosmicRayDiffusionCoeff[j] = SphP[i].CosmicRayDiffusionCoeff[j];
+#ifdef CRFLUID_M1
+        for(k=0;k<3;k++) {in->CosmicRayFlux[j][k] = SphP[i].CosmicRayFluxPred[j][k];}
+#endif
+#ifdef CRFLUID_EVOLVE_SCATTERINGWAVES
+        for(k=0;k<2;k++) {in->CosmicRayAlfvenEnergy[j][k] = SphP[i].CosmicRayAlfvenEnergyPred[j][k];}
+#endif
+    }
+#endif
 
 #ifdef EOS_ELASTIC
     in->CompositionType = SphP[i].CompositionType;
@@ -573,6 +618,16 @@ static inline void out2particle_hydra(struct OUTPUT_STRUCT_NAME *out, int i, int
 #endif // Dedner //
 #endif // MAGNETIC //
 
+#ifdef COSMIC_RAY_FLUID
+    SphP[i].Face_DivVel_ForAdOps += out->Face_DivVel_ForAdOps;
+    for(k=0;k<N_CR_PARTICLE_BINS;k++)
+    {
+        SphP[i].DtCosmicRayEnergy[k] += out->DtCosmicRayEnergy[k];
+#ifdef CRFLUID_EVOLVE_SCATTERINGWAVES
+        int kAlf; for(kAlf=0;kAlf<2;kAlf++) {SphP[i].DtCosmicRayAlfvenEnergy[k][kAlf] += out->DtCosmicRayAlfvenEnergy[k][kAlf];}
+#endif
+    }
+#endif
 }
 
 
@@ -715,7 +770,7 @@ void hydro_final_operations_and_cleanup(void)
                 erad_i = SphP[i].Rad_E_gamma_Pred[kfreq]*vol_inv; // radiation energy density, needed below
                 for(k=0;k<3;k++) {flux_i[k]=SphP[i].Rad_Flux_Pred[kfreq][k]*vol_inv; vel_i[k]=(C_LIGHT_CODE_REDUCED/C_LIGHT_CODE)*SphP[i].VelPred[k]/All.cf_atime; flux_mag+=flux_i[k]*flux_i[k];}
                 eddington_tensor_dot_vector(SphP[i].ET[kfreq],vel_i,vdot_D); // note these 'vdoth' terms shouldn't be included in FLD, since its really assuming the entire right-hand-side of the flux equation reaches equilibrium with the pressure tensor, which gives the expression in rt_utilities
-                for(k=0;k<3;k++) {vdot_h[k] = erad_i * (vel_i[k] + vdot_D[k]);} // calculate volume integral of scattering coefficient t_inv * (gas_vel . [e_rad*I + P_rad_tensor]), which gives an additional time-derivative term. this is the P term //
+                for(k=0;k<3;k++) {vdot_h[k] = (RSOL_CORRECTION_FACTOR_FOR_VELOCITY_TERMS*C_LIGHT_CODE/C_LIGHT_CODE_REDUCED) * erad_i * (vel_i[k] + vdot_D[k]);} // calculate volume integral of scattering coefficient t_inv * (gas_vel . [e_rad*I + P_rad_tensor]), which gives an additional time-derivative term. this is the P term //
                 double flux_thin = erad_i * C_LIGHT_CODE_REDUCED; if(flux_mag>0) {flux_mag=sqrt(flux_mag);} else {flux_mag=1.e-20*flux_thin;}
                 if(flux_mag > 0) {flux_corr = DMIN(1., flux_thin/flux_mag); // restrict flux here (b/c drifted can exceed physical b/c of integration errors
 #if defined(RT_ENABLE_R15_GRADIENTFIX)
@@ -756,7 +811,7 @@ void hydro_final_operations_and_cleanup(void)
 #endif
             
             
-#if (defined(FLAG_NOT_IN_PUBLIC_CODE) && !defined(COOLING_OPERATOR_SPLIT)) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if (defined(COSMIC_RAY_FLUID) && !defined(COOLING_OPERATOR_SPLIT)) || defined(FLAG_NOT_IN_PUBLIC_CODE)
             /* with the spectrum model, we account here the adiabatic heating/cooling of the 'fluid', here, which was solved in the hydro solver but doesn't resolve which portion goes to CRs and which to internal energy, with gamma=GAMMA_COSMICRAY */
             double gamma_minus_eCR_tmp=0;
             for(k=0;k<N_CR_PARTICLE_BINS;k++) {gamma_minus_eCR_tmp+=(GAMMA_COSMICRAY(k)-1.)*SphP[i].CosmicRayEnergyPred[k];} // routine below only depends on the total CR energy, not bin-by-bin energies, when we do it this way here
@@ -764,6 +819,39 @@ void hydro_final_operations_and_cleanup(void)
             double u0=DMAX(SphP[i].InternalEnergyPred, All.MinEgySpec) , uf=DMAX(u0 - dCR_div/P[i].Mass , All.MinEgySpec); // final updated value of internal energy per above
             SphP[i].DtInternalEnergy += (uf - u0) / (dt + MIN_REAL_NUMBER); // update gas quantities to be used in cooling function
 #endif
+#if defined(COSMIC_RAY_FLUID)
+            /* energy transfer from CRs to gas due to the streaming instability (mediated by high-frequency Alfven waves, but they thermalize quickly
+                (note this is important; otherwise build up CR 'traps' where the gas piles up and cools but is entirely supported by CRs in outer disks) */
+#if !defined(CRFLUID_EVOLVE_SCATTERINGWAVES) // handled in separate solver if explicitly evolving the relevant wave families
+            for(k=0;k<N_CR_PARTICLE_BINS;k++) {
+                double streamfac = fabs(CR_get_streaming_loss_rate_coefficient(i,k));
+                SphP[i].DtInternalEnergy += SphP[i].CosmicRayEnergyPred[k] * streamfac;
+                SphP[i].DtCosmicRayEnergy[k] -= CosmicRayFluid_RSOL_Corrfac(k) * SphP[i].CosmicRayEnergyPred[k] * streamfac; // in the multi-bin formalism, save this operation for the CR cooling ops since can involve bin-to-bin transfer of energy
+            }
+#endif
+#if defined(CRFLUID_M1) && !defined(CRFLUID_ALT_FLUX_FORM_JOCH) && defined(MAGNETIC) // only makes sense to include parallel correction below if all these terms enabled //
+            /* 'residual' term from parallel scattering of CRs being not-necessarily-in-equilibrium with a two-moment form of the equations */
+            double vA_eff=Get_Gas_ion_Alfven_speed_i(i), vol_i=SphP[i].Density*All.cf_a3inv/P[i].Mass, Bmag=0, bhat[3]={0}; // define some useful variables
+            for(k=0;k<3;k++) {bhat[k]=SphP[i].BPred[k]; Bmag+=bhat[k]*bhat[k];} // get direction vector for B-field needed below
+            if(Bmag>0) {Bmag=sqrt(Bmag); for(k=0;k<3;k++) {bhat[k] /= Bmag;}} // make dimensionless
+            if(Bmag>0) {for(k=0;k<N_CR_PARTICLE_BINS;k++) {
+                int target_for_cr_betagamma = i; // if this = -1, use the gamma factor at the bin-center for evaluating this, if this = i, use the mean gamma of the bin, weighted by the CR energy -- won't give exactly the same result here
+#ifdef CRFLUID_DIFFUSION_CORRECTION_TERMS
+                target_for_cr_betagamma = -1; // the correction terms depend on these being evaluated at their bin-centered locations
+#endif
+                double three_chi = return_cosmic_ray_anisotropic_closure_function_threechi(i,k);
+                int m; double grad_P_dot_B=0, gradpcr[3]={0}, F_dot_B=0, e0_cr=SphP[i].CosmicRayEnergyPred[k]*vol_i, p0_cr=(GAMMA_COSMICRAY(k)-1.)*e0_cr, vA_k=vA_eff*return_CRbin_nuplusminus_asymmetry(i,k), fcorr[3]={0}, beta_fac=return_CRbin_beta_factor(target_for_cr_betagamma,k);
+                for(m=0;m<3;m++) {gradpcr[m] = SphP[i].Gradients.CosmicRayPressure[k][m] * (All.cf_a3inv/All.cf_atime);}
+                for(m=0;m<3;m++) {grad_P_dot_B += bhat[m] * gradpcr[m]; F_dot_B += bhat[m] * SphP[i].CosmicRayFluxPred[k][m] * vol_i;}
+                if(F_dot_B < 0) {vA_k *= -1;} // needs to have appropriately-matched signage below //
+                double gamma_0=return_CRbin_gamma_factor(target_for_cr_betagamma,k), gamma_fac=gamma_0/(gamma_0-1.); // lorentz factor here, needed in next line, because the loss term here scales with -total- energy, not kinetic energy
+                if(beta_fac<0.1) {gamma_fac=2./(beta_fac*beta_fac) -0.5 - 0.125*beta_fac*beta_fac;} // avoid accidental nan
+                for(m=0;m<3;m++) {fcorr[m] = bhat[m] * (grad_P_dot_B + (gamma_fac*(F_dot_B/CosmicRayFluid_RSOL_Corrfac(k)) - three_chi*vA_k*(gamma_fac*e0_cr + p0_cr))*(beta_fac*beta_fac)/(3.*SphP[i].CosmicRayDiffusionCoeff[k])) / (SphP[i].Density*All.cf_a3inv);} // physical units
+                for(m=0;m<3;m++) {fcorr[m] += (1.-three_chi) * (gradpcr[m] - bhat[m]*grad_P_dot_B) / (SphP[i].Density*All.cf_a3inv);} // physical units
+                for(m=0;m<3;m++) {SphP[i].HydroAccel[m] += fcorr[m];} // add correction term back into hydro acceleration terms -- need to check that don't end up with nasty terms for badly-initialized/limited scattering rates above
+            }}
+#endif
+#endif // COSMIC_RAY_FLUID
 
 
 #ifdef GALSF_SUBGRID_WINDS
@@ -812,6 +900,25 @@ void hydro_final_operations_and_cleanup(void)
     add_turb_accel(); // update turbulent driving fields and TurbAccel fields at same time as update HydroAccel, here
 #endif
 
+#ifdef NUCLEAR_NETWORK
+    PRINT_STATUS("Doing nuclear network");
+    MPI_Barrier(MPI_COMM_WORLD); int nuc_particles=0,nuc_particles_sum=0; double dedt_nuc;
+    for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
+        if(P[i].Type == 0)
+        {   /* evaluate network here, but do it only for high enough temperatures */
+            if(SphP[i].Temperature > All.NetworkTempThreshold)
+            {
+                nuc_particles++;
+                double dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i) * UNIT_TIME_IN_CGS;
+                network_integrate(SphP[i].Temperature, SphP[i].Density * All.cf_a3inv * UNIT_DENSITY_IN_CGS, SphP[i].xnuc,
+                                  SphP[i].dxnuc, dt, &dedt_nuc, NULL, &All.nd, &All.nw);
+                SphP[i].DtInternalEnergy += dedt_nuc * UNIT_ENERGY_IN_CGS / UNIT_TIME_IN_CGS;
+            }
+            else {for(k = 0; k < EOS_NSPECIES; k++) {SphP[i].dxnuc[k] = 0;}}
+        }
+    MPI_Allreduce(&nuc_particles, &nuc_particles_sum, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    PRINT_STATUS("Nuclear network done for %d particles", nuc_particles_sum);
+#endif
 }
 
 
@@ -873,6 +980,16 @@ void hydro_force_initial_operations_preloop(void)
 #endif
 #endif
 #endif // magnetic //
+#ifdef COSMIC_RAY_FLUID
+            SphP[i].Face_DivVel_ForAdOps = 0;
+            for(k=0;k<N_CR_PARTICLE_BINS;k++)
+            {
+                SphP[i].DtCosmicRayEnergy[k] = 0;
+#ifdef CRFLUID_EVOLVE_SCATTERINGWAVES
+                int kAlf; for(kAlf=0;kAlf<2;kAlf++) {SphP[i].DtCosmicRayAlfvenEnergy[k][kAlf] = 0;}
+#endif
+            }
+#endif
 #ifdef WAKEUP
             PPPZ[i].wakeup = 0;
 #endif

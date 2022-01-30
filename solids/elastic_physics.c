@@ -38,7 +38,7 @@ void tillotson_eos_init(void)
     int j_t,k_t;
     for(j_t=1;j_t<7;j_t++)
     {
-        for(k_t=0;k_t<10;k_t++)
+        for(k_t=0;k_t<12;k_t++)
         {
             All.Tillotson_EOS_params[j_t][k_t] = qtmp[j_t-1][k_t];
             if((k_t==2)||(k_t==6)||(k_t==7)) {All.Tillotson_EOS_params[j_t][k_t] /= UNIT_SPECEGY_IN_CGS;}

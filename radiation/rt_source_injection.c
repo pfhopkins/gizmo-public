@@ -55,7 +55,7 @@ void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
 #if defined(RT_INJECT_PHOTONS_DISCRETELY)
     dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i);
 #ifdef BH_INTERACT_ON_GAS_TIMESTEP
-    if(P[i].Type == 5){dt = P[i].dt_since_last_gas_search;}
+    if(P[i].Type == 5) {dt = P[i].dt_since_last_gas_search;}
 #endif
 #if defined(RT_EVOLVE_FLUX)
     for(k=0; k<3; k++) {if(P[i].Type==0) {in->Vel[k] = SphP[i].VelPred[k];} else {in->Vel[k] = P[i].Vel[k];}}
@@ -105,6 +105,8 @@ void rt_source_injection_initial_operations_preloop(void)
 {
     /* first, we do a loop over the gas particles themselves. these are trivial -- they don't need to share any information,
      they just determine their own source functions. so we don't need to do any loops. and we can zero everything before the loop below. */
+    if(!(RT_SOURCES & 1)) return; // we skip this if gas cells don't have explicit source terms
+
     int j;
     for(j=0;j<NumPart;j++) {
         if(P[j].Type==0) {
@@ -214,7 +216,7 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
 #endif                    
 
 #ifdef RT_REPROCESS_INJECTED_PHOTONS // conserving photon energy, put only the un-absorbed component of the current band into that band, putting the rest in its "donation" bin (ionizing->optical, all others->IR). This would happen anyway during the routine for resolved absorption, but this may more realistically handle situations where e.g. your dust destruction front is at totally unresolved scales and you don't want to spuriously ionize stuff on larger scales. Assume isotropic re-radiation, so inject only energy for the donated bin and not net flux/momentum.
-		    double dE_donation=0; int donation_bin=rt_get_donation_target_bin(k), do_donation=0; if(donation_bin > -1){do_donation = 1;}
+                    double dE_donation=0; int donation_bin=rt_get_donation_target_bin(k), do_donation=0; if(donation_bin > -1){do_donation = 1;}
 #ifdef RT_CHEM_PHOTOION  // figure out if we have enough photons to carve a Stromgren sphere through this cell. If yes, inject ionizing radiation, otherwise more accurate to downgrade it to model an unresolved HII region
                     if(k==RT_FREQ_BIN_H0) {
                         double stellum=0; if(local.Dt > 0) {stellum = local.Luminosity[k] / (C_LIGHT_CODE_REDUCED/C_LIGHT_CODE) / local.Dt * UNIT_LUM_IN_CGS;}
@@ -267,9 +269,25 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
 #endif
 
 #if defined(RT_EVOLVE_FLUX) // add relativistic corrections here, which should be there in general. however we will ignore [here] the 'back-reaction' term, since we're assuming the source is a star or something like that, where this would be negligible. gas self gain/loss is handled separately.
-                    {int kv; for(kv=0;kv<3;kv++) {dfluxes[kv] += dE * ((C_LIGHT_CODE_REDUCED/C_LIGHT_CODE)*local.Vel[kv]/All.cf_atime);}}
+                    {int kv; for(kv=0;kv<3;kv++) {dfluxes[kv] += dE * (RSOL_CORRECTION_FACTOR_FOR_VELOCITY_TERMS*local.Vel[kv]/All.cf_atime);}}
 #ifdef GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION
-                    {double dflux=dE*C_LIGHT_CODE_REDUCED; dfluxes[2] += dflux;}
+                    double qtau=(0.75*All.Grain_Q_at_MaxGrainSize)/(All.Grain_Internal_Density*All.Grain_Size_Max), e0=(P[j].Mass/SphP[j].Density)*All.Vertical_Grain_Accel/qtau,tau_tot=All.Dust_to_Gas_Mass_Ratio*qtau,flux_egy_0=C_LIGHT_CODE_REDUCED*DMAX(SphP[j].Rad_E_gamma[k],SphP[j].Rad_E_gamma_Pred[k])/(1.+3.*tau_tot),f0=DMAX(flux_egy_0,DMAX(C_LIGHT_CODE_REDUCED*e0,DMAX(SphP[j].Rad_Flux[k][2],SphP[j].Rad_Flux_Pred[k][2])));
+                    dfluxes[0]=0; dfluxes[1]=0; dfluxes[2]=f0; /* for now, for this special problem setup, we have everything hard-coded here to ensure it obeys the desired flux boundary condition */
+                    {
+                        #pragma omp atomic
+                        SphP[j].Rad_Flux[k][0]=0;
+                        #pragma omp atomic
+                        SphP[j].Rad_Flux[k][1]=0;
+                        #pragma omp atomic
+                        SphP[j].Rad_Flux[k][2]=0;
+                        #pragma omp atomic
+                        SphP[j].Rad_Flux_Pred[k][0]=0;
+                        #pragma omp atomic
+                        SphP[j].Rad_Flux_Pred[k][1]=0;
+                        #pragma omp atomic
+                        SphP[j].Rad_Flux_Pred[k][2]=0;
+                    }
+                    //{double dflux=dE*C_LIGHT_CODE_REDUCED; dfluxes[2] += dflux;}
 #endif
                     {int kv; for(kv=0;kv<3;kv++) {
                         #pragma omp atomic

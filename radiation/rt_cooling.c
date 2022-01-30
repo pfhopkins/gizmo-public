@@ -25,7 +25,7 @@
 double rt_DoHeating(int i, double dt)
 {
     double sigma, nH, rate, du, de, e_gamma, nHI;
-    nH = HYDROGEN_MASSFRAC * SphP[i].Density * All.cf_a3inv / PROTONMASS * UNIT_MASS_IN_CGS;
+    nH = HYDROGEN_MASSFRAC * SphP[i].Density * All.cf_a3inv / PROTONMASS_CGS * UNIT_MASS_IN_CGS;
     nHI = SphP[i].HI * nH;
     sigma = 1.63e-18 / (UNIT_LENGTH_IN_CGS*UNIT_LENGTH_IN_CGS);
     e_gamma = SphP[i].Rad_E_gamma[0] * (SphP[i].Density*All.cf_a3inv/P[i].Mass);  // want the photon energy density //
@@ -41,7 +41,7 @@ double rt_DoHeating(int i, double dt)
 #ifdef RT_CHEM_PHOTOION_HE
     double nHeI, nHeII, nHeIII;
 #endif
-    nH = HYDROGEN_MASSFRAC * SphP[i].Density * All.cf_a3inv / PROTONMASS * UNIT_MASS_IN_CGS;
+    nH = HYDROGEN_MASSFRAC * SphP[i].Density * All.cf_a3inv / PROTONMASS_CGS * UNIT_MASS_IN_CGS;
     nHI = SphP[i].HI * nH;
 #ifdef RT_CHEM_PHOTOION_HE
     nHeI = SphP[i].HeI * nH;
@@ -143,7 +143,7 @@ double rt_get_cooling_rate(int i, double internal_energy)
     
     double fac = 1. / (UNIT_LENGTH_IN_CGS*UNIT_LENGTH_IN_CGS*UNIT_LENGTH_IN_CGS * UNIT_LUM_IN_CGS);
     
-    nH = HYDROGEN_MASSFRAC * SphP[i].Density * All.cf_a3inv * UNIT_MASS_IN_CGS / PROTONMASS;	//physical
+    nH = HYDROGEN_MASSFRAC * SphP[i].Density * All.cf_a3inv * UNIT_MASS_IN_CGS / PROTONMASS_CGS;	//physical
     temp = rt_photoion_chem_return_temperature(i, internal_energy);
 
     /* all rates in erg cm^3 s^-1 in code units */

@@ -51,7 +51,7 @@ void apply_grain_dragforce(void)
             vgas_mag = sqrt(vgas_mag) / All.cf_atime; /* convert to physical units */
             int grain_subtype = 1; /* default assumption about particulate sub-type for operations below */
 #if defined(PIC_MHD)
-            grain_subtype = P[i].Grain_SubType;
+            grain_subtype = P[i].MHD_PIC_SubType;
 #endif
             if((grain_subtype <= 2) && (dt > 0) && (P[i].Gas_Density>0) && (vgas_mag > 0)) /* only bother with particles moving wrt gas with finite gas density and timestep */
             {
@@ -63,14 +63,14 @@ void apply_grain_dragforce(void)
                 double tstop_inv = 1.59577/sqrt(gamma_eff) * rho_gas * cs / (R_grain_code * rho_grain_code); // 2*sqrt[2/pi] * 1/tstop //
 #ifdef GRAIN_LORENTZFORCE /* calculate the grain charge following Draine & Sutin */
                 double cs_cgs = cs * UNIT_VEL_IN_CGS;
-                double tau_draine_sutin = R_grain_cgs * (2.3*PROTONMASS) * (cs_cgs*cs_cgs) / (gamma_eff * ELECTRONCHARGE*ELECTRONCHARGE);
+                double tau_draine_sutin = R_grain_cgs * (2.3*PROTONMASS_CGS) * (cs_cgs*cs_cgs) / (gamma_eff * ELECTRONCHARGE_CGS*ELECTRONCHARGE_CGS);
                 double Z_grain = -DMAX( 1./(1. + sqrt(1.0e-3/tau_draine_sutin)) , 2.5*tau_draine_sutin ); /* note: if grains moving super-sonically with respect to gas, and charge equilibration time is much shorter than the streaming/dynamical timescales, then the charge is slightly reduced, because the ion collision rate is increased while the electron collision rate is increased less (since electrons are moving much faster, we assume the grain is still sub-sonic relative to the electron sound speed. in this case, for the large-grain limit, the Draine & Sutin results can be generalized; the full expressions are messy but can be -approximated- fairly well for Mach numbers ~3-30 by simply suppressing the equilibrium grain charge by a power ~exp[-0.04*mach]  (weak effect, though can be significant for mach>10) */
                 if(isnan(Z_grain)||(Z_grain>=0)) {Z_grain=0;}
 #endif
 #ifdef GRAIN_EPSTEIN_STOKES
                 if(grain_subtype == 0 || grain_subtype == 1)
                 {
-                    double mu = 2.3*PROTONMASS, temperature = (mu/PROTONMASS) * (1.4-1.) * U_TO_TEMP_UNITS * P[i].Gas_InternalEnergy; // assume molecular gas (as its the only regime where this is relevant) with gamma=1.4
+                    double mu = 2.3*PROTONMASS_CGS, temperature = (mu/PROTONMASS_CGS) * (1.4-1.) * U_TO_TEMP_UNITS * P[i].Gas_InternalEnergy; // assume molecular gas (as its the only regime where this is relevant) with gamma=1.4
                     double cross_section = GRAIN_EPSTEIN_STOKES * 2.0e-15 * (1. + 70./temperature);
                     cross_section /= UNIT_LENGTH_IN_CGS*UNIT_LENGTH_IN_CGS;
                     double n_mol = rho_gas * UNIT_MASS_IN_CGS / mu, mean_free_path = 1 / (n_mol * cross_section); // should be in code units now //
@@ -86,7 +86,7 @@ void apply_grain_dragforce(void)
                     tstop_Coulomb_inv /= (1. + a_Coulomb *(vgas_mag/cs)*(vgas_mag/cs)*(vgas_mag/cs)) * sqrt(1.+x0*x0); // velocity dependence (force becomes weak when super-sonic)
                     tstop_Coulomb_inv *= (Z_grain/tau_draine_sutin) * (Z_grain/tau_draine_sutin) / 17.; // coulomb attraction terms, assuming ions have charge ~1, and Coulomb logarithm is 17
                     // don't need super-accuration gas ionization states, just need approximate estimate, which we can make based on temperature //
-                    double T_Kelvin = (2.3*PROTONMASS) * (cs_cgs*cs_cgs) / (1.3807e-16 * gamma_eff), f_ion_to_use = 0; // temperature in K
+                    double T_Kelvin = (2.3*PROTONMASS_CGS) * (cs_cgs*cs_cgs) / (1.3807e-16 * gamma_eff), f_ion_to_use = 0; // temperature in K
                     if(T_Kelvin > 1000.) {f_ion_to_use = exp(-15000./T_Kelvin);} /* default to a simple approximate guess for ionization, without cooling active */
 #ifdef COOLING  // in this case, have the ability to calculate more accurate ionization fraction
                     double u_tmp, ne_tmp = 1, nh0_tmp = 0, mu_tmp = 1, temp_tmp, nHeII_tmp, nhp_tmp, nHe0_tmp, nHepp_tmp;
@@ -112,7 +112,7 @@ void apply_grain_dragforce(void)
                         we ignore the Hall effect setting R=0 (ignore current carried by the particles themselves in induction) */
                     double grain_mass = (4.*M_PI/3.) * R_grain_code*R_grain_code*R_grain_code * rho_grain_code; // code units
                     double lorentz_units = UNIT_B_IN_GAUSS; // code B to Gauss
-                    lorentz_units *= (ELECTRONCHARGE/C_LIGHT) * UNIT_VEL_IN_CGS / UNIT_MASS_IN_CGS; // converts acceleration to cgs
+                    lorentz_units *= (ELECTRONCHARGE_CGS/C_LIGHT_CGS) * UNIT_VEL_IN_CGS / UNIT_MASS_IN_CGS; // converts acceleration to cgs
                     lorentz_units /= UNIT_VEL_IN_CGS / UNIT_TIME_IN_CGS; // converts it to code-units acceleration
 
                     double bhat[3], bmag=0, efield[3]={0}, efield_coeff=0, dv[3]; /* define unit vectors and B for evolving the lorentz force */
@@ -172,12 +172,13 @@ void apply_grain_dragforce(void)
 #ifndef PIC_SPEEDOFLIGHT_REDUCTION
 #define PIC_SPEEDOFLIGHT_REDUCTION (1)
 #endif            
-            if((grain_subtype == 3) && (dt > 0) && (P[i].Gas_Density>0) && (vgas_mag > 0)) /* only bother with particles moving wrt gas with finite gas density and timestep */
+            if((grain_subtype >= 3) && (dt > 0) && (P[i].Gas_Density>0) && (vgas_mag > 0)) /* only bother with particles moving wrt gas with finite gas density and timestep */
             {
                 double reduced_C = PIC_SPEEDOFLIGHT_REDUCTION * C_LIGHT_CODE; /* effective speed of light for this part of the code */
                 double charge_to_mass_ratio_dimensionless = All.PIC_Charge_to_Mass_Ratio; /* dimensionless q/m in units of e/mp */
+                //if(grain_subtype==4) {charge_to_mass_ratio_dimensionless = -1836.15; /* electrons */
 
-                double lorentz_units = UNIT_B_IN_GAUSS * UNIT_VEL_IN_CGS * (ELECTRONCHARGE/(PROTONMASS*C_LIGHT)) / (UNIT_VEL_IN_CGS/UNIT_TIME_IN_CGS); // code velocity to CGS and B to Gauss, times base units e/(mp*c), then convert 'back' to code-units acceleration
+                double lorentz_units = UNIT_B_IN_GAUSS * UNIT_VEL_IN_CGS * (ELECTRONCHARGE_CGS/(PROTONMASS_CGS*C_LIGHT_CGS)) / (UNIT_VEL_IN_CGS/UNIT_TIME_IN_CGS); // code velocity to CGS and B to Gauss, times base units e/(mp*c), then convert 'back' to code-units acceleration
 #ifdef PIC_MHD_NEW_RSOL_METHOD
                 lorentz_units *= PIC_SPEEDOFLIGHT_REDUCTION; // the rsol enters by slowing down the forces here, acts as a unit shift for time
 #endif
@@ -478,7 +479,7 @@ int interpolate_fluxes_opacities_gasgrains_evaluate(int target, int mode, int *e
                         }
                     } else { /* sitting on a -grain- element, want to interpolate flux to it and calculate radiation pressure force */
                         wt = SphP[j].Density*All.cf_a3inv * wk_i; /* weight of element to 'i, with appropriate coefficient from above */
-                        double radacc[3]={0},vel_i[3]={0},dtEgamma_work_done=0; for(k=0;k<3;k++) {vel_i[k]=(C_LIGHT_CODE_REDUCED/C_LIGHT_CODE)*local.Vel[k]/All.cf_atime;} /* velocity of interest here is the grain velocity (radiation in lab frame) */
+                        double radacc[3]={0},vel_i[3]={0},dtEgamma_work_done=0; for(k=0;k<3;k++) {vel_i[k]=RSOL_CORRECTION_FACTOR_FOR_VELOCITY_TERMS*local.Vel[k]/All.cf_atime;} /* velocity of interest here is the grain velocity (radiation in lab frame) */
                         for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++)
                         {
                             double f_kappa_abs=0.5,vdot_h[3]={0},flux_i[3]={0},flux_mag=0,erad_i=0,flux_corr=1;
@@ -496,7 +497,7 @@ int interpolate_fluxes_opacities_gasgrains_evaluate(int target, int mode, int *e
 #endif
                             if(!isfinite(flux_mag) || flux_mag<=MIN_REAL_NUMBER) {flux_mag=MIN_REAL_NUMBER; flux_i[0]=flux_i[1]=0; flux_i[2]=flux_mag;}
                             double flux_thin = erad_i * C_LIGHT_CODE_REDUCED; if(!isfinite(flux_thin) || flux_thin<=0) {flux_thin=0;}
-                            flux_corr = DMIN(1., flux_thin/flux_mag);
+                            flux_corr = DMIN(1., 100.*flux_thin/flux_mag);
                             for(k=0;k<3;k++)
                             {
                                 radacc[k] += local.Grain_Abs_Coeff[k_freq] * wt * (flux_corr*flux_i[k] - vdot_h[k]); // note these 'vdoth' terms shouldn't be included in FLD, since its really assuming the entire right-hand-side of the flux equation reaches equilibrium with the pressure tensor, which gives the expression in rt_utilities

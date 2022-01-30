@@ -18,11 +18,10 @@
  * It has been updated by PFH for basic compatibility with GIZMO.
  */
 
-#define  LYMAN_ALPHA      1215.6e-8    /* 1215.6 Angstroem */
-#define  LYMAN_ALPHA_HeII  303.8e-8    /* 303.8 Angstroem */
-#define  OSCILLATOR_STRENGTH       0.41615
-#define  OSCILLATOR_STRENGTH_HeII  0.41615
-
+#define  LYMAN_ALPHA_WAVELENGTH_CM_HI    (1215.6e-8)    /* 1215.6 Angstrom */
+#define  LYMAN_ALPHA_WAVELENGTH_CM_HeII  (303.8e-8)    /* 303.8 Angstrom */
+#define  OSCILLATOR_STRENGTH_HI    (0.41615)
+#define  OSCILLATOR_STRENGTH_HeII  (0.41615)
 
 #ifdef OUTPUT_LINEOFSIGHT
 
@@ -386,12 +385,12 @@ void sum_over_processors_and_normalize(void)
 	  /* neutral hydrogen quantities */
 	  LosGlobal->VpecHI[bin] /= LosGlobal->RhoHI[bin];
 	  LosGlobal->TempHI[bin] /= LosGlobal->RhoHI[bin];
-	  LosGlobal->NHI[bin] = LosGlobal->RhoHI[bin] * (UNIT_MASS_IN_CGS / PROTONMASS);
+	  LosGlobal->NHI[bin] = LosGlobal->RhoHI[bin] * (UNIT_MASS_IN_CGS / PROTONMASS_CGS);
 
 	  /* HeII quantities */
 	  LosGlobal->VpecHeII[bin] /= (All.Time * LosGlobal->RhoHeII[bin]);
 	  LosGlobal->TempHeII[bin] /= LosGlobal->RhoHeII[bin];
-	  LosGlobal->NHeII[bin] = LosGlobal->RhoHeII[bin] * (UNIT_MASS_IN_CGS / (4 * PROTONMASS));
+	  LosGlobal->NHeII[bin] = LosGlobal->RhoHeII[bin] * (UNIT_MASS_IN_CGS / (4 * PROTONMASS_CGS));
 	}
     }
 }
@@ -424,7 +423,7 @@ void absorb_along_lines_of_sight(void)
 
 	      dv = (dv * Wmax / PIXELS + LosGlobal->VpecHI[k]) * UNIT_VEL_IN_CGS;
 
-	      b = sqrt(2 * BOLTZMANN * LosGlobal->TempHI[k] / PROTONMASS);
+	      b = sqrt(2 * BOLTZMANN_CGS * LosGlobal->TempHI[k] / PROTONMASS_CGS);
 
 	      LosGlobal->TauHI[bin] += LosGlobal->NHI[k] * exp(-dv * dv / (b * b)) / b * dz;
 
@@ -439,7 +438,7 @@ void absorb_along_lines_of_sight(void)
 
 	      dv = (dv * Wmax / PIXELS + LosGlobal->VpecHeII[k]) * UNIT_VEL_IN_CGS;
 
-	      b = sqrt(2 * BOLTZMANN * LosGlobal->TempHeII[k] / (4 * PROTONMASS));
+	      b = sqrt(2 * BOLTZMANN_CGS * LosGlobal->TempHeII[k] / (4 * PROTONMASS_CGS));
 
 	      LosGlobal->TauHeII[bin] += LosGlobal->NHeII[k] * exp(-dv * dv / (b * b)) / b * dz;
 	    }
@@ -450,12 +449,12 @@ void absorb_along_lines_of_sight(void)
 
       /*  to get things into cgs units */
       fac = 1 / (UNIT_LENGTH_IN_CGS*UNIT_LENGTH_IN_CGS);
-      fac *= OSCILLATOR_STRENGTH * M_PI * LYMAN_ALPHA * sqrt(3 * THOMPSON / (8 * M_PI)) * C_LIGHT / (All.cf_atime * All.cf_atime) / sqrt(M_PI);	/* Ly-alpha cross section */
+      fac *= OSCILLATOR_STRENGTH_HI * M_PI * LYMAN_ALPHA_WAVELENGTH_CM_HI * sqrt(3 * (THOMPSON_CX_CGS) / (8 * M_PI)) * C_LIGHT_CGS / (All.cf_atime * All.cf_atime) / sqrt(M_PI);	/* Ly-alpha cross section, Thompson cross-section in cgs */
 
       /* Note: For HeII, the oscillator strength is equal to that of HI,
          and the Lyman-alpha wavelength is 4 times shorter */
 
-      fac_HeII = fac * (OSCILLATOR_STRENGTH_HeII / OSCILLATOR_STRENGTH) * (LYMAN_ALPHA_HeII / LYMAN_ALPHA);
+      fac_HeII = fac * (OSCILLATOR_STRENGTH_HeII / OSCILLATOR_STRENGTH_HI) * (LYMAN_ALPHA_WAVELENGTH_CM_HeII / LYMAN_ALPHA_WAVELENGTH_CM_HI);
 
       for(bin = 0; bin < PIXELS; bin++)
 	{

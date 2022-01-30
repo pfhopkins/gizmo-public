@@ -206,6 +206,10 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
                 /* sound speed, relative velocity, and signal velocity computation */
                 kernel.sound_j = Get_Gas_effective_soundspeed_i(j);
                 kernel.vsig = kernel.sound_i + kernel.sound_j;
+#ifdef COSMIC_RAY_FLUID
+                double CosmicRayPressure_j[N_CR_PARTICLE_BINS]; for(k=0;k<N_CR_PARTICLE_BINS;k++) {CosmicRayPressure_j[k] = Get_Gas_CosmicRayPressure(j,k);} /* compute this for use below */
+                //double Streaming_Loss_Term = 0; // alternative evaluation of streaming+diffusion losses: still experimental //
+#endif
 #ifdef MAGNETIC
                 double BPred_j[3];
                 for(k=0;k<3;k++) {BPred_j[k]=Get_Gas_BField(j,k);} /* defined j b-field in appropriate units for everything */
@@ -356,6 +360,9 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
 #include "../turb/chimes_turbulent_ion_diffusion.h"
 #endif
 
+#ifdef COSMIC_RAY_FLUID
+#include "../eos/cosmic_ray_fluid/cosmic_ray_diffusion.h"
+#endif
 
 #ifdef RT_SOLVER_EXPLICIT
 #if defined(RT_EVOLVE_INTENSITIES)

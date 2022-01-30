@@ -76,7 +76,9 @@ void blackhole_start(void);
 void blackhole_end(void);
 void blackhole_properties_loop(void);
 double bh_eddington_mdot(double bh_mass);
-double bh_lum_bol(double mdot, double mass, long id);
+double bh_lum_bol(double mdot, double mass, long pindex);
+double evaluate_blackhole_radiative_efficiency(double mdot, double mass, long pindex);
+double evaluate_blackhole_cosmicray_efficiency(double mdot, double mass, long pindex);
 
 /* blackholes.c */
 void blackhole_final_operations(void);

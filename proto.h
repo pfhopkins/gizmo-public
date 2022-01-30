@@ -281,6 +281,38 @@ double CR_calculate_adiabatic_gasCR_exchange_term(int i, double dt_entr, double 
 double INLINE_FUNC Get_CosmicRayEnergyDensity_cgs(int i);
 double CR_gas_heating(int target, double n_elec, double nH0, double nHcgs);
 double Get_CosmicRayIonizationRate_cgs(int i);
+#ifdef COSMIC_RAY_FLUID
+void CalculateAndAssign_CosmicRay_DiffusionAndStreamingCoefficients(int i);
+double INLINE_FUNC Get_Gas_CosmicRayPressure(int i, int k_CRegy);
+double Get_CosmicRayGradientLength(int i, int k_CRegy);
+double Get_CosmicRayStreamingVelocity(int i, int k_CRegy);
+double CosmicRay_Update_DriftKick(int i, double dt_entr, int mode);
+double CR_cooling_and_gas_heating(int target, double n_elec, double nH_cgs, double dtime_cgs, int mode);
+double CR_energy_spectrum_injection_fraction(int k_CRegy, int source_type, double shock_vel, int return_index_in_bin, int target);
+double return_cosmic_ray_anisotropic_closure_function_threechi(int target, int k_CRegy);
+void inject_cosmic_rays(double CR_energy_to_inject, double injection_velocity, int source_type, int target, double *dir);
+double return_CRbin_M1speed(int k_CRegy);
+double evaluate_cr_transport_reductionfactor(int target, int k_CRegy, int mode);
+double Get_AlfvenMachNumber_Local(int i, double vA_idealMHD_codeunits, int use_shear_corrected_vturb_flag);
+double diffusion_coefficient_constant(int target, int k_CRegy);
+double diffusion_coefficient_extrinsic_turbulence(int mode, int target, int k_CRegy, double M_A, double L_scale, double b_muG, double vA_noion, double rho_cgs, double temperature, double cs_thermal, double nh0, double nHe0, double f_ion);
+double diffusion_coefficient_self_confinement(int mode, int target, int k_CRegy, double M_A, double L_scale, double b_muG, double vA_noion, double rho_cgs, double temperature, double cs_thermal, double nh0, double nHe0, double f_ion);
+double return_CRbin_numberdensity_in_cgs(int target, int k_CRegy);
+double return_CRbin_CR_energies_in_GeV(int target, int k_CRegy);
+double return_CRbin_CR_charge_in_e(int target, int k_CRegy);
+int return_CRbin_CR_species_ID(int k_CRegy);
+double return_CRbin_kinetic_energy_in_GeV(int target, int k_CRegy);
+double return_CRbin_gamma_factor(int target, int k_CRegy);
+double gamma_eos_of_crs_in_bin(int k_CRegy);
+double return_CRbin_beta_factor(int target, int k_CRegy);
+double get_cell_Urad_in_eVcm3(int i);
+void CR_cooling_and_losses(int target, double n_elec, double nHcgs, double dtime_cgs);
+double return_CRbin_CRmass_in_mp(int target, int k_CRegy);
+double return_CRbin_CR_rigidity_in_GV(int target, int k_CRegy);
+double CR_get_streaming_loss_rate_coefficient(int target, int k_CRegy);
+double Get_Gas_ion_Alfven_speed_i(int i);
+double return_CRbin_nuplusminus_asymmetry(int i, int k_CRegy);
+#endif
 #ifdef EOS_ELASTIC
 void elastic_body_update_driftkick(int i, double dt_entr, int mode);
 #endif
@@ -294,6 +326,7 @@ double Get_Gas_Alfven_speed_i(int i);
 double Get_Gas_Fast_MHD_wavespeed_i(int i);
 double Get_Gas_Mean_Molecular_Weight_mu(double T_guess, double rho, double *xH0, double *ne_guess, double urad_from_uvb_in_G0, int target);
 void update_explicit_molecular_fraction(int i, double dtime_cgs);
+double return_dust_to_metals_ratio_vs_solar(int i);
 double yhelium(int target);
 double Get_Gas_Molecular_Mass_Fraction(int i, double temperature, double neutral_fraction, double free_electron_ratio, double urad_from_uvb_in_G0);
 double INLINE_FUNC Get_Gas_BField(int i_particle_id, int k_vector_component);
@@ -480,6 +513,7 @@ double evaluate_NH_from_GradRho(MyFloat gradrho[3], double hsml, double rho, dou
 
 
 #ifdef GALSF
+int is_particle_single_star_eligible(long i);
 double evaluate_stellar_age_Gyr(double stellar_tform);
 double evaluate_light_to_mass_ratio(double stellar_age_in_gyr, int i);
 double calculate_relative_light_to_mass_ratio_from_imf(double stellar_age_in_gyr, int i);
@@ -503,11 +537,15 @@ struct addFB_evaluate_data_in_
 
 void particle2in_addFB_fromstars(struct addFB_evaluate_data_in_ *in, int i, int fb_loop_iteration);
 double mechanical_fb_calculate_eventrates(int i, double dt);
+double Z_for_stellar_evol(int i);
 #ifdef METALS
 void get_jet_yields(double *yields, int i);
 #endif
 #endif
 
+#ifdef SINGLE_STAR_FB_JETS
+double single_star_jet_velocity(int n);
+#endif
 #ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
 double single_star_feedback_velocity_fortimestep(int n);
 #endif
@@ -518,7 +556,7 @@ void apply_grain_dragforce(void);
 
 #ifdef RT_INFRARED
 double get_min_allowed_dustIRrad_temperature(void);
-double get_rt_ir_lambdadust_effective(double T, double rho, double *nH0_guess, double *ne_guess, int target);
+double get_rt_ir_lambdadust_effective(double T, double rho, double *nH0_guess, double *ne_guess, int target, int update_Tdust);
 #endif
 
 #if defined(FLAG_NOT_IN_PUBLIC_CODE) || (defined(RT_CHEM_PHOTOION) && defined(GALSF))

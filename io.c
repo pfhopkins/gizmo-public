@@ -522,7 +522,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
-                    *ip_int++ = (int) P[pindex].Grain_SubType;
+                    *ip_int++ = (int) P[pindex].MHD_PIC_SubType;
                     n++;
                 }
 #endif
@@ -617,7 +617,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             for (n = 0; n < pc; pindex++)
                 if (P[pindex].Type == type)
                 {
-                    *fp++ = (MyOutputFloat) (evaluate_NH_from_GradRho(P[pindex].GradRho,PPP[pindex].Hsml,SphP[pindex].Density,PPP[pindex].NumNgb,1,pindex) * UNIT_SURFDEN_IN_CGS * shielding_length_factor * (1.0 - (P[pindex].Metallicity[0] + P[pindex].Metallicity[1])) / PROTONMASS);
+                    *fp++ = (MyOutputFloat) (evaluate_NH_from_GradRho(P[pindex].GradRho,PPP[pindex].Hsml,SphP[pindex].Density,PPP[pindex].NumNgb,1,pindex) * UNIT_SURFDEN_IN_CGS * shielding_length_factor * (1.0 - (P[pindex].Metallicity[0] + P[pindex].Metallicity[1])) / PROTONMASS_CGS);
                     n++;
                 }
 #endif
@@ -816,6 +816,15 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             break;
 
         case IO_COSMICRAY_ENERGY:	/* energy in the cosmic ray field  */
+#ifdef COSMIC_RAY_FLUID
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    for(k=0;k<N_CR_PARTICLE_BINS;k++) {fp[k] = (MyOutputFloat) SphP[pindex].CosmicRayEnergyPred[k];}
+                    fp += N_CR_PARTICLE_BINS;
+                    n++;
+                }
+#endif
             break;
 
             
@@ -823,9 +832,27 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             break;
 
         case IO_COSMICRAY_KAPPA:    /* local CR diffusion constant */
+#if defined(COSMIC_RAY_FLUID) && defined(CRFLUID_DIFFUSION_MODEL)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    for(k=0;k<N_CR_PARTICLE_BINS;k++) {fp[k] = (MyOutputFloat) SphP[pindex].CosmicRayDiffusionCoeff[k];}
+                    fp += N_CR_PARTICLE_BINS;
+                    n++;
+                }
+#endif
             break;
 
         case IO_COSMICRAY_ALFVEN:    /* energy in the resonant (~gyro-radii) Alfven modes field, in the +/- (with respect to B) fields  */
+#ifdef CRFLUID_EVOLVE_SCATTERINGWAVES
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    for(k=0;k<2;k++) {int k2; for(k2=0;k2<N_CR_PARTICLE_BINS;k2++) {fp[N_CR_PARTICLE_BINS*k + k2] = (MyOutputFloat) SphP[pindex].CosmicRayAlfvenEnergyPred[k2][k];}}
+                    fp += 2*N_CR_PARTICLE_BINS;
+                    n++;
+                }
+#endif
             break;
 
 
@@ -1217,6 +1244,15 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                     *fp++ = (MyOutputFloat) SphP[pindex].Temperature;
                     n++;
                 }
+#elif defined(OUTPUT_TEMPERATURE)
+	    for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+		    double u, ne, nh0 = 0, mu = 1, temp, nHeII, nhp, nHe0, nHepp; u = DMAX(All.MinEgySpec, SphP[pindex].InternalEnergy); // needs to be in code units                                                                                                                                                  
+		    temp = ThermalProperties(u, SphP[pindex].Density * All.cf_a3inv, pindex, &mu, &ne, &nh0, &nhp, &nHe0, &nHeII, &nHepp);		  
+		    *fp++ = (MyOutputFloat) temp;
+		    n++;
+                }	    
 #endif
             break;
 
@@ -1292,6 +1328,18 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                 {
                     for(k=0;k<N_RT_FREQ_BINS;k++) {fp[k] = (MyOutputFloat) SphP[pindex].Rad_E_gamma[k];}
                     fp += N_RT_FREQ_BINS;
+                    n++;
+                }
+#endif
+            break;
+
+        case IO_RAD_FLUX:
+#if defined(OUTPUT_RT_RAD_FLUX) && defined(RT_EVOLVE_FLUX)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    for(k=0;k<3;k++) {int kf; for(kf=0;kf<N_RT_FREQ_BINS;kf++) {fp[N_RT_FREQ_BINS*k + kf] = (MyOutputFloat) (SphP[pindex].Rad_Flux_Pred[kf][k] * (SphP[pindex].Density*All.cf_a3inv/P[pindex].Mass));}}
+                    fp += 3*N_RT_FREQ_BINS;
                     n++;
                 }
 #endif
@@ -1528,7 +1576,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
         break;
 
     case IO_DYNERROR:
-#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
+#ifdef OUTPUT_TURB_DIFF_DYNAMIC_ERROR
         for (n = 0; n < pc; pindex++) {
             if (P[pindex].Type == type) {
                 *fp++ = (MyOutputFloat) SphP[pindex].TD_DynDiffCoeff_error;
@@ -1539,7 +1587,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
         break;
 
     case IO_DYNERRORDEFAULT:
-#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
+#ifdef OUTPUT_TURB_DIFF_DYNAMIC_ERROR
         for (n = 0; n < pc; pindex++) {
             if (P[pindex].Type == type) {
                 *fp++ = (MyOutputFloat) SphP[pindex].TD_DynDiffCoeff_error_default;
@@ -1697,9 +1745,21 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_COSMICRAY_ENERGY:
         case IO_COSMICRAY_SLOPES:
         case IO_COSMICRAY_KAPPA:
+#if defined(COSMIC_RAY_FLUID) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+            if(mode)
+                bytes_per_blockelement = (N_CR_PARTICLE_BINS) * sizeof(MyInputFloat);
+            else
+                bytes_per_blockelement = (N_CR_PARTICLE_BINS) * sizeof(MyOutputFloat);
+#endif
             break;
 
         case IO_COSMICRAY_ALFVEN:
+#ifdef CRFLUID_EVOLVE_SCATTERINGWAVES
+            if(mode)
+                bytes_per_blockelement = (2 * N_CR_PARTICLE_BINS) * sizeof(MyInputFloat);
+            else
+                bytes_per_blockelement = (2 * N_CR_PARTICLE_BINS) * sizeof(MyOutputFloat);
+#endif
             break;
 
         case IO_IMF:
@@ -1717,6 +1777,15 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
                 bytes_per_blockelement = (N_RT_FREQ_BINS) * sizeof(MyInputFloat);
             else
                 bytes_per_blockelement = (N_RT_FREQ_BINS) * sizeof(MyOutputFloat);
+#endif
+            break;
+
+        case IO_RAD_FLUX:
+#ifdef RADTRANSFER
+            if(mode)
+                bytes_per_blockelement = (3*N_RT_FREQ_BINS) * sizeof(MyInputFloat);
+            else
+                bytes_per_blockelement = (3*N_RT_FREQ_BINS) * sizeof(MyOutputFloat);
 #endif
             break;
 
@@ -1950,9 +2019,15 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_COSMICRAY_ENERGY:
         case IO_COSMICRAY_SLOPES:
         case IO_COSMICRAY_KAPPA:
+#if defined(COSMIC_RAY_FLUID) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+            values = N_CR_PARTICLE_BINS;
+#endif
             break;
 
         case IO_COSMICRAY_ALFVEN:
+#ifdef CRFLUID_EVOLVE_SCATTERINGWAVES
+            values = (2*N_CR_PARTICLE_BINS);
+#endif
             break;
 
         case IO_CBE_MOMENTS:
@@ -1961,6 +2036,12 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_EDDINGTON_TENSOR:
 #ifdef RADTRANSFER
             values = (6*N_RT_FREQ_BINS);
+#endif
+            break;
+
+        case IO_RAD_FLUX:
+#ifdef RADTRANSFER
+            values = (3*N_RT_FREQ_BINS);
 #endif
             break;
 
@@ -2084,6 +2165,7 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_PARTVEL:
         case IO_RAD_ACCEL:
         case IO_RADGAMMA:
+        case IO_RAD_FLUX:
         case IO_EDDINGTON_TENSOR:
         case IO_U:
         case IO_RHO:
@@ -2265,6 +2347,12 @@ int blockpresent(enum iofields blocknr)
 
         case IO_RADGAMMA:
 #if defined(RADTRANSFER) || defined(RT_USE_GRAVTREE_SAVE_RAD_ENERGY)
+            return 1;
+#endif
+            break;
+
+        case IO_RAD_FLUX:
+#if defined(OUTPUT_RT_RAD_FLUX) && defined(RT_EVOLVE_FLUX)
             return 1;
 #endif
             break;
@@ -2472,15 +2560,24 @@ int blockpresent(enum iofields blocknr)
             break;
 
         case IO_COSMICRAY_ENERGY:
+#if defined(COSMIC_RAY_FLUID) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+            return 1;
+#endif
             break;
 
         case IO_COSMICRAY_SLOPES:
             break;
 
         case IO_COSMICRAY_KAPPA:
+#if defined(COSMIC_RAY_FLUID) && defined(CRFLUID_DIFFUSION_MODEL)
+            return 1;
+#endif
             break;
 
         case IO_COSMICRAY_ALFVEN:
+#ifdef CRFLUID_EVOLVE_SCATTERINGWAVES
+            return 1;
+#endif
             break;
 
         case IO_ABVC:
@@ -2623,6 +2720,8 @@ int blockpresent(enum iofields blocknr)
         case IO_EOSTEMP:
 #ifdef EOS_CARRIES_TEMPERATURE
             return 1;
+#elif defined(OUTPUT_TEMPERATURE)
+	    return 1;
 #endif
             break;
 
@@ -2733,7 +2832,7 @@ int blockpresent(enum iofields blocknr)
 
         case IO_DYNERRORDEFAULT:
         case IO_DYNERROR:
-#ifdef IO_TURB_DIFF_DYNAMIC_ERROR
+#ifdef OUTPUT_TURB_DIFF_DYNAMIC_ERROR
             return 1;
 #endif
             break;
@@ -3034,6 +3133,9 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
         case IO_RADGAMMA:
             strncpy(label, "RADG", 4);
             break;
+        case IO_RAD_FLUX:
+            strncpy(label, "RADF", 4);
+            break;
         case IO_RAD_ACCEL:
             strncpy(label, "RADA", 4);
             break;
@@ -3155,6 +3257,9 @@ void get_dataset_name(enum iofields blocknr, char *buf)
             break;
         case IO_RADGAMMA:
             strcpy(buf, "PhotonEnergy");
+            break;
+        case IO_RAD_FLUX:
+            strcpy(buf, "PhotonFluxDensity");
             break;
         case IO_RAD_ACCEL:
             strcpy(buf, "RadiativeAcceleration");
@@ -4031,6 +4136,10 @@ void write_header_attributes_in_hdf5(hid_t handle)
     H5Awrite(hdf5_attribute,H5T_NATIVE_INT,&All.DesLinkNgb); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 #endif
 
+#if defined(COSMIC_RAY_FLUID) && (CRFLUID_DIFFUSION_MODEL == 0)
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "CosmicRayDiffusionCoeff_at_GV_CodeUnits", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.CosmicRayDiffusionCoeff); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
 
 #if defined(DM_SIDM)
 #ifdef GRAIN_COLLISIONS
@@ -4078,11 +4187,15 @@ void write_header_attributes_in_hdf5(hid_t handle)
     H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.PhotonMomentum_Coupled_Fraction); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 #endif
 
+#ifdef BH_PHOTONMOMENTUM
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "LEBRON_Sink_PhotonMomentum_Coupled_Fraction", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BH_Rad_MomentumFactor); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
 
 #ifdef GRAIN_FLUID
     {int holder=GRAIN_PTYPES; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "GrainCR_Particle_Type_BitFlag", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
     H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &holder); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
-#if !defined(PIC_MHD) || defined(GRAIN_FLUID_AND_PIC_BOTH_DEFINED)
+#if !defined(PIC_MHD) || defined(FLAG_NOT_IN_PUBLIC_CODE)
     hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Grain_Internal_Density", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
     H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.Grain_Internal_Density); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
     hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Grain_Size_Min", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
@@ -4262,6 +4375,10 @@ void write_header_attributes_in_hdf5(hid_t handle)
     H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BAL_v_outflow); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 #endif
 
+#if defined(SINGLE_STAR_FB_JETS)
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BAL_f_launch_v", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BAL_f_launch_v); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
 
 #if defined(BH_COSMIC_RAYS)
     hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BH_CosmicRay_Injection_Efficiency", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);

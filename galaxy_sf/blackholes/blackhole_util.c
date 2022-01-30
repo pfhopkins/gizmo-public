@@ -124,24 +124,49 @@ void blackhole_end(void)
 
 
 
-/* return the eddington accretion-rate = L_edd/(epsilon_r*c*c) */
+/* return the eddington accretion-rate = L_edd/(epsilon_r*c*c) - for a variable radiative efficiency, this scales off of the 'canonical' value given as the constant in the parameterfile, per usual convention in the literature */
 double bh_eddington_mdot(double bh_mass)
 {
-    return (4*M_PI * GRAVITY_G * PROTONMASS / (All.BlackHoleRadiativeEfficiency * C_LIGHT * THOMPSON)) * bh_mass * UNIT_TIME_IN_CGS;
+    return (4*M_PI * GRAVITY_G_CGS * PROTONMASS_CGS / (All.BlackHoleRadiativeEfficiency * C_LIGHT_CGS * THOMPSON_CX_CGS)) * bh_mass * UNIT_TIME_IN_CGS;
 }
 
 
 
 /* return the bh luminosity given some accretion rate and mass (allows for non-standard models: radiatively inefficient flows, stellar sinks, etc) */
-double bh_lum_bol(double mdot, double mass, long id)
+double bh_lum_bol(double mdot, double mass, long pindex)
 {
-    double lum = All.BlackHoleRadiativeEfficiency * mdot * C_LIGHT_CODE*C_LIGHT_CODE; // this is automatically in -physical code units-
+    double lum = evaluate_blackhole_radiative_efficiency(mdot,mass,pindex) * mdot * C_LIGHT_CODE*C_LIGHT_CODE; // this is automatically in -physical code units-
 #ifdef SINGLE_STAR_SINK_DYNAMICS
-    lum = calculate_individual_stellar_luminosity(mdot,mass,id);
+    lum = calculate_individual_stellar_luminosity(mdot,mass,pindex);
 #endif
     return All.BlackHoleFeedbackFactor * lum;
 }
 
+
+/* return the bh radiative efficiency - allows for models with dynamical or accretion-dependent radiative efficiencies */
+double evaluate_blackhole_radiative_efficiency(double mdot, double mass, long pindex)
+{
+#ifdef BH_RIAF_SUBEDDINGTON_MODEL /* simple classic model where radiative efficiency declines linearly below critical eddington ratio of order 1% eddington */
+    double lambda_0 = 0.01, lambda_eff = mdot/bh_eddington_mdot(mass), qfac = lambda_eff/lambda_0;
+    return All.BlackHoleRadiativeEfficiency * (qfac/(1.+qfac));
+    //return All.BlackHoleRadiativeEfficiency * DMIN(1., qfac);
+#endif
+    return All.BlackHoleRadiativeEfficiency; // default to constant
+}
+
+
+/* return the bh cosmic ray acceleration efficiency - allows for models with dynamical or accretion-dependent cosmic ray efficiencies */
+double evaluate_blackhole_cosmicray_efficiency(double mdot, double mass, long pindex)
+{
+#ifdef BH_COSMIC_RAYS
+#ifdef BH_CR_SUBEDDINGTON_MODEL /* experiment with functions here to explore more/less efficient CR injection at lower/higher eddington ratios, reflecting hard/soft-type transition */
+    double lambda_0 = 0.01, enhancement_fac=10., m_exp=1., lambda_eff = mdot/bh_eddington_mdot(mass), qfac = 1.+pow(lambda_eff/lambda_0, m_exp); // eddington accretion ratio in units of 0.01
+    return All.BH_CosmicRay_Injection_Efficiency * (1. + enhancement_fac/qfac);
+#endif
+    return All.BH_CosmicRay_Injection_Efficiency; // default to constant
+#endif
+    return 0;
+}
 
 
 void blackhole_properties_loop(void) /* Note, normalize_temp_info_struct is now done at the end of blackhole_environment_loop(), so that final quantities are available for the second environment loop if needed */
@@ -152,7 +177,7 @@ void blackhole_properties_loop(void) /* Note, normalize_temp_info_struct is now 
         n = BlackholeTempInfo[i].index;
         dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(n);
 #ifdef BH_INTERACT_ON_GAS_TIMESTEP
-        if(P[i].Type == 5){dt = P[i].dt_since_last_gas_search;}
+        if(P[i].Type == 5) {dt = P[i].dt_since_last_gas_search;}
 #endif
         BPP(n).BH_Mdot=0;  /* always initialize/default to zero accretion rate */
         set_blackhole_long_range_rp(i, n);

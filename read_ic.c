@@ -305,7 +305,7 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
 
         case IO_GRAINTYPE:
 #if defined(PIC_MHD)
-            for(n = 0; n < pc; n++) {P[offset + n].Grain_SubType = *ip_int++;}
+            for(n = 0; n < pc; n++) {P[offset + n].MHD_PIC_SubType = *ip_int++;}
 #endif
             break;
 
@@ -453,12 +453,26 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
             break;
 
         case IO_COSMICRAY_ENERGY:
+#ifdef COSMIC_RAY_FLUID
+#ifdef CRFLUID_ALT_SPECTRUM_SPECIALSNAPRESTART
+            for(n = 0; n < pc; n++) {SphP[offset + n].CosmicRayEnergy[0] = *fp++;}
+#else
+            for(n = 0; n < pc; n++) {for(k=0; k<N_CR_PARTICLE_BINS; k++) {SphP[offset + n].CosmicRayEnergy[k] = *fp++;}}
+#endif
+#endif
             break;
 
         case IO_COSMICRAY_SLOPES:
             break;
 
         case IO_COSMICRAY_ALFVEN:
+#ifdef CRFLUID_EVOLVE_SCATTERINGWAVES
+            for(n = 0; n < pc; n++) {
+                int k2; for(k=0;k<2;k++) {for(k2=0;k2<N_CR_PARTICLE_BINS;k2++) {
+                        SphP[offset + n].CosmicRayAlfvenEnergy[k2][k] = fp[N_CR_PARTICLE_BINS*k + k2];}}
+                fp += 2*N_CR_PARTICLE_BINS;
+            }
+#endif
             break;
 
         case IO_OSTAR:
@@ -548,6 +562,7 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
         case IO_LAST_CAUSTIC:
         case IO_HSMS:
         case IO_ACRB:
+        case IO_RAD_FLUX:
         case IO_VSTURB_DISS:
         case IO_VSTURB_DRIVE:
         case IO_grHI:

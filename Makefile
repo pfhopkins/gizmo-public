@@ -229,7 +229,7 @@ MPICHLIB =
 OPT     += -DUSE_MPI_IN_PLACE
 ##
 ## module load TACC intel impi hdf5 gsl fftw2
-##  - note you cann choose to use FFTW3 now instead of FFTW2, but you will need to load that module and change the compiler link appropriately
+##  - note you can choose to use FFTW3 now instead of FFTW2, but you will need to load that module and change the compiler link appropriately
 ## note is you are using the KNL system it has a large number of slow cores, so some changes to 'usual' compilation parameters are advised:
 ##  - recommend running with ~16 mpi tasks/node. higher [32 or 64] usually involves a performance hit unless the problem is more scale-able;
 ##     use the remaining nodes in OPENMP. Do not use >64 MPI tasks/node [need ~4 cores free for management] and do not use >2 threads/core
@@ -369,7 +369,80 @@ OPT     += -DUSE_MPI_IN_PLACE
 ## module load mkl
 ## module load hdf5
 ## module load fftw
+# NOTE: this machine does not appear to always parallelize correctly in a hybrid MPI/OpenMP (i.e. when OPENMP is enabled) setup - it can potentially assign multiple threads to the same physical core and get lousy performance. A surefire way to get the correct thread affinity is to generate a rankfile and include as an argument to mpirun, e.g. https://github.com/mikegrudic/make_rankfile
 endif
+
+#----------------------------------------------------------------------------------------------
+ifeq ($(SYSTYPE),"Anvil")
+CC       = mpicc
+CXX      = mpic++
+FC       = mpif90  # gcc/clang
+#FC       = mpif90 -nofor_main  # intel
+OPTIMIZE = -O3
+OPTIMIZE += -march=znver1 -mfma -fvectorize -mfma -mavx2 -m3dnow -floop-unswitch-aggressive -fcommon  # aocc/clang
+#OPTIMIZE += -march=znver1 -mtune=znver1 -mfma -mavx2 -m3dnow -fomit-frame-pointer -fcommon  # gcc
+#OPTIMIZE += -march=core-avx2 -fma -ftz -fomit-frame-pointer -ipo -funroll-loops -no-prec-div -fp-model fast=2  # intel
+ifeq (OPENMP,$(findstring OPENMP,$(CONFIGVARS)))
+OPTIMIZE += -fopenmp  # gcc/clang
+#OPTIMIZE += -qopenmp  # intel
+endif
+MKL_INCL = -I$(C_INCLUDE_PATH)
+MKL_LIBS = -L$(LIBRARY_PATH) -mkl=sequential
+GSL_INCL = -I$(C_INCLUDE_PATH)
+GSL_LIBS = -L$(LIBRARY_PATH)
+FFTW_INCL= -I$(C_INCLUDE_PATH)
+FFTW_LIBS= -L$(LIBRARY_PATH)
+HDF5INCL = -I$(C_INCLUDE_PATH) -DH5_USE_16_API
+HDF5LIB  = -L$(LIBRARY_PATH) -lhdf5 -lz
+MPICHLIB =
+OPT     += -DUSE_MPI_IN_PLACE
+# modules to load: aocc openmpi hdf5 gsl fftw
+# NOTE: this machine does not appear to always parallelize correctly in a hybrid MPI/OpenMP (i.e. when OPENMP is enabled) setup - it can potentially assign multiple threads to the same physical core and get lousy performance. A surefire way to get the correct thread affinity is to generate a rankfile and include as an argument to mpirun, e.g. https://github.com/mikegrudic/make_rankfile
+endif
+
+
+#----------------------------------------------------------------------------------------------
+ifeq ($(SYSTYPE),"Pleiades")
+CC       =  icc -lmpi
+CXX      =  icc -lmpi -lmpi++
+FC       =  ifort -nofor_main -lmpi
+OPTIMIZE = -O3 -axCORE-AVX512,CORE-AVX2 -xAVX -ip -funroll-loops -no-prec-div -fp-model fast=2 -diag-disable 3180  # all core types
+OPTIMIZE += -Wall  # compiler warnings
+ifeq (OPENMP,$(findstring OPENMP,$(CONFIGVARS)))
+OPTIMIZE += -parallel -qopenmp
+endif
+GMP_INCL =
+GMP_LIBS =
+GSL_INCL = -I$(PKGSRC_BASE)/include/gsl
+GSL_LIBS = -L$(PKGSRC_BASE)/lib
+FFTW_INCL= -I$(FFTW2_HOME)/include
+FFTW_LIBS= -L$(FFTW2_HOME)/lib
+ifeq (USE_FFTW3, $(findstring USE_FFTW3, $(CONFIGVARS)))
+FFTW_INCL= -I$(FFTW3_HOME)/include
+FFTW_LIBS= -L$(FFTW3_HOME)/lib
+endif
+HDF5INCL = -I$(PKGSRC_BASE)/include -DH5_USE_16_API
+HDF5LIB  = -L$(PKGSRC_BASE)/lib -lhdf5 -lz
+MPICHLIB =
+OPT     += -DUSE_MPI_IN_PLACE
+endif
+## modules to load:
+##     module load comp-intel mpi-hpe/mpt pkgconfig
+## also add this to your .bashrc (after loading the modules above):
+##     export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$PKGSRC_BASE/lib
+## FFTW: Pleiades does not have an MPI-enabled FFTW, so install your own version in your home directory
+##     for FFTW2 - to build:
+##         ./configure --prefix=$HOME/local/fftw2 --enable-mpi --enable-type-prefix --enable-float
+##     for FFTW3 - to build:
+##         ./configure --prefix=$HOME/local/fftw3 --enable-mpi --enable-float
+##     then define the following variable(s) in your .bashrc:
+##         export FFTW2_HOME=$HOME/local/fftw2
+##         and/or
+##         export FFTW3_HOME=$HOME/local/fftw3
+##     so Gizmo can find your FFTW installation
+## in your job submission script, include the following before submitting your job:
+##     export MPI_DSM_DISTRIBUTE=0
+##     export KMP_AFFINITY=disabled
 
 
 #----------------------------
@@ -945,54 +1018,6 @@ OPT     += -DUSE_MPI_IN_PLACE -DREDUCE_TREEWALK_BRANCHING
 ## to load the mpi compilers and mpi wrappers, and MPICH libraries (python there is optional)
 ## xl appears to provide some improvement over gcc; xl-ndebug provides no noticeable further improvement, despite being more unsafe
 endif
-
-
-
-#----------------------------------------------------------------------------------------------
-ifeq (Pleiades,$(findstring Pleiades,$(SYSTYPE)))
-CC       =  icc -lmpi
-CXX      =  icc -lmpi -lmpi++
-FC       =  ifort -nofor_main -lmpi
-ifeq ($(SYSTYPE),"Pleiades-Haswell")
-OPTIMIZE = -O3 -ip -funroll-loops -no-prec-div -fp-model fast=2 -xCORE-AVX2 -diag-disable 3180 # Haswell cores
-endif
-ifeq ($(SYSTYPE),"Pleiades-SIBridge")
-OPTIMIZE = -O3 -ip -funroll-loops -no-prec-div -fp-model fast=2 -xAVX -diag-disable 3180 # Sandy or Ivy-Bridge cores
-endif
-OPTIMIZE += -Wall # compiler warnings
-ifeq (OPENMP,$(findstring OPENMP,$(CONFIGVARS)))
-OPTIMIZE += -parallel -qopenmp
-endif
-MATHLIBS = /nasa/pkgsrc/sles12/2016Q4/views/math-libs
-GMP_INCL =
-GMP_LIBS =
-GSL_INCL = -I$(MATHLIBS)/include
-GSL_LIBS = -L$(MATHLIBS)/lib
-FFTW_INCL= -I$(FFTW2_HOME)/include
-FFTW_LIBS= -L$(FFTW2_HOME)/lib
-HDF5INCL = -DH5_USE_16_API
-HDF5LIB  = -lhdf5 -lz -L/nasa/szip/2.1.1/lib -lsz
-MPICHLIB =
-OPT     += -DUSE_MPI_IN_PLACE
-endif
-##
-## Notes:
-##   1. modules to load (math-libs is added now, this is needed to include GSL):
-##          module load comp-intel mpi-sgi/mpt hdf5/1.8.18_mpt szip math-libs
-##   2. make sure you set the correct core-type: runs submitted to the wrong cores will not run
-##   3. FFTW2: the pre-existing installation on Pleiades is incomplete and problematic.
-##      you will need to install your own in your home directory. when building the library, use
-##          ./configure --prefix=$HOME/fftw --enable-mpi --enable-type-prefix --enable-float
-##      where "$HOME/fftw" can be renamed but is the install directory (should be your home directory);
-##      then you need to define the variable (here or in your bashrc file)
-##          FFTW2_HOME=$HOME/fftw
-##      (matching what you used for the installation) so that the code can find fftw2
-##   4. in your job submission file, it is recommended for certain core types that additional settings
-##      are used. for Sandy Bridge, they recommend:
-##          export MPI_DSM_DISTRIBUTE=0
-##          export KMP_AFFINITY=disabled
-##      before the actual lines submitting your job
-##
 
 
 #----------------------------------------------------------------------------------------------

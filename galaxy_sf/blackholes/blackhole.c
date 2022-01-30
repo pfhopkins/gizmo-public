@@ -316,6 +316,11 @@ void set_blackhole_mdot(int i, int n, double dt)
             double facc_which_hubber_mdot = DMIN(1, 1.75*sqrt(j_eff)/(m_eff*sqrt(All.G*(m_eff+P[n].Mass)*rmax_for_bhar))); /* disk fraction estimator */
             mdot = DMAX( BlackholeTempInfo[i].hubber_mdot_bondi_limiter , pow(hubber_mdot_from_vr_estimator,1-facc_which_hubber_mdot)*pow(hubber_mdot_disk_estimator,facc_which_hubber_mdot));
 #endif
+#ifdef BH_GRAVACCRETION_STELLARFBCORR
+            double sigma_crit = 3000. * (2.09e-4 / UNIT_SURFDEN_IN_CGS); // from MG's fit to isolated cloud sims [converts from Msun/pc^2 to code units]
+            double sigma_enc = (BlackholeTempInfo[i].Malt_in_Kernel + P[n].Mass) / (M_PI*rmax_for_bhar*rmax_for_bhar); // effective surface density [total gravitating mass / area]
+            mdot *= sigma_enc / (sigma_enc + sigma_crit);
+#endif
 #ifndef IO_REDUCED_MODE
             printf(" ..BH accretion kernel :: mdot %g Norm %g fdisk %g bh_8 %g fgas %g f0 %g mdisk_9 %g rmax_100 %g \n",
                    mdot,fac,f_disk_for_bhar,bh_mass_units,fgas_for_bhar,f0_for_bhar,mdisk_for_bhar_units,rmax_for_bhar_units);
@@ -656,7 +661,7 @@ void blackhole_final_operations(void)
 #if (BH_REPOSITION_ON_POTMIN == 2)
                 dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(n);
 #ifdef BH_INTERACT_ON_GAS_TIMESTEP
-		if(P[i].Type == 5){dt = P[i].dt_since_last_gas_search;}
+                if(P[i].Type == 5) {dt = P[i].dt_since_last_gas_search;}
 #endif
                 double dr_min=0; for(k=0;k<3;k++) {dr_min+=(BPP(n).BH_MinPotPos[k]-P[n].Pos[k])*(BPP(n).BH_MinPotPos[k]-P[n].Pos[k]);}
                 if(dr_min > 0 && dt > 0)
@@ -738,14 +743,14 @@ void blackhole_final_operations(void)
         /* always substract the radiation energy from BPP(n).BH_Mass && P[n].Mass */
         dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(n);
 #ifdef BH_INTERACT_ON_GAS_TIMESTEP
-        if(P[i].Type == 5){dt = P[i].dt_since_last_gas_search;}
+        if(P[n].Type == 5) {dt = P[n].dt_since_last_gas_search;}
 #endif
         double dm = BPP(n).BH_Mdot * dt;
 #ifdef BH_DEBUG_FIX_MDOT_MBH
         dm=0; double period_bh=All.BH_fb_period/UNIT_TIME_IN_GYR, period_bh_on=All.BH_fb_duty_cycle*period_bh;
         if(All.BH_fb_duty_cycle>=1) {dm=BH_DEBUG_FIX_MDOT_MBH*dt;} else {if(fmod(All.Time, period_bh) < period_bh_on) {dm = 2.*(BH_DEBUG_FIX_MDOT_MBH/All.BH_fb_duty_cycle) *  pow(sin(M_PI*All.Time/period_bh_on),2) * dt;}}
 #endif
-        double radiation_loss = All.BlackHoleRadiativeEfficiency * dm;
+        double radiation_loss = evaluate_blackhole_radiative_efficiency(BPP(n).BH_Mdot,BPP(n).BH_Mass,n) * dm;
         if(radiation_loss > DMIN(P[n].Mass,BPP(n).BH_Mass)) radiation_loss = DMIN(P[n].Mass,BPP(n).BH_Mass);
 #ifndef BH_DEBUG_FIX_MDOT_MBH
         P[n].Mass -= radiation_loss; BPP(n).BH_Mass -= radiation_loss;
@@ -777,6 +782,9 @@ void blackhole_final_operations(void)
 #ifdef BH_WIND_SPAWN
         /* DAA: for wind spawning, we only need to subtract the BAL wind mass from BH_Mass (or BH_Mass_AlphaDisk) --> wind mass subtracted from P.Mass in blackhole_spawn_particle_wind_shell()  */
         double dm_wind = (1.-All.BAL_f_accretion) / All.BAL_f_accretion * dm;
+#ifdef SINGLE_STAR_FB_JETS
+        if((P[n].BH_Mass * UNIT_MASS_IN_SOLAR < 0.01) || P[n].Mass < 3.5*All.MeanGasParticleMass) {dm_wind = 0;} // no jets launched yet if <0.01 msun or if we haven't accreted enough to get a reliable jet direction
+#endif
         if(dm_wind > P[n].Mass) {dm_wind = P[n].Mass;}
 #if defined(BH_ALPHADISK_ACCRETION)
         if(dm_wind > BPP(n).BH_Mass_AlphaDisk) {dm_wind = BPP(n).BH_Mass_AlphaDisk;}

@@ -14,6 +14,7 @@
 
 #ifdef GALSF_FB_MECHANICAL
 
+int N_Gas_Couplings_ThisTask; // define variable to use below to record if and how many times a coupling to a cell occurs in a timestep per MPI task
 
 int addFB_evaluate_active_check(int i, int fb_loop_iteration);
 int addFB_evaluate_active_check(int i, int fb_loop_iteration)
@@ -51,7 +52,7 @@ void determine_where_SNe_occur(void)
         if(P[i].Mass<=0) {continue;}
         dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i);
 #ifdef BH_INTERACT_ON_GAS_TIMESTEP
-	if(P[i].Type == 5){dt = P[i].dt_since_last_gas_search;}
+        if(P[i].Type == 5) {dt = P[i].dt_since_last_gas_search;}
 #endif
         if(dt<=0) {continue;} // no time, no events
         star_age = evaluate_stellar_age_Gyr(P[i].StellarAge);
@@ -61,7 +62,7 @@ void determine_where_SNe_occur(void)
         double RSNe = mechanical_fb_calculate_eventrates(i,dt);
         rmean += RSNe; ptotal += RSNe * (P[i].Mass*UNIT_MASS_IN_SOLAR) * (dt*UNIT_TIME_IN_MYR);
 #ifdef GALSF_SFR_IMF_SAMPLING
-        if(P[i].IMF_NumMassiveStars>0) {P[i].IMF_NumMassiveStars=DMAX(0,P[i].IMF_NumMassiveStars-P[i].SNe_ThisTimeStep);} // lose an O-star for every SNe //
+        if(P[i].Type<5) {if(P[i].IMF_NumMassiveStars>0) {P[i].IMF_NumMassiveStars=DMAX(0,P[i].IMF_NumMassiveStars-P[i].SNe_ThisTimeStep);}} // lose an O-star for every SNe //
 #endif
         if(P[i].SNe_ThisTimeStep>0) {ntotal+=P[i].SNe_ThisTimeStep; nhosttotal++;}
         dtmean += dt;
@@ -93,11 +94,7 @@ void determine_where_SNe_occur(void)
  for example for ensuring conservation if there are many overlapping events */
 static struct temporary_mech_fb_data_tohold
 {
-    double m_injected;
-    double p_injected[3];
-    double KE_injected;
-    double TE_injected;
-    double Z_injected[NUM_METAL_SPECIES];
+    int N_injected; double m_injected, p_injected[3], KE_injected, TE_injected, Z_injected[NUM_METAL_SPECIES];
 }
 *LocalGasMechFBInfoTemp;
 
@@ -207,6 +204,9 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 if(r2<=0) {continue;} // same particle //
                 double h2j = PPP[j].Hsml * PPP[j].Hsml;
                 if((r2>h2)&&(r2>h2j)) {continue;} // outside kernel (in both 'directions') //
+#ifdef FIRE1_SNE_COUPLING
+                if(r2>h2) {continue;} // only search 'one way' for particles seen by the BH
+#endif
                 if(r2 > r2max_phys) {continue;} // outside long-range cutoff //
                 kernel.r = sqrt(r2); if(kernel.r <= 0) {continue;}
                 
@@ -222,6 +222,10 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 if(V_j<0 || isnan(V_j)) {V_j=0;}
                 double sph_area = fabs(local.V_i*local.V_i*kernel.dwk + V_j*V_j*dwk_j); // effective face area //
                 wk = 0.5 * (1 - 1/sqrt(1 + sph_area / (M_PI*kernel.r*kernel.r))); // corresponding geometric weight //
+#ifdef FIRE1_SNE_COUPLING
+                if(u<1) {kernel_main(u, kernel.hinv3, kernel.hinv4, &kernel.wk, &kernel.dwk, 0);} else {kernel.wk=kernel.dwk=0;}
+                wk = (Mass_j/rho_j) * kernel.wk;
+#endif
                 if((wk <= 0)||(isnan(wk))) continue; // no point in going further, there's no physical weight here
                 double wk_vec[AREA_WEIGHTED_SUM_ELEMENTS]={0}, wk_tmp=0;
                 wk_vec[0] = wk;
@@ -264,6 +268,9 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                     double q; q = 0; int i1=2*k+1, i2=i1+1;
                     double q_i1 = fabs(local.Area_weighted_sum[i1]);
                     double q_i2 = fabs(local.Area_weighted_sum[i2]);
+#ifdef FIRE1_SNE_COUPLING
+                    q_i1=q_i2=1;
+#endif
                     if((q_i1>MIN_REAL_NUMBER)&&(q_i2>MIN_REAL_NUMBER))
                     {
                         double rr = q_i2/q_i1;
@@ -435,10 +442,15 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     double unitlength_in_kpc= UNIT_LENGTH_IN_KPC * All.cf_atime, density_to_n=All.cf_a3inv*UNIT_DENSITY_IN_NHCGS, unit_egy_SNe = 1.0e51/UNIT_ENERGY_IN_CGS;
 
     // now define quantities that will be used below //
-    double psi_cool=1, psi_egycon=1, v_ejecta_eff_init=local.SNe_v_ejecta, v_ejecta_eff=v_ejecta_eff_init; // separate initial [pre-shock] ejecta velocity, which defines energy, and post-shock
+    double psi_cool=1, psi_egycon=1, v_ejecta_eff_init=local.SNe_v_ejecta, v_ejecta_eff=v_ejecta_eff_init, residual_thermal_frac=0; // separate initial [pre-shock] ejecta velocity, which defines energy, and post-shock
     double wk_norm = 1. / (MIN_REAL_NUMBER + fabs(local.Area_weighted_sum[0])); // normalization for scalar weight sum
     double pnorm_sum = 1./(MIN_REAL_NUMBER + fabs(local.Area_weighted_sum[10])); // re-normalization after second pass for normalized "pnorm" (should be close to ~1)
-    double sedov_phase_thermal_to_kinetic_ratio = 2.54, f_sedov_kin=1./(1.+sedov_phase_thermal_to_kinetic_ratio); // fraction of total energy in kinetic after reverse shock, to assume for sedov-taylor phase
+    double sedov_phase_thermal_to_kinetic_ratio = 2.54, f_sedov_kin; // define ratio of thermal-to-kinetic energy for sedov-taylor phase
+    int retain_thermal_flag = 1; // flag to determine whether additional post-shock thermal energy should be considered to have radiated away already
+    int feedback_type_is_SNe = 0; // variable to know if this is a sne or continuous wind or other form of mechanical feedback (discrete injection treated differently from continuous in some ways below)
+    if(loop_iteration == 0) {feedback_type_is_SNe = 1;} // assume, for now, that loop 0 represents SNe, for purposes of energy-momentum switch below //
+    if(feedback_type_is_SNe == 0) {sedov_phase_thermal_to_kinetic_ratio = 1.e-2;} // negligible excess thermal component for continuous sources
+    f_sedov_kin=1./(1.+sedov_phase_thermal_to_kinetic_ratio); // fraction of total energy in kinetic after reverse shock, to assume for sedov-taylor phase
     if((local.Area_weighted_sum[0] > MIN_REAL_NUMBER) && (loop_iteration >= 0))
     {
         double vba_2_eff = pnorm_sum * local.Area_weighted_sum[7]; // phi term for energy: weighted mass-deposited KE for ejecta neighbors
@@ -446,19 +458,19 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
         v_ejecta_eff = v_ejecta_eff_init * sqrt(f_sedov_kin); // effective velocity after reverse shock in sedov phase
         double beta_egycon = sqrt(pnorm_sum / local.Msne) * (1./v_ejecta_eff) * local.Area_weighted_sum[8]; // beta term for re-normalization for energy [can be positive or negative]
         double beta_cool = pnorm_sum * local.Area_weighted_sum[9]; // beta term if all particles in terminal-momentum-limit
-       //if(All.ComovingIntegrationOn) {if(fabs(beta_cool) < fabs(beta_egycon)) {beta_egycon = beta_cool;}} // this was a testing catch from earlier versions of this code, not needed now, this can and should be allowed to be larger
         psi_egycon = sqrt(1. + beta_egycon*beta_egycon) - beta_egycon; // exact solution for energy equation for constant psi
         if(beta_egycon > 20.) {psi_egycon = 1./(2.*beta_egycon);} // replace with series expansion to avoid roundoff error at high beta
+        //if(beta_egycon < 0) {psi_egycon=1; residual_thermal_frac=DMAX(0., sqrt(1.+beta_egycon*beta_egycon)-beta_egycon-1.) * f_sedov_kin;} // in this case (blastwave in a converging flow) we don't boost the momentum beyond the 'normal' maximum but assign the residual energy to thermal, since the timescale to convert this additional post-shock thermal energy to kinetic is actually quite long for this situation
+        if(beta_egycon < 0) {psi_egycon=1; residual_thermal_frac=DMAX(0., -2.*beta_egycon) * f_sedov_kin;} // in this case (blastwave in a converging flow) we don't boost the momentum beyond the 'normal' maximum but assign the residual energy to thermal, since the timescale to convert this additional post-shock thermal energy to kinetic is actually quite long for this situation
         if(beta_cool > 0.5) {psi_cool = 1./(2.*beta_cool);} // for cooling limit, only need upper limit to psi, all else will use less energy
     }
+    psi_egycon = DMIN(1 , psi_egycon); // this should be gauranteed by the above checks, but enforce it regardless
 
 
     double Energy_injected_codeunits = 0.5 * local.Msne * v_ejecta_eff_init * v_ejecta_eff_init;
     double Esne51 = Energy_injected_codeunits / unit_egy_SNe;
     double RsneKPC = 0., RsneKPC_3 = 0., m_cooling = 0., v_cooling = 210./UNIT_VEL_IN_KMS;
     double RsneKPC_0 = (0.0284/unitlength_in_kpc);
-    int feedback_type_is_SNe = 0;
-    if(loop_iteration == 0) {feedback_type_is_SNe = 1;} // assume, for now, that loop 0 represents SNe, for purposes of energy-momentum switch below //
     if(feedback_type_is_SNe == 1) // check for SNe specifically
     {
         RsneKPC_0 *= pow(1+Esne51,0.286); //SNe: using scaling from Cioffi with weak external pressure
@@ -606,7 +618,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 wk *= wk_norm; // this way wk matches the value summed above for the weighting //
 
                 if((wk <= 0)||(isnan(wk))) continue;
-
+            
                 /* define initial mass and ejecta velocity in this 'cone' */
                 double pnorm = 0, pvec[3] = {0};
                 for(k=0; k<3; k++)
@@ -654,14 +666,14 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
 #endif
 #endif
                 
-                double KE_initial = 0, KE_final = 0;
+                double KE_initial=0, KE_final=0;
                 if(couple_anything_but_scalar_mass_and_metals)
                 {
                 /* inject momentum: account for ejecta being energy-conserving inside the cooling radius (or Hsml, if thats smaller) */
                 double wk_m_cooling = pnorm * m_cooling; // effective cooling mass for this particle
                 double boost_terminal = sqrt(1 + wk_m_cooling / dM_ejecta_in); // terminal momentum boost-factor
                 double boost_egycon = sqrt(1 + mj_preshock / dM_ejecta_in); // energy-conserving limit for coupling through neighbors
-                double mom_boost_fac = 1, mcool_mod = 2.*mj_preshock; // set default value of momentum term and dummy variable to check which [energy or momentum-conserving] solution to apply
+                double mom_boost_fac = 1; // set default value of momentum term and dummy variable to check which [energy or momentum-conserving] solution to apply
                 if(feedback_type_is_SNe == 1) // question here is whether wind-type feedback should assume kinetic energy conserved here
                 {
                     boost_terminal *= psi_cool; // appropriately re-weight boost to avoid energy conservation errors [cooling-limit]
@@ -669,33 +681,44 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                     mom_boost_fac = boost_egycon; // default to energy-conserving solution, then modify if needed in lines below
                     double dv_dp_phys = 0; for(k=0;k<3;k++) {dv_dp_phys += (1-massratio_ejecta) * (kernel.dp[k]/kernel.r) * ((local.Vel[k] - Vel_j[k])/All.cf_atime);} // recession velocity of cell from SNe
                     double vcool_eff = v_cooling / psi_cool; // effective shell speed when the cooling radius is reached
+#if 0
                     double dv_eff = vcool_eff + 2.*dv_dp_phys; // effective relative velocity for determining if you can reach that shell speed. i.e. when recession velocity equals nominal cooling mass for a real solution, assuming you cool when the post-shock temperature reaches a Tcool that corresponds to the post-shock velocity for some outward vcool, giving e.g. half the desired cooling mass is obtained when you have outward v = vcool
-                    if(dv_eff > 0) {mcool_mod = wk_m_cooling * vcool_eff / (1.e-20*vcool_eff + dv_eff);} // use the above recession velocity information to modify the cooling mass compared to the total cell mass to determine which solution to use
-                    if(mcool_mod < mj_preshock) {mom_boost_fac = DMIN(boost_terminal,boost_egycon);} // if swept mass where reach the terminal solution is less than the cell mass, apply it, otherwise apply the conservative solution
-                } else {mom_boost_fac=DMIN(1,boost_egycon*psi_egycon);} // prevent energy conservation issues when coupling mass-loss
-
+                    double mcool_mod = wk_m_cooling; // this should be our starting point for applying the cooling solution, unless we include the compressive term, but don't want to over-shoot there
+                    if(dv_eff > 0) {mcool_mod = wk_m_cooling; if(dv_dp_phys > 0) {mcool_mod *= vcool_eff / (1.e-20*vcool_eff + dv_eff);}} // use the above recession velocity information to modify the cooling mass compared to the total cell mass to determine which solution to use
+                    if(mcool_mod < mj_preshock) {mom_boost_fac = DMIN(boost_terminal,boost_egycon); residual_thermal_frac=0; retain_thermal_flag=0;} // if swept mass where reach the terminal solution is less than the cell mass, apply it, otherwise apply the conservative solution
+#else
+                    double dv_eff = vcool_eff + dv_dp_phys; // effective relative velocity for determining if you can reach that shell speed. i.e. when recession velocity equals nominal cooling mass for a real solution, assuming you cool when the post-shock temperature reaches a Tcool that corresponds to the post-shock velocity for some outward vcool, giving e.g. half the desired cooling mass is obtained when you have outward v = vcool
+                    double m_terminal=wk_m_cooling, m_cooling=1.e10*mj_preshock; // this should be our starting point for applying the cooling solution, unless we include the compressive term, but don't want to over-shoot there
+                    if(dv_eff > 1.e-10*vcool_eff) {double fac_ve=vcool_eff/(MIN_REAL_NUMBER+1.e-10*vcool_eff + dv_eff); m_cooling*=fac_ve; if(fac_ve<1.) {m_terminal*=fac_ve;}} // use the above recession velocity information to modify the cooling mass compared to the total cell mass to determine which solution to use
+                    if(mj_preshock > m_cooling) {residual_thermal_frac=0; retain_thermal_flag=0;} // figure out if we've passed the cooling time/distance (which is -not- the same as reaching the terminal momentum for an arbitrary inflow structure around the explosion)
+                    if(mj_preshock > m_terminal) {mom_boost_fac = DMIN(boost_terminal,boost_egycon);} // if swept mass where reach the terminal solution is less than the cell mass, apply it, otherwise apply the conservative solution
+#endif
+                } else {mom_boost_fac=DMIN(1,boost_egycon*psi_egycon); residual_thermal_frac=0;} // prevent energy conservation issues when coupling mass-loss
+                
                 /* save summation values for outputs */
                 dP = local.unit_mom_SNe / Mass_j * pnorm;
                 dP_sum += dP; dP_boost_sum += dP * mom_boost_fac;
 
                 /* actually do the injection */
                 double mom_prefactor =  mom_boost_fac * massratio_ejecta * (All.cf_atime*v_ejecta_eff) / pnorm; // this gives the appropriately-normalized tap-able momentum from the energy-conserving solution
-                for(k=0; k<3; k++)
+                if(mom_prefactor > 0)
                 {
-                    double d_vel = mom_prefactor * pvec[k] + massratio_ejecta*(local.Vel[k] - Vel_j[k]); // local.Vel term from extra momentum of moving star, Vel_j term from going from momentum to velocity boost with added mass
-                    KE_initial += Vel_j[k]*Vel_j[k]; Vel_j[k] += d_vel; KE_final += Vel_j[k]*Vel_j[k];
+                    for(k=0; k<3; k++)
+                    {
+                        double d_vel = mom_prefactor * pvec[k] + massratio_ejecta*(local.Vel[k] - Vel_j[k]); // local.Vel term from extra momentum of moving star, Vel_j term from going from momentum to velocity boost with added mass
+                        KE_initial += Vel_j_0[k]*Vel_j_0[k]; Vel_j[k] += d_vel; KE_final += Vel_j[k]*Vel_j[k]; // calculate initial and final kinetic energies (here v^2, multiply by mass below)
+                    }
+                    KE_initial *= 0.5*mj_preshock*All.cf_a2inv; KE_final *= 0.5*Mass_j*All.cf_a2inv;
                 }
-                /* now calculate the residual energy and add it as thermal */
-                KE_initial *= 0.5 * mj_preshock * All.cf_a2inv;
-                KE_final *= 0.5 * Mass_j * All.cf_a2inv;
                 double E_sne_initial = pnorm * Energy_injected_codeunits;
-                double d_Egy_internal = KE_initial + E_sne_initial - KE_final;
+                double d_Egy_internal = KE_initial + E_sne_initial - KE_final; /* now calculate the residual energy with option to add it as thermal */
 #if !defined(SINGLE_STAR_FB_WINDS) /* (for single-star modules we ignore this b/c assume always trying to resolve R_cool) */
                 if(feedback_type_is_SNe == 1) /* if coupling radius > R_cooling, account for thermal energy loss in the post-shock medium: from Thornton et al. thermal energy scales as R^(-6.5) for R>R_cool. only use for SNe b/c scalings [like momentum] only apply there. over-cooling if code wants to do it will easily occur next timestep. */
                 {
-                    d_Egy_internal = (1.-f_sedov_kin)*E_sne_initial; // the thermal energy component is constant (proportional to the injected area) and determined -as part of the energy-conserving solution- here, you should not artificially decrease it or renormalize it cell-by-cell for this form of the solutions
+                    d_Egy_internal = (1.-f_sedov_kin+residual_thermal_frac)*E_sne_initial; // the thermal energy component is constant (proportional to the injected area) and determined -as part of the energy-conserving solution- here, you should not artificially decrease it or renormalize it cell-by-cell for this form of the solutions
                 } else {d_Egy_internal = DMAX(DMIN(d_Egy_internal , 2.*E_sne_initial),0);}
 #endif
+                if(retain_thermal_flag==0) {d_Egy_internal=0;} // use flag to determined if we should retain this residual thermal energy for this stage
                 d_Egy_internal /= Mass_j; // convert to specific internal energy, finally //
 #ifndef MECHANICAL_FB_MOMENTUM_ONLY
                 if(d_Egy_internal > 0) {InternalEnergy_j += d_Egy_internal; E_coupled += d_Egy_internal;}
@@ -704,6 +727,10 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 } // couple_anything_but_scalar_mass_and_metals
                     
                 /* we updated variables that need to get assigned to element 'j' -- let's do it here in a thread-safe manner */
+                #pragma omp atomic
+                N_Gas_Couplings_ThisTask++; // note that a cell recieved some feedback
+                #pragma omp atomic
+                LocalGasMechFBInfoTemp[j].N_injected++; // flag that -this- cell received feedback
                 #pragma omp atomic
                 LocalGasMechFBInfoTemp[j].m_injected += Mass_j - Mass_j_0; // finite mass update [delta difference added here, allowing for another element to update in the meantime]. done this way to ensure conservation.
                 #pragma omp atomic
@@ -736,8 +763,12 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
 /* subroutine to check for total kinetic energy change and thermal energy change after integrating the effects of all SNe over all cells, and coupling this to particles,  */
 void verify_and_assign_local_mechfb_integrals(void)
 {
-    int j,k; for(j=0;j<N_gas;j++) {
-        if(P[j].Type==0 && P[j].Mass>0) {
+    if(N_Gas_Couplings_ThisTask <= 0) {return;} /* no cells had feedback deposited */
+    int j,k,ndone=0; for(j=0;j<N_gas;j++)
+    {
+        if(LocalGasMechFBInfoTemp[j].N_injected <= 0) {continue;} /* all mechanisms deposit non-zero mass, so skip if this is not >0*/
+        if(P[j].Type==0 && P[j].Mass>0)
+        {
             double m0=P[j].Mass, dm=LocalGasMechFBInfoTemp[j].m_injected; P[j].Mass += dm; /* update mass */
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
             m0=SphP[j].MassTrue; SphP[j].MassTrue += dm; /* update conserved mass */
@@ -750,7 +781,9 @@ void verify_and_assign_local_mechfb_integrals(void)
             {
                 double TE_0=m0*SphP[j].InternalEnergy; dTE=DMAX(-TE_0,dTE); /* ensure against non-negative values */
                 double dU = (-dm/mf)*SphP[j].InternalEnergy + (1./mf)*dTE; /* using new mass get updated internal energy */
-                SphP[j].InternalEnergy += dU; SphP[j].InternalEnergyPred += dU; /* update internal energy */
+                double dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(j), implied_heating_cgs=(dU*UNIT_SPECEGY_IN_CGS*PROTONMASS_CGS)/(dt*UNIT_TIME_IN_CGS), typical_cooling_cgs=1.e-23*(SphP[j].Density*All.cf_a3inv*UNIT_DENSITY_IN_NHCGS);
+                if((implied_heating_cgs < 0.3*typical_cooling_cgs) && (dt > MIN_REAL_NUMBER) && ((dU < 4.*SphP[j].InternalEnergy) || ((dU < 1000.*SphP[j].InternalEnergy) && ((dU+SphP[j].InternalEnergy)*U_TO_TEMP_UNITS*2./3.*1.28 < 5.e5)))) {SphP[j].DtInternalEnergy += dU/dt;} else {SphP[j].InternalEnergy += dU; SphP[j].InternalEnergyPred += dU;}
+                //SphP[j].InternalEnergy += dU; SphP[j].InternalEnergyPred += dU; /* update internal energy; simpler (old) way to do it - less accurate phase diagrams at high density, however */
             }
             double dKE=LocalGasMechFBInfoTemp[j].KE_injected, dp[3];
             if(dKE != 0 || LocalGasMechFBInfoTemp[j].p_injected[0] != 0 || LocalGasMechFBInfoTemp[j].p_injected[1] != 0 || LocalGasMechFBInfoTemp[j].p_injected[2] != 0 )
@@ -762,12 +795,14 @@ void verify_and_assign_local_mechfb_integrals(void)
                 if(sfac<=0 || !isfinite(sfac)) {if((fabs(a0)<1.e-40) || !isfinite(b0/a0)) {f0=0;} else {f0=-b0/(2.*a0);}} // catches for floating-point error
                     else {if((b0>0) && fabs(4.*a0*c0)<1.e-3*b0*b0) {f0=c0/b0;} // catches for floating-point error
                     else {if(fabs(a0)<1.e-40 || !isfinite(a0)) {f0=0;} else {f0=(-b0+sqrt(b0*b0+4.*a0*c0))/(2.*a0);}}} // catches for floating-point error, if pass all of them, use exact solution for desired KE
-                if(f0<0 || !isfinite(f0)) {f0=0;} else {if(f0>2.) {f0=2.;}} /* limit to physical values (should never be an issue but again because of float error it could be) */
+                if(f0<0 || !isfinite(f0)) {f0=0;} else {if(f0>1.) {f0=1.;}} /* limit to physical values (should never be an issue but again because of float error it could be) */
                 for(k=0;k<3;k++) {
                     double dv = (-dm/mf)*P[j].Vel[k] + f0*(1./mf)*dp[k]*All.cf_atime; /* calculate total momentum change and mass change and therefore final velocity (in code units) */
                     P[j].Vel[k] += dv; SphP[j].VelPred[k] += dv; P[j].dp[k] += f0*dp[k]; /* update velocities */
                 }
             }
+            ndone++; /* note another cell accounted for */
+            if(ndone >= N_Gas_Couplings_ThisTask) {break;} /* we have done all cells (note is possible if the same cell is hit many times, N_Gas_Couplings_ThisTask can be much larger than ndone after the full loop. but if its smaller, then we -must- be done with this loop */
         }
     }
     return;
@@ -782,6 +817,7 @@ void mechanical_fb_calc_toplevel(void)
 #ifndef GALSF_USE_SNE_ONELOOP_SCHEME
     /* allocate temporary stucture which will hold the total change, to compare when done to check for non-linear effects if too many cells act at once */
     LocalGasMechFBInfoTemp = (struct temporary_mech_fb_data_tohold *) mymalloc("LocalGasMechFBInfoTemp",N_gas * sizeof(struct temporary_mech_fb_data_tohold)); /* allocate */
+    N_Gas_Couplings_ThisTask = 0; /* initialize this to zero [default to assume no coupled feedback] */
     int i; for(i=0;i<N_gas;i++) {if(P[i].Type==0) {memset(&LocalGasMechFBInfoTemp[i], 0, sizeof(struct temporary_mech_fb_data_tohold));}} /* zero it out before loops */
     mechanical_fb_calc(-2); /* compute weights for coupling [first weight-calculation pass] */
 #endif
