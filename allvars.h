@@ -38,7 +38,7 @@
 
 #include "GIZMO_config.h"
 /*------- Things that are always recommended (this must follow loading GIZMO_config.h!) -------*/
-#define GIZMO_VERSION     2021  /*!< code version (should be an int corresponding to the year) */
+#define GIZMO_VERSION     2022  /*!< code version (should be an int corresponding to the year) */
 #define DOUBLEPRECISION         /* using double (not floating-point) precision */
 #define PEANOHILBERT            /* sort particles on a Peano-Hilbert curve (huge optimization) */
 #define WALLCLOCK               /* track timing of different routines */
