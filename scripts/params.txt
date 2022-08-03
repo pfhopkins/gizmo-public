@@ -31,7 +31,7 @@ TimeBetSnapshot             1.1   % time between snapshot writes (if OutputListO
 TimeBetStatistics           0.05  % code time between additional statistics (e.g. energy) [Default=infinity]
 
 %---- CPU run-time and checkpointing time-limits
-TimeLimitCPU                100000  % wall-clock timelimit for sim in seconds, before self-stop [Default=1 day]
+TimeLimitCPU                100000  % wall-clock timelimit for sim in seconds, before self-stop [Default=2 days]
 CpuTimeBetRestartFile       7200  	% wall-clock time between restartfile writes, in seconds [Default=1 hour]
 
 %---- Desired simulation beginning and end times (in code units) for run

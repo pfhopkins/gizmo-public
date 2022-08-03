@@ -85,82 +85,60 @@ int subfind_loctree_treebuild(int npart, struct unbind_data *mp)
   nfree = All.MaxPart;
   nfreep = &Nodes[nfree];
 
-
   /* create an empty  root node  */
   nfreep->len = RootLen;
-  for(i = 0; i < 3; i++)
-    nfreep->center[i] = RootCenter[i];
-
-  for(i = 0; i < 8; i++)
-    nfreep->u.suns[i] = -1;
+  for(i = 0; i < 3; i++) {nfreep->center[i] = RootCenter[i];}
+  for(i = 0; i < 8; i++) {nfreep->u.suns[i] = -1;}
 
   numnodes = 1;
   nfreep++;
   nfree++;
 
   /* insert all particles */
-
   for(k = 0; k < npart; k++)
     {
-      if(mp)
-	i = mp[k].index;
-      else
-	endrun(211);
-
+      if(mp) {i = mp[k].index;} else {endrun(211);}
       th = All.MaxPart;
 
       while(1)
 	{
 	  if(th >= All.MaxPart)	/* we are dealing with an internal node */
-	    {
-	      subnode = 0;
-	      if(P[i].Pos[0] > Nodes[th].center[0])
-		subnode += 1;
-	      if(P[i].Pos[1] > Nodes[th].center[1])
-		subnode += 2;
-	      if(P[i].Pos[2] > Nodes[th].center[2])
-		subnode += 4;
+      {
+          subnode = 0;
+          if(P[i].Pos[0] > Nodes[th].center[0]) {subnode += 1;}
+          if(P[i].Pos[1] > Nodes[th].center[1]) {subnode += 2;}
+          if(P[i].Pos[2] > Nodes[th].center[2]) {subnode += 4;}
+          
+          nn = Nodes[th].u.suns[subnode];
 
-	      nn = Nodes[th].u.suns[subnode];
-
-	      if(nn >= 0)	/* ok, something is in the daughter slot already, need to continue */
-		{
-		  parent = th;	/* note: subnode can still be used in the next step of the walk */
-		  th = nn;
-		}
-	      else
-		{
-		  /* here we have found an empty slot where we can 
-		   * attach the new particle as a leaf 
-		   */
-		  Nodes[th].u.suns[subnode] = i;
-		  break;	/* done for that particle */
-		}
-	    }
+          if(nn >= 0)    /* ok, something is in the daughter slot already, need to continue */
+          {
+              parent = th;    /* note: subnode can still be used in the next step of the walk */
+              th = nn;
+          }
+          else
+          {
+              /* here we have found an empty slot where we can attach the new particle as a leaf */
+              Nodes[th].u.suns[subnode] = i;
+              break;    /* done for that particle */
+          }
+      }
 	  else
-	    {
-	      /* we try to insert into a leaf with a single particle
-	       * need to generate a new internal node at that point 
-	       */
-	      Nodes[parent].u.suns[subnode] = nfree;
+      {
+          /* we try to insert into a leaf with a single particle need to generate a new internal node at that point */
+          Nodes[parent].u.suns[subnode] = nfree;
+          
+          nfreep->len = 0.5 * Nodes[parent].len;
+          lenhalf = 0.25 * Nodes[parent].len;
 
-	      nfreep->len = 0.5 * Nodes[parent].len;
-	      lenhalf = 0.25 * Nodes[parent].len;
+	      if(subnode & 1) {nfreep->center[0] = Nodes[parent].center[0] + lenhalf;}
+	      else {nfreep->center[0] = Nodes[parent].center[0] - lenhalf;}
 
-	      if(subnode & 1)
-		nfreep->center[0] = Nodes[parent].center[0] + lenhalf;
-	      else
-		nfreep->center[0] = Nodes[parent].center[0] - lenhalf;
+	      if(subnode & 2) {nfreep->center[1] = Nodes[parent].center[1] + lenhalf;}
+	      else {nfreep->center[1] = Nodes[parent].center[1] - lenhalf;}
 
-	      if(subnode & 2)
-		nfreep->center[1] = Nodes[parent].center[1] + lenhalf;
-	      else
-		nfreep->center[1] = Nodes[parent].center[1] - lenhalf;
-
-	      if(subnode & 4)
-		nfreep->center[2] = Nodes[parent].center[2] + lenhalf;
-	      else
-		nfreep->center[2] = Nodes[parent].center[2] - lenhalf;
+	      if(subnode & 4) {nfreep->center[2] = Nodes[parent].center[2] + lenhalf;}
+	      else {nfreep->center[2] = Nodes[parent].center[2] - lenhalf;}
 
 	      nfreep->u.suns[0] = -1;
 	      nfreep->u.suns[1] = -1;
@@ -172,40 +150,30 @@ int subfind_loctree_treebuild(int npart, struct unbind_data *mp)
 	      nfreep->u.suns[7] = -1;
 
 	      subnode = 0;
-	      if(P[th].Pos[0] > nfreep->center[0])
-		subnode += 1;
-	      if(P[th].Pos[1] > nfreep->center[1])
-		subnode += 2;
-	      if(P[th].Pos[2] > nfreep->center[2])
-		subnode += 4;
+	      if(P[th].Pos[0] > nfreep->center[0]) {subnode += 1;}
+	      if(P[th].Pos[1] > nfreep->center[1]) {subnode += 2;}
+	      if(P[th].Pos[2] > nfreep->center[2]) {subnode += 4;}
 
-	      if(nfreep->len < 3.e-4 * All.ForceSoftening[P[i].Type])
-		{
-		  /* seems like we're dealing with particles   
-		   * at identical locations. randomize 
-		   * subnode index (well below gravitational softening scale). 
-		   */
-		  subnode = (int) (8.0 * get_random_number(nfree));
-		  if(subnode >= 8)
-		    subnode = 7;
-		}
+          if(nfreep->len < 3.e-4 * ForceSoftening_KernelRadius(th))
+          {
+              /* seems like we're dealing with particles at identical locations. randomize subnode index (well below gravitational softening scale) */
+              subnode = (int) (8.0 * get_random_number(nfree));
+              if(subnode >= 8) {subnode = 7;}
+          }
 
 	      nfreep->u.suns[subnode] = th;
-
-	      th = nfree;	/* resume trying to insert the new particle at 
-				   the newly created internal node */
-
+	      th = nfree;	/* resume trying to insert the new particle at the newly created internal node */
 	      numnodes++;
 	      nfree++;
 	      nfreep++;
 
-	      if((numnodes) >= MaxNodes)
-		{
-		  printf("maximum number %d of tree-nodes reached.\n", MaxNodes);
-		  printf("for particle %d  %g %g %g\n", i, P[i].Pos[0], P[i].Pos[1], P[i].Pos[2]);
-		  endrun(1);
-		}
-	    }
+          if((numnodes) >= MaxNodes)
+          {
+              printf("maximum number %d of tree-nodes reached.\n", MaxNodes);
+              printf("for particle %d  %g %g %g\n", i, P[i].Pos[0], P[i].Pos[1], P[i].Pos[2]);
+              endrun(1);
+          }
+      }
 	}
     }
 
@@ -213,10 +181,7 @@ int subfind_loctree_treebuild(int npart, struct unbind_data *mp)
   last = -1;
   subfind_loctree_update_node_recursive(All.MaxPart, -1, -1);
 
-  if(last >= All.MaxPart)
-    Nodes[last].u.d.nextnode = -1;
-  else
-    Nextnode[last] = -1;
+  if(last >= All.MaxPart) {Nodes[last].u.d.nextnode = -1;} else {Nextnode[last] = -1;}
 
   return numnodes;
 }
@@ -229,98 +194,84 @@ int subfind_loctree_treebuild(int npart, struct unbind_data *mp)
  */
 void subfind_loctree_update_node_recursive(int no, int sib, int father)
 {
-  int j, jj, p, pp = 0, nextsib, suns[8];
-  double mass;
-  double s[3];
-
-  if(no >= All.MaxPart)
+    int j, jj, p, pp = 0, nextsib, suns[8];
+    double mass, s[3];
+    
+    if(no >= All.MaxPart)
     {
-      for(j = 0; j < 8; j++)
-	suns[j] = Nodes[no].u.suns[j];	/* that "backup" is necessary because the nextnode entry will
-					   overwrite one element (union!) */
-      if(last >= 0)
-	{
-	  if(last >= All.MaxPart)
-	    Nodes[last].u.d.nextnode = no;
-	  else
-	    Nextnode[last] = no;
-	}
-
-      last = no;
-
-      mass = 0;
-      s[0] = 0;
-      s[1] = 0;
-      s[2] = 0;
-
-      for(j = 0; j < 8; j++)
-	{
-	  if((p = suns[j]) >= 0)
-	    {
-	      /* check if we have a sibling on the same level */
-	      for(jj = j + 1; jj < 8; jj++)
-		if((pp = suns[jj]) >= 0)
-		  break;
-
-	      if(jj < 8)	/* yes, we do */
-		nextsib = pp;
-	      else
-		nextsib = sib;
-
-	      subfind_loctree_update_node_recursive(p, nextsib, no);
-
-	      if(p >= All.MaxPart)	/* an internal node or pseudo particle */
-		{
-		  mass += Nodes[p].u.d.mass;	/* we assume a fixed particle mass */
-		  s[0] += Nodes[p].u.d.mass * Nodes[p].u.d.s[0];
-		  s[1] += Nodes[p].u.d.mass * Nodes[p].u.d.s[1];
-		  s[2] += Nodes[p].u.d.mass * Nodes[p].u.d.s[2];
-		}
-	      else		/* a particle */
-		{
-		  mass += P[p].Mass;
-		  s[0] += P[p].Mass * P[p].Pos[0];
-		  s[1] += P[p].Mass * P[p].Pos[1];
-		  s[2] += P[p].Mass * P[p].Pos[2];
-		}
-	    }
-	}
-
-      if(mass > 0)
-	{
-	  s[0] /= mass;
-	  s[1] /= mass;
-	  s[2] /= mass;
-	}
-      else
-	{
-	  s[0] = Nodes[no].center[0];
-	  s[1] = Nodes[no].center[1];
-	  s[2] = Nodes[no].center[2];
-	}
-
-      Nodes[no].u.d.s[0] = s[0];
-      Nodes[no].u.d.s[1] = s[1];
-      Nodes[no].u.d.s[2] = s[2];
-      Nodes[no].u.d.mass = mass;
-
-      Nodes[no].u.d.sibling = sib;
-      Nodes[no].u.d.father = father;
+        for(j = 0; j < 8; j++) {suns[j] = Nodes[no].u.suns[j];}    /* that "backup" is necessary because the nextnode entry will overwrite one element (union!) */
+        if(last >= 0)
+        {
+            if(last >= All.MaxPart) {Nodes[last].u.d.nextnode = no;} else {Nextnode[last] = no;}
+        }
+        
+        last = no;
+        mass = 0;
+        s[0] = 0;
+        s[1] = 0;
+        s[2] = 0;
+        
+        for(j = 0; j < 8; j++)
+        {
+            if((p = suns[j]) >= 0)
+            {
+                /* check if we have a sibling on the same level */
+                for(jj = j + 1; jj < 8; jj++) if((pp = suns[jj]) >= 0) {break;}
+                
+                if(jj < 8) {nextsib = pp;}    /* yes, we do */
+                else {nextsib = sib;}
+                
+                subfind_loctree_update_node_recursive(p, nextsib, no);
+                
+                if(p >= All.MaxPart)    /* an internal node or pseudo particle */
+                {
+                    mass += Nodes[p].u.d.mass;    /* we assume a fixed particle mass */
+                    s[0] += Nodes[p].u.d.mass * Nodes[p].u.d.s[0];
+                    s[1] += Nodes[p].u.d.mass * Nodes[p].u.d.s[1];
+                    s[2] += Nodes[p].u.d.mass * Nodes[p].u.d.s[2];
+                }
+                else        /* a particle */
+                {
+                    mass += P[p].Mass;
+                    s[0] += P[p].Mass * P[p].Pos[0];
+                    s[1] += P[p].Mass * P[p].Pos[1];
+                    s[2] += P[p].Mass * P[p].Pos[2];
+                }
+            }
+        }
+        
+        if(mass > 0)
+        {
+            s[0] /= mass;
+            s[1] /= mass;
+            s[2] /= mass;
+        }
+        else
+        {
+            s[0] = Nodes[no].center[0];
+            s[1] = Nodes[no].center[1];
+            s[2] = Nodes[no].center[2];
+        }
+        
+        Nodes[no].u.d.s[0] = s[0];
+        Nodes[no].u.d.s[1] = s[1];
+        Nodes[no].u.d.s[2] = s[2];
+        Nodes[no].u.d.mass = mass;
+        
+        Nodes[no].u.d.sibling = sib;
+        Nodes[no].u.d.father = father;
     }
-  else				/* single particle or pseudo particle */
+    else                /* single particle or pseudo particle */
     {
-      if(last >= 0)
-	{
-	  if(last >= All.MaxPart)
-	    Nodes[last].u.d.nextnode = no;
-	  else
-	    Nextnode[last] = no;
-	}
-
-      last = no;
-
-      if(no < All.MaxPart)	/* only set it for single particles */
-	Father[no] = father;
+        if(last >= 0)
+        {
+            if(last >= All.MaxPart) {Nodes[last].u.d.nextnode = no;}
+            else {Nextnode[last] = no;}
+        }
+        
+        last = no;
+        if(no < All.MaxPart) {Father[no] = father;}    /* only set it for single particles */
+        
     }
 }
 
@@ -330,29 +281,23 @@ void subfind_loctree_update_node_recursive(int no, int sib, int father)
 
 double subfind_loctree_treeevaluate_potential(int target)
 {
-  struct NODE *nop = 0;
-  int no;
-  double r2, dx, dy, dz, mass, r, u, h, h_inv, wp;
-  double pot, pos_x, pos_y, pos_z;
+    struct NODE *nop = 0;
+    int no;
+    double r2, dx, dy, dz, mass, r, u, h, h_inv, wp;
+    double pot, pos_x, pos_y, pos_z;
     double h_p, h_p_inv, u_p, wp_p, h_max; h_p=0; h_p_inv=0; u_p=0; wp_p=0; h_max=0;
     int particle; particle=0;
 
-  pos_x = P[target].Pos[0];
-  pos_y = P[target].Pos[1];
-  pos_z = P[target].Pos[2];
+    pos_x = P[target].Pos[0];
+    pos_y = P[target].Pos[1];
+    pos_z = P[target].Pos[2];
+    h = ForceSoftening_KernelRadius(target);
 
-    h = All.ForceSoftening[P[target].Type];
-#if defined(ADAPTIVE_GRAVSOFT_FORALL)
-    h = P[target].AGS_Hsml;
-#elif defined(ADAPTIVE_GRAVSOFT_FORGAS)
-    if(P[target].Type == 0) h = PPP[target].Hsml;
-#endif
+    h_inv = 1.0 / h;
+    pot = 0;
+    no = All.MaxPart;
 
-  h_inv = 1.0 / h;
-  pot = 0;
-  no = All.MaxPart;
-
-  while(no >= 0)
+    while(no >= 0)
     {
       if(no < All.MaxPart)	/* single particle */
 	{
@@ -375,17 +320,11 @@ double subfind_loctree_treeevaluate_potential(int target)
         r2 = dx * dx + dy * dy + dz * dz;
 
       if(no < All.MaxPart)
-	{
-    particle = no;
-
-        h_p = All.ForceSoftening[P[particle].Type];
-#if defined(ADAPTIVE_GRAVSOFT_FORALL)
-    h_p = P[particle].AGS_Hsml;
-#elif defined(ADAPTIVE_GRAVSOFT_FORGAS)
-    if(P[particle].Type == 0) h_p = PPP[particle].Hsml;
-#endif
-	  no = Nextnode[no];
-	}
+      {
+        particle = no;
+        h_p = ForceSoftening_KernelRadius(no);
+        no = Nextnode[no];
+      }
       else			/* we have an internal node. Need to check opening criterion */
 	{
         double ErrTolThetaSubfind = All.ErrTolTheta;

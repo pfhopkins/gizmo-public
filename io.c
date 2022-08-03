@@ -35,7 +35,7 @@ static int n_info;
 void savepositions(int num)
 {
     size_t bytes;
-    char buf[500];
+    char buf[500], outputdir[100];
     int n, filenr, gr, ngroups, primaryTask, lastTask;
 
     CPU_Step[CPU_MISC] += measure_time();
@@ -84,6 +84,14 @@ void savepositions(int num)
         }
 #endif
 
+        sprintf(outputdir, "%s", All.OutputDir);
+#if STARS_ONLY_SNAPSHOT_FREQUENCY > 0
+        if( (All.SnapshotFileCount-1) % (STARS_ONLY_SNAPSHOT_FREQUENCY+1) )
+        {
+            sprintf(outputdir, "%s/stars_only", All.OutputDir);
+            mkdir(outputdir, 02755);
+        }
+#endif
 
         /* determine global and local particle numbers */
         for(n = 0; n < 6; n++)
@@ -101,16 +109,16 @@ void savepositions(int num)
         {
             if(ThisTask == 0)
             {
-                sprintf(buf, "%s/snapdir_%03d", All.OutputDir, num);
+                sprintf(buf, "%s/snapdir_%03d", outputdir, num);
                 mkdir(buf, 02755);
             }
             MPI_Barrier(MPI_COMM_WORLD);
         }
 
         if(All.NumFilesPerSnapshot > 1)
-            sprintf(buf, "%s/snapdir_%03d/%s_%03d.%d", All.OutputDir, num, All.SnapshotFileBase, num, filenr);
+            sprintf(buf, "%s/snapdir_%03d/%s_%03d.%d", outputdir, num, All.SnapshotFileBase, num, filenr);
         else
-            sprintf(buf, "%s%s_%03d", All.OutputDir, All.SnapshotFileBase, num);
+            sprintf(buf, "%s/%s_%03d", outputdir, All.SnapshotFileBase, num);
 
 
         ngroups = All.NumFilesPerSnapshot / All.NumFilesWrittenInParallel;
@@ -730,13 +738,29 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
 #ifdef PMGRID
                     for(k = 0; k < 3; k++) {fp[k] += (MyOutputFloat) (All.cf_a2inv * P[pindex].GravPM[k]);}
 #endif
+#ifndef OUTPUT_HYDROACCELERATION
                     if(P[pindex].Type == 0) {for(k = 0; k < 3; k++) {fp[k] += (MyOutputFloat) SphP[pindex].HydroAccel[k];}}
+#endif
                     fp += 3;
                     n++;
                 }
 #endif
             break;
 
+            
+        case IO_HYDROACCEL:        /* 'hydro' acceleration */
+#ifdef OUTPUT_HYDROACCELERATION
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    if(P[pindex].Type == 0) {for(k = 0; k < 3; k++) {fp[k] = (MyOutputFloat) SphP[pindex].HydroAccel[k];}}
+                    fp += 3;
+                    n++;
+                }
+#endif
+            break;
+
+            
         case IO_DTENTR:		/* rate of change of internal energy */
 #ifdef OUTPUT_CHANGEOFENERGY
             for(n = 0; n < pc; pindex++)
@@ -913,6 +937,34 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
 #endif
             break;
 
+            
+        case IO_GRADRHO:        /* density gradient */
+#if defined(OUTPUT_GRADIENT_RHO)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    for(k=0;k<3;k++) {fp[k] = (MyOutputFloat) (SphP[pindex].Gradients.Density[k] * All.cf_a2inv*All.cf_a2inv);} // output in physical units
+                    fp += 3;
+                    n++;
+                }
+#endif
+            break;
+
+                                                               
+        case IO_GRADVEL:        /* velocity gradients */
+#if defined(OUTPUT_GRADIENT_VEL)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    int k1,k2;
+                    for(k1=0;k1<3;k1++) {for(k2=0;k2<3;k2++) {fp[k1*3 + k2] = (MyOutputFloat) (SphP[pindex].Gradients.Velocity[k1][k2] * All.cf_a2inv);}} // output in physical units
+                    fp += 9;
+                    n++;
+                }
+#endif
+            break;
+
+            
         case IO_COOLRATE:		/* current cooling rate of particle  */
 #ifdef OUTPUT_COOLRATE
             for(n = 0; n < pc; pindex++)
@@ -1032,6 +1084,17 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                 }
 #endif
             break;
+
+        case IO_SINK_FORM_MASS:
+#ifdef SINGLE_STAR_SINK_DYNAMICS
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) P[pindex].Sink_Formation_Mass;
+                    n++;
+                }
+#endif
+            break;	    
 
         case IO_TIDALTENSORPS:   /* 3x3 configuration-space tidal tensor that is driving the GDE */
 #ifdef OUTPUT_TIDAL_TENSOR
@@ -1245,13 +1308,13 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                     n++;
                 }
 #elif defined(OUTPUT_TEMPERATURE)
-	    for(n = 0; n < pc; pindex++)
+            for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
-		    double u, ne, nh0 = 0, mu = 1, temp, nHeII, nhp, nHe0, nHepp; u = DMAX(All.MinEgySpec, SphP[pindex].InternalEnergy); // needs to be in code units                                                                                                                                                  
-		    temp = ThermalProperties(u, SphP[pindex].Density * All.cf_a3inv, pindex, &mu, &ne, &nh0, &nhp, &nHe0, &nHeII, &nHepp);		  
-		    *fp++ = (MyOutputFloat) temp;
-		    n++;
+                    double u, ne, nh0 = 0, mu = 1, temp, nHeII, nhp, nHe0, nHepp; u = DMAX(All.MinEgySpec, SphP[pindex].InternalEnergy); // needs to be in code units
+                    temp = ThermalProperties(u, SphP[pindex].Density * All.cf_a3inv, pindex, &mu, &ne, &nh0, &nhp, &nHe0, &nHeII, &nHepp);
+                    *fp++ = (MyOutputFloat) temp;
+                    n++;
                 }	    
 #endif
             break;
@@ -1627,9 +1690,11 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_VEL:
         case IO_PARTVEL:
         case IO_ACCEL:
+        case IO_HYDROACCEL:
         case IO_BFLD:
         case IO_INIB:
         case IO_GRADPHI:
+        case IO_GRADRHO:
         case IO_RAD_ACCEL:
         case IO_VORT:
         case IO_BH_ANGMOM:
@@ -1691,6 +1756,7 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_BHMASSALPHA:
         case IO_ACRB:
         case IO_SINKRAD:
+        case IO_SINK_FORM_MASS:
         case IO_BHMDOT:
         case IO_R_PROTOSTAR:
         case IO_MASS_D_PROTOSTAR:
@@ -1836,6 +1902,7 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
 
         case IO_CBE_MOMENTS:
 
+        case IO_GRADVEL:
         case IO_EOS_STRESS_TENSOR:
         case IO_TIDALTENSORPS:
         case IO_SHEET_ORIENTATION:
@@ -1915,8 +1982,10 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_INIB:
         case IO_PARTVEL:
         case IO_ACCEL:
+        case IO_HYDROACCEL:
         case IO_BFLD:
         case IO_GRADPHI:
+        case IO_GRADRHO:
         case IO_RAD_ACCEL:
         case IO_VORT:
         case IO_BH_ANGMOM:
@@ -1965,6 +2034,7 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_BHMASSALPHA:
         case IO_ACRB:
         case IO_SINKRAD:
+        case IO_SINK_FORM_MASS:
         case IO_BHMDOT:
         case IO_R_PROTOSTAR:
         case IO_MASS_D_PROTOSTAR:
@@ -2080,6 +2150,7 @@ int get_values_per_blockelement(enum iofields blocknr)
 #endif
             break;
 
+        case IO_GRADVEL:
         case IO_TIDALTENSORPS:
         case IO_SHEET_ORIENTATION:
         case IO_EOS_STRESS_TENSOR:
@@ -2164,6 +2235,7 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
 
         case IO_PARTVEL:
         case IO_RAD_ACCEL:
+        case IO_HYDROACCEL:
         case IO_RADGAMMA:
         case IO_RAD_FLUX:
         case IO_EDDINGTON_TENSOR:
@@ -2197,6 +2269,8 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_AMDC:
         case IO_PHI:
         case IO_GRADPHI:
+        case IO_GRADRHO:
+        case IO_GRADVEL:
         case IO_COOLRATE:
         case IO_EOSTEMP:
         case IO_EOSABAR:
@@ -2283,6 +2357,7 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_UNSPMASS:
         case IO_ACRB:
         case IO_SINKRAD:
+        case IO_SINK_FORM_MASS:
         case IO_BHMDOT:
         case IO_R_PROTOSTAR:
         case IO_MASS_D_PROTOSTAR:
@@ -2514,6 +2589,12 @@ int blockpresent(enum iofields blocknr)
 #endif
             break;
 
+        case IO_HYDROACCEL:
+#ifdef OUTPUT_HYDROACCELERATION
+            return 1;
+#endif
+            break;
+
         case IO_DTENTR:
 #ifdef OUTPUT_CHANGEOFENERGY
             return 1;
@@ -2599,6 +2680,18 @@ int blockpresent(enum iofields blocknr)
 #endif
             break;
 
+        case IO_GRADRHO:
+#if defined(OUTPUT_GRADIENT_RHO)
+            return 1;
+#endif
+            break;
+
+        case IO_GRADVEL:
+#if defined(OUTPUT_GRADIENT_VEL)
+            return 1;
+#endif
+            break;
+
         case IO_COOLRATE:
 #ifdef OUTPUT_COOLRATE
             return 1;
@@ -2617,6 +2710,13 @@ int blockpresent(enum iofields blocknr)
             return 1;
 #endif
             break;
+
+        case IO_SINK_FORM_MASS:
+#ifdef SINGLE_STAR_SINK_DYNAMICS
+            return 1;
+#endif
+            break;
+	    
 
         case IO_BHMASS:
 #ifdef BLACK_HOLES
@@ -2977,6 +3077,9 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
         case IO_ACCEL:
             strncpy(label, "ACCE", 4);
             break;
+        case IO_HYDROACCEL:
+            strncpy(label, "ACCH", 4);
+            break;
         case IO_DTENTR:
             strncpy(label, "ENDT", 4);
             break;
@@ -3025,6 +3128,12 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
         case IO_GRADPHI:
             strncpy(label, "GPHI", 4);
             break;
+        case IO_GRADRHO:
+            strncpy(label, "GRHO", 4);
+            break;
+        case IO_GRADVEL:
+            strncpy(label, "GVEL", 4);
+            break;
         case IO_COOLRATE:
             strncpy(label, "COOR", 4);
             break;
@@ -3049,6 +3158,9 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
         case IO_SINKRAD:
             strncpy(label, "SRAD", 4);
             break;
+        case IO_SINK_FORM_MASS:
+            strncpy(label, "SMAS", 4);
+            break;	    
         case IO_BHMDOT:
             strncpy(label, "BHMD", 4);
             break;
@@ -3357,6 +3469,9 @@ void get_dataset_name(enum iofields blocknr, char *buf)
         case IO_ACCEL:
             strcpy(buf, "Acceleration");
             break;
+        case IO_HYDROACCEL:
+            strcpy(buf, "HydroAcceleration");
+            break;
         case IO_DTENTR:
             strcpy(buf, "RateOfChangeOfInternalEnergy");
             break;
@@ -3405,6 +3520,12 @@ void get_dataset_name(enum iofields blocknr, char *buf)
         case IO_GRADPHI:
             strcpy(buf, "DivBcleaningFunctionGradPhi");
             break;
+        case IO_GRADRHO:
+            strcpy(buf, "DensityGradient");
+            break;
+        case IO_GRADVEL:
+            strcpy(buf, "VelocityGradient");
+            break;
         case IO_COOLRATE:
             strcpy(buf, "CoolingRate");
             break;
@@ -3429,6 +3550,9 @@ void get_dataset_name(enum iofields blocknr, char *buf)
         case IO_SINKRAD:
             strcpy(buf, "SinkRadius");
             break;
+        case IO_SINK_FORM_MASS:
+            strcpy(buf, "SinkInitialMass");
+            break;	    
         case IO_BHMDOT:
             strcpy(buf, "BH_Mdot");
             break;
@@ -3595,7 +3719,7 @@ void get_dataset_name(enum iofields blocknr, char *buf)
  *  Each snapshot file contains a header first, then particle positions,
  *  velocities and ID's.  Then particle masses are written for those particle
  *  types with zero entry in MassTable.  After that, first the internal
- *  energies u, and then the density is written for the SPH particles.  If
+ *  energies u, and then the density is written for the gas cells.  If
  *  cooling is enabled, mean molecular weight and neutral hydrogen abundance
  *  are written for the gas particles. This is followed by the gas kernel
  *  length and further blocks of information, depending on included physics
@@ -3860,7 +3984,11 @@ void write_file(char *fname, int writeTask, int lastTask)
 
                 for(type = 0; type < 6; type++)
                 {
+#if STARS_ONLY_SNAPSHOT_FREQUENCY > 0
+                    if ( typelist[type] && ( (type!=0) || !( (All.SnapshotFileCount-1) % (STARS_ONLY_SNAPSHOT_FREQUENCY+1) ) ) ) //we skip type 0 (gas) data for the reduced snapshots
+#else
                     if(typelist[type])
+#endif
                     {
 #ifdef HAVE_HDF5
                         if(ThisTask == writeTask && All.SnapFormat == 3 && header.npart[type] > 0)

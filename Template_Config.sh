@@ -288,7 +288,7 @@
 #BH_DYNFRICTION=0               # apply explicit dynamical friction force to the BHs when m_bh not >> other particle mass: 0=[DM+stars+gas]; 1=[DM+stars]; =2[stars]; >2 simply multiplies the DF force by this number (cite Tremmel, Governato, Volonteri, & Quinn,2015, MNRAS, 451, 1868)
 #BH_DYNFRICTION_FROMTREE        # compute dynamical friction forces on BH following the discrete DF estimator in Linhao Ma et al., arXiv:2101.02727. This is a more flexible, general, and less noisy and more accurate version of the traditional Chandrasekhar dynamical friction formula. Cite L Ma et al. 2021 and 2022 if used, and contact author L. Ma for applications as testing is still ongoing.
 #BH_DRAG=1                      # drag force on BH due to accretion; =1 uses actual mdot, =2 boost as if BH is accreting at eddington. cite Springel, Di Matteo, and Hernquist, 2005, MNRAS, 361, 776
-#BH_REPOSITION_ON_POTMIN=2      # reposition black hole on potential minimum (requires EVALPOTENTIAL). [=0 'jumps', =1 to "jump" onto STARS only, =2 moves smoothly with damped velocity to most-bound particle]
+#BH_REPOSITION_ON_POTMIN=2      # reposition black hole on potential minimum (requires EVALPOTENTIAL). [-1=disabled, =0 'jumps', =1 to "jump" onto STARS only, =2 moves smoothly with damped velocity to most-bound particle]
 ## ----------------------------------------------------------------------------------------------------
 # ----- accretion models (modules for gas or other particle accretion)
 ## ----------------------------------------------------------------------------------------------------
@@ -456,8 +456,11 @@
 #OUTPUT_POTENTIAL               # forces code to compute+output potentials in snapshots
 #OUTPUT_TIDAL_TENSOR            # writes tidal tensor (computed in gravity) to snapshots
 #OUTPUT_ACCELERATION            # output physical acceleration of each particle in snapshots
+#OUTPUT_HYDROACCELERATION       # output the 'hydrodynamic' (includes -all- stress tensor terms) acceleration. if enabled with 'OUTPUT_ACCELERATION', that will output the gravitational acceleration, so the sum of the two is the total
 #OUTPUT_CHANGEOFENERGY          # outputs rate-of-change of internal energy of gas particles in snapshots
 #OUTPUT_VORTICITY               # outputs the vorticity vector
+#OUTPUT_GRADIENT_RHO            # outputs the gradients of the gas density field
+#OUTPUT_GRADIENT_VEL            # outputs the full velocity gradient tensor field for the gas
 #OUTPUT_BFIELD_DIVCLEAN_INFO    # outputs the phi, phi-gradient, and numerical div-B fields used for de-bugging MHD simulations
 #OUTPUT_TIMESTEP                # outputs timesteps for each particle
 #OUTPUT_COOLRATE                # outputs cooling rate, and conduction rate if enabled
@@ -475,6 +478,7 @@
 #OUTPUT_BH_DISTANCES            # saves the distance to the nearest sink, if BH_CALC_DISTANCES is enabled, to snapshots
 #OUTPUT_RT_RAD_FLUX             # save flux vector for radiation methods that explictly evolve the flux (e.g. M1)
 #INPUT_READ_HSML                # force reading hsml from IC file (instead of re-computing them; in general this is redundant but useful if special guesses needed)
+#INPUT_READ_SINKPROPS           # force reading sink properties including sink radius, zams mass, luminosity, age, etc, from ICs file if it includes sink particles and the IC is designed for use with the single-star modules
 #OUTPUT_TWOPOINT_ENABLED        # allows user to calculate mass 2-point function by enabling and setting restartflag=5
 #IO_DISABLE_HDF5                # disable HDF5 I/O support (for both reading/writing; use only if HDF5 not install-able)
 #IO_COMPRESS_HDF5     		    # write HDF5 in compressed form (will slow down snapshot I/O and may cause issues on old machines, but reduce snapshots 2x)
@@ -511,7 +515,7 @@
 #ENERGY_ENTROPY_SWITCH_IS_ACTIVE # enable energy-entropy switch as described in GIZMO methods paper. This can greatly improve performance on some problems where the
                                 # the flow is very cold and highly super-sonic. it can cause problems in multi-phase flows with strong cooling, though, and is not compatible with non-barytropic equations of state
 #FORCE_ENTROPIC_EOS_BELOW=(0.01) # set (manually) the alternative energy-entropy switch which is enabled by default in MFM/MFV: if relative velocities are below this threshold, it uses the entropic EOS
-#DISABLE_SPH_PARTICLE_WAKEUP    # don't let gas particles move to lower timesteps based on neighbor activity (use for debugging)
+#DISABLE_GAS_CELL_WAKEUP    # don't let gas particles move to lower timesteps based on neighbor activity (use for debugging)
 #DO_UPWIND_TIME_CENTERING       # this (and DO_HALFSTEP_FOR_MESHLESS_METHODS) use alternative methods for up-winding the fluxes in the MFM/MFV schemes. this up-weighting can be more accurate in hydrostatic problems with a large sound-speed discontinuity -if- the pressure gradient is steady-state, but if they are moving or unstable, it is less accurate (and can suppress mixing)
 #HYDRO_KERNEL_SURFACE_VOLCORR   # attempt to correct SPH/MFM/MFV cell volumes for free-surface effects, using the estimated boundary correction for the Wendland C2 kernel (works with others but most accurate for this) based on asymmetry of neighbors within kernel, as calibrated in Reinhardt & Stadel 2017 (arXiv:1701.08296), see e.g. their Fig 3
 #DISABLE_SURFACE_VOLCORR        # disables HYDRO_KERNEL_SURFACE_VOLCORR if it would be set by default (e.g. if EOS_ELASTIC is enabled)
@@ -584,17 +588,23 @@
 #USE_MPI_IN_PLACE               # MPI debugging: makes AllGatherV compatible with MPI_IN_PLACE definitions in some MPI libraries
 #NO_ISEND_IRECV_IN_DOMAIN       # MPI debugging: slower, but fixes memory errors during exchange in the domain decomposition (ANY RUN with >2e9 particles MUST SET THIS OR FAIL!)
 #FIX_PATHSCALE_MPI_STATUS_IGNORE_BUG # MPI debugging
-#MPISENDRECV_SIZELIMIT=100      # MPI debugging
-#MPISENDRECV_CHECKSUM           # MPI debugging
+#MPISENDRECV_SIZELIMIT=100      # MPI debugging: force all MPI_Sendrecv calls to use the "size-limited" version which checks for the minimum of int, buffersize, or this value in MB as the maximum number of bytes it can send/receive (otherwise it breaks it into chunks). should never hurt, just gives slightly slower communication calls because of the extra checks.
+#MPISENDRECV_CHECKSUM           # MPI debugging: force all MPI_Sendrecv calls to use the "checksummed" version which checks for communication and appropriate values. useful for debugging but not normally desired (adds a significant cost multiplier)
 #DONOTUSENODELIST               # MPI debugging
-#NOTYPEPREFIX_FFTW              # FFTW debugging (fftw-header/libraries accessed without type prefix, adopting whatever was
-                                #   chosen as default at compile of fftw). Otherwise, the type prefix 'd' for double is used.
+#NOTYPEPREFIX_FFTW              # FFTW debugging (fftw-header/libraries accessed without type prefix, adopting whatever was chosen as default at compile of fftw). Otherwise, the type prefix 'd' for double is used.
 #USE_FFTW3                      # enables FFTW3 (can be used with DOUBLEPRECISION_FFTW). Thanks to Takashi Okamoto.
 #DOUBLEPRECISION_FFTW           # FFTW in double precision to match libraries
 #DISABLE_ALIGNED_ALLOC          # disable calls to 'aligned_alloc', needed for older C99-only versions of GCC compilers [everything C11+ -should- be compatible and not need this]
 # --------------------
 # ----- Load-Balancing
-#ALLOW_IMBALANCED_GASPARTICLELOAD # increases All.MaxPartSph to All.MaxPart: can allow better load-balancing in some cases, but uses more memory. But use me if you run into errors where it can't fit the domain (where you would increase PartAllocFac, but can't for some reason)
-#SEPARATE_STELLARDOMAINDECOMP   # separate stars (ptype=4) and other non-gas particles in domain decomposition (may help load-balancing)
+#ALLOW_IMBALANCED_GASPARTICLELOAD # increases All.MaxPartGas to All.MaxPart: can allow better load-balancing in some cases, but uses more memory. But use me if you run into errors where it can't fit the domain (where you would increase PartAllocFac, but can't for some reason)
+#SEPARATE_STELLARDOMAINDECOMP   # separate stars (ptype=4+5) and other non-gas particles in domain decomposition (may help load-balancing)
 ####################################################################################################
+
+
+
+
+
+
+
 

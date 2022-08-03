@@ -129,9 +129,9 @@ void kepler_timestep(int i, double dt, double kick_dv[3], double drift_dx[3], in
 
 // Quantity needed for gravitational acceleration and jerk; mass / r^3 in Newtonian gravity
 double gravfac(double r, double mass){
-    if(r < All.ForceSoftening[5]) {
-	double u = r / All.ForceSoftening[5];
-	double h_inv = 1/All.ForceSoftening[5];
+    if(r < SinkParticle_GravityKernelRadius) {
+	double u = r / SinkParticle_GravityKernelRadius;
+	double h_inv = 1. / SinkParticle_GravityKernelRadius;
 	return mass * kernel_gravity(u, h_inv, h_inv*h_inv*h_inv, 1);
     } else return mass / (r*r*r);
 }
@@ -139,7 +139,7 @@ double gravfac(double r, double mass){
 // quantity needed for the jerk, 3* mass/r^5 in Newtonian gravity
 double gravfac2(double r, double mass)
 {
-    double hinv = 1. / All.ForceSoftening[5];
+    double hinv = 1. / SinkParticle_GravityKernelRadius;
     return mass * kernel_gravity(r*hinv, hinv, hinv*hinv*hinv, 2);
 }
 
@@ -219,7 +219,7 @@ void odeint_super_timestep(int i, double dt_super, double kick_dv[3], double dri
 	    vSqr += dv[k]*dv[k];
 	    rSqr += dx[k]*dx[k];
 	}
-    double r_effective = KERNEL_FAC_FROM_FORCESOFT_TO_PLUMMER * All.ForceSoftening[5];
+    double r_effective = KERNEL_FAC_FROM_FORCESOFT_TO_PLUMMER * SinkParticle_GravityKernelRadius;
     rSqr += r_effective*r_effective;
 	dt = DMIN(0.1/(sqrt(vSqr/rSqr) + sqrt((All.G * total_mass)/sqrt(rSqr*rSqr*rSqr))), dt_super-t); // harmonic mean of approach time and freefall time
     // could swap in any integration scheme you want here; default to Hermite

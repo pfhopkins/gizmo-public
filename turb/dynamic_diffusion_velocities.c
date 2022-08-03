@@ -84,7 +84,7 @@ static inline void out2particle_DiffFilter(struct OUTPUT_STRUCT_NAME *out, int i
 void dynamic_diff_vel_calc_initial_operations_preloop(void);
 void dynamic_diff_vel_calc_initial_operations_preloop(void)
 {
-    /* Because of the smoothing operation, need to set bar quantity to current SPH value first */
+    /* Because of the smoothing operation, need to set bar quantity to current fluid value first */
     int i;
     for (i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i]) {
         if (P[i].Type == 0) {
@@ -98,13 +98,7 @@ void dynamic_diff_vel_calc_initial_operations_preloop(void)
 }
 
 
-/**
- *
- *  Computes the smoothed velocity field Velocity_bar according to eq. 2.17 in
- *  Monaghan 2011 (turbulence for SPH).
- *  - D. Rennehan
- *
- */
+/*  Computes the smoothed velocity field Velocity_bar according to eq. 2.17 in Monaghan 2011. - D. Rennehan */
 /*!   -- this subroutine contains no writes to shared memory -- */
 int DiffFilter_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration) {
     /* initialize and check if we should bother doing a neighbor loop */

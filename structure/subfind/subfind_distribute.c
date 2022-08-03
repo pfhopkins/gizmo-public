@@ -252,34 +252,34 @@ void subfind_distribute_particles(int mode)
 
 void subfind_exchange(void)
 {
-  int count_togo = 0, count_togo_sph = 0, count_get = 0, count_get_sph = 0;
-  int *count, *count_sph, *offset, *offset_sph;
-  int *count_recv, *count_recv_sph, *offset_recv, *offset_recv_sph;
+  int count_togo = 0, count_togo_gas = 0, count_get = 0, count_get_gas = 0;
+  int *count, *count_gas, *offset, *offset_gas;
+  int *count_recv, *count_recv_gas, *offset_recv, *offset_recv_gas;
   int i, n, ngrp, target;
-  int *local_toGet, *local_toGetSph;
-  int *local_toGo, *local_toGoSph;
+  int *local_toGet, *local_toGetGas;
+  int *local_toGo, *local_toGoGas;
   struct particle_data *partBuf;
-  struct sph_particle_data *sphBuf;
+  struct gas_cell_data *gasBuf;
 
   count = (int *) mymalloc("count", NTask * sizeof(int));
-  count_sph = (int *) mymalloc("count_sph", NTask * sizeof(int));
+  count_gas = (int *) mymalloc("count_gas", NTask * sizeof(int));
   offset = (int *) mymalloc("offset", NTask * sizeof(int));
-  offset_sph = (int *) mymalloc("offset_sph", NTask * sizeof(int));
+  offset_gas = (int *) mymalloc("offset_gas", NTask * sizeof(int));
 
   count_recv = (int *) mymalloc("count_recv", NTask * sizeof(int));
-  count_recv_sph = (int *) mymalloc("count_recv_sph", NTask * sizeof(int));
+  count_recv_gas = (int *) mymalloc("count_recv_gas", NTask * sizeof(int));
   offset_recv = (int *) mymalloc("offset_recv", NTask * sizeof(int));
-  offset_recv_sph = (int *) mymalloc("offset_recv_sph", NTask * sizeof(int));
+  offset_recv_gas = (int *) mymalloc("offset_recv_gas", NTask * sizeof(int));
 
   local_toGet = (int *) mymalloc("local_toGet", NTask * sizeof(int));
-  local_toGetSph = (int *) mymalloc("local_toGetSph", NTask * sizeof(int));
+  local_toGetGas = (int *) mymalloc("local_toGetGas", NTask * sizeof(int));
   local_toGo = (int *) mymalloc("local_toGo", NTask * sizeof(int));
-  local_toGoSph = (int *) mymalloc("local_toGoSph", NTask * sizeof(int));
+  local_toGoGas = (int *) mymalloc("local_toGoGas", NTask * sizeof(int));
 
   for(n = 0; n < NTask; n++)
     {
       local_toGo[n] = 0;
-      local_toGoSph[n] = 0;
+      local_toGoGas[n] = 0;
     }
 
 
@@ -289,25 +289,25 @@ void subfind_exchange(void)
 	{
 	  local_toGo[P[n].targettask]++;
 	  if(P[n].Type == 0)
-	    local_toGoSph[P[n].targettask]++;
+	    local_toGoGas[P[n].targettask]++;
 	}
     }
 
   MPI_Alltoall(local_toGo, 1, MPI_INT, local_toGet, 1, MPI_INT, MPI_COMM_WORLD);
-  MPI_Alltoall(local_toGoSph, 1, MPI_INT, local_toGetSph, 1, MPI_INT, MPI_COMM_WORLD);
+  MPI_Alltoall(local_toGoGas, 1, MPI_INT, local_toGetGas, 1, MPI_INT, MPI_COMM_WORLD);
 
   int prec_offset, prec_count;
   int *decrease;
 
   decrease = (int *) mymalloc("decrease", NTask * sizeof(int));
 
-  for(i = 1, offset_sph[0] = 0, decrease[0] = 0; i < NTask; i++)
+  for(i = 1, offset_gas[0] = 0, decrease[0] = 0; i < NTask; i++)
     {
-      offset_sph[i] = offset_sph[i - 1] + local_toGoSph[i - 1];
-      decrease[i] = local_toGoSph[i - 1];
+      offset_gas[i] = offset_gas[i - 1] + local_toGoGas[i - 1];
+      decrease[i] = local_toGoGas[i - 1];
     }
 
-  prec_offset = offset_sph[NTask - 1] + local_toGoSph[NTask - 1];
+  prec_offset = offset_gas[NTask - 1] + local_toGoGas[NTask - 1];
 
   offset[0] = prec_offset;
 
@@ -319,10 +319,10 @@ void subfind_exchange(void)
   for(i = 0; i < NTask; i++)
     {
       count_togo += local_toGo[i];
-      count_togo_sph += local_toGoSph[i];
+      count_togo_gas += local_toGoGas[i];
 
       count_get += local_toGet[i];
-      count_get_sph += local_toGetSph[i];
+      count_get_gas += local_toGetGas[i];
 
     }
 
@@ -333,18 +333,18 @@ void subfind_exchange(void)
       endrun(12787878);
     }
 
-  if(N_gas + count_get_sph - count_togo_sph > All.MaxPartSph)
+  if(N_gas + count_get_gas - count_togo_gas > All.MaxPartGas)
     {
-      printf("Task=%d N_gas(%d)+count_get_sph(%d)-count_togo_sph(%d)=%d All.MaxPartSph=%d\n", ThisTask,
-	     N_gas, count_get_sph, count_togo_sph, N_gas + count_get_sph - count_togo_sph, All.MaxPartSph);
+      printf("Task=%d N_gas(%d)+count_get_gas(%d)-count_togo_gas(%d)=%d All.MaxPartGas=%d\n", ThisTask,
+	     N_gas, count_get_gas, count_togo_gas, N_gas + count_get_gas - count_togo_gas, All.MaxPartGas);
       endrun(712187879);
     }
 
   partBuf = (struct particle_data *) mymalloc("partBuf", count_togo * sizeof(struct particle_data));
-  sphBuf = (struct sph_particle_data *) mymalloc("sphBuf", count_togo_sph * sizeof(struct sph_particle_data));
+  gasBuf = (struct gas_cell_data *) mymalloc("gasBuf", count_togo_gas * sizeof(struct gas_cell_data));
 
   for(i = 0; i < NTask; i++)
-    count[i] = count_sph[i] = 0;
+    count[i] = count_gas[i] = 0;
 
 
   for(n = 0; n < NumPart; n++)
@@ -355,9 +355,9 @@ void subfind_exchange(void)
 
 	  if(P[n].Type == 0)
 	    {
-	      partBuf[offset_sph[target] + count_sph[target]] = P[n];
-	      sphBuf[offset_sph[target] + count_sph[target]] = SphP[n];
-	      count_sph[target]++;
+	      partBuf[offset_gas[target] + count_gas[target]] = P[n];
+	      gasBuf[offset_gas[target] + count_gas[target]] = SphP[n];
+	      count_gas[target]++;
 	    }
 	  else
 	    {
@@ -388,20 +388,20 @@ void subfind_exchange(void)
 
   int count_totget;
 
-  count_totget = count_get_sph;
+  count_totget = count_get_gas;
 
   if(count_totget)
     memmove(P + N_gas + count_totget, P + N_gas, (NumPart - N_gas) * sizeof(struct particle_data));
 
   for(i = 0; i < NTask; i++)
     {
-      count_recv_sph[i] = local_toGetSph[i];
-      count_recv[i] = local_toGet[i] - local_toGetSph[i];
+      count_recv_gas[i] = local_toGetGas[i];
+      count_recv[i] = local_toGet[i] - local_toGetGas[i];
     }
 
-  for(i = 1, offset_recv_sph[0] = N_gas; i < NTask; i++)
-    offset_recv_sph[i] = offset_recv_sph[i - 1] + count_recv_sph[i - 1];
-  prec_count = N_gas + count_get_sph;
+  for(i = 1, offset_recv_gas[0] = N_gas; i < NTask; i++)
+    offset_recv_gas[i] = offset_recv_gas[i - 1] + count_recv_gas[i - 1];
+  prec_count = N_gas + count_get_gas;
 
   offset_recv[0] = NumPart - N_gas + prec_count;
 
@@ -422,14 +422,14 @@ void subfind_exchange(void)
 
       if(target < NTask)
 	{
-	  if(count_recv_sph[target] > 0)
+	  if(count_recv_gas[target] > 0)
 	    {
-	      MPI_Irecv(P + offset_recv_sph[target], count_recv_sph[target] * sizeof(struct particle_data),
-			MPI_BYTE, target, TAG_PDATA_SPH, MPI_COMM_WORLD, &requests[n_requests++]);
+	      MPI_Irecv(P + offset_recv_gas[target], count_recv_gas[target] * sizeof(struct particle_data),
+			MPI_BYTE, target, TAG_PDATA_GAS, MPI_COMM_WORLD, &requests[n_requests++]);
 
-	      MPI_Irecv(SphP + offset_recv_sph[target],
-			count_recv_sph[target] * sizeof(struct sph_particle_data), MPI_BYTE, target,
-			TAG_SPHDATA, MPI_COMM_WORLD, &requests[n_requests++]);
+	      MPI_Irecv(SphP + offset_recv_gas[target],
+			count_recv_gas[target] * sizeof(struct gas_cell_data), MPI_BYTE, target,
+			TAG_GASDATA, MPI_COMM_WORLD, &requests[n_requests++]);
 	    }
 
 
@@ -452,13 +452,13 @@ void subfind_exchange(void)
 
       if(target < NTask)
 	{
-	  if(count_sph[target] > 0)
+	  if(count_gas[target] > 0)
 	    {
-	      MPI_Isend(partBuf + offset_sph[target], count_sph[target] * sizeof(struct particle_data),
-			MPI_BYTE, target, TAG_PDATA_SPH, MPI_COMM_WORLD, &requests[n_requests++]);
+	      MPI_Isend(partBuf + offset_gas[target], count_gas[target] * sizeof(struct particle_data),
+			MPI_BYTE, target, TAG_PDATA_GAS, MPI_COMM_WORLD, &requests[n_requests++]);
 
-	      MPI_Isend(sphBuf + offset_sph[target], count_sph[target] * sizeof(struct sph_particle_data),
-			MPI_BYTE, target, TAG_SPHDATA, MPI_COMM_WORLD, &requests[n_requests++]);
+	      MPI_Isend(gasBuf + offset_gas[target], count_gas[target] * sizeof(struct gas_cell_data),
+			MPI_BYTE, target, TAG_GASDATA, MPI_COMM_WORLD, &requests[n_requests++]);
 	    }
 
 	  if(count[target] > 0)
@@ -487,18 +487,18 @@ void subfind_exchange(void)
 
       if(target < NTask)
 	{
-	  if(count_sph[target] > 0 || count_recv_sph[target] > 0)
+	  if(count_gas[target] > 0 || count_recv_gas[target] > 0)
 	    {
-	      MPI_Sendrecv(partBuf + offset_sph[target], count_sph[target] * sizeof(struct particle_data),
-			   MPI_BYTE, target, TAG_PDATA_SPH,
-			   P + offset_recv_sph[target], count_recv_sph[target] * sizeof(struct particle_data),
-			   MPI_BYTE, target, TAG_PDATA_SPH, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+	      MPI_Sendrecv(partBuf + offset_gas[target], count_gas[target] * sizeof(struct particle_data),
+			   MPI_BYTE, target, TAG_PDATA_GAS,
+			   P + offset_recv_gas[target], count_recv_gas[target] * sizeof(struct particle_data),
+			   MPI_BYTE, target, TAG_PDATA_GAS, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-	      MPI_Sendrecv(sphBuf + offset_sph[target], count_sph[target] * sizeof(struct sph_particle_data),
-			   MPI_BYTE, target, TAG_SPHDATA,
-			   SphP + offset_recv_sph[target],
-			   count_recv_sph[target] * sizeof(struct sph_particle_data), MPI_BYTE, target,
-			   TAG_SPHDATA, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+	      MPI_Sendrecv(gasBuf + offset_gas[target], count_gas[target] * sizeof(struct gas_cell_data),
+			   MPI_BYTE, target, TAG_GASDATA,
+			   SphP + offset_recv_gas[target],
+			   count_recv_gas[target] * sizeof(struct gas_cell_data), MPI_BYTE, target,
+			   TAG_GASDATA, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 	    }
 
 
@@ -523,30 +523,30 @@ void subfind_exchange(void)
       endrun(12787878);
     }
 
-  N_gas += count_get_sph;
-  if(N_gas > All.MaxPartSph)
+  N_gas += count_get_gas;
+  if(N_gas > All.MaxPartGas)
     {
-      printf("Task=%d N_gas=%d All.MaxPartSph=%d\n", ThisTask, N_gas, All.MaxPartSph);
+      printf("Task=%d N_gas=%d All.MaxPartGas=%d\n", ThisTask, N_gas, All.MaxPartGas);
       endrun(712187879);
     }
 
 
-  myfree(sphBuf);
+  myfree(gasBuf);
   myfree(partBuf);
 
-  myfree(local_toGoSph);
+  myfree(local_toGoGas);
   myfree(local_toGo);
-  myfree(local_toGetSph);
+  myfree(local_toGetGas);
   myfree(local_toGet);
 
-  myfree(offset_recv_sph);
+  myfree(offset_recv_gas);
   myfree(offset_recv);
-  myfree(count_recv_sph);
+  myfree(count_recv_gas);
   myfree(count_recv);
 
-  myfree(offset_sph);
+  myfree(offset_gas);
   myfree(offset);
-  myfree(count_sph);
+  myfree(count_gas);
   myfree(count);
 }
 

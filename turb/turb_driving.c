@@ -15,7 +15,7 @@
  like idealized turbulence tests, large-eddy simulations, and the like */
 /*
  *  This code was originally written for GADGET3 by Andreas Bauer; it has been
- *   modified slightly by Phil Hopkins for GIZMO, but is largely intact.
+ *   modified significantly by Phil Hopkins for GIZMO, and slightly by Mike Grudic
  */
 
 #if defined(TURB_DRIVING)
@@ -102,7 +102,8 @@ void init_turb(void)
                 {
                     if(All.TurbDriving_Global_DrivingSpectrumKey == 0)
                     {
-                        ampl = 1.; // uniform amplitude for all
+                        //ampl = 1.; // uniform amplitude for all
+                        ampl = pow(k/kmin, -1. + 2. - 0*0.5*NUMDIMS); // this should scale as the acceleration per eddy, ~v^2/L, crudely
                     }
                     else if(All.TurbDriving_Global_DrivingSpectrumKey ==  1)
                     {
@@ -111,12 +112,12 @@ void init_turb(void)
                     else if(All.TurbDriving_Global_DrivingSpectrumKey == 2)
                     {
                         //ampl = pow(k/kmin, (1.-NUMDIMS)- 5./3. ); // because this is E[vector_k] for NUMDIMS, need extra NUMDIMS-1 power term here
-                        ampl = pow(k/kmin, 1./3. - 0*0.5*NUMDIMS); // this should scale as the acceleration per eddy, ~v^2/L, crudely
+                        ampl = pow(k/kmin, -5./3. + 2. - 0*0.5*NUMDIMS); // this should scale as the acceleration per eddy, ~v^2/L, crudely
                     }
                     else if(All.TurbDriving_Global_DrivingSpectrumKey == 3)
                     {
                         //ampl = pow(k/kmin, (1.-NUMDIMS)- 2. ); // because this is E[vector_k] for NUMDIMS, need extra NUMDIMS-1 power term here
-                        ampl = pow(k/kmin, 0. - 0*0.5*NUMDIMS); // this should scale as the acceleration per eddy, ~v^2/L, crudely
+                        ampl = pow(k/kmin, -2. + 2. - 0*0.5*NUMDIMS); // this should scale as the acceleration per eddy, ~v^2/L, crudely
                     }
                     else
                     {
@@ -342,6 +343,9 @@ void add_turb_accel()
         if(P[i].Type == 0)
         {
             double fx = 0, fy = 0, fz = 0;
+#ifdef _OPENMP
+#pragma omp parallel for reduction(+:fx) reduction(+:fy) reduction(+:fz) // parallelize the sum reduction over the different wavenumbers
+#endif
             for(m=0; m<StNModes; m++) // calc force
             {
                 double kxx = StMode[3*m+0]*P[i].Pos[0], kyy = StMode[3*m+1]*P[i].Pos[1], kzz = StMode[3*m+2]*P[i].Pos[2];

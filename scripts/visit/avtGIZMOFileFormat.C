@@ -379,7 +379,7 @@ avtGIZMOFileFormat::PopulateDatabaseMetaData(avtDatabaseMetaData *md)
 
   for(int ptype = 0; ptype < GIZMO_N_PTYPE; ++ptype) {
     if(header.num_part_this_file[ptype] > 0) {
-      // SPH particle grid
+      // fluid cell/particle grid
       avtMeshMetaData * mmd = new avtMeshMetaData;
       char mesh_name[GIZMO_STRLEN];
       snprintf(mesh_name, GIZMO_STRLEN, "PartType%d", ptype);

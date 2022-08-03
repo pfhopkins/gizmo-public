@@ -39,7 +39,7 @@ double CPUThisRun;		/*!< Sums CPU time of current process */
 
 int NumForceUpdate;		/*!< number of active particles on local processor in current timestep  */
 long long GlobNumForceUpdate;
-int NumSphUpdate;		/*!< number of active SPH particles on local processor in current timestep  */
+int NumGasUpdate;		/*!< number of active gas cells on local processor in current timestep  */
 
 int MaxTopNodes;		/*!< Maximum number of nodes in the top-level tree used for domain decomposition */
 
@@ -61,7 +61,7 @@ int *NextActiveParticle;
 unsigned char *ProcessedFlag;
 
 int TimeBinCount[TIMEBINS];
-int TimeBinCountSph[TIMEBINS];
+int TimeBinCountGas[TIMEBINS];
 int TimeBinActive[TIMEBINS];
 
 int FirstInTimeBin[TIMEBINS];
@@ -70,7 +70,7 @@ int *NextInTimeBin;
 int *PrevInTimeBin;
 
 size_t HighMark_run, HighMark_domain, HighMark_gravtree,
-  HighMark_pmperiodic, HighMark_pmnonperiodic, HighMark_sphdensity, HighMark_sphhydro, HighMark_GasGrad;
+  HighMark_pmperiodic, HighMark_pmnonperiodic, HighMark_gasdensity, HighMark_hydro, HighMark_GasGrad;
 
 #ifdef BOX_PERIODIC
 MyDouble boxSize, boxHalf;      /* size of the box! these variables are technically redundant but used -constantly- so very helpful */
@@ -151,7 +151,7 @@ int N_gas;			/*!< number of gas particles on the LOCAL processor  */
 int N_stars;
 #endif
 #ifdef BH_WIND_SPAWN
-double  MaxUnSpanMassBH;
+double  Max_Unspawned_MassUnits_fromSink;
 #endif
 
 long long Ntype[6];		/*!< total number of particles of each type */
@@ -177,7 +177,10 @@ int *DomainStartList, *DomainEndList;
 
 double *DomainWork;
 int *DomainCount;
-int *DomainCountSph;
+int *DomainCountGas;
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+int *DomainCountStars;
+#endif
 int *DomainTask;
 int *DomainNodeIndex;
 int *DomainList, DomainNumChanged;
@@ -284,11 +287,11 @@ struct particle_data *P,	/*!< holds particle data on local processor */
 
 
 
-/* the following struture holds data that is stored for each SPH particle in addition to the collisionless
+/* the following struture holds data that is stored for each gas cell in addition to the collisionless
  * variables.
  */
-struct sph_particle_data *SphP,	/*!< holds SPH particle data on local processor */
- *DomainSphBuf;			/*!< buffer for SPH particle data in domain decomposition */
+struct gas_cell_data *SphP,	/*!< holds gas cell data on local processor */
+ *DomainGasBuf;			/*!< buffer for gas cell data in domain decomposition */
 
 peanokey *DomainKeyBuf;
 

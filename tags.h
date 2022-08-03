@@ -11,7 +11,7 @@
 #define TAG_N             10      /*!< Various tags used for labeling MPI messages */
 #define TAG_HEADER        11
 #define TAG_PDATA         12
-#define TAG_SPHDATA       13
+#define TAG_GASDATA       13
 #define TAG_KEY           14
 #define TAG_DMOM          15
 #define TAG_NODELEN       16
@@ -71,8 +71,8 @@
 #define TAG_DMDENS_B      64
 
 #define TAG_PSRT_A        65
-#define TAG_PDATA_SPH     66
-#define TAG_KEY_SPH       67
+#define TAG_PDATA_GAS     66
+#define TAG_KEY_GAS       67
 
 #define TAG_RT_A          72
 #define TAG_RT_B          73

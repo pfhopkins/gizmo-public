@@ -344,7 +344,7 @@ void subfind(int num)
     printf("sort of local particles()() took %g sec\n", timediff(t0, t1));
 
 
-  /* now we have the particles of groups consecutively, but SPH particles are
+  /* now we have the particles of groups consecutively, but fluid cells are
      not aligned. They can however be accessed via SphP[P[i].originindex] */
 
 

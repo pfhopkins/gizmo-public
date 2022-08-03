@@ -27,6 +27,7 @@ void GravAccel_ShearingSheet(void);
 void GravAccel_PaczynskyWiita(void);
 void GravAccel_RDITestProblem(void);
 void GravAccel_GMCTurbInit(void);
+void GravAccel_FilamentTurbInit(void);
 
 /* parent routine which decides which (if any) analytic gravitational forces are applied */
 void add_analytic_gravitational_forces()
@@ -47,6 +48,9 @@ void add_analytic_gravitational_forces()
 #endif
 #ifdef STARFORGE_GMC_TURBINIT
     GravAccel_GMCTurbInit();              // uniform sphere harmonic potential + r^-3 halo outside to confine stirred turbulent gas
+#endif
+#ifdef STARFORGE_FILAMENT_TURBINIT
+    GravAccel_FilamentTurbInit();              // potential of an finitite cylinder with a Plummer density profile, truncated at the ends of the cylinder
 #endif
 
 #ifdef BOX_SHEARING
@@ -104,7 +108,11 @@ void GravAccel_RDITestProblem()
 #ifdef GRAIN_RDI_TESTPROBLEM_ACCEL_DEPENDS_ON_SIZE
             acc *= All.Grain_Size_Max / P[i].Grain_Size;
 #endif
-            if((1 << P[i].Type) & (GRAIN_PTYPES))
+            int grain_subtype = 1;
+#if defined(PIC_MHD)
+            grain_subtype = P[i].MHD_PIC_SubType; /* check if the 'grains' are really PIC elements */
+#endif
+            if(((1 << P[i].Type) & (GRAIN_PTYPES)) && (grain_subtype <= 2))
             {
                 P[i].GravAccel[GRAV_DIRECTION_RDI] += acc * cos(All.Vertical_Grain_Accel_Angle * M_PI/180.);
                 P[i].GravAccel[0] += acc * sin(All.Vertical_Grain_Accel_Angle * M_PI/180.);
@@ -212,13 +220,44 @@ void GravAccel_GMCTurbInit()
     {
         double dp[3]; for(k=0;k<3;k++) {dp[k]=P[i].Pos[k] - 0.5*All.BoxSize;}
         double r2 = dp[0]*dp[0]+dp[1]*dp[1]+dp[2]*dp[2], r = sqrt(r2);
-	double M = 0.808 * All.TotN_gas * All.MeanGasParticleMass, R=All.BoxSize/10; // these are for the default settings of MakeCloud's uniform sphere IC, adjust for your problem!
-	double menc = DMIN(M,M*pow(r/R,3)) + DMAX(0,3*M*log(r/R)); // uniform sphere plus a r^-3 surrounding halo with density matched at the sphere radius
-        for(k=0;k<3;k++) {P[i].GravAccel[k] += -All.G * STARFORGE_GMC_ALPHA * menc * dp[k]/(r2*r);}
+        double M = 0.808 * All.TotN_gas * All.MeanGasParticleMass, R=All.BoxSize/10; // these are for the default settings of MakeCloud's uniform sphere IC, adjust for your problem!
+        double menc = DMIN(M,M*pow(r/R,3)) + DMAX(0,3*M*log(r/R)); // uniform sphere plus a r^-3 surrounding halo with density matched at the sphere radius
+        for(k=0;k<3;k++) {P[i].GravAccel[k] += -All.G * STARFORGE_GMC_TURBINIT * menc * dp[k]/(r2*r);}
     }
 #endif
 }
 
+
+void GravAccel_FilamentTurbInit()
+{
+#ifdef STARFORGE_FILAMENT_TURBINIT
+    int i,k; for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
+    {
+        double dp[3]; for(k=0;k<3;k++) {dp[k]=P[i].Pos[k] - 0.5*All.BoxSize;}
+        double r = sqrt(dp[1]*dp[1]+dp[2]*dp[2]) + P[i].Hsml, lambda = r/STARFORGE_FILAMENT_RADIUS; //define cylindrical radius and lambda rescaled radius
+        double R2 = STARFORGE_FILAMENT_RADIUS*STARFORGE_FILAMENT_RADIUS; //shorthand
+        double num_scaling_factor = 2.0 ; //additional scaling found numerically to make the stirring run reproduce the right alpha and filament length (similarly determined numerical factor added to MakeCloud)
+        /* Potential for an infinite cylinder along the x axis with rho = rho0/(1+(r/R)^2)^(3/2) (i.e., p=3 Plummer profile) */
+        double rho_uniform = STARFORGE_FILAMENT_MASS / (R2*STARFORGE_FILAMENT_LENGTH*M_PI); //density that a uniform cylinder would have
+        double menc = STARFORGE_FILAMENT_MASS * ( 1.0 - pow(1+lambda*lambda,-0.5) ); //enclosed mass at radius r
+        double cyl_grav_accel_rad = 2.0*All.G/STARFORGE_FILAMENT_LENGTH * STARFORGE_FILAMENT_TURBINIT * num_scaling_factor * menc /r; //gravitational acceleration for an *infinite* cylinder with
+        /* Get the truncation in the x direction for having a finite cylinder. We use an approximate formula, for simplicity calculated along the axis of a uniform cylinder */
+        double dx = abs(dp[0]) + P[i].Hsml;
+        double dx1 = dx - STARFORGE_FILAMENT_LENGTH/2.0, dx2 = dx + STARFORGE_FILAMENT_LENGTH/2.0;
+        double x_trunc_factor=1.0, x_expr=0.0; //init
+        if (dx1>0){ //expression for the x component of the accceleration outside the cylinder (approximate)
+            x_expr = STARFORGE_FILAMENT_LENGTH + sqrt(dx1*dx1 + R2) - sqrt(dx2*dx2 + R2);
+            x_trunc_factor = x_expr / ( STARFORGE_FILAMENT_LENGTH + r - sqrt(STARFORGE_FILAMENT_LENGTH*STARFORGE_FILAMENT_LENGTH + R2) );
+        }
+        else{ //expression for the x component of the accceleration inside the cylinder (approximate)
+            x_expr = STARFORGE_FILAMENT_LENGTH + 2*dx1 + sqrt( dx1*dx1 + R2 ) - sqrt( pow(STARFORGE_FILAMENT_LENGTH+dx1,2.0) + R2);
+        }
+        P[i].GravAccel[0] += (-2.0)*M_PI*All.G*rho_uniform * STARFORGE_FILAMENT_TURBINIT * num_scaling_factor * x_expr * dp[0]/dx; //add z component
+        /* Apply truncated radial acceleration */
+        for(k=1;k<3;k++) {P[i].GravAccel[k] += -cyl_grav_accel_rad * x_trunc_factor * dp[k]/r;} //add radial component
+    }
+#endif
+}
 
 
 /* time-dependent potential of an adiabatically-growing disk */
@@ -361,6 +400,22 @@ void GravAccel_PaczynskyWiita()
 #ifdef PARTICLE_EXCISION
 void apply_excision(void)
 {
+#ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM
+    /* we will excise -any- cells or particles which fall inside the force softening kernel of the central SMBH particle */
+    if(All.SMBH_SpecialParticle_Position_ForRefinement[0] > -1.e10)
+    {
+        int i,k; double excision_radius = All.ForceSoftening[3];
+        double excision_radius2 = excision_radius*excision_radius;
+        for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
+        {
+            if(P[i].Type != 3) /* don't excise the SMBH itself! */
+            {
+                double r2=0; for(k=0;k<3;k++) {double dp=P[i].Pos[k]-All.SMBH_SpecialParticle_Position_ForRefinement[k]; r2+=dp*dp;}
+                if(r2 < excision_radius2) {All.Mass_Accreted_By_SpecialSMBHParticle+=P[i].Mass; P[i].Mass=0;}
+            }
+        }
+    }
+#else
     double EXCISION_MASS = 0; // mass of the excised object. Used to move the excision boundary so as to capture bound objects. If zero the excision boundary will not move
     double EXCISION_INIT_RADIUS = 0; // initial excision radius
     double EXCISION_ETA = 1; // remove particles with radius < EXCISION_ETA R_excision
@@ -379,6 +434,7 @@ void apply_excision(void)
             if(r < excision_radius) {P[i].Mass = 0;}
         }
     }
+#endif
 }
 #endif
 

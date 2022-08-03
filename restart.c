@@ -18,7 +18,7 @@
 static FILE *fd;
 
 #ifdef CHIMES 
-static ChimesFloat *sphAbundancesBuf;
+static ChimesFloat *gasAbundancesBuf;
 #endif 
 
 static void in(int *x, int modus);
@@ -177,9 +177,9 @@ void restart(int modus)
 
 		  All.PartAllocFactor = save_PartAllocFactor;
 		  All.MaxPart = (int) (All.PartAllocFactor * (All.TotNumPart / NTask));
-		  All.MaxPartSph = (int) (All.PartAllocFactor * (All.TotN_gas / NTask));
+		  All.MaxPartGas = (int) (All.PartAllocFactor * (All.TotN_gas / NTask));
 #ifdef ALLOW_IMBALANCED_GASPARTICLELOAD
-          All.MaxPartSph = All.MaxPart; // PFH: increasing All.MaxPartSph according to this line can allow better load-balancing in some cases. however it leads to more memory problems
+          All.MaxPartGas = All.MaxPart; // PFH: increasing All.MaxPartGas according to this line can allow better load-balancing in some cases. however it leads to more memory problems
 #endif
           new_MaxPart = All.MaxPart;
 
@@ -219,19 +219,18 @@ void restart(int modus)
 	  in(&N_gas, modus);
 	  if(N_gas > 0)
 	    {
-	      if(N_gas > All.MaxPartSph)
+	      if(N_gas > All.MaxPartGas)
 		{
-		  printf
-		    ("SPH: it seems you have reduced(!) 'PartAllocFactor' below the value of %g needed to load the restart file.\n",
+		  printf("GAS: it seems you have reduced(!) 'PartAllocFactor' below the value of %g needed to load the restart file.\n",
 		     N_gas / (((double) All.TotN_gas) / NTask));
 		  printf("fatal error\n");
 		  endrun(222);
 		}
-	      /* Sph-Particle data  */
-	      byten(&SphP[0], N_gas * sizeof(struct sph_particle_data), modus);
+	      /* fluid-cell data  */
+	      byten(&SphP[0], N_gas * sizeof(struct gas_cell_data), modus);
 
 #ifdef CHIMES 
-	      sphAbundancesBuf = (ChimesFloat *) malloc(N_gas * ChimesGlobalVars.totalNumberOfSpecies * sizeof(ChimesFloat));
+	      gasAbundancesBuf = (ChimesFloat *) malloc(N_gas * ChimesGlobalVars.totalNumberOfSpecies * sizeof(ChimesFloat));
 
 	      if (!modus) /* write */
 		{
@@ -239,12 +238,12 @@ void restart(int modus)
 		  for (partIndex = 0; partIndex < N_gas; partIndex++)
 		    {
 		      for (abunIndex = 0; abunIndex < ChimesGlobalVars.totalNumberOfSpecies; abunIndex++)
-			sphAbundancesBuf[(partIndex * ChimesGlobalVars.totalNumberOfSpecies) + abunIndex] = ChimesGasVars[partIndex].abundances[abunIndex];
+			gasAbundancesBuf[(partIndex * ChimesGlobalVars.totalNumberOfSpecies) + abunIndex] = ChimesGasVars[partIndex].abundances[abunIndex];
 		    }
 		}
 
 	      /* Abundance buffer */
-	      byten(&sphAbundancesBuf[0], N_gas * ChimesGlobalVars.totalNumberOfSpecies * sizeof(ChimesFloat), modus);
+	      byten(&gasAbundancesBuf[0], N_gas * ChimesGlobalVars.totalNumberOfSpecies * sizeof(ChimesFloat), modus);
 	      /* GasVars */
 	      byten(&ChimesGasVars[0], N_gas * sizeof(struct gasVariables), modus);
 			  
@@ -257,14 +256,14 @@ void restart(int modus)
 		      
 		      /* Read abundances from buffer */
 		      for (abunIndex = 0; abunIndex < ChimesGlobalVars.totalNumberOfSpecies; abunIndex++)
-			ChimesGasVars[partIndex].abundances[abunIndex] = sphAbundancesBuf[(partIndex * ChimesGlobalVars.totalNumberOfSpecies) + abunIndex];
+			ChimesGasVars[partIndex].abundances[abunIndex] = gasAbundancesBuf[(partIndex * ChimesGlobalVars.totalNumberOfSpecies) + abunIndex];
 
 #ifdef CHIMES_TURB_DIFF_IONS 
 		      chimes_update_turbulent_abundances(partIndex, 1); 
 #endif 
 		    }
 		}
-	      free(sphAbundancesBuf); 
+	      free(gasAbundancesBuf); 
 #endif
 	    }
 

@@ -220,8 +220,8 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 if(u_j<1) {kernel_main(u_j, hinv3_j, hinv4_j, &wk_j, &dwk_j, 1);} else {wk_j=dwk_j=0;}
                 if(local.V_i<0 || isnan(local.V_i)) {local.V_i=0;}
                 if(V_j<0 || isnan(V_j)) {V_j=0;}
-                double sph_area = fabs(local.V_i*local.V_i*kernel.dwk + V_j*V_j*dwk_j); // effective face area //
-                wk = 0.5 * (1 - 1/sqrt(1 + sph_area / (M_PI*kernel.r*kernel.r))); // corresponding geometric weight //
+                double face_area = fabs(local.V_i*local.V_i*kernel.dwk + V_j*V_j*dwk_j); // effective face area //
+                wk = 0.5 * (1 - 1/sqrt(1 + face_area / (M_PI*kernel.r*kernel.r))); // corresponding geometric weight //
 #ifdef FIRE1_SNE_COUPLING
                 if(u<1) {kernel_main(u, kernel.hinv3, kernel.hinv4, &kernel.wk, &kernel.dwk, 0);} else {kernel.wk=kernel.dwk=0;}
                 wk = (Mass_j/rho_j) * kernel.wk;
@@ -445,14 +445,15 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     double psi_cool=1, psi_egycon=1, v_ejecta_eff_init=local.SNe_v_ejecta, v_ejecta_eff=v_ejecta_eff_init, residual_thermal_frac=0; // separate initial [pre-shock] ejecta velocity, which defines energy, and post-shock
     double wk_norm = 1. / (MIN_REAL_NUMBER + fabs(local.Area_weighted_sum[0])); // normalization for scalar weight sum
     double pnorm_sum = 1./(MIN_REAL_NUMBER + fabs(local.Area_weighted_sum[10])); // re-normalization after second pass for normalized "pnorm" (should be close to ~1)
-    double sedov_phase_thermal_to_kinetic_ratio = 2.54, f_sedov_kin; // define ratio of thermal-to-kinetic energy for sedov-taylor phase
+    double thermal_to_kinetic_ratio_universal = 2.54, f_sedov_kin, thermal_kinetic_ratio_lim_wvinwards = 0; // define ratio of thermal-to-kinetic energy for sedov-taylor phase
     int retain_thermal_flag = 1; // flag to determine whether additional post-shock thermal energy should be considered to have radiated away already
     int feedback_type_is_SNe = 0; // variable to know if this is a sne or continuous wind or other form of mechanical feedback (discrete injection treated differently from continuous in some ways below)
     if(loop_iteration == 0) {feedback_type_is_SNe = 1;} // assume, for now, that loop 0 represents SNe, for purposes of energy-momentum switch below //
-    if(feedback_type_is_SNe == 0) {sedov_phase_thermal_to_kinetic_ratio = 1.e-2;} // negligible excess thermal component for continuous sources
-    f_sedov_kin=1./(1.+sedov_phase_thermal_to_kinetic_ratio); // fraction of total energy in kinetic after reverse shock, to assume for sedov-taylor phase
+    if(feedback_type_is_SNe == 0) {thermal_to_kinetic_ratio_universal = 1.e-2;} // negligible excess thermal component for continuous sources
+    f_sedov_kin=1./(1.+thermal_to_kinetic_ratio_universal); // fraction of total energy in kinetic after reverse shock, to assume for sedov-taylor phase
     if((local.Area_weighted_sum[0] > MIN_REAL_NUMBER) && (loop_iteration >= 0))
     {
+        double beta_egycon_thold = thermal_kinetic_ratio_lim_wvinwards / (2.*sqrt(1.+thermal_kinetic_ratio_lim_wvinwards)), psi_thold = 1./sqrt(1.+thermal_kinetic_ratio_lim_wvinwards); // some numbers to be used below: these define where the thermal-kinetic ratio reaches the limit defined above
         double vba_2_eff = pnorm_sum * local.Area_weighted_sum[7]; // phi term for energy: weighted mass-deposited KE for ejecta neighbors
         v_ejecta_eff_init = sqrt(local.SNe_v_ejecta*local.SNe_v_ejecta + vba_2_eff); // account for all terms to get the revised KE term here
         v_ejecta_eff = v_ejecta_eff_init * sqrt(f_sedov_kin); // effective velocity after reverse shock in sedov phase
@@ -460,9 +461,9 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
         double beta_cool = pnorm_sum * local.Area_weighted_sum[9]; // beta term if all particles in terminal-momentum-limit
         psi_egycon = sqrt(1. + beta_egycon*beta_egycon) - beta_egycon; // exact solution for energy equation for constant psi
         if(beta_egycon > 20.) {psi_egycon = 1./(2.*beta_egycon);} // replace with series expansion to avoid roundoff error at high beta
-        //if(beta_egycon < 0) {psi_egycon=1; residual_thermal_frac=DMAX(0., sqrt(1.+beta_egycon*beta_egycon)-beta_egycon-1.) * f_sedov_kin;} // in this case (blastwave in a converging flow) we don't boost the momentum beyond the 'normal' maximum but assign the residual energy to thermal, since the timescale to convert this additional post-shock thermal energy to kinetic is actually quite long for this situation
-        if(beta_egycon < 0) {psi_egycon=1; residual_thermal_frac=DMAX(0., -2.*beta_egycon) * f_sedov_kin;} // in this case (blastwave in a converging flow) we don't boost the momentum beyond the 'normal' maximum but assign the residual energy to thermal, since the timescale to convert this additional post-shock thermal energy to kinetic is actually quite long for this situation
-        if(beta_cool > 0.5) {psi_cool = 1./(2.*beta_cool);} // for cooling limit, only need upper limit to psi, all else will use less energy
+        if(beta_egycon < beta_egycon_thold) {psi_egycon=psi_thold; residual_thermal_frac=DMAX(0., (thermal_kinetic_ratio_lim_wvinwards-2.*beta_egycon*sqrt(1.+thermal_kinetic_ratio_lim_wvinwards))/(1.+thermal_kinetic_ratio_lim_wvinwards) * f_sedov_kin);} // in this case (blastwave in a converging flow) we don't boost the momentum beyond the 'normal' maximum but assign the residual energy to thermal, since the timescale to convert this additional post-shock thermal energy to kinetic is actually quite long for this situation
+        if(beta_cool > 1./(2.*psi_thold)) {psi_cool = 1./(2.*beta_cool);} else {psi_cool = psi_thold;} // for cooling limit, only need upper limit to psi, all else will use less energy
+        //if(beta_cool > 0.5) {psi_cool = psi_thold/(2.*beta_cool);} else {psi_cool = psi_thold;} // for cooling limit, only need upper limit to psi, all else will use less energy
     }
     psi_egycon = DMIN(1 , psi_egycon); // this should be gauranteed by the above checks, but enforce it regardless
 
@@ -522,8 +523,8 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 if(u_j<1) {kernel_main(u_j, hinv3_j, hinv4_j, &wk_j, &dwk_j, 1);} else {wk_j=dwk_j=0;}
                 if(local.V_i<0 || isnan(local.V_i)) {local.V_i=0;}
                 if(V_j<0 || isnan(V_j)) {V_j=0;}
-                double sph_area = fabs(local.V_i*local.V_i*kernel.dwk + V_j*V_j*dwk_j); // effective face area //
-                wk = 0.5 * (1 - 1/sqrt(1 + sph_area / (M_PI*kernel.r*kernel.r))); // corresponding geometric weight //
+                double face_area = fabs(local.V_i*local.V_i*kernel.dwk + V_j*V_j*dwk_j); // effective face area //
+                wk = 0.5 * (1 - 1/sqrt(1 + face_area / (M_PI*kernel.r*kernel.r))); // corresponding geometric weight //
 
                 if((wk <= 0)||(isnan(wk))) {continue;} // no point in going further, there's no physical weight here
 

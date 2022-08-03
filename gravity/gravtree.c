@@ -217,9 +217,10 @@ void gravity_tree(void)
                 place = DataIndexTable[j].Index;
 
                 /* assign values (input-function to pass in memory) */
-                GravDataIn[j].Type = P[place].Type;
-                GravDataIn[j].OldAcc = P[place].OldAcc;
                 for(k = 0; k < 3; k++) {GravDataIn[j].Pos[k] = P[place].Pos[k];}
+                GravDataIn[j].Type = P[place].Type;
+                GravDataIn[j].Soft = ForceSoftening_KernelRadius(place);
+                GravDataIn[j].OldAcc = P[place].OldAcc;
 #if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE) || defined(SINGLE_STAR_TIMESTEPPING)
                 GravDataIn[j].Mass = P[place].Mass;
 #endif
@@ -239,11 +240,8 @@ void gravity_tree(void)
                 }
                 else {P[place].is_in_a_binary=0; /* setting values to zero just to be sure */}
 #endif
-#if defined(SINGLE_STAR_TIMESTEPPING)
-                GravDataIn[j].Soft = All.ForceSoftening[P[place].Type];
-#endif
 #if defined(RT_USE_GRAVTREE) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(FLAG_NOT_IN_PUBLIC_CODE)
-                if( (P[place].Type == 0) && (PPP[place].Hsml > All.ForceSoftening[P[place].Type]) ) {GravDataIn[j].Soft = PPP[place].Hsml;} else {GravDataIn[j].Soft = All.ForceSoftening[P[place].Type];}
+                if((P[place].Type == 0) && (PPP[place].Hsml > All.ForceSoftening[P[place].Type])) {GravDataIn[j].Soft = PPP[place].Hsml;} else {GravDataIn[j].Soft = All.ForceSoftening[P[place].Type];}
 #endif
 #ifdef ADAPTIVE_GRAVSOFT_FORGAS
                 if((P[place].Type == 0) && (PPP[place].Hsml > All.ForceSoftening[P[place].Type])) {GravDataIn[j].AGS_zeta = PPPZ[place].AGS_zeta;} else {GravDataIn[j].AGS_zeta = 0;}
@@ -504,9 +502,10 @@ void gravity_tree(void)
 #ifdef GDE_DISTORTIONTENSOR /* for GDE implementation, want to include particle self-tide contribution -- for timestep or hill criteria, on the other hand, this is not necessary */
         if(All.ComovingIntegrationOn) {P[i].tidal_tensorps[0][0] -= All.TidalCorrection/All.G; P[i].tidal_tensorps[1][1] -= All.TidalCorrection/All.G; P[i].tidal_tensorps[2][2] -= All.TidalCorrection/All.G;} // subtract Hubble flow terms //
         /* Diagonal terms of tidal tensor need correction, because tree is running over all particles -> also over target particle -> extra term -> correct it */
-        P[i].tidal_tensorps[0][0] += P[i].Mass / (All.ForceSoftening[P[i].Type] * All.ForceSoftening[P[i].Type] * All.ForceSoftening[P[i].Type]) * 10.666666666667;
-        P[i].tidal_tensorps[1][1] += P[i].Mass / (All.ForceSoftening[P[i].Type] * All.ForceSoftening[P[i].Type] * All.ForceSoftening[P[i].Type]) * 10.666666666667;
-        P[i].tidal_tensorps[2][2] += P[i].Mass / (All.ForceSoftening[P[i].Type] * All.ForceSoftening[P[i].Type] * All.ForceSoftening[P[i].Type]) * 10.666666666667;
+        double soft_gde = ForceSoftening_KernelRadius(i), fac_gde = P[i].Mass / (soft_gde*soft_gde*soft_gde) * 10.666666666667;
+        P[i].tidal_tensorps[0][0] += fac_gde;
+        P[i].tidal_tensorps[1][1] += fac_gde;
+        P[i].tidal_tensorps[2][2] += fac_gde;
 #endif
         for(j=0;j<3;j++) {int i2tt; for(i2tt=0;i2tt<3;i2tt++) {P[i].tidal_tensorps[j][i2tt] *= All.G;}} // units //
 #ifdef COMPUTE_JERK_IN_GRAVTREE
@@ -543,15 +542,19 @@ void gravity_tree(void)
                 for(k=0;k<3;k++) {vdot_h[k] = erad_i * (vel_i[k] + vdotflux*flux_i[k]/flux_mag2);} // calculate volume integral of scattering coefficient t_inv * (gas_vel . [e_rad*I + P_rad_tensor]), which gives an additional time-derivative term. this is the P term //
                 for(k=0;k<3;k++) {radacc[k] += acc_norm * (flux_i[k] - vdot_h[k]);} // note these 'vdoth' terms shouldn't be included in FLD, since its really assuming the entire right-hand-side of the flux equation reaches equilibrium with the pressure tensor, which gives the expression in rt_utilities
             }
+#if defined(RT_RAD_PRESSURE_OUTPUT)
+            for(k=0;k<3;k++) {SphP[i].Rad_Accel[k] = radacc[k];} // here units are the same as hydroaccel, so no extra comoving units 
+#else
             for(k=0;k<3;k++) {P[i].GravAccel[k] += radacc[k] / All.cf_a2inv;} // convert into our code units for GravAccel, which are comoving gm/r^2 units //
+#endif
         }
 #endif
 #endif
 
 #ifdef RT_USE_TREECOL_FOR_NH  /* compute the effective column density that gives equivalent attenuation of a uniform background: -log(avg(exp(-tau)))/kappa */
-        double attenuation=0; int kbin; // first do a sum of the columns and express columns in units of that sum, so that we're plugging O(1) values into exp and avoid overflow when we have unfortunate units. Then we just multiply by the sum at the end.
+        double attenuation=0; int kbin;
         double kappa_photoelectric = 500. * DMAX(1e-4, (P[i].Metallicity[0]/All.SolarAbundances[0])*return_dust_to_metals_ratio_vs_solar(i)); // dust opacity in cgs
-        for(kbin=0; kbin<RT_USE_TREECOL_FOR_NH; kbin++) {attenuation += exp(-P[i].ColumnDensityBins[kbin] * UNIT_SURFDEN_IN_CGS * kappa_photoelectric);}
+        for(kbin=0; kbin<RT_USE_TREECOL_FOR_NH; kbin++) {attenuation += exp(DMAX(-P[i].ColumnDensityBins[kbin] * UNIT_SURFDEN_IN_CGS * kappa_photoelectric,-100));} // we put a floor here to avoid underflow errors where exp(-large) = 0 - will just return a very high surface density that will be in the highly optically thick regime where both the ISRF and cooling radiation escape will be negligible
         P[i].SigmaEff = -log(attenuation/RT_USE_TREECOL_FOR_NH) / (kappa_photoelectric * UNIT_SURFDEN_IN_CGS);       
 #endif
 
@@ -801,7 +804,7 @@ void subtract_companion_gravity(int i)
     /* Remove contribution to gravitational field and tidal tensor from the stars in the binary to the center of mass */
     double u, dr, fac, fac2, h, h_inv, h3_inv, u2, tidal_tensorps[3][3]; int i1, i2;
     dr = sqrt(P[i].comp_dx[0]*P[i].comp_dx[0] + P[i].comp_dx[1]*P[i].comp_dx[1] + P[i].comp_dx[2]*P[i].comp_dx[2]);
-    h = All.ForceSoftening[5];  h_inv = 1.0 / h; h3_inv = h_inv*h_inv*h_inv; u = dr*h_inv; u2=u*u;
+    h = SinkParticle_GravityKernelRadius;  h_inv = 1.0 / h; h3_inv = h_inv*h_inv*h_inv; u = dr*h_inv; u2=u*u;
     fac = P[i].comp_Mass / (dr*dr*dr); fac2 = 3.0 * P[i].comp_Mass / (dr*dr*dr*dr*dr); /* no softening nonsense */
     if(dr < h) /* second derivatives needed -> calculate them from softened potential. NOTE this is here -assuming- a cubic spline, will be inconsistent for different kernels used! */
     {

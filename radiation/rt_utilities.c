@@ -107,7 +107,7 @@ int rt_get_source_luminosity(int i, int mode, double *lum)
 #if (NUMDIMS == 3)
         A_base = boxSize_X * boxSize_Y;
 #endif
-        lum[RT_FREQ_BIN_GENERIC_USER_FREQ] = (P[i].Mass/1.) * All.Vertical_Grain_Accel * C_LIGHT_CODE * (All.Grain_Internal_Density*All.Grain_Size_Max) * A_base / (0.75*All.Grain_Q_at_MaxGrainSize); // special behavior for particular test of stratified boxes compared to explicit dust opacities
+        lum[RT_FREQ_BIN_GENERIC_USER_FREQ] = (P[i].Mass/1.) * All.Vertical_Grain_Accel * C_LIGHT_CODE * ((All.Grain_Internal_Density/UNIT_DENSITY_IN_CGS)*(All.Grain_Size_Max/UNIT_LENGTH_IN_CGS)) * A_base / (0.75*All.Grain_Q_at_MaxGrainSize); // special behavior for particular test of stratified boxes compared to explicit dust opacities
 #endif
     }
 #endif
@@ -139,7 +139,7 @@ double rt_kappa(int i, int k_freq)
 
 #if defined(RT_OPACITY_FROM_EXPLICIT_GRAINS)
 #ifdef GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION /* special test problem implementation */
-    return SphP[i].Interpolated_Opacity[k_freq] + 1.e-3 * All.Dust_to_Gas_Mass_Ratio*0.75*All.Grain_Q_at_MaxGrainSize/(All.Grain_Internal_Density*All.Grain_Size_Max); /* enforce minimum */
+    return SphP[i].Interpolated_Opacity[k_freq] + 1.e-3 * All.Dust_to_Gas_Mass_Ratio*0.75*All.Grain_Q_at_MaxGrainSize/((All.Grain_Internal_Density/UNIT_DENSITY_IN_CGS)*(All.Grain_Size_Max/UNIT_LENGTH_IN_CGS)); /* enforce minimum; note kappa in code units here so need to convert appropriately */
 #endif
     return MIN_REAL_NUMBER + SphP[i].Interpolated_Opacity[k_freq]; /* this is calculated in a different routine, just return it now */
 #endif
@@ -969,6 +969,11 @@ void get_background_isrf_urad(int i, double *urad){
 void rt_set_simple_inits(int RestartFlag)
 {
     if(RestartFlag==1) return;
+    int flag_to_reset_values_on_startup = 0;
+    if(RestartFlag==0) {flag_to_reset_values_on_startup = 1;}
+#if defined(SINGLE_STAR_AND_SSP_HYBRID_MODEL) && defined(SINGLE_STAR_RESTART_FROM_FIRESIM)
+    if(RestartFlag==2) {flag_to_reset_values_on_startup = 1;}
+#endif
     
     int i; for(i = 0; i < NumPart; i++)
     {
@@ -979,9 +984,6 @@ void rt_set_simple_inits(int RestartFlag)
             SphP[i].Dust_Temperature = DMIN(All.InitGasTemp,100.); //get_min_allowed_dustIRrad_temperature(); // in K, floor = CMB temperature or 10K
             SphP[i].Radiation_Temperature = DMIN(All.InitGasTemp,100.); //SphP[i].Dust_Temperature;
             SphP[i].Dt_Rad_E_gamma_T_weighted_IR = 0;
-#endif
-#ifdef RT_RAD_PRESSURE_OUTPUT
-            for(k=0;k<3;k++) {SphP[i].Rad_Accel[k]=0;}
 #endif
 #ifdef RT_CHEM_PHOTOION
             SphP[i].HII = MIN_REAL_NUMBER;
@@ -1001,7 +1003,7 @@ void rt_set_simple_inits(int RestartFlag)
 #endif
             for(k = 0; k < N_RT_FREQ_BINS; k++)
             {
-                if(RestartFlag==0) {SphP[i].Rad_E_gamma[k] = MIN_REAL_NUMBER;}
+                if(flag_to_reset_values_on_startup) {SphP[i].Rad_E_gamma[k] = MIN_REAL_NUMBER;}
                 SphP[i].ET[k][0]=SphP[i].ET[k][1]=SphP[i].ET[k][2]=1./3.; SphP[i].ET[k][3]=SphP[i].ET[k][4]=SphP[i].ET[k][5]=0;
                 SphP[i].Rad_Je[k] = 0; SphP[i].Rad_Kappa[k] = rt_kappa(i,k);
 #ifdef RT_FLUXLIMITER
@@ -1009,12 +1011,12 @@ void rt_set_simple_inits(int RestartFlag)
 #endif
 
 #ifdef RT_INFRARED
-                if(RestartFlag==0 && k==RT_FREQ_BIN_INFRARED){ // only initialize the IR energy if starting a new run, otherwise use what's in the snapshot
+                if(flag_to_reset_values_on_startup && k==RT_FREQ_BIN_INFRARED){ // only initialize the IR energy if starting a new run, otherwise use what's in the snapshot
                     SphP[i].Rad_E_gamma[RT_FREQ_BIN_INFRARED] = (4.*5.67e-5 / C_LIGHT_CGS) * pow(DMIN(All.InitGasTemp,100.),4.) / UNIT_PRESSURE_IN_CGS * P[i].Mass / (SphP[i].Density*All.cf_a3inv);
                 }
 #endif
 #ifdef RT_ISRF_BACKGROUND
-                if(RestartFlag == 0) {SphP[i].Rad_E_gamma[k] = urad[k] * P[i].Mass / (SphP[i].Density*All.cf_a3inv);}
+                if(flag_to_reset_values_on_startup) {SphP[i].Rad_E_gamma[k] = urad[k] * P[i].Mass / (SphP[i].Density*All.cf_a3inv);}
 #endif
 #ifdef RT_EVOLVE_ENERGY
                 SphP[i].Rad_E_gamma_Pred[k] = SphP[i].Rad_E_gamma[k]; SphP[i].Dt_Rad_E_gamma[k] = 0;
@@ -1027,8 +1029,8 @@ void rt_set_simple_inits(int RestartFlag)
 #endif
                 
 #ifdef GRAIN_RDI_TESTPROBLEM_LIVE_RADIATION_INJECTION
-                double q_a = (0.75*All.Grain_Q_at_MaxGrainSize) / (All.Grain_Internal_Density*All.Grain_Size_Max), e0 = All.Vertical_Grain_Accel / q_a, kappa_0 = All.Grain_Absorbed_Fraction_vs_Total_Extinction * q_a * All.Dust_to_Gas_Mass_Ratio, cell_vol = (P[i].Mass/SphP[i].Density);
-                double rho_base_setup = 1., H_scale_setup = 1.; // define in code units the -assumed- initial scaling of the base gas density and vertical scale-length (PROBLEM SPECIFIC HERE!)
+                double q_a = (0.75*All.Grain_Q_at_MaxGrainSize) / ((All.Grain_Internal_Density/UNIT_DENSITY_IN_CGS)*(All.Grain_Size_Max/UNIT_LENGTH_IN_CGS)), e0 = All.Vertical_Grain_Accel / q_a, kappa_0 = All.Grain_Absorbed_Fraction_vs_Total_Extinction * q_a * All.Dust_to_Gas_Mass_Ratio, cell_vol = (P[i].Mass/SphP[i].Density);
+                double rho_base_setup = 1., H_scale_setup = 1.*boxSize_X; // define in code units the -assumed- initial scaling of the base gas density and vertical scale-length (PROBLEM SPECIFIC HERE!)
 #ifdef GRAIN_RDI_TESTPROBLEM_ACCEL_DEPENDS_ON_SIZE
                 kappa_0 *= sqrt(All.Grain_Size_Max / All.Grain_Size_Min); // opacity must be corrected for dependence of Q on grainsize or lack thereof
 #endif

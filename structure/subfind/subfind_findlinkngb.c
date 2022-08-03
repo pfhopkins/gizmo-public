@@ -295,7 +295,7 @@ void subfind_find_linkngb(void)
 }
 
 
-/*! This function represents the core of the SPH density computation. The
+/*! This function represents the core of the density computation. The
  *  target particle may either be local, or reside in the communication
  *  buffer.
  */

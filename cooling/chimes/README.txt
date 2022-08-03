@@ -1,11 +1,11 @@
 The CHIMES flag is the 'top-level' switch. When this is switched on, the following changes occur: 
   - A 'global variables' structure for the CHIMES parameters is created. 
-  - An array of 'gas variables' structures is created, one for each SPH particle. The array is 
-    'MaxPartSph' long on each processor (same as SphP). However, memory for the abundance 
-    arrays is only allocated for the actual particles. For example, if an Sph particle is 
+  - An array of 'gas variables' structures is created, one for each gas/fluid cell. The array is
+    'MaxPartGas' long on each processor (same as the default gas struct). However, memory for the abundance 
+    arrays is only allocated for the actual particles. For example, if a gas cell is 
     moved to another processor, the memory for the abundance array of that particle is freed on 
     the local processor. This reduces the amount of memory needed (rather than always having 
-    memory allocated for abundance arrays of 'MaxPartSph' particles on each processor). 
+    memory allocated for abundance arrays of 'MaxPartGas' particles on each processor). 
   - Parameters specific to CHIMES are read in from the parameter file. 
   - In the 'DoCooling()' routine, the internal energy is updated by calling the CHIMES chemistry 
     solver for that particle, which evolves the abundances and temperature together. 
@@ -35,7 +35,7 @@ The CHIMES flag is the 'top-level' switch. When this is switched on, the followi
     inconsistent, the chemistry solver will force the ion/molecule abundances to be consistent with 
     the metallicities, BUT the result may not be what you expected (for example, it may no longer be 
     in an initial equilibrium). 
-  - In the domain decomposition, extra weight is given to high-density SPH particles, to try to better 
+  - In the domain decomposition, extra weight is given to high-density gas cells, to try to better
     balance the work load of the chemistry. NB: Currently this is commented out - we need to find what 
     works best. 
   - When CHIMES is switched on, cpu.txt contains an additional line for 'sfrcoolimbal'. This is CPU time 
@@ -91,7 +91,7 @@ There are some Config flags that CHIMES does not currently work with, or its beh
     model HII regions, and then GALSF_FB_FIRE_RT_HIIHEATING is not required. 
   - GALSF_FB_FIRE_RT_UVHEATING - currently, switching this on would have no effect on CHIMES. We need to add a 
     UV field in CHIMES and use the SphP[i].Rad_Flux_UV of each gas particle. Also, note that, in accel.c, the 
-    Rad_Flux_UV of each SPH particle is attenuated by local self-shielding by calling selfshield_local_incident_uv_flux(). 
+    Rad_Flux_UV of each gas cell is attenuated by local self-shielding by calling selfshield_local_incident_uv_flux().
     We do NOT want to do this when using it with CHIMES, because the chemistry solver will apply local self-shielding 
     itself. Therefore, you need to add an exception for CHIMES in accel.c. ALSO, what is the difference between 
     SphP[i].Rad_Flux_UV and SphP[i].Rad_Flux_EUV?

@@ -58,7 +58,9 @@
 #if !defined(LONG_INTEGER_TIME)
 #define LONG_INTEGER_TIME   /* always recommended: on modern machines the memory overhead cost of this is negligible */
 #endif
-
+//#if !defined(MPISENDRECV_SIZELIMIT)
+//#define MPISENDRECV_SIZELIMIT /* define but without an explicit memory value so it uses the buffersize defaults instead */
+//#endif
 
 #define DO_PREPROCESSOR_EXPAND_(VAL)  VAL ## 1
 #define EXPAND_PREPROCESSOR_(VAL)     DO_PREPROCESSOR_EXPAND_(VAL) /* checks for a NON-ZERO value of this parameter */
@@ -72,7 +74,7 @@
 #endif
 #endif
 
-#ifndef DISABLE_SPH_PARTICLE_WAKEUP
+#ifndef DISABLE_GAS_CELL_WAKEUP
 #if (SLOPE_LIMITER_TOLERANCE > 0)
 #define WAKEUP   4.1            /* allows 2 timestep bins within kernel */
 #else
@@ -319,6 +321,9 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 #define RT_SOURCES (16+32)   /* need to allow -both- ssp-particles and single-star particles to emit */
 #define RT_SPEEDOFLIGHT_REDUCTION (0.01)   /* for many problems on these scales, need much larger RSOL than default starforge values (dynamical velocities are big, without this they will severely lag behind) */
 #define ADAPTIVE_TREEFORCE_UPDATE (0.0625) /* rough typical value we use for ensuring stability */
+#ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM
+#define PARTICLE_EXCISION
+#endif
 #endif // closes hybrid FIRE+STARFORGE model settings
 
 
@@ -382,7 +387,9 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 
 #if defined(SINGLE_STAR_FB_JETS) || ((defined(SINGLE_STAR_FB_WINDS) || defined(SINGLE_STAR_FB_SNE)) && defined(FLAG_NOT_IN_PUBLIC_CODE))
 #define BH_WIND_SPAWN (2) // leverage the BHFB model already developed within the FIRE-BHs framework. gives accurate launching of arbitrarily-structured jets.
+#if !defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
 #define MAINTAIN_TREE_IN_REARRANGE // don't rebuild the domains/tree every time a particle is spawned - salvage the existing one by redirecting pointers as needed
+#endif
 #endif
 
 #if (defined(SINGLE_STAR_FB_SNE) || defined(SINGLE_STAR_FB_WINDS)) && !defined(SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT)
@@ -667,6 +674,12 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 #define EVALPOTENTIAL
 #endif
 
+#if defined(BH_REPOSITION_ON_POTMIN)
+#if (BH_REPOSITION_ON_POTMIN < 0)
+#undef BH_REPOSITION_ON_POTMIN // this is a key to un-define this variable if it is set, useful for some of the preset variable packages above //
+#endif
+#endif
+
 #if defined(BLACK_HOLES) && (defined(BH_REPOSITION_ON_POTMIN) || defined(BH_SEED_FROM_FOF))
 #ifndef EVALPOTENTIAL
 #define EVALPOTENTIAL
@@ -782,13 +795,16 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 /*------- Things that are always recommended -------*/
 
 
+#ifdef MPISENDRECV_SIZELIMIT
+#undef MPI_Sendrecv
+#define MPI_Sendrecv MPI_Sizelimited_Sendrecv
+#endif
+
 #ifdef MPISENDRECV_CHECKSUM
+#undef MPI_Sendrecv
 #define MPI_Sendrecv MPI_Check_Sendrecv
 #endif
 
-#ifdef MPISENDRECV_SIZELIMIT
-#define MPI_Sendrecv MPI_Sizelimited_Sendrecv
-#endif
 
 #include "tags.h"
 #include <assert.h>
@@ -1318,7 +1334,7 @@ typedef MyDouble MyBigFloat;
 #ifdef AGS_HSML_CALCULATION_IS_ACTIVE
 #define PPPZ P
 #else
-#define PPPZ SphP
+#define PPPZ SphP 
 #endif
 
 #ifdef BOX_PERIODIC
@@ -1512,7 +1528,7 @@ extern int FirstActiveParticle;
 extern int *NextActiveParticle;
 extern unsigned char *ProcessedFlag;
 extern int TimeBinCount[TIMEBINS];
-extern int TimeBinCountSph[TIMEBINS];
+extern int TimeBinCountGas[TIMEBINS];
 extern int TimeBinActive[TIMEBINS];
 extern int FirstInTimeBin[TIMEBINS];
 extern int LastInTimeBin[TIMEBINS];
@@ -1550,7 +1566,7 @@ extern int PTask;		/*!< note: NTask = 2^PTask */
 extern double CPUThisRun;	/*!< Sums CPU time of current process */
 extern int NumForceUpdate;	/*!< number of active particles on local processor in current timestep  */
 extern long long GlobNumForceUpdate;
-extern int NumSphUpdate;	/*!< number of active SPH particles on local processor in current timestep  */
+extern int NumGasUpdate;	/*!< number of active gas cells on local processor in current timestep  */
 extern int MaxTopNodes;	        /*!< Maximum number of nodes in the top-level tree used for domain decomposition */
 extern int RestartFlag;		/*!< taken from command line used to start code. 0 is normal start-up from initial conditions, 1 is resuming a run from a set of restart files, while 2 marks a restart from a snapshot file. */
 extern int RestartSnapNum;
@@ -1570,7 +1586,7 @@ extern char CPU_String[CPU_STRING_LEN + 1];
 extern double WallclockTime;    /*!< This holds the last wallclock time measurement for timings measurements */
 extern int Flag_FullStep;	/*!< Flag used to signal that the current step involves all particles */
 extern size_t HighMark_run,  HighMark_domain, HighMark_gravtree, HighMark_pmperiodic,
-  HighMark_pmnonperiodic,  HighMark_sphdensity, HighMark_sphhydro, HighMark_GasGrad;
+  HighMark_pmnonperiodic,  HighMark_gasdensity, HighMark_hydro, HighMark_GasGrad;
 
 #ifdef TURB_DRIVING
 extern size_t HighMark_turbpower;
@@ -1589,7 +1605,7 @@ extern int N_gas;		/*!< number of gas particles on the LOCAL processor  */
 extern int N_stars;
 #endif
 #ifdef BH_WIND_SPAWN
-extern double MaxUnSpanMassBH;
+extern double Max_Unspawned_MassUnits_fromSink;
 #endif
 
 extern long long Ntype[6];	/*!< total number of particles of each type */
@@ -1607,7 +1623,10 @@ extern double DomainCorner[3], DomainCenter[3], DomainLen, DomainFac;
 extern int *DomainStartList, *DomainEndList;
 extern double *DomainWork;
 extern int *DomainCount;
-extern int *DomainCountSph;
+extern int *DomainCountGas;
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+extern int *DomainCountStars;
+#endif
 extern int *DomainTask;
 extern int *DomainNodeIndex;
 extern int *DomainList, DomainNumChanged;
@@ -1624,6 +1643,10 @@ double rt_ion_G_HI[N_RT_FREQ_BINS];
 double rt_ion_G_HeI[N_RT_FREQ_BINS];
 double rt_ion_G_HeII[N_RT_FREQ_BINS];
 #endif
+
+
+
+#define SinkParticle_GravityKernelRadius (All.ForceSoftening[5])
 
 
 extern struct topnode_data
@@ -1739,7 +1762,7 @@ extern struct global_data_all_processes
 #endif
 
   int MaxPart;			/*!< This gives the maxmimum number of particles that can be stored on one processor. */
-  int MaxPartSph;		/*!< This gives the maxmimum number of SPH particles that can be stored on one processor. */
+  int MaxPartGas;		/*!< This gives the maxmimum number of gas cells that can be stored on one processor. */
   int ICFormat;			/*!< selects different versions of IC file-format */
   int SnapFormat;		/*!< selects different versions of snapshot file-formats */
   int NumFilesPerSnapshot;	/*!< number of files in multi-file snapshot dumps */
@@ -1764,8 +1787,8 @@ extern struct global_data_all_processes
   double ScalarScreeningLength;
 #endif
 
-  /* some SPH parameters */
-  double DesNumNgb;		/*!< Desired number of SPH neighbours */
+  /* some gas/fluid arbitrary-mesh parameters */
+  double DesNumNgb;		/*!< Desired number of gas cell neighbours */
 #ifdef SUBFIND
   int DesLinkNgb;       /*! < Number of neighbors used for linking and density estimation in SUBFIND */
 #endif
@@ -1893,7 +1916,7 @@ extern struct global_data_all_processes
 				   of all particles, and limits the timestep such that the rms displacement is a fraction of the mean particle separation (determined from the
 				   particle mass and the cosmological parameters). This parameter specifies this fraction. */
   int MaxMemSize;
-  double CourantFac;		/*!< SPH-Courant factor */
+  double CourantFac;		/*!< Courant factor */
 
   /* frequency of tree reconstruction/domain decomposition */
   double TreeDomainUpdateFrequency;	/*!< controls frequency of domain decompositions  */
@@ -2175,7 +2198,7 @@ extern struct global_data_all_processes
 #ifdef BH_SEED_FROM_FOF
   double MinFoFMassForNewSeed;      /*!< Halo mass required before new seed is put in */
 #endif
-  double BlackHoleNgbFactor;        /*!< Factor by which the SPH neighbour should be increased/decreased */
+  double BlackHoleNgbFactor;        /*!< Factor by which the gas neighbour count should be increased/decreased */
   double BlackHoleMaxAccretionRadius;
   double BlackHoleEddingtonFactor;	/*!< Factor above Eddington */
   double BlackHoleRadiativeEfficiency;  /**< Radiative efficiency determined by the spin value, default value is 0.1 */
@@ -2187,6 +2210,11 @@ extern struct global_data_all_processes
 
 #ifdef EOS_TABULATED
     char EosTable[100];
+#endif
+    
+#ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM
+    double SMBH_SpecialParticle_Position_ForRefinement[3];
+    double Mass_Accreted_By_SpecialSMBHParticle;
 #endif
 
 #ifdef NUCLEAR_NETWORK
@@ -2417,6 +2445,7 @@ extern ALIGN(32) struct particle_data
 #endif
 #ifdef SINGLE_STAR_SINK_DYNAMICS
     MyFloat SwallowTime; /* freefall time of a particle onto a sink particle  */
+    MyFloat Sink_Formation_Mass; /* initial mass of sink when it formed */
 #endif
 #if defined(SINGLE_STAR_TIMESTEPPING)
     MyFloat BH_SurroundingGasVel; /* Relative speed of sink to surrounding gas  */
@@ -2518,6 +2547,10 @@ extern ALIGN(32) struct particle_data
     integertime dt_step;
 #endif
 
+#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+    MyFloat Time_Of_Last_MergeSplit;
+#endif
+    
 #ifdef AGS_HSML_CALCULATION_IS_ACTIVE
     MyDouble AGS_Hsml;          /*!< smoothing length (for gravitational forces) */
     MyFloat AGS_zeta;           /*!< factor in the correction term */
@@ -2577,10 +2610,10 @@ extern ALIGN(32) struct particle_data
 #endif
 
 
-/* the following struture holds data that is stored for each SPH particle in addition to the collisionless
+/* the following struture holds data that is stored for each gas cell in addition to the collisionless
  * variables.
  */
-extern struct sph_particle_data
+extern struct gas_cell_data
 {
     /* the PRIMITIVE and CONSERVED hydro variables used in STATE reconstruction */
     MyDouble Density;               /*!< current baryonic mass density of particle */
@@ -2598,7 +2631,7 @@ extern struct sph_particle_data
     //MyDouble dInternalEnergy;     /*!< change in specific internal energy from hydro step */ //manifest-indiv-timestep-debug//
     MyDouble DtInternalEnergy;      /*!< rate of change of specific internal energy */
 
-    MyDouble VelPred[3];            /*!< predicted SPH particle velocity at the current time */
+    MyDouble VelPred[3];            /*!< predicted gas cell velocity at the current time */
     //MyDouble dMomentum[3];        /*!< change in momentum from hydro step (conserved variable) */ //manifest-indiv-timestep-debug//
     MyDouble HydroAccel[3];         /*!< acceleration due to hydrodynamical force (for drifting) */
 
@@ -2770,9 +2803,12 @@ extern struct sph_particle_data
   MyFloat HostHaloMass;             /*!< host halo mass estimator for wind launching velocity */
 #endif
 #if (GALSF_SUBGRID_WIND_SCALING==2)
-  MyFloat HsmlDM;                   /*!< smoothing length to find neighboring dark matter particles */
+  MyFloat  HsmlDM;                   /*!< smoothing length to find neighboring dark matter particles */
   MyDouble NumNgbDM;                /*!< number of neighbor dark matter particles */
-  MyDouble DM_Vx, DM_Vy, DM_Vz, DM_VelDisp; /*!< surrounding DM velocity and velocity dispersion */
+  MyDouble DM_Vx;
+  MyDouble DM_Vy;
+  MyDouble DM_Vz;
+  MyDouble DM_VelDisp; /*!< surrounding DM velocity and velocity dispersion */
 #endif
 #endif
 
@@ -2860,9 +2896,6 @@ extern struct sph_particle_data
 #else
 #define Rad_E_gamma_Pred Rad_E_gamma        /*! define a useful shortcut for use throughout code so we don't have to worry about Pred-vs-true difference */
 #endif
-#ifdef RT_RAD_PRESSURE_OUTPUT
-    MyFloat Rad_Accel[3];
-#endif
 #if defined(RT_OPACITY_FROM_EXPLICIT_GRAINS)
     MyDouble Interpolated_Opacity[N_RT_FREQ_BINS]; /* opacity values interpolated to gas positions */
 #endif
@@ -2893,7 +2926,10 @@ extern struct sph_particle_data
     MyFloat Rad_Flux[N_RT_FREQ_BINS][3];
 #define Rad_Flux_Pred Rad_Flux
 #endif
-    
+
+#ifdef RT_RAD_PRESSURE_OUTPUT
+    MyFloat Rad_Accel[3];
+#endif
 
 
 #ifdef EOS_GENERAL
@@ -2971,8 +3007,8 @@ extern struct sph_particle_data
 #endif
 
 }
-  *SphP,				/*!< holds SPH particle data on local processor */
-  *DomainSphBuf;			/*!< buffer for SPH particle data in domain decomposition */
+  *SphP,				/*!< holds gas cell data on local processor */
+  *DomainGasBuf;			/*!< buffer for gas cell data in domain decomposition */
 
 
 extern peanokey *DomainKeyBuf;
@@ -3023,22 +3059,20 @@ extern struct data_nodelist
 
 extern struct gravdata_in
 {
+    int Type;
     MyFloat Pos[3];
+    MyFloat Soft;
 #if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE) || defined(SINGLE_STAR_TIMESTEPPING)
     MyFloat Mass;
 #endif
 #if defined(SINGLE_STAR_TIMESTEPPING) || defined(COMPUTE_JERK_IN_GRAVTREE) || defined(BH_DYNFRICTION_FROMTREE)
     MyFloat Vel[3];
 #endif
-    int Type;
 #if defined(BH_DYNFRICTION_FROMTREE)
     MyFloat BH_Mass;
 #endif
-#if defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(RT_USE_GRAVTREE) || defined(SINGLE_STAR_TIMESTEPPING) || defined(FLAG_NOT_IN_PUBLIC_CODE)
-    MyFloat Soft;
 #if defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(ADAPTIVE_GRAVSOFT_FORALL)
     MyFloat AGS_zeta;
-#endif
 #endif
 #ifdef SINGLE_STAR_FIND_BINARIES
     MyFloat min_bh_t_orbital;   /*!<orbital time for binary */
@@ -3224,8 +3258,10 @@ enum iofields
   IO_BH_DIST,
   IO_ACRB,
   IO_SINKRAD,
+  IO_SINK_FORM_MASS,
   IO_POT,
   IO_ACCEL,
+  IO_HYDROACCEL,
   IO_HII,
   IO_HeI,
   IO_HeII,
@@ -3250,6 +3286,8 @@ enum iofields
   IO_AMDC,
   IO_PHI,
   IO_GRADPHI,
+  IO_GRADRHO,
+  IO_GRADVEL,
   IO_COOLRATE,
   IO_TIDALTENSORPS,
   IO_GDE_DISTORTIONTENSOR,
@@ -3403,6 +3441,9 @@ extern ALIGN(32) struct NODE
 #ifdef RT_USE_TREECOL_FOR_NH
   MyFloat gasmass;
 #endif
+#ifdef BH_DYNFRICTION_FROMTREE
+  long N_part;   /*!< number of particles+cells in the tree node */
+#endif
 #ifdef RT_USE_GRAVTREE
   MyFloat stellar_lum[N_RT_FREQ_BINS]; /*!< luminosity in the node*/
 #ifdef CHIMES_STELLAR_FLUXES
@@ -3420,9 +3461,11 @@ extern ALIGN(32) struct NODE
 #ifdef BH_CALC_DISTANCES
   MyFloat bh_mass;      /*!< holds the BH mass in the node.  Used for calculating tree based dist to closest bh */
   MyFloat bh_pos[3];    /*!< holds the mass-weighted position of the the actual black holes within the node */
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(SINGLE_STAR_FIND_BINARIES)
+  int N_BH;             /*!< holds the number of BH particles in the node. Used for refinement/search criteria */
+#endif
 #if defined(SINGLE_STAR_TIMESTEPPING)
   MyFloat bh_vel[3];    /*!< holds the mass-weighted avg. velocity of black holes in the node */
-  int N_BH;             /*!< holds the number of BH particles in the node. Used for refinement/search criteria */
 #ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
   MyFloat MaxFeedbackVel;
 #endif

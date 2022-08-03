@@ -117,7 +117,7 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
 #endif
 
     /* --------------------------------------------------------------------------------- */
-    /* Now start the actual SPH computation for this particle */
+    /* Now start the actual hydrodynamic force computation for this particle */
     /* --------------------------------------------------------------------------------- */
     if(mode == 0)
     {
@@ -297,7 +297,6 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
 
 
 
-//#ifndef HYDRO_SPH
                 /* the following macros are useful for all the diffusion operations below: this is the diffusion term associated
                     with the HLL reimann problem solution. This adds numerical diffusion (albeit limited to the magnitude of the
                     physical diffusion coefficients), but stabilizes the relevant equations */

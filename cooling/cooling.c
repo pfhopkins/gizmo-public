@@ -998,12 +998,12 @@ double CoolingRate(double logT, double rho, double n_elec_guess, int target)
         surface_density *= 0.2 * UNIT_SURFDEN_IN_CGS; // converts to cgs; 0.2 is a tuning factor so that the Masunaga & Inutsuka 2000 solution is reproduced
         double effective_area = 2.3 * PROTONMASS_CGS / surface_density; // since cooling rate is ultimately per-particle, need a particle-weight here
         double kappa_eff; // effective kappa, accounting for metal abundance, temperature, and density //
-        if(T < 1500.)
-        {
-            if(T < 150.) {kappa_eff=0.0027*T*sqrt(T);} else {kappa_eff=5.;}
-            kappa_eff *= (P[target].Metallicity[0]/All.SolarAbundances[0]) * return_dust_to_metals_ratio_vs_solar(target);
-            if(kappa_eff < 0.1) {kappa_eff=0.1;}
-        } else {
+	
+	if(T < 150.) {kappa_eff=0.0027*T*sqrt(T);} else {kappa_eff=5.;}
+        kappa_eff *= (P[target].Metallicity[0]/All.SolarAbundances[0]) * return_dust_to_metals_ratio_vs_solar(target); // cutoff in dust opacity is now built into return_dust_to_metals_ratio_vs_solar
+        if(kappa_eff < 0.1) {kappa_eff=0.1;}
+	
+        if(T>1500.){
             /* this is an approximate result for high-temperature opacities, but provides a pretty good fit from 1.5e3 - 1.0e9 K */
             double k_electron = 0.2 * (1. + HYDROGEN_MASSFRAC); //0.167 * n_elec; /* Thompson scattering (non-relativistic) */
             double k_molecular = 0.1 * P[target].Metallicity[0]; /* molecular line opacities */
@@ -1011,7 +1011,7 @@ double CoolingRate(double logT, double rho, double n_elec_guess, int target)
             double k_Kramers = 4.0e25 * (1.+HYDROGEN_MASSFRAC) * (P[target].Metallicity[0]+0.001) * rho / (T*T*T*sqrt(T)); /* free-free, bound-free, bound-bound transitions */
             double k_radiative = k_molecular + 1./(1./k_Hminus + 1./(k_electron+k_Kramers)); /* approximate interpolation between the above opacities */
             double k_conductive = 2.6e-7 * n_elec * T*T/(rho*rho); //*(1+pow(rho/1.e6,0.67) /* e- thermal conductivity can dominate at low-T, high-rho, here it as expressed as opacity */
-            kappa_eff = 1./(1./k_radiative + 1./k_conductive); /* effective opacity including both heat carriers (this is exact) */
+            kappa_eff += 1./(1./k_radiative + 1./k_conductive); /* effective opacity including both heat carriers (this is exact) */
         }
         double tau_eff = kappa_eff * surface_density;
         double Lambda_Thick_BlackBody = 5.67e-5 * (T*T*T*T) * effective_area / ((1.+tau_eff) * nHcgs);
@@ -1721,7 +1721,7 @@ double return_electron_fraction_from_heavy_ions(int target, double temperature, 
     double zeta_cr=1.0e-17, f_dustgas=0.01, n_ion_max=4.1533e-5, XH=HYDROGEN_MASSFRAC; // cosmic ray ionization rate (fixed as constant for non-CR runs) and dust-to-gas ratio
     if(target >= 0) {zeta_cr = Get_CosmicRayIonizationRate_cgs(target);} // convert to ionization rate, using models as in Cummings et al. 2016
 #ifdef METALS
-    if(target>=0) {f_dustgas=0.5*P[target].Metallicity[0]*return_dust_to_metals_ratio_vs_solar(target);} // constant dust-to-metals ratio
+    if(target>=0) {f_dustgas=0.5*P[target].Metallicity[0]*return_dust_to_metals_ratio_vs_solar(target) + 1.e-15;} // constant dust-to-metals ratio [floor purely numerical here, needed to avoid a spurious divergence below]
 #ifdef COOL_METAL_LINES_BY_SPECIES
     if(target>=0) {n_ion_max = (All.SolarAbundances[6]/24.3)/XH;} // limit, to avoid over-ionization at low metallicities
 #endif
@@ -1874,7 +1874,7 @@ double return_uvb_shieldfac(int target, double gamma_12, double nHcgs, double lo
 #ifdef GALSF_EFFECTIVE_EQS
     return 1; // self-shielding is implicit in the sub-grid model already //
 #endif
-    double NH_SS_z, NH_SS = 0.0123; /* CAFG: H number density above which we assume no ionizing bkg (proper cm^-3) */
+    double NH_SS_z, NH_SS = 0.0123; /* CAFG: H number density above which we assume no ionizing bkg (proper cm^-3): note this is a factor ~2 higher than Schaye and Rahmati normalization, owing to CAFG calibration (lower effective cross-section, owing to different UVB spectrum and potentially clumping factors, etc) */
     if(gamma_12>0) {NH_SS_z = NH_SS*pow(gamma_12,0.66)*pow(10.,0.173*(logT-4.));} else {NH_SS_z = NH_SS*pow(10.,0.173*(logT-4.));}
     double q_SS = nHcgs/NH_SS_z;
 #ifdef COOL_UVB_SELFSHIELD_RAHMATI

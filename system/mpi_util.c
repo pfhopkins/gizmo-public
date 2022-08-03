@@ -10,16 +10,13 @@
 
 #include <mpi.h>
 #include <string.h>
+#include <limits.h>
 #include "../allvars.h"
 #include "../proto.h"
 
 
-/** Calculates the recv_count, send_offset, and recv_offset arrays
-    based on the send_count. Returns nimportbytes, the total number of
-    bytes to be received. If an identical set of copies are to be
-    sent to all tasks, set send_identical=1 and the send_offset will
-    be zero for all tasks.
-
+/** Calculates the recv_count, send_offset, and recv_offset arrays based on the send_count. Returns nimportbytes, the total number of
+    bytes to be received. If an identical set of copies are to be sent to all tasks, set send_identical=1 and the send_offset will be zero for all tasks.
     All arrays should be allocated with NTask size. */
 int mpi_calculate_offsets(int *send_count, int *send_offset, int *recv_count, int *recv_offset, int send_identical)
 {
@@ -44,8 +41,7 @@ int mpi_calculate_offsets(int *send_count, int *send_offset, int *recv_count, in
 }
 
 
-/** Compare function used to sort an array of int pointers into order
-    of the pointer targets. */
+/** Compare function used to sort an array of int pointers into order of the pointer targets. */
 int intpointer_compare(const void *a, const void *b)
 {
   if((**(int **) a) < (**(int **) b)) {return -1;}
@@ -54,16 +50,11 @@ int intpointer_compare(const void *a, const void *b)
 }
 
 
-/** Sort an opaque array into increasing order of an int field, given
-    by the specified offset. (This would typically be field indicating
-    the task.) Returns a sorted copy of the data array, that needs to
-    be myfreed.
+/** Sort an opaque array into increasing order of an int field, given by the specified offset. (This would typically be field indicating
+    the task.) Returns a sorted copy of the data array, that needs to be myfreed.
 
-    We do this by sorting an array of pointers to the task field, and
-    then using this array to deduce the reordering of the data
-    array. Unfortunately this means making a copy of the data, but
-    this just replaces the copy after the mpi_exchange_buffers
-    anyway.  */
+    We do this by sorting an array of pointers to the task field, and then using this array to deduce the reordering of the data
+    array. Unfortunately this means making a copy of the data, but this just replaces the copy after the mpi_exchange_buffers anyway.  */
 void sort_based_on_field(void *data, int field_offset, int n_items, int item_size, void **data2ptr)
 {
   int i;
@@ -87,10 +78,8 @@ void sort_based_on_field(void *data, int field_offset, int n_items, int item_siz
 }
 
 
-/** This function distributes the members in an opaque structure to
-    the tasks based on a task field given by a specified offset into
-    the opaque struct. The task field must have int type. n_items is
-    updated to the new size of data. max_n is the allocated size of
+/** This function distributes the members in an opaque structure to the tasks based on a task field given by a specified offset into
+    the opaque struct. The task field must have int type. n_items is updated to the new size of data. max_n is the allocated size of
     the data array, and is updated if a realloc is necessary.  */
 void mpi_distribute_items_to_tasks(void *data, int task_offset, int *n_items, int *max_n, int item_size)
 {
@@ -129,7 +118,7 @@ void mpi_distribute_items_to_tasks(void *data, int task_offset, int *n_items, in
 
 #ifdef MPISENDRECV_CHECKSUM
 
-#undef MPI_Sendrecv
+#undef MPI_Sendrecv // need to undef before being called below so don't get stuck in loop here
 
 int MPI_Check_Sendrecv(void *sendbuf, int sendcount, MPI_Datatype sendtype,
                        int dest, int sendtag, void *recvbufreal, int recvcount,
@@ -397,22 +386,19 @@ int MPI_Check_Sendrecv(void *sendbuf, int sendcount, MPI_Datatype sendtype,
 #endif
 
 
-#ifdef MPISENDRECV_SIZELIMIT
 
-#undef MPI_Sendrecv
+#undef MPI_Sendrecv // need to undef before being called below so don't get stuck in loop here
 
-
-int MPI_Sizelimited_Sendrecv(void *sendbuf, int sendcount, MPI_Datatype sendtype,
-                             int dest, int sendtag, void *recvbuf, int recvcount,
+int MPI_Sizelimited_Sendrecv(void *sendbuf0, size_t sendcount, MPI_Datatype sendtype,
+                             int dest, int sendtag, void *recvbuf0, size_t recvcount,
                              MPI_Datatype recvtype, int source, int recvtag, MPI_Comm comm,
-                             MPI_Status * status)
+                             MPI_Status *status)
 {
     int iter = 0, size_sendtype, size_recvtype, send_now, recv_now;
-    int count_limit;
-    
-    
-    if(dest != source)
-        endrun(3);
+    char *sendbuf = (char *)sendbuf0;
+    char *recvbuf = (char *)recvbuf0;
+
+    if(dest != source) endrun(3);
     
     MPI_Type_size(sendtype, &size_sendtype);
     MPI_Type_size(recvtype, &size_recvtype);
@@ -423,18 +409,22 @@ int MPI_Sizelimited_Sendrecv(void *sendbuf, int sendcount, MPI_Datatype sendtype
         return 0;
     }
     
-    count_limit = (int) ((((long long) MPISENDRECV_SIZELIMIT) * 1024 * 1024) / size_sendtype);
+    size_t count_limit = (((long long)All.BufferSize)*1024LL * 1024LL) / size_sendtype;
+    size_t count_limit_intmax = INT_MAX;
+    if(count_limit_intmax < count_limit) {count_limit = count_limit_intmax;}
+    
+#ifdef MPISENDRECV_SIZELIMIT
+#if CHECK_IF_PREPROCESSOR_HAS_NUMERICAL_VALUE_(MPISENDRECV_SIZELIMIT)
+    size_t count_limit_manualmax = (((long long)MPISENDRECV_SIZELIMIT)*1024LL * 1024LL) / size_sendtype;
+    if(count_limit_manualmax < count_limit) {count_limit = count_limit_manualmax;}
+#endif
+#endif
     
     while(sendcount > 0 || recvcount > 0)
     {
         if(sendcount > count_limit)
         {
             send_now = count_limit;
-            if(iter == 0)
-            {
-                printf("imposing size limit on MPI_Sendrecv() on task=%d (send of size=%d)\n", ThisTask, sendcount * size_sendtype);
-                //fflush(stdout);
-            }
             iter++;
         }
         else
@@ -454,8 +444,6 @@ int MPI_Sizelimited_Sendrecv(void *sendbuf, int sendcount, MPI_Datatype sendtype
         sendbuf += send_now * size_sendtype;
         recvbuf += recv_now * size_recvtype;
     }
-    
     return 0;
 }
 
-#endif

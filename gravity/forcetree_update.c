@@ -70,17 +70,16 @@ void force_kick_node(int i, MyDouble * dp)
 
       for(j = 0; j < 3; j++)
 	{
-	  Extnodes[no].dp[j] += dp[j];
+        Extnodes[no].dp[j] += dp[j];
 #ifdef RT_SEPARATELY_TRACK_LUMPOS
         Extnodes[no].rt_source_lum_dp[j] += rt_source_lum_dp[j];
 #endif
 #ifdef DM_SCALARFIELD_SCREENING
-	  Extnodes[no].dp_dm[j] += dp_dm[j];
+        Extnodes[no].dp_dm[j] += dp_dm[j];
 #endif
 	}
 
-      if(Extnodes[no].vmax < vmax)
-	Extnodes[no].vmax = vmax;
+      if(Extnodes[no].vmax < vmax) {Extnodes[no].vmax = vmax;}
 
       Nodes[no].u.d.bitflags |= (1 << BITFLAG_NODEHASBEENKICKED);
       Extnodes[no].Ti_lastkicked = All.Ti_Current;
@@ -282,10 +281,7 @@ void force_drift_node(int no, integertime time1)
 	  terminate("inconsistency in drift node");
 	}
 
-      if(Nodes[no].u.d.mass)
-	fac = 1 / Nodes[no].u.d.mass;
-      else
-	fac = 0;
+      if(Nodes[no].u.d.mass) {fac = 1 / Nodes[no].u.d.mass;} else {fac = 0;}
 
 #ifdef RT_SEPARATELY_TRACK_LUMPOS
         double fac_stellar_lum;
@@ -295,11 +291,7 @@ void force_drift_node(int no, integertime time1)
 
 #ifdef DM_SCALARFIELD_SCREENING
       double fac_dm;
-
-      if(Nodes[no].mass_dm)
-	fac_dm = 1 / Nodes[no].mass_dm;
-      else
-	fac_dm = 0;
+      if(Nodes[no].mass_dm) {fac_dm = 1 / Nodes[no].mass_dm;} else {fac_dm = 0;}
 #endif
 
       for(j = 0; j < 3; j++)
@@ -350,13 +342,9 @@ void force_drift_node(int no, integertime time1)
 
 
 
-/*! This function updates the hmax-values in tree nodes that hold SPH
- *  particles. These values are needed to find all neighbors in the
- *  hydro-force computation.  Since the Hsml-values are potentially changed
- *  in the SPH-density computation, force_update_hmax() should be carried
- *  out just before the hydrodynamical SPH forces are computed, i.e. after
- *  density().
- */
+/*! This function updates the hmax-values in tree nodes that hold gas cells. These values are needed to find all neighbors in the
+ *  hydro-force computation.  Since the Hsml-values are potentially changed in the fluid-density computation, force_update_hmax() should be carried
+ *  out just before the hydrodynamical forces are computed, i.e. after density(). */
 void force_update_hmax(void)
 {
   int i, no, ta, totDomainNumChanged;

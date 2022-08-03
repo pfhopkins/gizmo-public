@@ -133,7 +133,7 @@ double get_pressure(int i)
     
 #if defined(EOS_TRUELOVE_PRESSURE) || defined(TRUELOVE_CRITERION_PRESSURE)
     /* add an artificial pressure term to suppress fragmentation at/below the explicit resolution scale */
-    double h_eff = DMAX(Get_Particle_Size(i), KERNEL_FAC_FROM_FORCESOFT_TO_PLUMMER*All.ForceSoftening[0]); /* need to include latter to account for inter-particle spacing << grav soft cases */
+    double h_eff = DMAX(Get_Particle_Size(i), KERNEL_FAC_FROM_FORCESOFT_TO_PLUMMER*ForceSoftening_KernelRadius(i)); /* need to include latter to account for inter-particle spacing << grav soft cases */
     /* standard finite-volume formulation of this (note there is some geometric ambiguity about whether there should be a "pi" in the equation below, but this 
         can be completely folded into the (already arbitrary) definition of NJeans, so we just use the latter parameter */
     double NJeans = 4; // set so that resolution = lambda_Jeans/NJeans -- fragmentation with Jeans/Toomre scales below this will be artificially suppressed now

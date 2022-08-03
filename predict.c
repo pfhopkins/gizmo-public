@@ -25,7 +25,7 @@ void reconstruct_timebins(void)
     for(bin = 0; bin < TIMEBINS; bin++)
     {
         TimeBinCount[bin] = 0;
-        TimeBinCountSph[bin] = 0;
+        TimeBinCountGas[bin] = 0;
         FirstInTimeBin[bin] = -1;
         LastInTimeBin[bin] = -1;
 #ifdef GALSF
@@ -57,7 +57,7 @@ void reconstruct_timebins(void)
         }
         TimeBinCount[bin]++;
         if(P[i].Type == 0)
-            TimeBinCountSph[bin]++;
+            TimeBinCountGas[bin]++;
         
 #ifdef GALSF
         if(P[i].Type == 0)
@@ -166,7 +166,7 @@ void drift_particle(int i, integertime time1)
         PPP[i].AGS_Hsml *= exp((double)divv_fac / ((double)NUMDIMS));
         if(PPP[i].AGS_Hsml < minsoft) {PPP[i].AGS_Hsml = minsoft;}
         if(PPP[i].AGS_Hsml > maxsoft) {PPP[i].AGS_Hsml = maxsoft;}
-    } else {PPP[i].AGS_Hsml = All.ForceSoftening[P[i].Type];} /* non-AGS-active particles use fixed softening */
+    } else {PPP[i].AGS_Hsml = ForceSoftening_KernelRadius(i);} /* non-AGS-active particles use fixed softening */
 #endif
     
 #ifdef DM_FUZZY
@@ -232,7 +232,7 @@ void drift_particle(int i, integertime time1)
             if(1 & ADAPTIVE_GRAVSOFT_FORALL) {PPP[i].AGS_Hsml = PPP[i].Hsml;} /* gas is AGS-active, so needs to be set here to match updated Hsml */
 #endif
 #endif
-            drift_sph_extra_physics(i, time0, time1, dt_entr);
+            drift_extra_physics(i, time0, time1, dt_entr);
 
             SphP[i].Pressure = get_pressure(i);
         }
@@ -256,7 +256,7 @@ void move_particles(integertime time1)
 
 
 
-void drift_sph_extra_physics(int i, integertime tstart, integertime tend, double dt_entr)
+void drift_extra_physics(int i, integertime tstart, integertime tend, double dt_entr)
 {
 #ifdef MAGNETIC
     int kB;

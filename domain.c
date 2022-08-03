@@ -39,26 +39,32 @@
  */
 
 
+#if defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+#define REDUC_FAC      0.90 /* need to give more 'padding' here to allow for aggressive dynamic splitting */
+#else
 #define REDUC_FAC      0.98
-
+#endif
 
 /*! toGo[task*NTask + partner] gives the number of particles in task 'task'
  *  that have to go to task 'partner'
  */
-static int *toGo, *toGoSph;
-static int *toGet, *toGetSph;
+static int *toGo, *toGoGas;
+static int *toGet, *toGetGas;
 static int *list_NumPart;
 static int *list_N_gas;
 static int *list_load;
-static int *list_loadsph;
+static int *list_loadgas;
 static double *list_work;
-static double *list_worksph;
+static double *list_workgas;
 extern int old_MaxPart, new_MaxPart;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-#define KD_COUNT_SPH_IN_DOMAIN
+#define KD_COUNT_GAS_IN_DOMAIN
 #define KD_COUNT_STARS_IN_DOMAIN
 static int *toGoStars, *toGetStars, *list_N_stars, *list_loadstars;
-//static double *list_workstars;
+static double *list_workstars;
+#define N_DOMAINDECOMP_QUEUES 4
+#else
+#define N_DOMAINDECOMP_QUEUES 3
 #endif
 
 static struct local_topnode_data
@@ -67,7 +73,7 @@ static struct local_topnode_data
   peanokey StartKey;		/*!< first Peano-Hilbert key in top-level node */
   long long Count;		/*!< counts the number of particles in this top-level node */
   double Cost;
-  double SphCost;
+  double GasCost;
   int Daughter;			/*!< index of first daughter cell (out of 8) of top-level node */
   int Leaf;			/*!< if the node is a leaf, this gives its number when all leaves are traversed in Peano-Hilbert order */
   int Parent;
@@ -83,22 +89,21 @@ static struct peano_hilbert_data
  *mp;
 
 static void domain_insertnode(struct local_topnode_data *treeA, struct local_topnode_data *treeB, int noA, int noB);
-static void domain_add_cost(struct local_topnode_data *treeA, int noA, long long count, double cost, double sphcost);
+static void domain_add_cost(struct local_topnode_data *treeA, int noA, long long count, double cost, double gascost);
 
 static float *domainWork;	/*!< a table that gives the total "work" due to the particles stored by each processor */
-static float *domainWorkSph;	/*!< a table that gives the total "work" due to the particles stored by each processor */
+static float *domainWorkGas;	/*!< a table that gives the total "work" due to the particles stored by each processor */
 static int *domainCount;	/*!< a table that gives the total number of particles held by each processor */
-static int *domainCountSph;	/*!< a table that gives the total number of SPH particles held by each processor */
-#ifdef SEPARATE_STELLARDOMAINDECOMP
-static int *domainCountStars;
-//static float *domainWorkStars;
-#endif
+static int *domainCountGas;	/*!< a table that gives the total number of gas cells held by each processor */
 static int domain_allocated_flag = 0;
-static int maxLoad, maxLoadsph;
+static int maxLoad, maxLoadgas;
+static double totgravcost, gravcost, totgascost, gascost;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
+static float *domainWorkStars;
+static int *domainCountStars;
 static int maxLoadstars;
+static double totstarcost, starcost;
 #endif
-static double totgravcost, gravcost, totsphcost, sphcost;
 static long long totpartcount;
 static int UseAllParticles;
 
@@ -131,8 +136,6 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
     do_box_wrapping();		/* map the particles back onto the box */
 #endif
     
-    //for(i = 0; i < NumPart; i++) {if(P[i].Type > 5 || P[i].Type < 0) {printf("task=%d:  P[i=%d].Type=%d\n", ThisTask, i, P[i].Type); endrun(112411);}} // this is pure de-bugging, doesn't need to be active in normal circumstances //
-
     MPI_Barrier(MPI_COMM_WORLD); CPU_Step[CPU_DRIFT] += measure_time(); // sync everything after merge-split and rearrange //
     
     TreeReconstructFlag = 1;	/* ensures that new tree will be constructed */
@@ -160,11 +163,11 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
 
       toGo = (int *) mymalloc("toGo", bytes = (sizeof(int) * NTask));
       all_bytes += bytes;
-      toGoSph = (int *) mymalloc("toGoSph", bytes = (sizeof(int) * NTask));
+      toGoGas = (int *) mymalloc("toGoGas", bytes = (sizeof(int) * NTask));
       all_bytes += bytes;
       toGet = (int *) mymalloc("toGet", bytes = (sizeof(int) * NTask));
       all_bytes += bytes;
-      toGetSph = (int *) mymalloc("toGetSph", bytes = (sizeof(int) * NTask));
+      toGetGas = (int *) mymalloc("toGetGas", bytes = (sizeof(int) * NTask));
       all_bytes += bytes;
       list_NumPart = (int *) mymalloc("list_NumPart", bytes = (sizeof(int) * NTask));
       all_bytes += bytes;
@@ -172,27 +175,27 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
       all_bytes += bytes;
       list_load = (int *) mymalloc("list_load", bytes = (sizeof(int) * NTask));
       all_bytes += bytes;
-      list_loadsph = (int *) mymalloc("list_loadsph", bytes = (sizeof(int) * NTask));
+      list_loadgas = (int *) mymalloc("list_loadgas", bytes = (sizeof(int) * NTask));
       all_bytes += bytes;
       list_work = (double *) mymalloc("list_work", bytes = (sizeof(double) * NTask));
       all_bytes += bytes;
-      list_worksph = (double *) mymalloc("list_worksph", bytes = (sizeof(double) * NTask));
+      list_workgas = (double *) mymalloc("list_workgas", bytes = (sizeof(double) * NTask));
       all_bytes += bytes;
       domainWork = (float *) mymalloc("domainWork", bytes = (MaxTopNodes * sizeof(float)));
       all_bytes += bytes;
-      domainWorkSph = (float *) mymalloc("domainWorkSph", bytes = (MaxTopNodes * sizeof(float)));
+      domainWorkGas = (float *) mymalloc("domainWorkGas", bytes = (MaxTopNodes * sizeof(float)));
       all_bytes += bytes;
       domainCount = (int *) mymalloc("domainCount", bytes = (MaxTopNodes * sizeof(int)));
       all_bytes += bytes;
-      domainCountSph = (int *) mymalloc("domainCountSph", bytes = (MaxTopNodes * sizeof(int)));
+      domainCountGas = (int *) mymalloc("domainCountGas", bytes = (MaxTopNodes * sizeof(int)));
       all_bytes += bytes;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
       toGoStars = (int *) mymalloc("toGoStars", bytes = (sizeof(int) * NTask)); all_bytes += bytes;
       toGetStars = (int *) mymalloc("toGetStars", bytes = (sizeof(int) * NTask)); all_bytes += bytes;
       list_N_stars = (int *) mymalloc("list_N_stars", bytes = (sizeof(int) * NTask)); all_bytes += bytes;
       list_loadstars = (int *) mymalloc("list_loadstars", bytes = (sizeof(int) * NTask)); all_bytes += bytes;
-      //list_workstars = (double *) mymalloc("list_workstars", bytes = (sizeof(double) * NTask)); all_bytes += bytes;
-      //domainWorkStars = (float *) mymalloc("domainWorkStars", bytes = (MaxTopNodes * sizeof(float))); all_bytes += bytes;
+      list_workstars = (double *) mymalloc("list_workstars", bytes = (sizeof(double) * NTask)); all_bytes += bytes;
+      domainWorkStars = (float *) mymalloc("domainWorkStars", bytes = (MaxTopNodes * sizeof(float))); all_bytes += bytes;
       domainCountStars = (int *) mymalloc("domainCountStars", bytes = (MaxTopNodes * sizeof(int))); all_bytes += bytes;
 #endif
 
@@ -203,7 +206,7 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
 	  PRINT_STATUS(" ..using %g MB of temporary storage for domain decomposition... (presently allocated=%g MB)",all_bytes / (1024.0 * 1024.0), AllocatedBytes / (1024.0 * 1024.0));
 
       maxLoad = (int) (All.MaxPart * REDUC_FAC);
-      maxLoadsph = (int) (All.MaxPartSph * REDUC_FAC);
+      maxLoadgas = (int) (All.MaxPartGas * REDUC_FAC);
 #ifdef SEPARATE_STELLARDOMAINDECOMP
       maxLoadstars = (int) (All.MaxPart * REDUC_FAC);
 #endif
@@ -225,27 +228,27 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
 
 #ifdef SEPARATE_STELLARDOMAINDECOMP
       myfree(domainCountStars);
-      //myfree(domainWorkStars);
-      //myfree(list_workstars);
+      myfree(domainWorkStars);
+      myfree(list_workstars);
       myfree(list_loadstars);
       myfree(list_N_stars);
       myfree(toGetStars);
       myfree(toGoStars);
 #endif
 
-      myfree(domainCountSph);
+      myfree(domainCountGas);
       myfree(domainCount);
-      myfree(domainWorkSph);
+      myfree(domainWorkGas);
       myfree(domainWork);
-      myfree(list_worksph);
+      myfree(list_workgas);
       myfree(list_work);
-      myfree(list_loadsph);
+      myfree(list_loadgas);
       myfree(list_load);
       myfree(list_N_gas);
       myfree(list_NumPart);
-      myfree(toGetSph);
+      myfree(toGetGas);
       myfree(toGet);
-      myfree(toGoSph);
+      myfree(toGoGas);
       myfree(toGo);
 
       MPI_Allreduce(&ret, &retsum, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
@@ -406,18 +409,19 @@ double domain_particle_costfactor(int i)
 int domain_decompose(void)
 {
     int i, no, status;
-    long long sumtogo, sumload, sumloadsph;
-    int maxload, maxloadsph, multipledomains = MULTIPLEDOMAINS;
-    double sumwork, maxwork, sumworksph, maxworksph;
+    long long sumtogo, sumload, sumloadgas;
+    int maxload, maxloadgas, multipledomains = MULTIPLEDOMAINS;
+    double sumwork, maxwork, sumworkgas, maxworkgas;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
     long long sumloadstars;
     int maxloadstars;
-    //double sumworkstars,maxworkstars;
+    double sumworkstars, maxworkstars;
+    starcost = 0;
 #endif
 
     for(i = 0; i < 6; i++) {NtypeLocal[i] = 0;}
 
-    for(i = 0, gravcost = sphcost = 0; i < NumPart; i++)
+    for(i = 0, gravcost = gascost = 0; i < NumPart; i++)
     {
 #ifdef SUBFIND
         if(GrNr >= 0 && P[i].GrNr != GrNr) {continue;}
@@ -425,7 +429,10 @@ int domain_decompose(void)
         NtypeLocal[P[i].Type]++;
         double wt = domain_particle_cost_multiplier(i);
         gravcost += (1 + wt) * domain_particle_costfactor(i);
-        if(TimeBinActive[P[i].TimeBin] || UseAllParticles) {sphcost += wt;}
+        if(P[i].Type == 0) {if(TimeBinActive[P[i].TimeBin] || UseAllParticles) {gascost += wt;}}
+#ifdef SEPARATE_STELLARDOMAINDECOMP
+        if(P[i].Type == 4 || P[i].Type == 5) {if(TimeBinActive[P[i].TimeBin] || UseAllParticles) {starcost += wt;}}
+#endif
     }
     /* because Ntype[] is of type `long long', we cannot do a simple MPI_Allreduce() to sum the total particle numbers */
     sumup_large_ints(6, NtypeLocal, Ntype);
@@ -433,7 +440,7 @@ int domain_decompose(void)
     for(i = 0, totpartcount = 0; i < 6; i++) {totpartcount += Ntype[i];}
 
     MPI_Allreduce(&gravcost, &totgravcost, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    MPI_Allreduce(&sphcost, &totsphcost, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(&gascost, &totgascost, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
     /* determine global dimensions of domain grid */
     domain_findExtent();
@@ -462,38 +469,38 @@ int domain_decompose(void)
 
     if(ThisTask == 0)
     {
-        sumload = maxload = sumloadsph = maxloadsph = 0;
-        sumwork = sumworksph = maxwork = maxworksph = 0;
+        sumload = maxload = sumloadgas = maxloadgas = 0;
+        sumwork = sumworkgas = maxwork = maxworkgas = 0;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
         sumloadstars = maxloadstars = 0;
-        //sumworkstars = maxworkstars = 0;
+        sumworkstars = maxworkstars = 0;
 #endif
 
         for(i = 0; i < NTask; i++)
         {
             sumload += list_load[i];
-            sumloadsph += list_loadsph[i];
+            sumloadgas += list_loadgas[i];
             sumwork += list_work[i];
-            sumworksph += list_worksph[i];
+            sumworkgas += list_workgas[i];
 #ifdef SEPARATE_STELLARDOMAINDECOMP
             sumloadstars += list_loadstars[i];
-            //sumworkstars += list_workstars[i];
+            sumworkstars += list_workstars[i];
 #endif
 
             if(list_load[i] > maxload) {maxload = list_load[i];}
-            if(list_loadsph[i] > maxloadsph) {maxloadsph = list_loadsph[i];}
+            if(list_loadgas[i] > maxloadgas) {maxloadgas = list_loadgas[i];}
 #ifdef SEPARATE_STELLARDOMAINDECOMP
             if(list_loadstars[i] > maxloadstars) {maxloadstars = list_loadstars[i];}
 #endif
             if(list_work[i] > maxwork) {maxwork = list_work[i];}
-            if(list_worksph[i] > maxworksph) {maxworksph = list_worksph[i];}
+            if(list_workgas[i] > maxworkgas) {maxworkgas = list_workgas[i];}
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-            //if(list_workstars[i] > maxworkstars) {maxworkstars = list_workstars[i];}
+            if(list_workstars[i] > maxworkstars) {maxworkstars = list_workstars[i];}
 #endif
         }
 
         printf("Balance: gravity work-load balance=%g   memory-balance=%g   hydro work-load balance=%g\n",
-	     maxwork / (sumwork / NTask), maxload / (((double) sumload) / NTask), maxworksph / ((sumworksph + 1.0e-30) / NTask));
+	     maxwork / (sumwork / NTask), maxload / (((double) sumload) / NTask), maxworkgas / ((sumworkgas + 1.0e-30) / NTask));
     }
 
     /* flag the particles that need to be exported */
@@ -550,51 +557,51 @@ int domain_decompose(void)
 int domain_check_memory_bound(int multipledomains)
 {
   int ta, m, i;
-  int load, sphload, max_load, max_sphload;
-  double work, worksph;
+  int load, gasload, max_load, max_gasload;
+  double work, workgas;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
   int starsload, max_starsload;
-  //double workstars;
+  double workstars;
 #endif
 
-  max_load = max_sphload = 0;
+  max_load = max_gasload = 0;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
   max_starsload = 0;
 #endif
 
   for(ta = 0; ta < NTask; ta++)
     {
-      load = sphload = 0;
-      work = worksph = 0;
+      load = gasload = 0;
+      work = workgas = 0;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
       starsload = 0;
-      //workstars = 0;
+      workstars = 0;
 #endif
 
       for(m = 0; m < multipledomains; m++)
       for(i = DomainStartList[ta * multipledomains + m]; i <= DomainEndList[ta * multipledomains + m]; i++)
 	  {
 	    load += domainCount[i];
-	    sphload += domainCountSph[i];
+	    gasload += domainCountGas[i];
 	    work += domainWork[i];
-	    worksph += domainWorkSph[i];
+	    workgas += domainWorkGas[i];
 #ifdef SEPARATE_STELLARDOMAINDECOMP
 	    starsload += domainCountStars[i];
-        //workstars += domainWorkStars[i];
+        workstars += domainWorkStars[i];
 #endif
 	  }
 
       list_load[ta] = load;
-      list_loadsph[ta] = sphload;
+      list_loadgas[ta] = gasload;
       list_work[ta] = work;
-      list_worksph[ta] = worksph;
+      list_workgas[ta] = workgas;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
       list_loadstars[ta] = starsload;
-      //list_workstars[ta] = workstars;
+      list_workstars[ta] = workstars;
 #endif
 
       if(load > max_load) {max_load = load;}
-      if(sphload > max_sphload) {max_sphload = sphload;}
+      if(gasload > max_gasload) {max_gasload = gasload;}
 #ifdef SEPARATE_STELLARDOMAINDECOMP
       if(starsload > max_starsload) {max_starsload = starsload;}
 #endif
@@ -604,7 +611,7 @@ int domain_check_memory_bound(int multipledomains)
   if(GrNr >= 0)
     {
       load = max_load;
-      sphload = max_sphload;
+      gasload = max_gasload;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
       starsload = max_starsload;
 #endif
@@ -614,14 +621,14 @@ int domain_check_memory_bound(int multipledomains)
 	    if(P[i].GrNr != GrNr)
 	    {
 	      load++;
-	      if(P[i].Type == 0) {sphload++;}
+	      if(P[i].Type == 0) {gasload++;}
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-	      if(P[i].Type == 4) {starsload++;}
+	      if(P[i].Type == 4 || P[i].Type == 5) {starsload++;}
 #endif
 	    }
 	  }
       MPI_Allreduce(&load, &max_load, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-      MPI_Allreduce(&sphload, &max_sphload, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+      MPI_Allreduce(&gasload, &max_gasload, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
 #ifdef SEPARATE_STELLARDOMAINDECOMP
       MPI_Allreduce(&starsload, &max_starsload, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
 #endif
@@ -634,16 +641,16 @@ int domain_check_memory_bound(int multipledomains)
       return 1;
     }
 
-    if(max_sphload > maxLoadsph)
+    if(max_gasload > maxLoadgas)
     {
-      if(ThisTask == 0) {printf("desired memory imbalance=%g  (SPH) (limit=%d, needed=%d)\n", (max_sphload * All.PartAllocFactor) / maxLoadsph, maxLoadsph, max_sphload);}
+      if(ThisTask == 0) {printf("desired memory imbalance=%g  (GAS/FLUID) (limit=%d, needed=%d)\n", (max_gasload * All.PartAllocFactor) / maxLoadgas, maxLoadgas, max_gasload);}
       return 1;
     }
 
 #ifdef SEPARATE_STELLARDOMAINDECOMP
     if(max_starsload > maxLoadstars)
     {
-      if(ThisTask == 0) {printf("desired memory imbalance=%g  (STARS) (limit=%d, needed=%d)\n", (max_starsload * All.PartAllocFactor) / maxLoadstars, maxLoadstars, max_starsload);}
+      if(ThisTask == 0) {printf("desired memory imbalance=%g  (STARS/SINKS) (limit=%d, needed=%d)\n", (max_starsload * All.PartAllocFactor) / maxLoadstars, maxLoadstars, max_starsload);}
       return 1;
     }
 #endif
@@ -654,23 +661,23 @@ int domain_check_memory_bound(int multipledomains)
 
 void domain_exchange(void)
 {
-  long count_togo = 0, count_togo_sph = 0, count_get = 0, count_get_sph = 0;
-  long *count, *count_sph, *offset, *offset_sph;
-  long *count_recv, *count_recv_sph, *offset_recv, *offset_recv_sph;
+  long count_togo = 0, count_togo_gas = 0, count_get = 0, count_get_gas = 0;
+  long *count, *count_gas, *offset, *offset_gas;
+  long *count_recv, *count_recv_gas, *offset_recv, *offset_recv_gas;
   long i, n, ngrp, no, target;
   struct particle_data *partBuf;
-  struct sph_particle_data *sphBuf;
+  struct gas_cell_data *gasBuf;
   peanokey *keyBuf;
 
   count = (long *) mymalloc("count", NTask * sizeof(long));
-  count_sph = (long *) mymalloc("count_sph", NTask * sizeof(long));
+  count_gas = (long *) mymalloc("count_gas", NTask * sizeof(long));
   offset = (long *) mymalloc("offset", NTask * sizeof(long));
-  offset_sph = (long *) mymalloc("offset_sph", NTask * sizeof(long));
+  offset_gas = (long *) mymalloc("offset_gas", NTask * sizeof(long));
 
   count_recv = (long *) mymalloc("count_recv", NTask * sizeof(long));
-  count_recv_sph = (long *) mymalloc("count_recv_sph", NTask * sizeof(long));
+  count_recv_gas = (long *) mymalloc("count_recv_gas", NTask * sizeof(long));
   offset_recv = (long *) mymalloc("offset_recv", NTask * sizeof(long));
-  offset_recv_sph = (long *) mymalloc("offset_recv_sph", NTask * sizeof(long));
+  offset_recv_gas = (long *) mymalloc("offset_recv_gas", NTask * sizeof(long));
 
 #ifdef SEPARATE_STELLARDOMAINDECOMP
   int count_togo_stars = 0, count_get_stars = 0;
@@ -688,13 +695,13 @@ void domain_exchange(void)
 
   decrease = (long *) mymalloc("decrease", NTask * sizeof(long));
 
-  for(i = 1, offset_sph[0] = 0, decrease[0] = 0; i < NTask; i++)
+  for(i = 1, offset_gas[0] = 0, decrease[0] = 0; i < NTask; i++)
     {
-      offset_sph[i] = offset_sph[i - 1] + toGoSph[i - 1];
-      decrease[i] = toGoSph[i - 1];
+      offset_gas[i] = offset_gas[i - 1] + toGoGas[i - 1];
+      decrease[i] = toGoGas[i - 1];
     }
 
-  prec_offset = offset_sph[NTask - 1] + toGoSph[NTask - 1];
+  prec_offset = offset_gas[NTask - 1] + toGoGas[NTask - 1];
 
 #ifdef SEPARATE_STELLARDOMAINDECOMP
   offset_stars[0] = prec_offset;
@@ -715,10 +722,10 @@ void domain_exchange(void)
   for(i = 0; i < NTask; i++)
     {
       count_togo += toGo[i];
-      count_togo_sph += toGoSph[i];
+      count_togo_gas += toGoGas[i];
 
       count_get += toGet[i];
-      count_get_sph += toGetSph[i];
+      count_get_gas += toGetGas[i];
 
 #ifdef SEPARATE_STELLARDOMAINDECOMP
       count_togo_stars += toGoStars[i];
@@ -728,19 +735,19 @@ void domain_exchange(void)
     }
 
   partBuf = (struct particle_data *) mymalloc("partBuf", count_togo * sizeof(struct particle_data));
-  sphBuf = (struct sph_particle_data *) mymalloc("sphBuf", count_togo_sph * sizeof(struct sph_particle_data));
+  gasBuf = (struct gas_cell_data *) mymalloc("gasBuf", count_togo_gas * sizeof(struct gas_cell_data));
 #ifdef CHIMES 
-  struct gasVariables *sphChimesBuf; 
-  ChimesFloat *sphAbundancesBuf, *sphAbundancesRecvBuf, *tempAbundanceArray; 
+  struct gasVariables *gasChimesBuf;
+  ChimesFloat *gasAbundancesBuf, *gasAbundancesRecvBuf, *tempAbundanceArray;
   int abunIndex; 
-  sphChimesBuf = (struct gasVariables *) mymalloc("chiBuf", count_togo_sph * sizeof(struct gasVariables));
-  sphAbundancesBuf = (ChimesFloat *) mymalloc("abunBuf", count_togo_sph * ChimesGlobalVars.totalNumberOfSpecies * sizeof(ChimesFloat));
-  sphAbundancesRecvBuf = (ChimesFloat *) mymalloc("xRecBuf", count_get_sph * ChimesGlobalVars.totalNumberOfSpecies * sizeof(ChimesFloat));
+  gasChimesBuf = (struct gasVariables *) mymalloc("chiBuf", count_togo_gas * sizeof(struct gasVariables));
+  gasAbundancesBuf = (ChimesFloat *) mymalloc("abunBuf", count_togo_gas * ChimesGlobalVars.totalNumberOfSpecies * sizeof(ChimesFloat));
+  gasAbundancesRecvBuf = (ChimesFloat *) mymalloc("xRecBuf", count_get_gas * ChimesGlobalVars.totalNumberOfSpecies * sizeof(ChimesFloat));
   tempAbundanceArray = (ChimesFloat *) malloc(ChimesGlobalVars.totalNumberOfSpecies * sizeof(ChimesFloat));
 #endif
   keyBuf = (peanokey *) mymalloc("keyBuf", count_togo * sizeof(peanokey));
 
-  for(i = 0; i < NTask; i++) {count[i] = count_sph[i] = 0;}
+  for(i = 0; i < NTask; i++) {count[i] = count_gas[i] = 0;}
 
 #ifdef SEPARATE_STELLARDOMAINDECOMP
   for(i = 0; i < NTask; i++) {count_stars[i] = 0;}
@@ -763,22 +770,22 @@ void domain_exchange(void)
 
 	  if(P[n].Type == 0)
 	    {
-	      partBuf[offset_sph[target] + count_sph[target]] = P[n];
-	      keyBuf[offset_sph[target] + count_sph[target]] = Key[n];
+	      partBuf[offset_gas[target] + count_gas[target]] = P[n];
+	      keyBuf[offset_gas[target] + count_gas[target]] = Key[n];
 #ifdef CHIMES 
-	      for(i = 0; i < ChimesGlobalVars.totalNumberOfSpecies; i++) {sphAbundancesBuf[((offset_sph[target] + count_sph[target]) * ChimesGlobalVars.totalNumberOfSpecies) + i] = ChimesGasVars[n].abundances[i];}
+	      for(i = 0; i < ChimesGlobalVars.totalNumberOfSpecies; i++) {gasAbundancesBuf[((offset_gas[target] + count_gas[target]) * ChimesGlobalVars.totalNumberOfSpecies) + i] = ChimesGasVars[n].abundances[i];}
 	      free_gas_abundances_memory(&(ChimesGasVars[n]), &ChimesGlobalVars); 
 	      ChimesGasVars[n].abundances = NULL; 
 	      ChimesGasVars[n].isotropic_photon_density = NULL; 
 	      ChimesGasVars[n].G0_parameter = NULL; 
 	      ChimesGasVars[n].H2_dissocJ = NULL; 
-	      sphChimesBuf[offset_sph[target] + count_sph[target]] = ChimesGasVars[n];
+	      gasChimesBuf[offset_gas[target] + count_gas[target]] = ChimesGasVars[n];
 #endif 
-	      sphBuf[offset_sph[target] + count_sph[target]] = SphP[n];
-	      count_sph[target]++;
+	      gasBuf[offset_gas[target] + count_gas[target]] = SphP[n];
+	      count_gas[target]++;
 	    }
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-	  else if(P[n].Type == 4)
+	  else if(P[n].Type == 4 || P[n].Type == 5)
 	    {
 	      partBuf[offset_stars[target] + count_stars[target]] = P[n];
 	      keyBuf[offset_stars[target] + count_stars[target]] = Key[n];
@@ -824,7 +831,7 @@ void domain_exchange(void)
 	      n--;
 	    }
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-	  else if(P[n].Type == 4)
+	  else if(P[n].Type == 4 || P[n].Type == 5)
 	    {
 	      if(n < NumPart - 1)
 		{
@@ -853,7 +860,7 @@ void domain_exchange(void)
 
   long count_totget;
 
-  count_totget = count_get_sph;
+  count_totget = count_get_gas;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
   count_totget += count_get_stars;
 #endif
@@ -867,8 +874,8 @@ void domain_exchange(void)
 
   for(i = 0; i < NTask; i++)
     {
-      count_recv_sph[i] = toGetSph[i];
-      count_recv[i] = toGet[i] - toGetSph[i];
+      count_recv_gas[i] = toGetGas[i];
+      count_recv[i] = toGet[i] - toGetGas[i];
 #ifdef SEPARATE_STELLARDOMAINDECOMP
       count_recv_stars[i] = toGetStars[i];
       count_recv[i] -= toGetStars[i];
@@ -876,9 +883,9 @@ void domain_exchange(void)
     }
 
 
-  for(i = 1, offset_recv_sph[0] = N_gas; i < NTask; i++)
-    {offset_recv_sph[i] = offset_recv_sph[i - 1] + count_recv_sph[i - 1];}
-  prec_count = N_gas + count_get_sph;
+  for(i = 1, offset_recv_gas[0] = N_gas; i < NTask; i++)
+    {offset_recv_gas[i] = offset_recv_gas[i - 1] + count_recv_gas[i - 1];}
+  prec_count = N_gas + count_get_gas;
 
 #ifdef SEPARATE_STELLARDOMAINDECOMP
   offset_recv_stars[0] = prec_count;
@@ -916,29 +923,29 @@ void domain_exchange(void)
 
       if(target < NTask)
 	{
-	  if(count_recv_sph[target] > 0)
+	  if(count_recv_gas[target] > 0)
 	    {
-	      MPI_Irecv(P + offset_recv_sph[target], count_recv_sph[target] * sizeof(struct particle_data),
-			MPI_BYTE, target, TAG_PDATA_SPH, MPI_COMM_WORLD, &requests[n_requests++]);
+	      MPI_Irecv(P + offset_recv_gas[target], count_recv_gas[target] * sizeof(struct particle_data),
+			MPI_BYTE, target, TAG_PDATA_GAS, MPI_COMM_WORLD, &requests[n_requests++]);
 
-	      MPI_Irecv(Key + offset_recv_sph[target], count_recv_sph[target] * sizeof(peanokey),
-			MPI_BYTE, target, TAG_KEY_SPH, MPI_COMM_WORLD, &requests[n_requests++]);
+	      MPI_Irecv(Key + offset_recv_gas[target], count_recv_gas[target] * sizeof(peanokey),
+			MPI_BYTE, target, TAG_KEY_GAS, MPI_COMM_WORLD, &requests[n_requests++]);
 
-	      MPI_Irecv(SphP + offset_recv_sph[target],
-			count_recv_sph[target] * sizeof(struct sph_particle_data), MPI_BYTE, target,
-			TAG_SPHDATA, MPI_COMM_WORLD, &requests[n_requests++]);
+	      MPI_Irecv(SphP + offset_recv_gas[target],
+			count_recv_gas[target] * sizeof(struct gas_cell_data), MPI_BYTE, target,
+			TAG_GASDATA, MPI_COMM_WORLD, &requests[n_requests++]);
 #ifdef CHIMES 
-	      MPI_Irecv(ChimesGasVars + offset_recv_sph[target],
-			count_recv_sph[target] * sizeof(struct gasVariables), MPI_BYTE, target,
+	      MPI_Irecv(ChimesGasVars + offset_recv_gas[target],
+			count_recv_gas[target] * sizeof(struct gasVariables), MPI_BYTE, target,
 			TAG_CHIMESDATA, MPI_COMM_WORLD, &requests[n_requests++]); 
 
 #ifdef CHIMES_USE_DOUBLE_PRECISION
-	      MPI_Irecv(sphAbundancesRecvBuf + ((offset_recv_sph[target] - offset_recv_sph[0]) * ChimesGlobalVars.totalNumberOfSpecies),
-			count_recv_sph[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_DOUBLE, target, TAG_ABUNDATA, 
+	      MPI_Irecv(gasAbundancesRecvBuf + ((offset_recv_gas[target] - offset_recv_gas[0]) * ChimesGlobalVars.totalNumberOfSpecies),
+			count_recv_gas[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_DOUBLE, target, TAG_ABUNDATA, 
 			MPI_COMM_WORLD, &requests[n_requests++]); 
 #else 
-	      MPI_Irecv(sphAbundancesRecvBuf + ((offset_recv_sph[target] - offset_recv_sph[0]) * ChimesGlobalVars.totalNumberOfSpecies),
-			count_recv_sph[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_FLOAT, target, TAG_ABUNDATA, 
+	      MPI_Irecv(gasAbundancesRecvBuf + ((offset_recv_gas[target] - offset_recv_gas[0]) * ChimesGlobalVars.totalNumberOfSpecies),
+			count_recv_gas[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_FLOAT, target, TAG_ABUNDATA, 
 			MPI_COMM_WORLD, &requests[n_requests++]); 
 #endif
 #endif 
@@ -979,27 +986,27 @@ void domain_exchange(void)
 
       if(target < NTask)
 	{
-	  if(count_sph[target] > 0)
+	  if(count_gas[target] > 0)
 	    {
-	      MPI_Isend(partBuf + offset_sph[target], count_sph[target] * sizeof(struct particle_data),
-			MPI_BYTE, target, TAG_PDATA_SPH, MPI_COMM_WORLD, &requests[n_requests++]);
+	      MPI_Isend(partBuf + offset_gas[target], count_gas[target] * sizeof(struct particle_data),
+			MPI_BYTE, target, TAG_PDATA_GAS, MPI_COMM_WORLD, &requests[n_requests++]);
 
-	      MPI_Isend(keyBuf + offset_sph[target], count_sph[target] * sizeof(peanokey),
-			MPI_BYTE, target, TAG_KEY_SPH, MPI_COMM_WORLD, &requests[n_requests++]);
+	      MPI_Isend(keyBuf + offset_gas[target], count_gas[target] * sizeof(peanokey),
+			MPI_BYTE, target, TAG_KEY_GAS, MPI_COMM_WORLD, &requests[n_requests++]);
 
-	      MPI_Isend(sphBuf + offset_sph[target], count_sph[target] * sizeof(struct sph_particle_data),
-			MPI_BYTE, target, TAG_SPHDATA, MPI_COMM_WORLD, &requests[n_requests++]);
+	      MPI_Isend(gasBuf + offset_gas[target], count_gas[target] * sizeof(struct gas_cell_data),
+			MPI_BYTE, target, TAG_GASDATA, MPI_COMM_WORLD, &requests[n_requests++]);
 #ifdef CHIMES 
-	      MPI_Isend(sphChimesBuf + offset_sph[target], count_sph[target] * sizeof(struct gasVariables),
+	      MPI_Isend(gasChimesBuf + offset_gas[target], count_gas[target] * sizeof(struct gasVariables),
 			MPI_BYTE, target, TAG_CHIMESDATA, MPI_COMM_WORLD, &requests[n_requests++]);
 
 #ifdef CHIMES_USE_DOUBLE_PRECISION
-	      MPI_Isend(sphAbundancesBuf + (offset_sph[target] * ChimesGlobalVars.totalNumberOfSpecies), 
-			count_sph[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_DOUBLE, target, 
+	      MPI_Isend(gasAbundancesBuf + (offset_gas[target] * ChimesGlobalVars.totalNumberOfSpecies),
+			count_gas[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_DOUBLE, target, 
 			TAG_ABUNDATA, MPI_COMM_WORLD, &requests[n_requests++]);
 #else 
-	      MPI_Isend(sphAbundancesBuf + (offset_sph[target] * ChimesGlobalVars.totalNumberOfSpecies), 
-			count_sph[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_FLOAT, target, 
+	      MPI_Isend(gasAbundancesBuf + (offset_gas[target] * ChimesGlobalVars.totalNumberOfSpecies),
+			count_gas[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_FLOAT, target, 
 			TAG_ABUNDATA, MPI_COMM_WORLD, &requests[n_requests++]);
 #endif 
 #endif 
@@ -1045,43 +1052,43 @@ void domain_exchange(void)
 
       if(target < NTask)
 	{
-	  if(count_sph[target] > 0 || count_recv_sph[target] > 0)
+	  if(count_gas[target] > 0 || count_recv_gas[target] > 0)
 	    {
-	      MPI_Sendrecv(partBuf + offset_sph[target], count_sph[target] * sizeof(struct particle_data),
-			   MPI_BYTE, target, TAG_PDATA_SPH,
-			   P + offset_recv_sph[target], count_recv_sph[target] * sizeof(struct particle_data),
-			   MPI_BYTE, target, TAG_PDATA_SPH, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            MPI_Sizelimited_Sendrecv(partBuf + offset_gas[target], count_gas[target] * sizeof(struct particle_data),
+			   MPI_BYTE, target, TAG_PDATA_GAS,
+			   P + offset_recv_gas[target], count_recv_gas[target] * sizeof(struct particle_data),
+			   MPI_BYTE, target, TAG_PDATA_GAS, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-	      MPI_Sendrecv(sphBuf + offset_sph[target], count_sph[target] * sizeof(struct sph_particle_data),
-			   MPI_BYTE, target, TAG_SPHDATA,
-			   SphP + offset_recv_sph[target],
-			   count_recv_sph[target] * sizeof(struct sph_particle_data), MPI_BYTE, target,
-			   TAG_SPHDATA, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            MPI_Sizelimited_Sendrecv(gasBuf + offset_gas[target], count_gas[target] * sizeof(struct gas_cell_data),
+			   MPI_BYTE, target, TAG_GASDATA,
+			   SphP + offset_recv_gas[target],
+			   count_recv_gas[target] * sizeof(struct gas_cell_data), MPI_BYTE, target,
+			   TAG_GASDATA, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 #ifdef CHIMES 
-	      MPI_Sendrecv(sphChimesBuf + offset_sph[target], count_sph[target] * sizeof(struct gasVariables),
-			   MPI_BYTE, target, TAG_CHIMESDATA, ChimesGasVars + offset_recv_sph[target],
-			   count_recv_sph[target] * sizeof(struct gasVariables), MPI_BYTE, target,
+            MPI_Sizelimited_Sendrecv(gasChimesBuf + offset_gas[target], count_gas[target] * sizeof(struct gasVariables),
+			   MPI_BYTE, target, TAG_CHIMESDATA, ChimesGasVars + offset_recv_gas[target],
+			   count_recv_gas[target] * sizeof(struct gasVariables), MPI_BYTE, target,
 			   TAG_CHIMESDATA, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
 #ifdef CHIMES_USE_DOUBLE_PRECISION
-	      MPI_Sendrecv(sphAbundancesBuf + (offset_sph[target] * ChimesGlobalVars.totalNumberOfSpecies), 
-			   count_sph[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_DOUBLE, target, TAG_ABUNDATA, 
-			   sphAbundancesRecvBuf + ((offset_recv_sph[target] - offset_recv_sph[0]) * ChimesGlobalVars.totalNumberOfSpecies), 
-			   count_recv_sph[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_DOUBLE, target, 
+            MPI_Sizelimited_Sendrecv(gasAbundancesBuf + (offset_gas[target] * ChimesGlobalVars.totalNumberOfSpecies),
+			   count_gas[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_DOUBLE, target, TAG_ABUNDATA, 
+			   gasAbundancesRecvBuf + ((offset_recv_gas[target] - offset_recv_gas[0]) * ChimesGlobalVars.totalNumberOfSpecies),
+			   count_recv_gas[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_DOUBLE, target, 
 			   TAG_ABUNDATA, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 #else 
-	      MPI_Sendrecv(sphAbundancesBuf + (offset_sph[target] * ChimesGlobalVars.totalNumberOfSpecies), 
-			   count_sph[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_FLOAT, target, TAG_ABUNDATA, 
-			   sphAbundancesRecvBuf + ((offset_recv_sph[target] - offset_recv_sph[0]) * ChimesGlobalVars.totalNumberOfSpecies), 
-			   count_recv_sph[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_FLOAT, target, 
+            MPI_Sizelimited_Sendrecv(gasAbundancesBuf + (offset_gas[target] * ChimesGlobalVars.totalNumberOfSpecies),
+			   count_gas[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_FLOAT, target, TAG_ABUNDATA, 
+			   gasAbundancesRecvBuf + ((offset_recv_gas[target] - offset_recv_gas[0]) * ChimesGlobalVars.totalNumberOfSpecies),
+			   count_recv_gas[target] * ChimesGlobalVars.totalNumberOfSpecies, MPI_FLOAT, target, 
 			   TAG_ABUNDATA, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 #endif 
 #endif 
 
-	      MPI_Sendrecv(keyBuf + offset_sph[target], count_sph[target] * sizeof(peanokey),
-			   MPI_BYTE, target, TAG_KEY_SPH,
-			   Key + offset_recv_sph[target], count_recv_sph[target] * sizeof(peanokey),
-			   MPI_BYTE, target, TAG_KEY_SPH, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            MPI_Sizelimited_Sendrecv(keyBuf + offset_gas[target], count_gas[target] * sizeof(peanokey),
+			   MPI_BYTE, target, TAG_KEY_GAS,
+			   Key + offset_recv_gas[target], count_recv_gas[target] * sizeof(peanokey),
+			   MPI_BYTE, target, TAG_KEY_GAS, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 	    }
 
 #ifdef SEPARATE_STELLARDOMAINDECOMP
@@ -1120,24 +1127,23 @@ void domain_exchange(void)
 #endif
 
 #ifdef CHIMES 
-  /* Loop through received SphP particles 
-   * and read in abundances from the buffer. */ 
+  /* Loop through received gas cells and read in abundances from the buffer. */ 
   for (target = 0; target < NTask; target++)
     {
-      if(count_recv_sph[target] > 0)
+      if(count_recv_gas[target] > 0)
 	{
-	  for (i = 0; i < count_recv_sph[target]; i++)
+	  for (i = 0; i < count_recv_gas[target]; i++)
 	    {
-	      allocate_gas_abundances_memory(&(ChimesGasVars[offset_recv_sph[target] + i]), &ChimesGlobalVars); 
+	      allocate_gas_abundances_memory(&(ChimesGasVars[offset_recv_gas[target] + i]), &ChimesGlobalVars); 
 	      for (abunIndex = 0; abunIndex < ChimesGlobalVars.totalNumberOfSpecies; abunIndex++)
-          {ChimesGasVars[offset_recv_sph[target] + i].abundances[abunIndex] = sphAbundancesRecvBuf[((offset_recv_sph[target] - offset_recv_sph[0] + i) * ChimesGlobalVars.totalNumberOfSpecies) + abunIndex];}
+          {ChimesGasVars[offset_recv_gas[target] + i].abundances[abunIndex] = gasAbundancesRecvBuf[((offset_recv_gas[target] - offset_recv_gas[0] + i) * ChimesGlobalVars.totalNumberOfSpecies) + abunIndex];}
 	    }
 	}
     }
 #endif 
 
   NumPart += count_get;
-  N_gas += count_get_sph;
+  N_gas += count_get_gas;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
   N_stars += count_get_stars;
 #endif
@@ -1149,17 +1155,17 @@ void domain_exchange(void)
       endrun(787878);
     }
 
-  if(N_gas > All.MaxPartSph)
+  if(N_gas > All.MaxPartGas)
     endrun(787879);
 
 
   myfree(keyBuf);
 #ifdef CHIMES 
-  myfree(sphAbundancesRecvBuf); 
-  myfree(sphAbundancesBuf); 
-  myfree(sphChimesBuf); 
+  myfree(gasAbundancesRecvBuf);
+  myfree(gasAbundancesBuf);
+  myfree(gasChimesBuf);
 #endif 
-  myfree(sphBuf);
+  myfree(gasBuf);
   myfree(partBuf);
 
 
@@ -1170,14 +1176,14 @@ void domain_exchange(void)
   myfree(count_stars);
 #endif
 
-  myfree(offset_recv_sph);
+  myfree(offset_recv_gas);
   myfree(offset_recv);
-  myfree(count_recv_sph);
+  myfree(count_recv_gas);
   myfree(count_recv);
 
-  myfree(offset_sph);
+  myfree(offset_gas);
   myfree(offset);
-  myfree(count_sph);
+  myfree(count_gas);
   myfree(count);
 }
 
@@ -1186,42 +1192,36 @@ void domain_exchange(void)
 void domain_findSplit_work_balanced(int ncpu, int ndomain)
 {
   int i, start, end;
-  double fac0, work, worksph, workavg, work_before, workavg_before;
-  double load, fac_work, fac_load, fac_worksph;
+  double work, workgas, workavg, work_before, workavg_before;
+  double load, fac_work, fac_load, fac_workgas;
 
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-  //double fac_workstars,workstars;
-  //workstars=0;
+  double fac_workstars, workstars; workstars=0;
 #endif
     
-  for(i = 0, work = load = worksph = 0; i < ndomain; i++)
+  for(i = 0, work = load = workgas = 0; i < ndomain; i++)
     {
       work += domainWork[i];
       load += domainCount[i];
-      worksph += domainWorkSph[i];
+      workgas += domainWorkGas[i];
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-      //workstars += domainWorkStars[i];
+      workstars += domainWorkStars[i];
 #endif
     }
  
-    if(worksph>0) fac0=0.333333; else fac0=0.5;
+      /* default to give equal weight to gravitational work-load, gas/fluid work load, and particle load */
+      double fac_work_0=0.67; int nworkterms = 1;
+      if(workgas > 0) {nworkterms+=1;} else {fac_work_0 = 0.5;} // equally-weight work and load here, if desired
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-  //if(workstars>0)
-  //  fac0 = 1./(1. + 1./fac0);
+      if(workstars>0) {nworkterms+=1;}
 #endif
+      fac_work_0 /= nworkterms; // divide the work weight equally among the different work terms here
 
-      /* in this case we give equal weight to gravitational work-load, SPH work load, and particle load */
-      fac_work = fac0 / work;
-      fac_load = fac0 / load;
-      if(worksph>0)
-        {fac_worksph = fac0 / worksph;}
-      else
-        {fac_worksph = 0.0;}
+      fac_work = fac_work_0 / work;
+      fac_load = (1.-fac_work_0*nworkterms) / load;
+      if(workgas>0) {fac_workgas = fac_work_0 / workgas;} else {fac_workgas = 0.0;}
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-//      if(workstars>0)
-//        {fac_workstars = fac0 / workstars;}
-//      else
-//        {fac_workstars = 0.0;}
+      if(workstars>0) {fac_workstars = fac_work_0 / workstars;} else {fac_workstars = 0.0;}
 #endif
 
   workavg = 1.0 / ncpu;
@@ -1235,9 +1235,9 @@ void domain_findSplit_work_balanced(int ncpu, int ndomain)
       work = 0;
       end = start;
 
-      work += fac_work * domainWork[end] + fac_load * domainCount[end] + fac_worksph * domainWorkSph[end];
+      work += fac_work * domainWork[end] + fac_load * domainCount[end] + fac_workgas * domainWorkGas[end];
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-      //work += fac_workstars * domainWorkStars[end];
+      work += fac_workstars * domainWorkStars[end];
 #endif
       while((work + work_before < workavg + workavg_before) || (i == ncpu - 1 && end < ndomain - 1))
 	{
@@ -1246,9 +1246,9 @@ void domain_findSplit_work_balanced(int ncpu, int ndomain)
 	  else
 	    {break;}
 
-	  work += fac_work * domainWork[end] + fac_load * domainCount[end] + fac_worksph * domainWorkSph[end];
+	  work += fac_work * domainWork[end] + fac_load * domainCount[end] + fac_workgas * domainWorkGas[end];
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-      //work += fac_workstars * domainWorkStars[end];
+      work += fac_workstars * domainWorkStars[end];
 #endif
 	}
 
@@ -1266,9 +1266,9 @@ static struct domain_segments_data
   int task, start, end;
   double work;
   double load;
-  double load_activesph;
+  double load_activegas;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-  //double load_activestars;
+  double load_activestars;
 #endif
   double normalized_load;
 }
@@ -1282,15 +1282,15 @@ struct queue_data
   int *previous;
   double *value;
 }
-queues[3];
+queues[N_DOMAINDECOMP_QUEUES];
 
 struct tasklist_data
 {
   double work;
   double load;
-  double load_activesph;
+  double load_activegas;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-  //double load_activestars;
+  double load_activestars;
 #endif
   int count;
 }
@@ -1314,11 +1314,11 @@ int domain_sort_load(const void *a, const void *b)
 
 void domain_assign_load_or_work_balanced(int mode, int multipledomains)
 {
-  double target_work_balance, target_load_balance, target_load_activesph_balance;
+  double target_work_balance, target_load_balance, target_load_activegas_balance;
   double value, target_max_balance, best_balance;
-  double tot_work, tot_load, tot_loadactivesph;
+  double tot_work, tot_load, tot_loadactivegas;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-  //double target_load_activestars_balance,tot_loadactivestars;
+  double target_load_activestars_balance, tot_loadactivestars;
 #endif
 
 
@@ -1335,18 +1335,18 @@ void domain_assign_load_or_work_balanced(int mode, int multipledomains)
     {
       tasklist[ta].work = 0;
       tasklist[ta].load = 0;
-      tasklist[ta].load_activesph = 0;
+      tasklist[ta].load_activegas = 0;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-      //tasklist[ta].load_activestars = 0;
+      tasklist[ta].load_activestars = 0;
 #endif
       tasklist[ta].count = 0;
     }
 
   tot_work = 0;
   tot_load = 0;
-  tot_loadactivesph = 0;
+  tot_loadactivegas = 0;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-  //tot_loadactivestars = 0;
+  tot_loadactivestars = 0;
 #endif
 
   for(n = 0; n < multipledomains * NTask; n++)
@@ -1355,26 +1355,26 @@ void domain_assign_load_or_work_balanced(int mode, int multipledomains)
       domainAssign[n].end = DomainEndList[n];
       domainAssign[n].work = 0;
       domainAssign[n].load = 0;
-      domainAssign[n].load_activesph = 0;
+      domainAssign[n].load_activegas = 0;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-      //domainAssign[n].load_activestars = 0;
+      domainAssign[n].load_activestars = 0;
 #endif
 
       for(i = DomainStartList[n]; i <= DomainEndList[n]; i++)
 	{
 	  domainAssign[n].work += domainWork[i];
 	  domainAssign[n].load += domainCount[i];
-	  domainAssign[n].load_activesph += domainWorkSph[i];
+	  domainAssign[n].load_activegas += domainWorkGas[i];
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-      //domainAssign[n].load_activestars += domainWorkStars[i];
+      domainAssign[n].load_activestars += domainWorkStars[i];
 #endif
 	}
 
       tot_work += domainAssign[n].work;
       tot_load += domainAssign[n].load;
-      tot_loadactivesph += domainAssign[n].load_activesph;
+      tot_loadactivegas += domainAssign[n].load_activegas;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-      //tot_loadactivestars += domainAssign[n].load_activestars;
+      tot_loadactivestars += domainAssign[n].load_activestars;
 #endif
     }
 
@@ -1382,16 +1382,16 @@ void domain_assign_load_or_work_balanced(int mode, int multipledomains)
     {
       domainAssign[n].normalized_load =
         domainAssign[n].work / (tot_work + 1.0e-30) +
-        domainAssign[n].load_activesph / (tot_loadactivesph + 1.0e-30);
+        domainAssign[n].load_activegas / (tot_loadactivegas + 1.0e-30);
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-        //domainAssign[n].normalized_load += domainAssign[n].load_activestars / (tot_loadactivestars + 1.0e-30);
+        domainAssign[n].normalized_load += domainAssign[n].load_activestars / (tot_loadactivestars + 1.0e-30);
 #endif
     }
 
   qsort(domainAssign, multipledomains * NTask, sizeof(struct domain_segments_data), domain_sort_load);
 
   /* initialize three queues */
-  for(q = 0; q < 3; q++)
+  for(q = 0; q < N_DOMAINDECOMP_QUEUES; q++)
     {
       queues[q].next = (int *) mymalloc("queues[q].next", NTask * sizeof(int));
       queues[q].previous = (int *) mymalloc("queues[q].previous", NTask * sizeof(int));
@@ -1412,7 +1412,7 @@ void domain_assign_load_or_work_balanced(int mode, int multipledomains)
   for(n = 0; n < multipledomains * NTask; n++)
     {
       /* need to decide, which of the tasks that has the lowest load in one of the three quantities is best */
-      for(q = 0, best_balance = 1.0e30, best_queue = 0; q < 3; q++)
+      for(q = 0, best_balance = 1.0e30, best_queue = 0; q < N_DOMAINDECOMP_QUEUES; q++)
 	{
 	  target = queues[q].first;
 
@@ -1420,16 +1420,16 @@ void domain_assign_load_or_work_balanced(int mode, int multipledomains)
 
 	  target_work_balance = (domainAssign[n].work + tasklist[target].work) / (tot_work + 1.0e-30);
 	  target_load_balance = (domainAssign[n].load + tasklist[target].load) / (tot_load + 1.0e-30);
-	  target_load_activesph_balance = (domainAssign[n].load_activesph + tasklist[target].load_activesph) / (tot_loadactivesph + 1.0e-30);
+	  target_load_activegas_balance = (domainAssign[n].load_activegas + tasklist[target].load_activegas) / (tot_loadactivegas + 1.0e-30);
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-      //target_load_activestars_balance = (domainAssign[n].load_activestars + tasklist[target].load_activestars) / (tot_loadactivestars + 1.0e-30);
+      target_load_activestars_balance = (domainAssign[n].load_activestars + tasklist[target].load_activestars) / (tot_loadactivestars + 1.0e-30);
 #endif
         
 	  target_max_balance = target_work_balance;
 	  if(target_max_balance < target_load_balance) {target_max_balance = target_load_balance;}
-	  if(target_max_balance < target_load_activesph_balance) {target_max_balance = target_load_activesph_balance;}
+	  if(target_max_balance < target_load_activegas_balance) {target_max_balance = target_load_activegas_balance;}
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-      //if(target_max_balance < target_load_activestars_balance) {target_max_balance = target_load_activestars_balance;}
+      if(target_max_balance < target_load_activestars_balance) {target_max_balance = target_load_activestars_balance;}
 #endif
 
 	  if(target_max_balance < best_balance)
@@ -1447,18 +1447,14 @@ void domain_assign_load_or_work_balanced(int mode, int multipledomains)
       domainAssign[n].task = target;
       tasklist[target].work += domainAssign[n].work;
       tasklist[target].load += domainAssign[n].load;
-      tasklist[target].load_activesph += domainAssign[n].load_activesph;
+      tasklist[target].load_activegas += domainAssign[n].load_activegas;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-      //tasklist[target].load_activestars += domainAssign[n].load_activestars;
+      tasklist[target].load_activestars += domainAssign[n].load_activestars;
 #endif
       tasklist[target].count++;
 
-      /* now we need to remove the element 'target' from the 3 queue's and reinsert it */
-//#ifdef SEPARATE_STELLARDOMAINDECOMP
-    //for(q = 0; q < 4; q++)
-//#else
-    for(q = 0; q < 3; q++)
-//#endif
+      /* now we need to remove the element 'target' from the N_DOMAINDECOMP_QUEUES queue's and reinsert it */
+    for(q = 0; q < N_DOMAINDECOMP_QUEUES; q++)
     {
 	  switch (q)
 	    {
@@ -1469,12 +1465,12 @@ void domain_assign_load_or_work_balanced(int mode, int multipledomains)
 	      value = tasklist[target].load;
 	      break;
 	    case 2:
-	      value = tasklist[target].load_activesph;
+	      value = tasklist[target].load_activegas;
 	      break;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-//        case 3:
-//          value = tasklist[target].load_activestars;
-//          break;
+        case 3:
+          value = tasklist[target].load_activestars;
+          break;
 #endif
 	    default:
 	      value = 0;
@@ -1547,7 +1543,7 @@ void domain_assign_load_or_work_balanced(int mode, int multipledomains)
     }
 
   /* free the queues */
-  for(q = 2; q >= 0; q--)
+  for(q = N_DOMAINDECOMP_QUEUES-1; q >= 0; q--)
     {
       myfree(queues[q].value);
       myfree(queues[q].previous);
@@ -1564,8 +1560,8 @@ void domain_findSplit_load_balanced(int ncpu, int ndomain)
 {
   int i, start, end;
   double load, loadavg, load_before, loadavg_before, fac_load, fac;
-#ifdef KD_COUNT_SPH_IN_DOMAIN
-   double loadSph=0, fac_loadSph=0;
+#ifdef KD_COUNT_GAS_IN_DOMAIN
+   double loadGas=0, fac_loadGas=0;
 #endif
 #ifdef KD_COUNT_STARS_IN_DOMAIN
   double loadStars=0, fac_loadStars=0;
@@ -1574,8 +1570,8 @@ void domain_findSplit_load_balanced(int ncpu, int ndomain)
   for(i = 0, load = 0; i < ndomain; i++)
     {
       load += domainCount[i];
-#ifdef COUNT_SPH_IN_DOMAIN
-      loadSph += domainCountSph[i];
+#ifdef KD_COUNT_GAS_IN_DOMAIN
+      loadGas += domainCountGas[i];
 #endif
 #ifdef KD_COUNT_STARS_IN_DOMAIN
       loadStars += domainCountStars[i];
@@ -1583,8 +1579,8 @@ void domain_findSplit_load_balanced(int ncpu, int ndomain)
     }
 
   fac = 1;
-#ifdef KD_COUNT_SPH_IN_DOMAIN
-  if(loadSph > 0) {fac = fac + 1;}
+#ifdef KD_COUNT_GAS_IN_DOMAIN
+  if(loadGas > 0) {fac = fac + 1;}
 #endif
 #ifdef KD_COUNT_STARS_IN_DOMAIN
   if(loadStars > 0) {fac = fac + 1;}
@@ -1592,8 +1588,8 @@ void domain_findSplit_load_balanced(int ncpu, int ndomain)
   fac = 1./fac;
 
   fac_load = fac / load;
-#ifdef KD_COUNT_SPH_IN_DOMAIN
-  if(loadSph > 0) {fac_loadSph = fac / loadSph;}
+#ifdef KD_COUNT_GAS_IN_DOMAIN
+  if(loadGas > 0) {fac_loadGas = fac / loadGas;}
 #endif
 #ifdef KD_COUNT_STARS_IN_DOMAIN
   if(loadStars > 0) {fac_loadStars = fac / loadStars;}
@@ -1611,8 +1607,8 @@ void domain_findSplit_load_balanced(int ncpu, int ndomain)
       end = start;
 
       load += fac_load * domainCount[end];
-#ifdef KD_COUNT_SPH_IN_DOMAIN
-      load += fac_loadSph * domainCountSph[end];
+#ifdef KD_COUNT_GAS_IN_DOMAIN
+      load += fac_loadGas * domainCountGas[end];
 #endif
 #ifdef KD_COUNT_STARS_IN_DOMAIN
       load += fac_loadStars * domainCountStars[end];
@@ -1625,8 +1621,8 @@ void domain_findSplit_load_balanced(int ncpu, int ndomain)
 	    {break;}
 
 	  load += fac_load * domainCount[end];
-#ifdef KD_COUNT_SPH_IN_DOMAIN
-	  load += fac_loadSph * domainCountSph[end];
+#ifdef KD_COUNT_GAS_IN_DOMAIN
+	  load += fac_loadGas * domainCountGas[end];
 #endif
 #ifdef KD_COUNT_STARS_IN_DOMAIN
 	  load += fac_loadStars * domainCountStars[end];
@@ -1659,13 +1655,13 @@ int domain_countToGo(size_t nlimit)
     for(n = 0; n < NTask; n++)
     {
         toGo[n] = 0;
-        toGoSph[n] = 0;
+        toGoGas[n] = 0;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
         toGoStars[n] = 0;
 #endif
     }
 
-    package = (sizeof(struct particle_data) + sizeof(struct sph_particle_data) + sizeof(peanokey));
+    package = (sizeof(struct particle_data) + sizeof(struct gas_cell_data) + sizeof(peanokey));
     if(package >= nlimit) {endrun(212);}
 
     for(n = 0; n < NumPart && package < nlimit; n++)
@@ -1686,11 +1682,11 @@ int domain_countToGo(size_t nlimit)
                 
                 if((P[n].Type & 15) == 0)
                 {
-                    toGoSph[DomainTask[no]] += 1;
-                    nlimit -= sizeof(struct sph_particle_data);
+                    toGoGas[DomainTask[no]] += 1;
+                    nlimit -= sizeof(struct gas_cell_data);
                 }
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-                if((P[n].Type & 15) == 4) {toGoStars[DomainTask[no]] += 1;}
+                if(((P[n].Type & 15) == 4) || ((P[n].Type & 15) == 5)) {toGoStars[DomainTask[no]] += 1;} // ???
 #endif
                 P[n].Type |= 16;    /* flag this particle for export */
             }
@@ -1698,7 +1694,7 @@ int domain_countToGo(size_t nlimit)
     }
 
     MPI_Alltoall(toGo, 1, MPI_INT, toGet, 1, MPI_INT, MPI_COMM_WORLD);
-    MPI_Alltoall(toGoSph, 1, MPI_INT, toGetSph, 1, MPI_INT, MPI_COMM_WORLD);
+    MPI_Alltoall(toGoGas, 1, MPI_INT, toGetGas, 1, MPI_INT, MPI_COMM_WORLD);
 #ifdef SEPARATE_STELLARDOMAINDECOMP
     MPI_Alltoall(toGoStars, 1, MPI_INT, toGetStars, 1, MPI_INT, MPI_COMM_WORLD);
 #endif
@@ -1717,7 +1713,7 @@ int domain_countToGo(size_t nlimit)
         MPI_Allgather(&N_stars, 1, MPI_INT, list_N_stars, 1, MPI_INT, MPI_COMM_WORLD);
 #endif
         int flag, flagsum, ntoomany, ta, i, target;
-        int count_togo, count_toget, count_togo_sph, count_toget_sph;
+        int count_togo, count_toget, count_togo_gas, count_toget_gas;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
         int ntoomanystars, count_togo_stars, count_toget_stars;
 #endif
@@ -1733,7 +1729,7 @@ int domain_countToGo(size_t nlimit)
                     if(ta == ThisTask)
                     {
                         count_togo = count_toget = 0;
-                        count_togo_sph = count_toget_sph = 0;
+                        count_togo_gas = count_toget_gas = 0;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
                         count_togo_stars = count_toget_stars = 0;
 #endif
@@ -1741,8 +1737,8 @@ int domain_countToGo(size_t nlimit)
                         {
                             count_togo += toGo[i];
                             count_toget += toGet[i];
-                            count_togo_sph += toGoSph[i];
-                            count_toget_sph += toGetSph[i];
+                            count_togo_gas += toGoGas[i];
+                            count_toget_gas += toGetGas[i];
 #ifdef SEPARATE_STELLARDOMAINDECOMP
                             count_togo_stars += toGoStars[i];
                             count_toget_stars += toGetStars[i];
@@ -1751,15 +1747,15 @@ int domain_countToGo(size_t nlimit)
                     }
                     MPI_Bcast(&count_togo, 1, MPI_INT, ta, MPI_COMM_WORLD);
                     MPI_Bcast(&count_toget, 1, MPI_INT, ta, MPI_COMM_WORLD);
-                    MPI_Bcast(&count_togo_sph, 1, MPI_INT, ta, MPI_COMM_WORLD);
-                    MPI_Bcast(&count_toget_sph, 1, MPI_INT, ta, MPI_COMM_WORLD);
+                    MPI_Bcast(&count_togo_gas, 1, MPI_INT, ta, MPI_COMM_WORLD);
+                    MPI_Bcast(&count_toget_gas, 1, MPI_INT, ta, MPI_COMM_WORLD);
 #ifdef SEPARATE_STELLARDOMAINDECOMP
                     MPI_Bcast(&count_togo_stars, 1, MPI_INT, ta, MPI_COMM_WORLD);
                     MPI_Bcast(&count_toget_stars, 1, MPI_INT, ta, MPI_COMM_WORLD);
 #endif
                     
                     int ifntoomany;
-                    ntoomany = list_N_gas[ta] + count_toget_sph - count_togo_sph - All.MaxPartSph;
+                    ntoomany = list_N_gas[ta] + count_toget_gas - count_togo_gas - All.MaxPartGas;
                     ifntoomany = (ntoomany > 0);
 #ifdef SEPARATE_STELLARDOMAINDECOMP
                     ntoomanystars = list_N_stars[ta] + count_toget_stars - count_togo_stars - All.MaxPart;
@@ -1772,7 +1768,7 @@ int domain_countToGo(size_t nlimit)
                             if(flagsum < 25) {PRINT_STATUS(" ..domain exchange must be modified - cannot receive %d gas elements on task=%d (iter=%d)", ntoomany, ta, flagsum+1);}
                             else {
                                 printf(" ..domain exchange must be modified - cannot receive %d gas elements on task=%d (iter=%d)\n", ntoomany, ta, flagsum+1);
-                                printf(" ..list_N_gas[ta=%d]=%d  count_toget_gas=%d count_togo_gas=%d MaxPartGas=%d NTask=%d flagsum=%d\n", ta, list_N_gas[ta], count_toget_sph, count_togo_sph,All.MaxPartSph,NTask,flagsum); fflush(stdout);
+                                printf(" ..list_N_gas[ta=%d]=%d  count_toget_gas=%d count_togo_gas=%d MaxPartGas=%d NTask=%d flagsum=%d\n", ta, list_N_gas[ta], count_toget_gas, count_togo_gas,All.MaxPartGas,NTask,flagsum); fflush(stdout);
                             }
                         }
 #ifdef SEPARATE_STELLARDOMAINDECOMP
@@ -1791,11 +1787,11 @@ int domain_countToGo(size_t nlimit)
                         {
                             if(i == ThisTask)
                             {
-                                if(toGoSph[ta] > 0)
+                                if(toGoGas[ta] > 0)
                                     if(ntoomany > 0)
                                     {
-                                        toGoSph[ta]--;
-                                        count_toget_sph--;
+                                        toGoGas[ta]--;
+                                        count_toget_gas--;
                                         count_toget--;
                                         ntoomany--;
                                     }
@@ -1812,7 +1808,7 @@ int domain_countToGo(size_t nlimit)
                             
                             MPI_Bcast(&ntoomany, 1, MPI_INT, i, MPI_COMM_WORLD);
                             MPI_Bcast(&count_toget, 1, MPI_INT, i, MPI_COMM_WORLD);
-                            MPI_Bcast(&count_toget_sph, 1, MPI_INT, i, MPI_COMM_WORLD);
+                            MPI_Bcast(&count_toget_gas, 1, MPI_INT, i, MPI_COMM_WORLD);
 #ifdef SEPARATE_STELLARDOMAINDECOMP
                             MPI_Bcast(&count_toget_stars, 1, MPI_INT, i, MPI_COMM_WORLD);
 #endif
@@ -1863,15 +1859,15 @@ int domain_countToGo(size_t nlimit)
                 
                 if(flagsum > 100) {if(ThisTask==0) {printf("Failed to converge in domain.c, flagsum=%d",flagsum); fflush(stdout); endrun(1013);}}
                 MPI_Alltoall(toGo, 1, MPI_INT, toGet, 1, MPI_INT, MPI_COMM_WORLD);
-                MPI_Alltoall(toGoSph, 1, MPI_INT, toGetSph, 1, MPI_INT, MPI_COMM_WORLD);
+                MPI_Alltoall(toGoGas, 1, MPI_INT, toGetGas, 1, MPI_INT, MPI_COMM_WORLD);
             }
             while(flag);
             
             if(flagsum)
             {
-                int *local_toGo, *local_toGoSph;
+                int *local_toGo, *local_toGoGas;
                 local_toGo = (int *) mymalloc("          local_toGo", NTask * sizeof(int));
-                local_toGoSph = (int *) mymalloc("          local_toGoSph", NTask * sizeof(int));
+                local_toGoGas = (int *) mymalloc("          local_toGoGas", NTask * sizeof(int));
 #ifdef SEPARATE_STELLARDOMAINDECOMP
                 int *local_toGoStars;
                 local_toGoStars = (int *) mymalloc("          local_toGoStars", NTask * sizeof(int));
@@ -1880,7 +1876,7 @@ int domain_countToGo(size_t nlimit)
                 for(n = 0; n < NTask; n++)
                 {
                     local_toGo[n] = 0;
-                    local_toGoSph[n] = 0;
+                    local_toGoGas[n] = 0;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
                     local_toGoStars[n] = 0;
 #endif
@@ -1901,15 +1897,15 @@ int domain_countToGo(size_t nlimit)
                         
                         if((P[n].Type & 15) == 0)
                         {
-                            if(local_toGoSph[target] < toGoSph[target] && local_toGo[target] < toGo[target])
+                            if(local_toGoGas[target] < toGoGas[target] && local_toGo[target] < toGo[target])
                             {
                                 local_toGo[target] += 1;
-                                local_toGoSph[target] += 1;
+                                local_toGoGas[target] += 1;
                                 P[n].Type |= 16;
                             }
                         }
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-                        else if((P[n].Type & 15) == 4)
+                        else if(((P[n].Type & 15) == 4) || ((P[n].Type & 15) == 5))
                         {
                             if(local_toGoStars[target] < toGoStars[target] && local_toGo[target] < toGo[target])
                             {
@@ -1933,19 +1929,19 @@ int domain_countToGo(size_t nlimit)
                 for(n = 0; n < NTask; n++)
                 {
                     toGo[n] = local_toGo[n];
-                    toGoSph[n] = local_toGoSph[n];
+                    toGoGas[n] = local_toGoGas[n];
 #ifdef SEPARATE_STELLARDOMAINDECOMP
                     toGoStars[n] = local_toGoStars[n];
 #endif
                 }
                 
                 MPI_Alltoall(toGo, 1, MPI_INT, toGet, 1, MPI_INT, MPI_COMM_WORLD);
-                MPI_Alltoall(toGoSph, 1, MPI_INT, toGetSph, 1, MPI_INT, MPI_COMM_WORLD);
+                MPI_Alltoall(toGoGas, 1, MPI_INT, toGetGas, 1, MPI_INT, MPI_COMM_WORLD);
 #ifdef SEPARATE_STELLARDOMAINDECOMP
                 MPI_Alltoall(toGoStars, 1, MPI_INT, toGetStars, 1, MPI_INT, MPI_COMM_WORLD);
                 myfree(local_toGoStars);
 #endif
-                myfree(local_toGoSph);
+                myfree(local_toGoGas);
                 myfree(local_toGo);
             }
         }
@@ -2395,19 +2391,19 @@ void domain_sumCost(void)
 {
   int i, n, no;
   float *local_domainWork;
-  float *local_domainWorkSph;
+  float *local_domainWorkGas;
   int *local_domainCount;
-  int *local_domainCountSph;
+  int *local_domainCountGas;
 
   local_domainWork = (float *) mymalloc("local_domainWork", NTopnodes * sizeof(float));
-  local_domainWorkSph = (float *) mymalloc("local_domainWorkSph", NTopnodes * sizeof(float));
+  local_domainWorkGas = (float *) mymalloc("local_domainWorkGas", NTopnodes * sizeof(float));
   local_domainCount = (int *) mymalloc("local_domainCount", NTopnodes * sizeof(int));
-  local_domainCountSph = (int *) mymalloc("local_domainCountSph", NTopnodes * sizeof(int));
+  local_domainCountGas = (int *) mymalloc("local_domainCountGas", NTopnodes * sizeof(int));
 #ifdef SEPARATE_STELLARDOMAINDECOMP
   int *local_domainCountStars;
-  //float *local_domainWorkStars;
+  float *local_domainWorkStars;
+  local_domainWorkStars = (float *) mymalloc("local_domainWorkStars", NTopnodes * sizeof(float));
   local_domainCountStars = (int *) mymalloc("local_domainCountStars", NTopnodes * sizeof(int));
-  //local_domainWorkStars = (float *) mymalloc("local_domainWorkStars", NTopnodes * sizeof(float));
 #endif
 
 
@@ -2417,11 +2413,11 @@ void domain_sumCost(void)
   for(i = 0; i < NTopleaves; i++)
     {
       local_domainWork[i] = 0;
-      local_domainWorkSph[i] = 0;
+      local_domainWorkGas[i] = 0;
       local_domainCount[i] = 0;
-      local_domainCountSph[i] = 0;
+      local_domainCountGas[i] = 0;
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-      //local_domainWorkStars[i] = 0;
+      local_domainWorkStars[i] = 0;
       local_domainCountStars[i] = 0;
 #endif
     }
@@ -2442,27 +2438,29 @@ void domain_sumCost(void)
       double wt = domain_particle_cost_multiplier(n);
       local_domainWork[no] += (1 + wt) * domain_particle_costfactor(n);
       local_domainCount[no] += 1;
-      if(TimeBinActive[P[n].TimeBin] || UseAllParticles) {local_domainWorkSph[no] += wt;}
-      if(P[n].Type == 0) {local_domainCountSph[no] += 1;}
-
+      if(P[n].Type == 0) {
+          if(TimeBinActive[P[n].TimeBin] || UseAllParticles) {local_domainWorkGas[no] += wt;}
+          local_domainCountGas[no] += 1;}
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-        if(P[n].Type == 4) {local_domainCountStars[no] += 1;}
+        if(P[n].Type == 4 || P[n].Type == 5) {
+            if(TimeBinActive[P[n].TimeBin] || UseAllParticles) {local_domainWorkStars[no] += wt;}
+            local_domainCountStars[no] += 1;}
 #endif
     }
 
   MPI_Allreduce(local_domainWork, domainWork, NTopleaves, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
-  MPI_Allreduce(local_domainWorkSph, domainWorkSph, NTopleaves, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
+  MPI_Allreduce(local_domainWorkGas, domainWorkGas, NTopleaves, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
   MPI_Allreduce(local_domainCount, domainCount, NTopleaves, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-  MPI_Allreduce(local_domainCountSph, domainCountSph, NTopleaves, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+  MPI_Allreduce(local_domainCountGas, domainCountGas, NTopleaves, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-  //MPI_Allreduce(local_domainWorkStars, domainWorkStars, NTopleaves, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
+  MPI_Allreduce(local_domainWorkStars, domainWorkStars, NTopleaves, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
   MPI_Allreduce(local_domainCountStars, domainCountStars, NTopleaves, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-  //myfree(local_domainWorkStars);
   myfree(local_domainCountStars);
+  myfree(local_domainWorkStars);
 #endif
-  myfree(local_domainCountSph);
+  myfree(local_domainCountGas);
   myfree(local_domainCount);
-  myfree(local_domainWorkSph);
+  myfree(local_domainWorkGas);
   myfree(local_domainWork);
 }
 
@@ -2524,7 +2522,7 @@ void domain_findExtent(void)
 
 
 
-void domain_add_cost(struct local_topnode_data *treeA, int noA, long long count, double cost, double sphcost)
+void domain_add_cost(struct local_topnode_data *treeA, int noA, long long count, double cost, double gascost)
 {
   int i, sub;
   long long countA, countB;
@@ -2533,23 +2531,18 @@ void domain_add_cost(struct local_topnode_data *treeA, int noA, long long count,
   countA = count - 7 * countB;
 
   cost = cost / 8;
-  sphcost = sphcost / 8;
+  gascost = gascost / 8;
 
   for(i = 0; i < 8; i++)
     {
       sub = treeA[noA].Daughter + i;
-
-      if(i == 0)
-	{count = countA;}
-      else
-	{count = countB;}
+      if(i == 0) {count = countA;} else {count = countB;}
 
       treeA[sub].Count += count;
       treeA[sub].Cost += cost;
-      treeA[sub].SphCost += sphcost;
+      treeA[sub].GasCost += gascost;
 
-      if(treeA[sub].Daughter >= 0)
-	{domain_add_cost(treeA, sub, count, cost, sphcost);}
+      if(treeA[sub].Daughter >= 0) {domain_add_cost(treeA, sub, count, cost, gascost);}
     }
 }
 
@@ -2621,7 +2614,7 @@ void domain_insertnode(struct local_topnode_data *treeA, struct local_topnode_da
       else
 	{
 	  if(treeA[noA].Daughter >= 0)
-	    domain_add_cost(treeA, noA, treeB[noB].Count, treeB[noB].Cost, treeB[noB].SphCost);
+	    domain_add_cost(treeA, noA, treeB[noB].Count, treeB[noB].Cost, treeB[noB].GasCost);
 	}
     }
   else

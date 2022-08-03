@@ -107,12 +107,7 @@ void subfind_potential_compute(int num, struct unbind_data *d, int phase, double
     for(i = 0; i < num; i++)
     {
         if(phase == 1) {if(P[d[i].index].v.DM_BindingEnergy <= weakly_bound_limit) {continue;}}
-        int p = d[i].index; double h_grav = All.ForceSoftening[P[p].Type];
-#if defined(ADAPTIVE_GRAVSOFT_FORALL)
-        h_grav = P[p].AGS_Hsml;
-#elif defined(ADAPTIVE_GRAVSOFT_FORGAS)
-        if(P[p].Type == 0) h_grav = PPP[p].Hsml;
-#endif
+        int p = d[i].index; double h_grav = ForceSoftening_KernelRadius(p);
         P[p].u.DM_Potential -= P[p].Mass / h_grav * kernel_gravity(0,1,1,-1); // subtract self-contribution here
         P[p].u.DM_Potential *= All.G / All.cf_atime;
         if(All.TotN_gas > 0 && (FOF_SECONDARY_LINK_TYPES & 1) == 0 && (FOF_PRIMARY_LINK_TYPES & 1) == 0 && All.OmegaBaryon > 0) {P[p].u.DM_Potential *= All.OmegaMatter / (All.OmegaMatter - All.OmegaBaryon);}

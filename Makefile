@@ -1,3 +1,4 @@
+
 #-----------------------------------------------------------------
 #
 # You might be looking for the compile-time Makefile options of the code...
@@ -331,6 +332,30 @@ OPT     += -DUSE_MPI_IN_PLACE -DNO_ISEND_IRECV_IN_DOMAIN -DHDF5_DISABLE_VERSION_
 ##
 endif
 
+#----------------------------------------------------------------------------------------------
+ifeq ($(SYSTYPE),"CaltechHPC")
+CC       =  mpicc
+CXX      =  mpic++
+FC       =  mpif90 -nofor_main
+OPTIMIZE = -O2 -xCORE-AVX2
+ifeq (OPENMP,$(findstring OPENMP,$(CONFIGVARS)))
+OPTIMIZE += -qopenmp
+endif
+GMP_INCL = #
+GMP_LIBS = #
+MKL_INCL = -I$(CPATH)
+MKL_LIBS = -L$(LIBRARY_PATH) -mkl=sequential
+GSL_INCL = -I$(CPATH)
+GSL_LIBS = -L$(LIBRARY_PATH)
+FFTW_INCL= -I$(CPATH)
+FFTW_LIBS= -L$(LIBRARY_PATH)
+HDF5INCL = -I$(CPATH) -DH5_USE_16_API
+HDF5LIB  = -L$(LIBRARY_PATH) -lhdf5 -lz
+MPICHLIB =
+OPT     += -DUSE_MPI_IN_PLACE -DNO_ISEND_IRECV_IN_DOMAIN -DHDF5_DISABLE_VERSION_CHECK
+# Compiles with following modules:   1) intel/20.1    2) hdf5/1.10.1   3) gsl/2.4       4) fftw/3.3.7
+endif
+
 
 #----------------------------------------------------------------------------------------------
 ifeq ($(SYSTYPE),"Bridges2")
@@ -379,20 +404,20 @@ CXX      = mpic++
 FC       = mpif90  # gcc/clang
 #FC       = mpif90 -nofor_main  # intel
 OPTIMIZE = -O3
-OPTIMIZE += -march=znver1 -mfma -fvectorize -mfma -mavx2 -m3dnow -floop-unswitch-aggressive -fcommon  # aocc/clang
+OPTIMIZE += -march=znver3 -mfma -fvectorize -mfma -mavx2 -m3dnow -floop-unswitch-aggressive -fcommon  # aocc/clang
 #OPTIMIZE += -march=znver1 -mtune=znver1 -mfma -mavx2 -m3dnow -fomit-frame-pointer -fcommon  # gcc
 #OPTIMIZE += -march=core-avx2 -fma -ftz -fomit-frame-pointer -ipo -funroll-loops -no-prec-div -fp-model fast=2  # intel
 ifeq (OPENMP,$(findstring OPENMP,$(CONFIGVARS)))
 OPTIMIZE += -fopenmp  # gcc/clang
 #OPTIMIZE += -qopenmp  # intel
 endif
-MKL_INCL = -I$(C_INCLUDE_PATH)
+MKL_INCL = -I$(CPATH)
 MKL_LIBS = -L$(LIBRARY_PATH) -mkl=sequential
-GSL_INCL = -I$(C_INCLUDE_PATH)
+GSL_INCL = -I$(CPATH)
 GSL_LIBS = -L$(LIBRARY_PATH)
-FFTW_INCL= -I$(C_INCLUDE_PATH)
+FFTW_INCL= -I$(CPATH)
 FFTW_LIBS= -L$(LIBRARY_PATH)
-HDF5INCL = -I$(C_INCLUDE_PATH) -DH5_USE_16_API
+HDF5INCL = -I$(CPATH) -DH5_USE_16_API
 HDF5LIB  = -L$(LIBRARY_PATH) -lhdf5 -lz
 MPICHLIB =
 OPT     += -DUSE_MPI_IN_PLACE
@@ -427,7 +452,8 @@ MPICHLIB =
 OPT     += -DUSE_MPI_IN_PLACE
 endif
 ## modules to load:
-##     module load comp-intel mpi-hpe/mpt pkgconfig
+##     module load comp-intel mpi-hpe/mpt pkgconfig (older setup)
+##     module load comp-intel mpi-hpe/mpt pkgsrc/2021Q2 (newer setup)
 ## also add this to your .bashrc (after loading the modules above):
 ##     export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$PKGSRC_BASE/lib
 ## FFTW: Pleiades does not have an MPI-enabled FFTW, so install your own version in your home directory
@@ -631,40 +657,37 @@ endif
 
 #----------------------------------------------------------------------------------------------
 ifeq ($(SYSTYPE),"SciNet")
-CC       =  mpicc     # sets the C-compiler
-OPTIMIZE =  -O1 -xHost -funroll-loops -no-prec-div -fast-transcendentals -fp-model fast=2 -ipo  # speed
-#OPTIMIZE += -openmp -parallel -par-num-threads=4  # for openmp mode
-OPTIMIZE += -g -debug parallel -Wall  # warnings
+CC		 = mpicc
+OPTIMIZE = -O2 -xHost -funroll-loops -no-prec-div -fast-transcendentals -fp-model fast=2 -ipo
+#OPTIMIZE += -g -Wall # Uncomment for debugging.
 ifeq (OPENMP,$(findstring OPENMP,$(CONFIGVARS)))
-OPTIMIZE +=-openmp -parallel  # openmp required compiler flags
+	OPTIMIZE += -qopenmp -parallel   # openmp required compiler flags
 endif
 FC       =  $(CC)
-GSL_INCL =  -I${SCINET_GSL_INC}
-GSL_LIBS =  -L${SCINET_GSL_LIB} #-limf
-FFTW_INCL=  -I${SCINET_FFTW_INC}
-FFTW_LIBS=  -L${SCINET_FFTW_LIB}
+GSL_INCL =  -I${SCINET_GSL_ROOT}/include
+GSL_LIBS =  -L${SCINET_GSL_ROOT}/lib -mkl
+FFTW_INCL=  -I${SCINET_FFTW_MPI_ROOT}/include
+FFTW_LIBS=  -L${SCINET_FFTW_MPI_ROOT}/lib
 MPICHLIB =
-HDF5INCL =  -I${SCINET_HDF5_INC} -DH5_USE_16_API
-HDF5LIB  =  -L${SCINET_HDF5_LIB} -lhdf5 -lz
+HDF5INCL =  -I${SCINET_HDF5_ROOT}/include -DH5_USE_16_API
+HDF5LIB  =  -L${SCINET_HDF5_ROOT}/lib -lhdf5 -lz
 MPICHLIB =
+OPT     += -DUSE_MPI_IN_PLACE -DHDF5_DISABLE_VERSION_CHECK
 ##
-## Notes:
+## Notes [Fergus Horrobin]:
 ## 
-### benchmarking suggests these optimizations, 256 cores with omp=4 or 2, no DOUBLE, multidomain=16 or 32, altogether gives best performance in
-###   simple galaxy merger experiment (6x speedup over 16-core run with old-but-highly-optimized code).
+## As of December 2021 it seems that the following way of loading the modules gives the best performance:
+##		module load intel intelmpi gsl hdf5 fftw
+## Experiment with OPENMP=2 or =4 especially for larger (>4 node) runs. MULTIPLEDOMAINS=16 seems to be helpful as
+## well but this may be problem specific.
 ##
-## module load intel use.experimental openmpi/intel/1.6.0 gsl fftw/2.1.5-intel-openmpi hdf5/intel-openmpi/1.8.9
-## NOTYPEPREFIX_FFTW should not be set on this machine
-## 
-## flags: 
-## OPT      += -DNOCALLSOFSYSTEM -DMPICH_IGNORE_CXX_SEEK -DNO_ISEND_IRECV_IN_DOMAIN
-##   -- these used to be recommended, with new compiler settings they don't seem necessary, but may help
-## If memory problems crash the code, recommend small-scale chunking: MPISENDRECV_SIZELIMIT=10-100 (but this costs speed!)
+## FFTW is FFTW3 on SciNet so you must enable the USE_FFTW3 compiler flag.
 ##
-## old options with intelmpi (not as good as openmpi):
-##    module load intel intelmpi gsl fftw/2.1.5-intel-intelmpi4 use.experimental hdf5/intelmpi/1.8.9
-##    OPTIMIZE =  -O2 -m64 -mt_mpi -openmp -xhost -g -debug parallel -mcmodel=medium -funroll-loops -Wall
+## Tested on planet disk interaction problem in 3D, strong and weak scaling are comparable to the ones presented in code
+## paper, tested for 16-256 nodes.
 ##
+## I am currently using -O2 since -O3 seems to be slightly slower for my testing, though the results seems to be the
+## same. -O1 is slightly slower and does not seem to yield better accuracy for my testing but you should experiment.
 endif
 
 
@@ -1115,14 +1138,28 @@ endif
 ifeq ($(SYSTYPE),"CITA")
 CC       =  mpicc
 CXX      =  mpicxx
-OPTIMIZE =  -O3 -Wall
-GSL_INCL =  -I/usr/include/gsl
-GSL_LIBS =  -L/usr/lib/libgsl
-FFTW_INCL=  -I/opt/fftw-2.1.5/include
-FFTW_LIBS=  -L/opt/fftw-2.1.5/lib
-MPICHLIB =  -L/usr/lib/libmpi
-HDF5INCL =  -I/usr/include
-HDF5LIB  =  -L/usr/lib/libhdf5 -static -lhdf5 -lz
+OPTIMIZE =  -O2 -xHost -funroll-loops -no-prec-div -fast-transcendentals -fp-model fast=2 -ipo
+#OPTIMIZE+= -g -Wall # For debugging
+ifeq (OPENMP,$(findstring OPENMP,$(CONFIGVARS)))
+	OPTIMIZE += -qopenmp -parallel   # openmp required compiler flags
+endif
+FC       =  $(CC)
+GSL_INCL =  -I/cita/modules/gsl-2.1-intel-19.1.3/include/gsl
+GSL_LIBS =  -L/cita/modules/gsl/2.7.1-intel-19.1.3/lib -mkl
+FFTW_INCL=  -I/cita/modules/fftw/3.3.10-intelmpi/include
+FFTW_LIBS=  -L/cita/modules/fftw/3.3.10-intelmpi/lib
+MPICHLIB =
+HDF5INCL =  -I/cita/modules/hdf5/1.12.1-intel/include -DH5_USE_16_API
+HDF5LIB  =  -L/citac/modules/hdf5/1.12.1-intel/lib -lhdf5 -lz
+OPT     += -DUSE_MPI_IN_PLACE -DHDF5_DISABLE_VERSION_CHECK
+## Notes [Fergus Horrobin]:
+##
+## The module system was updated in February 2022 on all CITA systems. The new modules that should be loaded are:
+##    module load intel intelmpi gsl/2.7.1-intel-19.1.3 hdf5/1.12.1-intel fftw/3.3.10-intelmpi
+##
+## The above settings and modules should work equally well on all the upgraded workstations as well as on Sunnyvale.
+## The module system was just updated so this has not been tested in detail yet but seems to work as well or a bit
+## better than it did with the old modules on a few test problems.
 endif 
 
 

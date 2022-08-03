@@ -118,7 +118,7 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
     if(mode == 0) {INPUTFUNCTION_NAME(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];} /* imports the data to the correct place and names */
     double h_i = local.Hsml, wk, dwk, vrel, vesc, dpos[3], dvel[3], f_accreted; f_accreted=1;
     if((local.Mass<0)||(h_i<=0)) {return 0;}
-    double w, p, r2, r, u, sink_radius=All.ForceSoftening[5], h_i2 = h_i * h_i, hinv = 1 / h_i, hinv3 = hinv * hinv * hinv, ags_h_i = All.ForceSoftening[5]; p=0; w=0;
+    double w, p, r2, r, u, sink_radius=SinkParticle_GravityKernelRadius, h_i2 = h_i * h_i, hinv = 1 / h_i, hinv3 = hinv * hinv * hinv, ags_h_i = SinkParticle_GravityKernelRadius; p=0; w=0;
 #ifdef BH_REPOSITION_ON_POTMIN
     out.BH_MinPot = BHPOTVALUEINIT;
 #endif
@@ -178,7 +178,7 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
 #if (BH_REPOSITION_ON_POTMIN == 2)
                         if( boundedness_function < 0 )
                         {
-                            double wt_rsoft = r / (3.*All.ForceSoftening[5]); // normalization arbitrary here, just using for convenience for function below
+                            double wt_rsoft = r / (3.*SinkParticle_GravityKernelRadius); // normalization arbitrary here, just using for convenience for function below
                             boundedness_function *= 1./(1. + wt_rsoft*wt_rsoft); // this down-weights particles which are very far away, relative to the user-defined force softening scale, which should define some 'confidence radius' of resolution around the BH particle
                         }
                         potential_function = boundedness_function; // jumps based on -most bound- particle, not just deepest potential (down-weights fast-movers)
@@ -202,7 +202,7 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
                         if(P[j].Type == 5)  /* we may have a black hole merger -- check below if allowed */
                             if((local.ID != P[j].ID) && (SwallowID_j == 0) && (BPP(j).BH_Mass < local.BH_Mass)) /* we'll assume most massive BH swallows the other - simplifies analysis and ensures unique results */
 #ifdef SINGLE_STAR_SINK_DYNAMICS
-                            if((r < 1.0001*P[j].min_dist_to_bh) && (r < PPP[j].Hsml) && (r < sink_radius) && (P[j].Mass < local.Mass) && (P[j].Mass < 10*All.MeanGasParticleMass)) /* only merge away stuff that is within the softening radius, and is no more massive that a few gas particles */
+                            if((r < 1.0001*P[j].min_dist_to_bh) && (r < PPP[j].Hsml) && (r < sink_radius) && ((P[j].Mass < local.Mass) || ((P[j].Mass == local.Mass) && (P[j].ID < local.ID))) && (P[j].Mass < 10.*P[j].Sink_Formation_Mass)) /* only merge away stuff that is within the softening radius, and is no more massive that a few gas particles */
 #endif
                             {
                                 if((vrel < vesc) && (bh_check_boundedness(j,vrel,vesc,r,sink_radius)==1))
@@ -211,9 +211,9 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
                                     SwallowID_j = local.ID;
                                 } else {
 #if defined(BH_OUTPUT_MOREINFO)     // DAA: BH merger info will be saved in a separate output file
-                                    printf(" ..ThisTask=%d, time=%g: id=%u would like to swallow %u, but vrel=%g vesc=%g\n", ThisTask, All.Time, local.ID, P[j].ID, vrel, vesc);
+                                    printf(" ..ThisTask=%d, time=%g: id=%llu would like to swallow %llu, but vrel=%g vesc=%g\n", ThisTask, All.Time, (unsigned long long)local.ID, (unsigned long long)P[j].ID, vrel, vesc);
 #elif !defined(IO_REDUCED_MODE)
-                                    fprintf(FdBlackHolesDetails, "ThisTask=%d, time=%g: id=%u would like to swallow %u, but vrel=%g vesc=%g\n", ThisTask, All.Time, local.ID, P[j].ID, vrel, vesc); fflush(FdBlackHolesDetails);
+                                    fprintf(FdBlackHolesDetails, "ThisTask=%d, time=%g: id=%llu would like to swallow %llu, but vrel=%g vesc=%g\n", ThisTask, All.Time, (unsigned long long)local.ID, (unsigned long long)P[j].ID, vrel, vesc); fflush(FdBlackHolesDetails);
 #endif
                                 }
                             } // if eligible for bh-bh mergers //

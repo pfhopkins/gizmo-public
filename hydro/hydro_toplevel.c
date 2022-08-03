@@ -26,9 +26,10 @@
  rho_code = rho_physical * a^3 (from length/mass scaling)
  InternalEnergy_code = InternalEnergy_physical
  Pressure_code =
-    InternalEnergy_code * rho_code * (gamma-1) = Pressure_physical * a^3 (energy SPH)
-    -- the distinction between these cases and e.g. entropy sph (now depricated)
-        should be taken care of in the factors
+    InternalEnergy_code * rho_code * (gamma-1) = Pressure_physical * a^3 (energy formulations)
+    -- the distinction between these cases, i.e. all standard/default modes of the code in which
+        we evolve the energy, and e.g. entropy sph (now depricated, but possible if the right flags
+        are set in older versions fo the code) should be taken care of in the factors
         All.cf_afac1/2/3, which will correctly assign between the two --
  B_code = a*a * B_physical (comoving magnetic fields)
  Phi_code = B_code*v_code = a^3 * Phi_physical (damping field for Dedner divergence cleaning)
@@ -607,7 +608,7 @@ static inline void out2particle_hydra(struct OUTPUT_STRUCT_NAME *out, int i, int
 #endif
 
 #if defined(MAGNETIC)
-    /* can't just do DtB += out-> DtB, because for SPH methods, the induction equation is solved in the density loop; need to simply add it here */
+    /* can't just do DtB += out-> DtB, because for some hydro methods, the induction equation is solved in the density loop; need to simply add it here */
     for(k=0;k<3;k++) {SphP[i].DtB[k] += out->DtB[k]; SphP[i].Face_Area[k] += out->Face_Area[k];}
     SphP[i].divB += out->divB;
 #if defined(DIVBCLEANING_DEDNER)
@@ -813,8 +814,7 @@ void hydro_final_operations_and_cleanup(void)
             
 #if (defined(COSMIC_RAY_FLUID) && !defined(COOLING_OPERATOR_SPLIT)) || defined(FLAG_NOT_IN_PUBLIC_CODE)
             /* with the spectrum model, we account here the adiabatic heating/cooling of the 'fluid', here, which was solved in the hydro solver but doesn't resolve which portion goes to CRs and which to internal energy, with gamma=GAMMA_COSMICRAY */
-            double gamma_minus_eCR_tmp=0;
-            for(k=0;k<N_CR_PARTICLE_BINS;k++) {gamma_minus_eCR_tmp+=(GAMMA_COSMICRAY(k)-1.)*SphP[i].CosmicRayEnergyPred[k];} // routine below only depends on the total CR energy, not bin-by-bin energies, when we do it this way here
+            double gamma_minus_eCR_tmp=0; for(k=0;k<N_CR_PARTICLE_BINS;k++) {gamma_minus_eCR_tmp+=(GAMMA_COSMICRAY(k)-1.)*SphP[i].CosmicRayEnergyPred[k];} // routine below only depends on the total CR energy, not bin-by-bin energies, when we do it this way here
             double dCR_div = CR_calculate_adiabatic_gasCR_exchange_term(i, dt, gamma_minus_eCR_tmp, 1); // this will handle the update below - separate subroutine b/c we want to allow it to appear in a couple different places
             double u0=DMAX(SphP[i].InternalEnergyPred, All.MinEgySpec) , uf=DMAX(u0 - dCR_div/P[i].Mass , All.MinEgySpec); // final updated value of internal energy per above
             SphP[i].DtInternalEnergy += (uf - u0) / (dt + MIN_REAL_NUMBER); // update gas quantities to be used in cooling function

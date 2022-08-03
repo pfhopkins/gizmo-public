@@ -1,5 +1,5 @@
 /* --------------------------------------------------------------------------------- */
-/* this is the sub-routine where we actually evaluate the SPH equations of motion */
+/* this is the sub-routine where we actually evaluate the gas/fluid continuum equations of motion if we use SPH formulations */
 /*
  * This file was written by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
  */
@@ -29,7 +29,6 @@
     /* --------------------------------------------------------------------------------- */
     double vi_dot_r,hfc,hfc_visc,hfc_i,hfc_j,hfc_dwk_i,hfc_dwk_j,hfc_egy=0,wt_corr_i=1,wt_corr_j=1;;
     /* 'Standard' (Lagrangian) Density Formulation: the acceleration term is identical whether we use 'entropy' or 'energy' sph */
-    /* (this step is the same in both 'Lagrangian' and 'traditional' SPH */
 
 #if defined(EOS_TILLOTSON) || defined(EOS_ELASTIC) /* need to include an effective stress for large negative pressures when elements are too close, to prevent tensile instability */
     if(local.Pressure < 0) {wt_corr_i = 1. - tensile_correction_factor;}

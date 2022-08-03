@@ -54,7 +54,11 @@ void disp_particle2in_density(struct INPUT_STRUCT_NAME *in, int i, int loop_iter
 /* this structure defines the variables that need to be sent -back to- the 'searching' element */
 static struct OUTPUT_STRUCT_NAME
 {
-    MyLongDouble Ngb, DM_Vel_Disp, DM_Vx, DM_Vy, DM_Vz;
+    MyLongDouble Ngb;
+    MyLongDouble DM_Vel_Disp;
+    MyLongDouble DM_Vx;
+    MyLongDouble DM_Vy;
+    MyLongDouble DM_Vz;
 }
 *DATARESULT_NAME, *DATAOUT_NAME;
 

@@ -1319,7 +1319,10 @@ void HLLD_Riemann_solver(struct Input_vec_Riemann Riemann_vec, struct Riemann_ou
     {
         
         /* ok, we are supersonically separating, the only safe thing to do is to assign no fluxes of conserved quantities */
-        P_M = MIN_REAL_NUMBER; S_M = v_frame = Riemann_out->B_normal_corrected = Riemann_out->phi_normal_mean = Riemann_out->phi_normal_db = 0; // vanishing //
+        P_M = MIN_REAL_NUMBER; S_M = v_frame = Riemann_out->B_normal_corrected = 0; // vanishing //
+#ifdef DIVBCLEANING_DEDNER
+        Riemann_out->phi_normal_mean = Riemann_out->phi_normal_db = 0; // vanishing
+#endif
         memset(&Riemann_out->Fluxes, 0, sizeof(struct Conserved_var_Riemann)); // set all fluxes to vanish //
         memset(Interface_State, 0, sizeof(struct Conserved_var_Riemann)); // interface state is also vanishing (for subsequent fluxes) //
         

@@ -120,7 +120,7 @@ void apply_grain_dragforce(void)
                     if(bmag>0) {bmag=sqrt(bmag); for(k=0;k<3;k++) {bhat[k]/=bmag;}} else {bmag=0;}
                     double grain_charge_cinv = Z_grain / grain_mass * lorentz_units;
 #ifdef GRAIN_RDI_TESTPROBLEM
-                    if(All.Grain_Charge_Parameter != 0) {grain_charge_cinv = -All.Grain_Charge_Parameter/All.Grain_Size_Max * pow(All.Grain_Size_Max/P[i].Grain_Size,2);} // set charge manually //
+                    if(All.Grain_Charge_Parameter != 0) {grain_charge_cinv = -All.Grain_Charge_Parameter*sqrt(1.)/((All.Grain_Internal_Density/UNIT_DENSITY_IN_CGS)*(All.Grain_Size_Max/UNIT_LENGTH_IN_CGS)) * pow(All.Grain_Size_Max/P[i].Grain_Size,2);} // set charge manually; this gives 1/t_Lorentz in code units: the sqrt[1] reflects the expected mean density of the box in code units [this is hard-coded for the RDI_testproblem set!] //
                     //if(fabs(grain_charge_cinv)>0) {grain_charge_cinv /= 1.e-3 + P[i].Gas_Density;} /* this is the 'photoelectric' scaling for isothermal gas; modify for your charge law */
 #endif
                     /* now apply the boris integrator */
@@ -176,48 +176,69 @@ void apply_grain_dragforce(void)
             {
                 double reduced_C = PIC_SPEEDOFLIGHT_REDUCTION * C_LIGHT_CODE; /* effective speed of light for this part of the code */
                 double charge_to_mass_ratio_dimensionless = All.PIC_Charge_to_Mass_Ratio; /* dimensionless q/m in units of e/mp */
-                //if(grain_subtype==4) {charge_to_mass_ratio_dimensionless = -1836.15; /* electrons */
-
-                double lorentz_units = UNIT_B_IN_GAUSS * UNIT_VEL_IN_CGS * (ELECTRONCHARGE_CGS/(PROTONMASS_CGS*C_LIGHT_CGS)) / (UNIT_VEL_IN_CGS/UNIT_TIME_IN_CGS); // code velocity to CGS and B to Gauss, times base units e/(mp*c), then convert 'back' to code-units acceleration
+                /* if(grain_subtype==4) {charge_to_mass_ratio_dimensionless = -1836.15; */ /* e.g. electons */
+                double dt_cgs = dt * UNIT_TIME_IN_CGS; /* convert to cgs for use below */
+                
+                double lorentz_units = 1./C_LIGHT_CGS; /* code velocity to CGS and B to Gauss, times base units e/(mp*c), then convert 'back' to code-units acceleration -- need to make sure this works with definitions below, with everything in cgs (see line for efield_coeff below) */
 #ifdef PIC_MHD_NEW_RSOL_METHOD
-                lorentz_units *= PIC_SPEEDOFLIGHT_REDUCTION; // the rsol enters by slowing down the forces here, acts as a unit shift for time
+                lorentz_units *= PIC_SPEEDOFLIGHT_REDUCTION; /* the rsol enters by slowing down the forces here, acts as a unit shift for time */
 #endif
-                double efield[3], bhat[3]={0}, bmag=0, v_g[3]; /* define unit vectors and B for evolving the lorentz force */
-                for(k=0;k<3;k++) {bhat[k]=P[i].Gas_B[k]*All.cf_a2inv; bmag+=bhat[k]*bhat[k]; v_g[k]=P[i].Gas_Velocity[k]/(All.cf_atime*reduced_C);} /* get magnitude and unit vector for B, and vector beta [-true- beta here] */
-                if(bmag>0) {bmag=sqrt(bmag); for(k=0;k<3;k++) {bhat[k]/=bmag;}} else {bmag=0;} /* take it correctly assuming its non-zero */
-                double efield_coeff = (0.5*dt) * charge_to_mass_ratio_dimensionless * bmag * lorentz_units; // dimensionless half-timestep term for boris integrator //
-                efield[0] = -v_g[1]*bhat[2] + v_g[2]*bhat[1]; efield[1] = -v_g[2]*bhat[0] + v_g[0]*bhat[2]; efield[2] = -v_g[0]*bhat[1] + v_g[1]*bhat[0]; /* efield term, but with magnitude of B factored out for units above */
-                double v_0[3],v0[3],vf[3],v2=0; for(k=0;k<3;k++) {v0[k]=P[i].Vel[k]/All.cf_atime; v2+=v0[k]*v0[k];} // magnitude of velocity [this is reduced from c]
-                if(v2 >= reduced_C*reduced_C) {PRINT_WARNING("VELOCITY HAS EXCEEDED THE SPEED OF LIGHT. BAD.");} // check against reduced c
-                double gamma_0=1/sqrt(1-v2/(reduced_C*reduced_C)); for(k=0;k<3;k++) {v_0[k]=v0[k]*gamma_0/reduced_C;} // calculate true gamma, convert to the momentum term ~gamma*beta (this times mc is true scalar momentum)
+                double efield[3], bhat[3]={0}, Bmag=0, beta_true_gas[3]; /* define unit vectors and B for evolving the lorentz force */
+                for(k=0;k<3;k++) {
+                    bhat[k]=P[i].Gas_B[k]*All.cf_a2inv;
+                    Bmag+=bhat[k]*bhat[k];
+                    beta_true_gas[k]=P[i].Gas_Velocity[k]/(All.cf_atime*C_LIGHT_CODE);} /* get magnitude and unit vector for B, and vector beta [-true- beta here] */
+                if(Bmag>0) {
+                    Bmag=sqrt(Bmag);
+                    for(k=0;k<3;k++) {bhat[k]/=Bmag;}}
+                else {Bmag=0;} /* take it correctly assuming its non-zero */
+                double Bmag_cgs = Bmag * UNIT_B_IN_GAUSS; /* convert to cgs */
+                double efield_coeff = (0.5*dt_cgs) * (charge_to_mass_ratio_dimensionless * ELECTRONCHARGE_CGS/PROTONMASS_CGS) * Bmag_cgs * lorentz_units; /* dimensionless half-timestep term for boris integrator */
+                efield[0] = -beta_true_gas[1]*bhat[2] + beta_true_gas[2]*bhat[1]; /* E = -(ugas/c) cross B used here */
+                efield[1] = -beta_true_gas[2]*bhat[0] + beta_true_gas[0]*bhat[2];
+                efield[2] = -beta_true_gas[0]*bhat[1] + beta_true_gas[1]*bhat[0]; /* efield term, but with magnitude of B factored out for units above */
+                double betagamma_0[3],beta_true_cr_0[3],beta_true_cr_f[3],beta2_true_cr=0;
+                for(k=0;k<3;k++) {
+                    beta_true_cr_0[k]=P[i].Vel[k]/(All.cf_atime*reduced_C);
+                    beta2_true_cr+=beta_true_cr_0[k]*beta_true_cr_0[k];} /* magnitude of velocity [this is reduced from c] */
+                if(beta2_true_cr >= 1) {PRINT_WARNING("VELOCITY HAS EXCEEDED THE SPEED OF LIGHT. BAD.");} /* check against reduced c */
+                double gamma_0=1/sqrt(1-beta2_true_cr); for(k=0;k<3;k++) {betagamma_0[k]=beta_true_cr_0[k]*gamma_0;} /* calculate true gamma, convert to the momentum term ~gamma*beta (this times mc is true scalar momentum) */
 
                 /* now apply the boris integrator */
-                double v_m[3]={0}, v_t[3]={0}, v_p[3]={0}, vcrosst[3]={0}, lorentz_coeff=efield_coeff;
-                for(k=0;k<3;k++) {v_m[k] = v_0[k] + efield_coeff*efield[k];} // first half-step from E-field
-                lorentz_coeff /= sqrt(1+v_m[0]*v_m[0]+v_m[1]*v_m[1]+v_m[2]*v_m[2]); // lorentz factor at this mid-point jump (recall v_m is a 'beta~v/c' here) is needed to correct the factor for the B-field term
-                vcrosst[0] = v_m[1]*bhat[2] - v_m[2]*bhat[1]; vcrosst[1] = v_m[2]*bhat[0] - v_m[0]*bhat[2]; vcrosst[2] = v_m[0]*bhat[1] - v_m[1]*bhat[0]; // cross-product for rotation
-                for(k=0;k<3;k++) {v_t[k] = v_m[k] + lorentz_coeff * vcrosst[k];} // first half-rotation
-                vcrosst[0] = v_t[1]*bhat[2] - v_t[2]*bhat[1]; vcrosst[1] = v_t[2]*bhat[0] - v_t[0]*bhat[2]; vcrosst[2] = v_t[0]*bhat[1] - v_t[1]*bhat[0];
-                for(k=0;k<3;k++) {v_p[k] = v_m[k] + (2.*lorentz_coeff/(1.+lorentz_coeff*lorentz_coeff)) * vcrosst[k];} // second half-rotation
-                for(k=0;k<3;k++) {v_p[k] += efield_coeff*efield[k];} // second half-step from E-field. v_p now contains the final scalar momentum in dimensionless units, i.e. gamma*beta. so this divided by gamma gives final beta
-                double vp2=v_p[0]*v_p[0]+v_p[1]*v_p[1]+v_p[2]*v_p[2], gamma_f=sqrt(1+vp2); for(k=0;k<3;k++) {vf[k]=reduced_C*v_p[k]/gamma_f;} // convert back to a velocity 'vf' which is always <= reduced_C - this is now the 'effective' velocity with which CRs will propagate
+                double betagamma_m[3]={0}, betagamma_t[3]={0}, betagamma_p[3]={0}, beta_b_crosst[3]={0};
+                for(k=0;k<3;k++) {betagamma_m[k] = betagamma_0[k] + efield_coeff*efield[k];} /* first half-step from E-field */
+                /* for the integrator, we want to write the equation of motion as dudt = u cross Q. currently have d[beta_gamma]dtau = lorentz_coeff_0 * beta cross bhat, [with lorentz_coeff_0 = efield_coeff identical from above]
+                    so need to multiply RHS by gamma/gamma -> d[beta_gamma]dtau = (lorentz_coeff_0/gamma)* (beta_gamma cross bhat) = lorentz_coeff_tau * (beta_gamma cross bhat).
+                    use 1/sqrt[1+|beta_gamma|^2] = 1/gamma, to convert this appropriately */
+                double lorentz_coeff_tau = efield_coeff / sqrt(1+betagamma_m[0]*betagamma_m[0]+betagamma_m[1]*betagamma_m[1]+betagamma_m[2]*betagamma_m[2]); /* lorentz factor at this mid-point jump (recall betagamma_m is a 'beta~v/c' here) is needed to correct the factor for the B-field term */
+                beta_b_crosst[0] = betagamma_m[1]*bhat[2] - betagamma_m[2]*bhat[1];
+                beta_b_crosst[1] = betagamma_m[2]*bhat[0] - betagamma_m[0]*bhat[2];
+                beta_b_crosst[2] = betagamma_m[0]*bhat[1] - betagamma_m[1]*bhat[0]; /* cross-product for rotation */
+                for(k=0;k<3;k++) {betagamma_t[k] = betagamma_m[k] + lorentz_coeff_tau * beta_b_crosst[k];} /* first half-rotation [generates the intermediate state we need for this integrator] */
+                beta_b_crosst[0] = betagamma_t[1]*bhat[2] - betagamma_t[2]*bhat[1];
+                beta_b_crosst[1] = betagamma_t[2]*bhat[0] - betagamma_t[0]*bhat[2];
+                beta_b_crosst[2] = betagamma_t[0]*bhat[1] - betagamma_t[1]*bhat[0];
+                for(k=0;k<3;k++) {betagamma_p[k] = betagamma_m[k] + (2.*lorentz_coeff_tau/(1.+lorentz_coeff_tau*lorentz_coeff_tau)) * beta_b_crosst[k];} /* second half-rotation */
+                for(k=0;k<3;k++) {betagamma_p[k] += efield_coeff*efield[k];} /* second half-step from E-field. betagamma_p now contains the final scalar momentum in dimensionless units, i.e. gamma*beta. so this divided by gamma gives final beta */
+                double betagamma2_p=betagamma_p[0]*betagamma_p[0]+betagamma_p[1]*betagamma_p[1]+betagamma_p[2]*betagamma_p[2], gamma_f=sqrt(1+betagamma2_p); /* this converts from betagamma to just gamma */
+                for(k=0;k<3;k++) {beta_true_cr_f[k]=betagamma_p[k]/gamma_f;} /* convert back to a velocity 'beta_true_cr_f' which is always <= 1 - this is now the 'effective' velocity with which CRs will propagate */
 
                 for(k=0;k<3;k++)
                 {
 #ifdef GRAIN_BACKREACTION
-                    double delta_momentum = P[i].Mass * (vf[k]*gamma_f - v0[k]*gamma_0) * All.cf_atime; /* account for lorentz factor in calculating the discrete momentum change here [put into code units] */
+                    double delta_momentum = P[i].Mass * C_LIGHT_CODE * (beta_true_cr_f[k]*gamma_f - beta_true_cr_0[k]*gamma_0) * All.cf_atime; /* account for lorentz factor in calculating the discrete momentum change here [put into code units] -- this is the 'true' (no RSOL) momentum change */
 #ifdef PIC_MHD_NEW_RSOL_METHOD
-                    delta_momentum /= PIC_SPEEDOFLIGHT_REDUCTION*PIC_SPEEDOFLIGHT_REDUCTION; // the real force back on the gas is the difference in the conserved quantity, Delta[(c/tilde[c]*gamma*beta_vector*mc], which requires multiplying the above by (c/RSOL)^2
+                    delta_momentum /= PIC_SPEEDOFLIGHT_REDUCTION; /* the real force back on the gas is given by the difference in the conserved quantity we would have without an RSOL, Delta[(c/tilde[c]*gamma*beta_vector*mc], which requires multiplying the above by (c/RSOL) */
 #endif
-                    P[i].Grain_DeltaMomentum[k] += delta_momentum; // save to couple back to gas in loop below
+                    P[i].Grain_DeltaMomentum[k] += delta_momentum; /* save to couple back to gas in loop below */
 #endif
-                    P[i].GravAccel[k] += (vf[k]-v0[k]) / (dt * All.cf_a2inv); /* update acceleration with the kick from the full boris push above [put into code units] */
+                    P[i].GravAccel[k] += (beta_true_cr_f[k]-beta_true_cr_0[k]) * reduced_C / (dt * All.cf_a2inv); /* update acceleration with the kick from the full boris push above [put into code units] */
                 }
-            } // closes check for gas density, dt, vmag > 0, subtype valid
+            } /* closes check for gas density, dt, vmag > 0, subtype valid */
 #endif
 
-        } // closes check for particle type, id
-    } // closes main particle loop (loop over active particles)
+        } /* closes check for particle type, id */
+    } /* closes main particle loop (loop over active particles) */
 #if defined(GRAIN_BACKREACTION)
     grain_backrx(); /* call parent routine to assign the back-reaction force among neighbors */
 #endif

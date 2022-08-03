@@ -1858,7 +1858,7 @@ void fof_make_black_holes(void)
         /* record that we actually made a BH, count numbers for book-keeping in domains */
 #if (BH_SEED_FROM_FOF != 1)
         Stars_converted++;
-        TimeBinCountSph[P[import_indices[n]].TimeBin]--;
+        TimeBinCountGas[P[import_indices[n]].TimeBin]--;
 #endif
 
     }
@@ -1889,7 +1889,7 @@ int compare_group_mass_ID(const void *a, const void *b)
   return 0;
 }
 
-void fof_assign_HostHaloMass(void)	/* assigns mass of host FoF group to SphP[].HostHaloMass for SPH particles */
+void fof_assign_HostHaloMass(void)	/* assigns mass of host FoF group to SphP[].HostHaloMass for fluid cells */
 {
   int i, j, k, start, lenloc, nimport;
   struct group_mass_MinID *required_groups, *groups_to_export;
@@ -2335,7 +2335,7 @@ void read_fof(int num)
 		    {
 		      MPI_Send(&nsend, 1, MPI_INT, target, TAG_HEADER, MPI_COMM_WORLD);
 		      MPI_Send(&tmpID_list[stored], nsend * sizeof(fof_id_list), MPI_BYTE,
-			       target, TAG_SPHDATA, MPI_COMM_WORLD);
+			       target, TAG_GASDATA, MPI_COMM_WORLD);
 		    }
 
 		  nids_to_get[target] -= nsend;
@@ -2363,7 +2363,7 @@ void read_fof(int num)
 	    {
 	      MPI_Recv(&nsend, 1, MPI_INT, 0, TAG_HEADER, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 	      MPI_Recv(&ID_list[nids_obtained[ThisTask]], nsend * sizeof(fof_id_list), MPI_BYTE,
-		       0, TAG_SPHDATA, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+		       0, TAG_GASDATA, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
 	      nids_to_get[ThisTask] -= nsend;
 	      nids_obtained[ThisTask] += nsend;

@@ -45,10 +45,12 @@ long long report_comittable_memory(long long *MemTotal,
 void merge_and_split_particles(void);
 int does_particle_need_to_be_merged(int i);
 int does_particle_need_to_be_split(int i);
-double target_mass_renormalization_factor_for_mergesplit(int i);
-void merge_particles_ij(int i, int j);
-//void split_particle_i(int i, int n_particles_split, int i_nearest, double r2_nearest);
-void split_particle_i(int i, int n_particles_split, int i_nearest);
+double target_mass_renormalization_factor_for_mergesplit(int i, int split_key);
+#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+int check_if_sufficient_mergesplit_time_has_passed(int i);
+#endif
+int merge_particles_ij(int i, int j);
+int split_particle_i(int i, int n_particles_split, int i_nearest);
 double gamma_eos(int i);
 void do_first_halfstep_kick(void);
 void do_second_halfstep_kick(void);
@@ -95,7 +97,7 @@ void compute_additional_forces_for_all_particles(void);
 
 
 void set_cosmo_factors_for_current_time(void);
-void drift_sph_extra_physics(int i, integertime tstart, integertime tend, double dt_entr);
+void drift_extra_physics(int i, integertime tstart, integertime tend, double dt_entr);
 
 void set_non_standard_physics_for_current_time(void);
 void calculate_non_standard_physics(void);
@@ -122,6 +124,23 @@ static inline double MINMOD_G(double a, double b) {return a;}
 static inline double sigmoid_sqrt(double x) {return 0.5*(1 + x/sqrt(1+x*x));} /* Sigmoid ("turn-on") function (1 + x/(1+x^2))/2, interpolates between 0 as x->-infty and 1 as x->infty. Useful for cheaply doing smooth fits of e.g. EOS where different thermo processes turn on at certain temps */
 
 
+
+static inline double ForceSoftening_KernelRadius(int p)
+{
+#if defined(ADAPTIVE_GRAVSOFT_FORALL)
+    if((1 << P[p].Type) & (ADAPTIVE_GRAVSOFT_FORALL)) {return PPP[p].AGS_Hsml;}
+#endif
+#if defined(ADAPTIVE_GRAVSOFT_FORGAS)
+    if(P[p].Type == 0) {return PPP[p].Hsml;}
+#endif
+#if defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+    if(P[p].Type == 4) {return All.ForceSoftening[P[p].Type] * DMIN(100., DMAX(1., pow(P[p].Mass*UNIT_MASS_IN_SOLAR/100. , 0.33)));}
+#endif
+    return All.ForceSoftening[P[p].Type];
+}
+
+
+
 #ifdef BOX_SHEARING
 void calc_shearing_box_pos_offset(void);
 #endif
@@ -138,8 +157,8 @@ int ngb_treefind_pairs_threads_targeted(MyDouble searchcenter[3], MyFloat hsml, 
 
 
 void do_distortion_tensor_kick(int i, double dt_gravkick);
-void set_predicted_sph_quantities_for_extra_physics(int i);
-void do_sph_kick_for_extra_physics(int i, integertime tstart, integertime tend, double dt_entr);
+void set_predicted_quantities_for_extra_physics(int i);
+void do_kick_for_extra_physics(int i, integertime tstart, integertime tend, double dt_entr);
 #if (SINGLE_STAR_TIMESTEPPING > 0)
 void do_fewbody_kick(int i, double fewbody_kick_dv[3], double dt);
 #endif
@@ -186,9 +205,10 @@ int MPI_Check_Sendrecv(void *sendbuf, int sendcount, MPI_Datatype sendtype,
                        int dest, int sendtag, void *recvbufreal, int recvcount,
                        MPI_Datatype recvtype, int source, int recvtag, MPI_Comm comm, MPI_Status * status);
 
-int MPI_Sizelimited_Sendrecv(void *sendbuf, int sendcount, MPI_Datatype sendtype,
-			     int dest, int sendtag, void *recvbuf, int recvcount,
-			     MPI_Datatype recvtype, int source, int recvtag, MPI_Comm comm, MPI_Status * status);
+int MPI_Sizelimited_Sendrecv(void *sendbuf0, size_t sendcount, MPI_Datatype sendtype,
+                             int dest, int sendtag, void *recvbuf0, size_t recvcount,
+                             MPI_Datatype recvtype, int source, int recvtag, MPI_Comm comm,
+                             MPI_Status *status);
 
 int mpi_calculate_offsets(int *send_count, int *send_offset, int *recv_count, int *recv_offset, int send_identical);
 void sort_based_on_field(void *data, int field_offset, int n_items, int item_size, void **data2ptr);
@@ -368,7 +388,7 @@ void get_wind_spawn_direction(int i, int num_spawned_this_call, int mode, double
 #ifdef MAGNETIC
 void get_wind_spawn_magnetic_field(int j, int mode, double *ny, double *nz,  double *dpdir, double d_r);
 #endif
-int blackhole_spawn_particle_wind_shell( int i, int dummy_sph_i_to_clone, int num_already_spawned );
+int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int num_already_spawned );
 void spawn_bh_wind_feedback(void);
 #endif
 int blackhole_evaluate(int target, int mode, int *nexport, int *nsend_local);
@@ -516,7 +536,7 @@ double evaluate_NH_from_GradRho(MyFloat gradrho[3], double hsml, double rho, dou
 int is_particle_single_star_eligible(long i);
 double evaluate_stellar_age_Gyr(double stellar_tform);
 double evaluate_light_to_mass_ratio(double stellar_age_in_gyr, int i);
-double calculate_relative_light_to_mass_ratio_from_imf(double stellar_age_in_gyr, int i);
+double calculate_relative_light_to_mass_ratio_from_imf(double stellar_age_in_gyr, int i, int mode);
 double calculate_individual_stellar_luminosity(double mdot, double mass, long i);
 double return_probability_of_this_forming_bh_from_seed_model(int i);
 
@@ -678,7 +698,6 @@ void peano_hilbert_order(void);
 double pot_integrand(double xx);
 void predict(double time);
 void predict_collisionless_only(double time);
-void predict_sph_particles(double time);
 void prepare_decouple(void);
 void read_ic(char *fname);
 int read_outputlist(char *fname);
@@ -694,7 +713,6 @@ void savepositions(int num);
 void savepositions_ioformat1(int num);
 double my_second(void);
 void set_softenings(void);
-void set_sph_kernel(void);
 void set_units(void);
 void setup_smoothinglengths(void);
 void apply_special_boundary_conditions(int i, double mass_for_dp, int mode);

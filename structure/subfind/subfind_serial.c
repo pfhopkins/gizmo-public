@@ -439,26 +439,20 @@ int subfind_unbind(struct unbind_data *ud, int len, int *len_non_gas)
 	{
 	  for(i = 0, minindex = -1, minpot = 1.0e30; i < len; i++)
 	    {
-	      p = ud[i].index;
+            p = ud[i].index;
+            pot = subfind_loctree_treeevaluate_potential(p);
+            /* note: add self-energy */
+            double h_grav = ForceSoftening_KernelRadius(p);
+            P[p].u.DM_Potential = pot - P[p].Mass / h_grav * kernel_gravity(0,1,1,-1); // subtracts self-contribution
+            P[p].u.DM_Potential *= All.G / atime;
 
-	      pot = subfind_loctree_treeevaluate_potential(p);
-	      /* note: add self-energy */
-        double h_grav = All.ForceSoftening[P[p].Type];
-#if defined(ADAPTIVE_GRAVSOFT_FORALL)
-        h_grav = P[p].AGS_Hsml;
-#elif defined(ADAPTIVE_GRAVSOFT_FORGAS)
-        if(P[p].Type == 0) h_grav = PPP[p].Hsml;
-#endif
-      P[p].u.DM_Potential = pot - P[p].Mass / h_grav * kernel_gravity(0,1,1,-1); // subtracts self-contribution
-	      P[p].u.DM_Potential *= All.G / atime;
+            if(All.TotN_gas > 0 && (FOF_PRIMARY_LINK_TYPES & 1) == 0 && (FOF_SECONDARY_LINK_TYPES & 1) == 0 && All.OmegaBaryon > 0) {P[p].u.DM_Potential *= All.OmegaMatter / (All.OmegaMatter - All.OmegaBaryon);}
 
-	      if(All.TotN_gas > 0 && (FOF_PRIMARY_LINK_TYPES & 1) == 0 && (FOF_SECONDARY_LINK_TYPES & 1) == 0 && All.OmegaBaryon > 0) {P[p].u.DM_Potential *= All.OmegaMatter / (All.OmegaMatter - All.OmegaBaryon);}
-
-	      if(P[p].u.DM_Potential < minpot || minindex == -1)
-		{
-		  minpot = P[p].u.DM_Potential;
-		  minindex = p;
-		}
+            if(P[p].u.DM_Potential < minpot || minindex == -1)
+            {
+                minpot = P[p].u.DM_Potential;
+                minindex = p;
+            }
 	    }
 
 	  for(j = 0; j < 3; j++) {pos[j] = P[minindex].Pos[j];}	/* position of minimum potential */
@@ -472,19 +466,14 @@ int subfind_unbind(struct unbind_data *ud, int len, int *len_non_gas)
 
 	      if(P[p].v.DM_BindingEnergy >= weakly_bound_limit)
 		{
-		  pot = subfind_loctree_treeevaluate_potential(p);
-		  /* note: add self-energy */
-        double h_grav = All.ForceSoftening[P[p].Type];
-#if defined(ADAPTIVE_GRAVSOFT_FORALL)
-        h_grav = P[p].AGS_Hsml;
-#elif defined(ADAPTIVE_GRAVSOFT_FORGAS)
-        if(P[p].Type == 0) h_grav = PPP[p].Hsml;
-#endif
-        P[p].u.DM_Potential = pot - P[p].Mass / h_grav * kernel_gravity(0,1,1,-1); // subtract self-contribution
-		  P[p].u.DM_Potential = pot + P[p].Mass / h_grav;
-		  P[p].u.DM_Potential *= All.G / atime;
+            pot = subfind_loctree_treeevaluate_potential(p);
+            /* note: add self-energy */
+            double h_grav = ForceSoftening_KernelRadius(p);
+            P[p].u.DM_Potential = pot - P[p].Mass / h_grav * kernel_gravity(0,1,1,-1); // subtract self-contribution
+            P[p].u.DM_Potential = pot + P[p].Mass / h_grav;
+            P[p].u.DM_Potential *= All.G / atime;
 
-		  if(All.TotN_gas > 0 && (FOF_PRIMARY_LINK_TYPES & 1) == 0 && (FOF_SECONDARY_LINK_TYPES & 1) == 0 && All.OmegaBaryon > 0) {P[p].u.DM_Potential *= All.OmegaMatter / (All.OmegaMatter - All.OmegaBaryon);}
+            if(All.TotN_gas > 0 && (FOF_PRIMARY_LINK_TYPES & 1) == 0 && (FOF_SECONDARY_LINK_TYPES & 1) == 0 && All.OmegaBaryon > 0) {P[p].u.DM_Potential *= All.OmegaMatter / (All.OmegaMatter - All.OmegaBaryon);}
 		}
 	    }
 	}

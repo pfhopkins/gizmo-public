@@ -268,8 +268,7 @@ void parallel_sort_comm(void *base, size_t nmemb, size_t size, int (*compar) (co
 	      if(Send_count[recvTask] > 0 || Recv_count[recvTask] > 0)
 		{
 #ifndef MPISENDRECV_SIZELIMIT
-		  if(Send_count[recvTask] > TRANSFER_SIZE_LIMIT || Recv_count[recvTask] > TRANSFER_SIZE_LIMIT)
-		    terminate("we are above TRANSFER_SIZE_LIMIT");
+          if(Send_count[recvTask] > TRANSFER_SIZE_LIMIT || Recv_count[recvTask] > TRANSFER_SIZE_LIMIT) {terminate("we are above TRANSFER_SIZE_LIMIT");}
 #endif
 		  MPI_Sendrecv((char *) base + Send_offset[recvTask] * size,
 			       Send_count[recvTask] * size, MPI_BYTE,

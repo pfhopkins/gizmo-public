@@ -108,7 +108,7 @@ void assign_imf_properties_from_starforming_gas(int i)
     gsl_rng *random_generator_for_massivestars;
     random_generator_for_massivestars = gsl_rng_alloc(gsl_rng_ranlxd1);
     gsl_rng_set(random_generator_for_massivestars, P[i].ID+121);
-    double mu = 0.01 * P[i].Mass * UNIT_MASS_IN_SOLAR; // 1 O-star per 100 Msun
+    double mu = 0.0115 * P[i].Mass * UNIT_MASS_IN_SOLAR; // 1 O-star per 100 Msun [more exactly calculated here as number of stars per solar mass with mass > 8 Msun, from our adopted Kroupa IMF from 0.01-100 Msun]
     unsigned int kk = gsl_ran_poisson(random_generator_for_massivestars, mu);
     P[i].IMF_NumMassiveStars = (double)kk;
 #endif
@@ -180,7 +180,7 @@ double return_probability_of_this_forming_bh_from_seed_model(int i)
     double Rcrit = PPP[i].Hsml;
     Z_threshold_solar = 0.1; /* based on Linhao's paper, we need to allow formation at somewhat higher metallicity or we tail to get BHs in the central density concentrations when they form */
 #if !defined(ADAPTIVE_GRAVSOFT_FORGAS) && !defined(ADAPTIVE_GRAVSOFT_FORALL)
-    Rcrit = All.ForceSoftening[0]; /* search radius is not h, in this case, but the force softening, but this is really not the case we want to study */
+    Rcrit = ForceSoftening_KernelRadius(i); /* search radius is not h, in this case, but the force softening, but this is really not the case we want to study */
 #endif
     Rcrit = DMAX( Rcrit , 0.1/(UNIT_LENGTH_IN_KPC*All.cf_atime)); /* set a baseline Rcrit_min, otherwise we get statistics that are very noisy */
 #ifdef BH_CALC_DISTANCES
@@ -259,8 +259,12 @@ double get_starformation_rate(int i, int mode)
 #endif
 
 #if defined(GALSF_SFR_VIRIAL_SF_CRITERION) /* apply standard virial-parameter criteria here. note that our definition of virial parameter here is ratio of [Kinetic+Internal Energy]/|Gravitational Energy| -- so <1=bound, >1=unbound, 1/2=bound-and-virialized, etc. */
-    double k_cs = 1. * v_fast / (Get_Particle_Size(i)*All.cf_atime), alpha_crit; alpha_crit = 1.0; /* effective wavenumber for thermal+B-field+CR+whatever internal energy support, and threshold virial parameter */
-#if defined(SINGLE_STAR_SINK_DYNAMICS)
+    double v_eff_touse = v_fast;
+#if defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+    v_eff_touse = cs_eff;
+#endif
+    double k_cs = 1. * v_eff_touse / (Get_Particle_Size(i)*All.cf_atime), alpha_crit; alpha_crit = 1.0; /* effective wavenumber for thermal+B-field+CR+whatever internal energy support, and threshold virial parameter */
+#if defined(SINGLE_STAR_SINK_DYNAMICS) & !defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
     if(cell_can_be_singlestar) {k_cs *= M_PI;} // use a stricter version here, because the relevant pre-factor depends on whether we expect Jeans collapse at the thermal limit to be resolved or un-resolved
 #endif
 #if (GALSF_SFR_VIRIAL_SF_CRITERION > 0)
@@ -348,7 +352,10 @@ double get_starformation_rate(int i, int mode)
 
 #if (SINGLE_STAR_SINK_FORMATION & 8) /* restrict to cell which neither 'sees' or 'is seen by' a sink too close */
     if(P[i].BH_Ngb_Flag) {rateOfSF=0;} /* cell cannot be 'seen' by -any- sink as a potential interacting neighbor */
-    if(P[i].min_dist_to_bh < P[i].Hsml){rateOfSF=0;} /* cell does not overlap with a sink */
+    if(P[i].min_dist_to_bh < P[i].Hsml) {rateOfSF=0;} /* cell does not overlap with a sink */
+#if (defined(COOLING) || defined(EOS_GMC_BAROTROPIC)) // if the simulation has opacity limit physics
+    if(P[i].min_dist_to_bh * UNIT_LENGTH_IN_AU < 0.1){rateOfSF=0;} /* distance to nearest sink is much greater than the size of a Larson core (at least a few AU), else the core should be accreted by the pre-existing protostar star */
+#endif
 #endif
 
 #if (SINGLE_STAR_SINK_FORMATION & 16) /* restrict to cells which have a local SF time or free-fall time shorter than their free-fall time onto the nearest sink */
@@ -467,7 +474,7 @@ void star_formation_parent_routine(void)
                     {
                         /* make a BH particle */
                         P[i].Type = 5;
-                        TimeBinCountSph[P[i].TimeBin]--;
+                        TimeBinCountGas[P[i].TimeBin]--;
                         num_bhformed++;
                         Stars_converted++;
                         stars_converted++;
@@ -503,7 +510,7 @@ void star_formation_parent_routine(void)
                         P[i].BH_CountProgs = 1;
 #endif
 #ifdef BH_GRAVCAPTURE_FIXEDSINKRADIUS
-                        P[i].SinkRadius = All.ForceSoftening[P[i].Type];
+                        P[i].SinkRadius = ForceSoftening_KernelRadius(i);
 #endif
                         P[i].BH_Mdot = 0;
                         P[i].DensAroundStar = SphP[i].Density;
@@ -523,7 +530,7 @@ void star_formation_parent_routine(void)
                             stars_converted++;
                             sum_mass_stars += P[i].Mass;
                             
-                            TimeBinCountSph[P[i].TimeBin]--;
+                            TimeBinCountGas[P[i].TimeBin]--;
                             TimeBinSfr[P[i].TimeBin] -= SphP[i].Sfr;
                             
                             P[i].StellarAge = All.Time;
@@ -540,7 +547,8 @@ void star_formation_parent_routine(void)
                             {
                                 P[i].Type = 5;
                                 num_bhformed++;
-                                P[i].BH_Mass = All.SeedBlackHoleMass; // if desired to make this appreciable fraction of particle mass, please do so in params file
+                                P[i].BH_Mass = DMAX(All.SeedBlackHoleMass, DMIN(0.5*P[i].Mass , 0.01/UNIT_MASS_IN_SOLAR)); // if desired to make this appreciable fraction of particle mass, please do so in params file
+                                P[i].Sink_Formation_Mass = P[i].Mass; // save the mass we had at the time of sink formation, because we will use this later to understand how the sink has grown
 #ifdef HERMITE_INTEGRATION
                                 P[i].AccretedThisTimestep = 0;
 #endif
@@ -552,13 +560,13 @@ void star_formation_parent_routine(void)
 #endif
                                 TreeReconstructFlag = 1;
 #ifdef BH_GRAVCAPTURE_FIXEDSINKRADIUS
-                                P[i].SinkRadius = All.ForceSoftening[5];
+                                P[i].SinkRadius = ForceSoftening_KernelRadius(i);
                                 double cs = 0.2 / UNIT_VEL_IN_KMS;
 #if (defined(COOLING) && !defined(COOL_LOWTEMP_THIN_ONLY)) || defined(EOS_GMC_BAROTROPIC)
                                 double nHcgs = HYDROGEN_MASSFRAC * (SphP[i].Density * All.cf_a3inv * UNIT_DENSITY_IN_NHCGS);
                                 if(nHcgs > 1e10) cs *= pow(nHcgs/1e10, 1./5); // if we're getting opacity-limited then we can set a smaller sink radius, since cs ~ n^1/5
 #endif
-                                P[i].SinkRadius = DMAX(0.79 * P[i].Mass * All.G / (cs * cs), All.ForceSoftening[5]); // volume-equivalent particle radius R= (3V/(4PI))^(1/3) at the density where cell length = Jeans length/2
+                                P[i].SinkRadius = DMAX(0.79 * P[i].Mass * All.G / (cs * cs), ForceSoftening_KernelRadius(i)); // volume-equivalent particle radius R= (3V/(4PI))^(1/3) at the density where cell length = Jeans length/2
 #endif
 #ifdef SINGLE_STAR_FIND_BINARIES
                                 P[i].min_bh_t_orbital=MAX_REAL_NUMBER; P[i].comp_dx[0]=P[i].comp_dx[1]=P[i].comp_dx[2]=P[i].comp_dv[0]=P[i].comp_dv[1]=P[i].comp_dv[2]=P[i].is_in_a_binary = 0;
@@ -593,7 +601,7 @@ void star_formation_parent_routine(void)
                                 dv2_abs = ((1./2.)*((SphP[i].Gradients.Velocity[1][0]+SphP[i].Gradients.Velocity[0][1])*(SphP[i].Gradients.Velocity[1][0]+SphP[i].Gradients.Velocity[0][1]) // squared norm of the trace-free symmetric [shear] component of the velocity gradient tensor //
                                                     + (SphP[i].Gradients.Velocity[2][0]+SphP[i].Gradients.Velocity[0][2])*(SphP[i].Gradients.Velocity[2][0]+SphP[i].Gradients.Velocity[0][2]) + (SphP[i].Gradients.Velocity[2][1]+SphP[i].Gradients.Velocity[1][2])*(SphP[i].Gradients.Velocity[2][1]+SphP[i].Gradients.Velocity[1][2])) +
                                            (2./3.)*((SphP[i].Gradients.Velocity[0][0]*SphP[i].Gradients.Velocity[0][0] + SphP[i].Gradients.Velocity[1][1]*SphP[i].Gradients.Velocity[1][1] + SphP[i].Gradients.Velocity[2][2]*SphP[i].Gradients.Velocity[2][2]) - (SphP[i].Gradients.Velocity[1][1]*SphP[i].Gradients.Velocity[2][2] + SphP[i].Gradients.Velocity[0][0]*SphP[i].Gradients.Velocity[1][1] + SphP[i].Gradients.Velocity[0][0]*SphP[i].Gradients.Velocity[2][2]))) * All.cf_a2inv*All.cf_a2inv;
-                                //Saves at formation sink properties in a table: 0:Time 1:ID 2:Mass 3-5:Position 6-8:Velocity 9-11:Magnetic field 12:Internal energy 13:Density 14:cs_effective 15:particle size 16:local surface density 17:local velocity dispersion 18: distance to closest BH
+                                // saves at formation sink properties in a table: 0:Time 1:ID 2:Mass 3-5:Position 6-8:Velocity 9-11:Magnetic field 12:Internal energy 13:Density 14:cs_effective 15:particle size 16:local surface density 17:local velocity dispersion 18: distance to closest BH
                                 fprintf(FdBhFormationDetails,"%g %llu %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g \n", All.Time, (unsigned long long)P[i].ID, P[i].Mass, P[i].Pos[0], P[i].Pos[1], P[i].Pos[2],  P[i].Vel[0], P[i].Vel[1],P[i].Vel[2], tempB[0], tempB[1], tempB[2], SphP[i].InternalEnergyPred, SphP[i].Density * All.cf_a3inv, Get_Gas_effective_soundspeed_i(i) * All.cf_afac3, Get_Particle_Size(i) * All.cf_atime, NH, dv2_abs, P[i].min_dist_to_bh ); fflush(FdBhFormationDetails);
 #endif
                             }

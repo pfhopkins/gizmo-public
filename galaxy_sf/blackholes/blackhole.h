@@ -92,6 +92,7 @@ void blackhole_environment_second_loop(void);
 
 /* blackhole_swallow_and_kick.c */
 void blackhole_swallow_and_kick_loop(void);
+double target_mass_for_wind_spawning(int i);
 
 /* blackhole_feed.c */
 void blackhole_feed_loop(void);

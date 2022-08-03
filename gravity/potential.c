@@ -79,20 +79,11 @@ void compute_potential(void)
             
             for(k = 0; k < 3; k++) {GravDataIn[j].Pos[k] = P[place].Pos[k];}
             GravDataIn[j].Type = P[place].Type;
+            GravDataIn[j].Soft = ForceSoftening_KernelRadius(place);
+            GravDataIn[j].OldAcc = P[place].OldAcc;
 #if defined(RT_USE_GRAVTREE) || defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS)
             GravDataIn[j].Mass = P[place].Mass;
 #endif
-#if defined(RT_USE_GRAVTREE) || defined(ADAPTIVE_GRAVSOFT_FORALL)
-            double h_place = PPP[place].Hsml;
-#ifdef ADAPTIVE_GRAVSOFT_FORALL
-            h_place = PPP[place].AGS_Hsml;
-#endif
-            if(h_place > All.ForceSoftening[P[place].Type]) {GravDataIn[j].Soft = h_place;} else {GravDataIn[j].Soft = All.ForceSoftening[P[place].Type];}
-#endif
-#if defined(ADAPTIVE_GRAVSOFT_FORGAS) && !defined(RT_USE_GRAVTREE)
-            if((P[place].Type == 0) && (PPP[place].Hsml > All.ForceSoftening[P[place].Type])) {GravDataIn[j].Soft = PPP[place].Hsml;} else {GravDataIn[j].Soft = All.ForceSoftening[P[place].Type];}
-#endif
-            GravDataIn[j].OldAcc = P[place].OldAcc;
             for(k = 0; k < NODELISTLENGTH; k++) {GravDataIn[j].NodeList[k] = DataNodeList[DataIndexTable[j].IndexGet].NodeList[k];}
         }
         
@@ -152,7 +143,7 @@ void compute_potential(void)
 #ifndef ADAPTIVE_GRAVSOFT_FORALL
     for(i = 0; i < NumPart; i++) /* add correction to exclude self-potential [actually well-defined with adaptive force softenings, so keep it there] */
     {
-        P[i].Potential -= P[i].Mass / All.ForceSoftening[P[i].Type] * kernel_gravity(0,1,1,-1); /* remove self-potential */
+        P[i].Potential -= P[i].Mass / ForceSoftening_KernelRadius(i) * kernel_gravity(0,1,1,-1); /* remove self-potential */
 #ifdef BOX_PERIODIC
         if(All.ComovingIntegrationOn) {P[i].Potential -= 2.8372975 * pow(P[i].Mass, 2.0 / 3) * pow(All.OmegaMatter * 3 * All.Hubble_H0_CodeUnits * All.Hubble_H0_CodeUnits / (8 * M_PI * All.G), 1.0 / 3);}
 #endif

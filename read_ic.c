@@ -510,6 +510,12 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
             for(n = 0; n < pc; n++) {P[offset + n].SinkRadius = *fp++;}
 #endif
             break;
+
+        case IO_SINK_FORM_MASS:
+#ifdef SINGLE_STAR_SINK_DYNAMICS
+            for(n = 0; n < pc; n++) {P[offset + n].Sink_Formation_Mass = *fp++;}
+#endif
+            break;	    
             
         case IO_MOLECULARFRACTION:
 #if defined(COOL_MOLECFRAC_NONEQM) & !defined(IO_MOLECFRAC_NOT_IN_ICFILE)
@@ -532,6 +538,7 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
         case IO_SFR:
         case IO_POT:
         case IO_ACCEL:
+        case IO_HYDROACCEL:
         case IO_DTENTR:
         case IO_RAD_ACCEL:
         case IO_GDE_DISTORTIONTENSOR:
@@ -552,6 +559,8 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
         case IO_AMDC:
         case IO_PHI:
         case IO_GRADPHI:
+        case IO_GRADRHO:
+        case IO_GRADVEL:
         case IO_TIDALTENSORPS:
         case IO_FLOW_DETERMINANT:
         case IO_STREAM_DENSITY:
@@ -720,9 +729,9 @@ void read_file(char *fname, int readTask, int lastTask)
         for(i = 0; i < 6; i++) {All.MassTable[i] = header.mass[i];}
 
         All.MaxPart = (int) (All.PartAllocFactor * (All.TotNumPart / NTask));
-        All.MaxPartSph = (int) (All.PartAllocFactor * (All.TotN_gas / NTask));	/* sets the maximum number of particles that may reside on a processor */
+        All.MaxPartGas = (int) (All.PartAllocFactor * (All.TotN_gas / NTask));	/* sets the maximum number of particles that may reside on a processor */
 #ifdef ALLOW_IMBALANCED_GASPARTICLELOAD
-        All.MaxPartSph = All.MaxPart; // PFH: increasing All.MaxPartSph according to this line can allow better load-balancing in some cases. however it leads to more memory problems
+        All.MaxPartGas = All.MaxPart; // PFH: increasing All.MaxPartGas according to this line can allow better load-balancing in some cases. however it leads to more memory problems
         // (PFH: needed to revert the change -- i.e. INCLUDE the line above: commenting it out, while it improved memory useage, causes some instability in the domain decomposition for
         //   sufficiently irregular trees. overall more stable behavior with the 'buffer', albeit at the expense of memory )
 #endif
@@ -787,9 +796,9 @@ void read_file(char *fname, int readTask, int lastTask)
 
         if(type == 0)
         {
-            if(N_gas + n_for_this_task > All.MaxPartSph)
+            if(N_gas + n_for_this_task > All.MaxPartGas)
             {
-                printf("Not enough space on task=%d for SPH particles (space for %d, need at least %lld)\n", ThisTask, All.MaxPartSph, N_gas + n_for_this_task);
+                printf("Not enough space on task=%d for gas/fluid cells (space for %d, need at least %lld)\n", ThisTask, All.MaxPartGas, N_gas + n_for_this_task);
                 fflush(stdout);
                 endrun(172);
             }
@@ -838,9 +847,12 @@ void read_file(char *fname, int readTask, int lastTask)
 #if defined(HYDRO_MESHLESS_FINITE_VOLUME) && ((HYDRO_FIX_MESH_MOTION==1)||(HYDRO_FIX_MESH_MOTION==2)||(HYDRO_FIX_MESH_MOTION==3))
                    && blocknr != IO_PARTVEL
 #endif
-#if defined(BH_GRAVCAPTURE_FIXEDSINKRADIUS)
+#if defined(BH_GRAVCAPTURE_FIXEDSINKRADIUS) && defined(INPUT_READ_SINKPROPS)
                    && blocknr != IO_SINKRAD
 #endif
+#if defined(SINGLE_STAR_SINK_DYNAMICS) && defined(INPUT_READ_SINKPROPS)
+                   && blocknr != IO_SINK_FORM_MASS
+#endif		   
 #if defined(CHIMES) && !defined(CHIMES_INITIALISE_IN_EQM)
                    && blocknr != IO_CHIMES_ABUNDANCES
 #endif
@@ -889,6 +901,19 @@ void read_file(char *fname, int readTask, int lastTask)
 
 #if !defined(RADTRANSFER)
             if(RestartFlag == 2 && blocknr == IO_RADGAMMA) {continue;}
+#endif
+
+#if !defined(EOS_CARRIES_TEMPERATURE)
+            if(RestartFlag == 2 && blocknr == IO_EOSTEMP) {continue;}
+#endif
+            
+#if defined(SINGLE_STAR_AND_SSP_HYBRID_MODEL) && defined(SINGLE_STAR_RESTART_FROM_FIRESIM)
+            if(RestartFlag == 2 && blocknr == IO_RADGAMMA) {continue;}
+            if(RestartFlag == 2 && blocknr == IO_EDDINGTON_TENSOR) {continue;}
+            if(RestartFlag == 2 && blocknr == IO_OSTAR) {continue;}
+            if(RestartFlag == 2 && blocknr == IO_HII) {continue;}
+            if(RestartFlag == 2 && blocknr == IO_HeI) {continue;}
+            if(RestartFlag == 2 && blocknr == IO_HeII) {continue;}
 #endif
 
 #if defined(IO_MOLECFRAC_NOT_IN_ICFILE)
@@ -1329,7 +1354,7 @@ void find_block(char *label, FILE * fd)
         FBSKIP;
         if(blksize != 8)
         {
-            printf("Incorrect Format (blksize=%u)!\n", blksize);
+            printf("Incorrect Format (blksize=%llu)!\n", (unsigned long long)blksize);
             endrun(1891);
         }
         else

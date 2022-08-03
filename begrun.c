@@ -58,7 +58,7 @@ void begrun(void)
 #endif
 
       printf("\nSize of particle structure       %d  [bytes]\n", (int) sizeof(struct particle_data));
-      printf("Size of hydro-cell structure   %d  [bytes]\n\n", (int) sizeof(struct sph_particle_data));
+      printf("Size of hydro-cell structure   %d  [bytes]\n\n", (int) sizeof(struct gas_cell_data));
 
     }
 
@@ -452,6 +452,9 @@ void begrun(void)
 #endif
 #endif
 
+#ifdef RT_RAD_PRESSURE_OUTPUT
+    {int i; for(i=0;i<NumPart;i++) {int k; for(k=0;k<3;k++) {SphP[i].Rad_Accel[k]=0;}}}
+#endif
 #ifdef RADTRANSFER
 #if defined(RT_EVOLVE_INTENSITIES)
     rt_init_intensity_directions();
@@ -749,29 +752,25 @@ void read_parameter_file(char *fname)
 
   if(sizeof(long long) != 8)
     {
-      if(ThisTask == 0)
-	printf("\nType `long long' is not 64 bit on this platform. Stopping.\n\n");
+      if(ThisTask == 0) {printf("\nType `long long' is not 64 bit on this platform. Stopping.\n\n");}
       endrun(0);
     }
 
   if(sizeof(int) != 4)
     {
-      if(ThisTask == 0)
-	printf("\nType `int' is not 32 bit on this platform. Stopping.\n\n");
+      if(ThisTask == 0) {printf("\nType `int' is not 32 bit on this platform. Stopping.\n\n");}
       endrun(0);
     }
 
   if(sizeof(float) != 4)
     {
-      if(ThisTask == 0)
-	printf("\nType `float' is not 32 bit on this platform. Stopping.\n\n");
+      if(ThisTask == 0) {printf("\nType `float' is not 32 bit on this platform. Stopping.\n\n");}
       endrun(0);
     }
 
   if(sizeof(double) != 8)
     {
-      if(ThisTask == 0)
-	printf("\nType `double' is not 64 bit on this platform. Stopping.\n\n");
+      if(ThisTask == 0) {printf("\nType `double' is not 64 bit on this platform. Stopping.\n\n");}
       endrun(0);
     }
 
@@ -779,7 +778,7 @@ void read_parameter_file(char *fname)
   if(ThisTask == 0)		/* read parameter file on process 0 */
     {
       nt = 0;
-      for(j=0;j<MAXTAGS;j++) {strcpy(alternate_tag[nt], "-null[invalid_tag_name]-");}
+      for(j=0;j<MAXTAGS;j++) {strcpy(alternate_tag[j], "-");}
 
       strcpy(tag[nt], "InitCondFile");
       strcpy(alternate_tag[nt], "Initial_Conditions_File");
@@ -1413,6 +1412,7 @@ void read_parameter_file(char *fname)
         id[nt++] = REAL;
 
         strcpy(tag[nt], "BAL_wind_particle_mass");
+        strcpy(alternate_tag[nt], "Cell_Spawn_Mass_ratio");
         addr[nt] = &All.BAL_wind_particle_mass;
         id[nt++] = REAL;
 #endif
@@ -1768,7 +1768,7 @@ void read_parameter_file(char *fname)
         addr[nt] = &All.TurbDriving_Global_SolenoidalFraction;
         id[nt++] = REAL;
 
-        strcpy(tag[nt], "ST_SpectForm"); // driving pwr-spec: 0=Ek~const; 1=sharp-peak at kc; 2=Ek~k^(-5/3); 3=Ek~k^-2
+        strcpy(tag[nt], "ST_SpectForm"); // driving pwr-spec: 0=Ek~k^-1; 1=sharp-peak at kc; 2=Ek~k^(-5/3); 3=Ek~k^-2
         strcpy(alternate_tag[nt], "TurbDrive_DrivingSpectrum");
         addr[nt] = &All.TurbDriving_Global_DrivingSpectrumKey;
         id[nt++] = INT;
@@ -2212,16 +2212,23 @@ void read_parameter_file(char *fname)
 #ifdef SPH_TP12_ARTIFICIAL_RESISTIVITY
     All.ArtMagDispConst = 1.0;
 #endif
-#endif // sph
+#endif
+    
 #ifdef DIVBCLEANING_DEDNER
+#ifdef MHD_CONSTRAINED_GRADIENT
+    All.DivBcleanParabolicSigma = 1.0;
+#else
     All.DivBcleanParabolicSigma = 0.2;
+#endif
     All.DivBcleanHyperbolicSigma = 1.0;
 #endif
 
 #ifdef TURB_DIFF_DYNAMIC
     All.TurbDynamicDiffIterations = 0; /* D. Rennehan: This has NOT been tested above 0 */
 #endif
+#if !defined(SINGLE_STAR_AND_SSP_HYBRID_MODEL)
     if(All.ComovingIntegrationOn) {All.ErrTolForceAcc = 0.005; All.ErrTolIntAccuracy = 0.05;}
+#endif
     All.MaxNumNgbDeviation = All.DesNumNgb / 640.;
 #ifdef GALSF
     All.MaxNumNgbDeviation = All.DesNumNgb / 64.;
@@ -2255,6 +2262,13 @@ void read_parameter_file(char *fname)
     /* determines tree cell-opening criterion: 0 for Barnes-Hut, 1 for relative criterion: this
      should only be changed if you -really- know what you're doing! */
 
+#if defined(GRAVITY_ACCURATE_FEWBODY_INTEGRATION)
+    if(All.ErrTolIntAccuracy > 0.01) {All.ErrTolIntAccuracy = 0.01;}
+    if(All.MaxRMSDisplacementFac > 0.125) {All.MaxRMSDisplacementFac = 0.125;}
+    if(All.ErrTolTheta > 0.5) {All.ErrTolTheta = 0.5;}
+    if(All.MaxNumNgbDeviation > 0.05) {All.MaxNumNgbDeviation = 0.05;}
+#endif
+    
 #if defined(MAGNETIC) || defined(HYDRO_MESHLESS_FINITE_VOLUME) || defined(BH_WIND_SPAWN)
     if(All.CourantFac > 0.2) {All.CourantFac = 0.2;}
     /* (PFH) safety factor needed for MHD calc, because people keep using the same CFac as hydro! */

@@ -195,7 +195,7 @@ int blackhole_environment_evaluate(int target, int mode, int *exportflag, int *e
     /* initialize variables before loop is started */
     int startnode, numngb, listindex = 0, j, k, n; struct INPUT_STRUCT_NAME local; struct OUTPUT_STRUCT_NAME out; memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME)); /* define variables and zero memory and import data for local target*/
     if(mode == 0) {INPUTFUNCTION_NAME(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];} /* imports the data to the correct place and names */
-    double ags_h_i, h_i, hinv, hinv3, wk, dwk, u; wk=0; dwk=0; u=0; h_i=local.Hsml; hinv=1./h_i; hinv3=hinv*hinv*hinv; ags_h_i=All.ForceSoftening[5];
+    double ags_h_i, h_i, hinv, hinv3, wk, dwk, u; wk=0; dwk=0; u=0; h_i=local.Hsml; hinv=1./h_i; hinv3=hinv*hinv*hinv; ags_h_i=SinkParticle_GravityKernelRadius;
 #if (ADAPTIVE_GRAVSOFT_FORALL & 32)
     ags_h_i = local.AGS_Hsml;
 #endif
@@ -236,7 +236,7 @@ int blackhole_environment_evaluate(int target, int mode, int *exportflag, int *e
                     {
                         double wtfac = wt;
 #if (BH_REPOSITION_ON_POTMIN == 2)
-                        double rfac = (dP[0]*dP[0] + dP[1]*dP[1] + dP[2]*dP[2]) * (10./(h_i*h_i) + 0.1/(All.ForceSoftening[5]*All.ForceSoftening[5]));
+                        double rfac = (dP[0]*dP[0] + dP[1]*dP[1] + dP[2]*dP[2]) * (10./(h_i*h_i) + 0.1/(SinkParticle_GravityKernelRadius*SinkParticle_GravityKernelRadius));
                         wtfac = wt / (1. + rfac); // simple function scaling ~ 1/r^2 for large r, to weight elements closer to the BH, so doesnt get 'pulled' by far-away elements //
 #endif
                         if(P[j].Mass>out.DF_mmax_particles) out.DF_mmax_particles=P[j].Mass;
@@ -286,7 +286,7 @@ int blackhole_environment_evaluate(int target, int mode, int *exportflag, int *e
                         double rj=u*h_i*All.cf_atime; double csj=Get_Gas_effective_soundspeed_i(j);
                         double vdotrj=0; for(k=0;k<3;k++) {vdotrj+=-dP[k]*dv[k];}
                         double vr_mdot = 4*M_PI * wt*(wk*All.cf_a3inv) * rj*vdotrj;
-                        if(rj < All.ForceSoftening[5]*All.cf_atime)
+                        if(rj < SinkParticle_GravityKernelRadius*All.cf_atime)
                         {
                             double bondi_mdot = 4*M_PI*All.G*All.G * local.Mass*local.Mass / pow(csj*csj + (dv[0]*dv[0]+dv[1]*dv[1]+dv[2]*dv[2])*All.cf_a2inv, 1.5) * wt * (wk*All.cf_a3inv);
                             vr_mdot = DMAX(vr_mdot , bondi_mdot); out.hubber_mdot_bondi_limiter += bondi_mdot;
@@ -319,7 +319,7 @@ int blackhole_environment_evaluate(int target, int mode, int *exportflag, int *e
                         double dr_code = sqrt(r2); vrel = sqrt(vrel) / All.cf_atime;
                         double vbound = bh_vesc(j, local.Mass, dr_code, ags_h_i);
                         if(vrel < vbound) { /* bound */
-                            double local_sink_radius = All.ForceSoftening[5];
+                            double local_sink_radius = SinkParticle_GravityKernelRadius;
 #ifdef BH_GRAVCAPTURE_FIXEDSINKRADIUS
                             local_sink_radius = local.SinkRadius;
                             double spec_mom=0; for(k=0;k<3;k++) {spec_mom += dv[k]*dP[k];} // delta_x.delta_v

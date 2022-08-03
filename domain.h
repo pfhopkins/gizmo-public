@@ -26,7 +26,6 @@ int domain_decompose(void);
 int domain_determineTopTree(void);
 void domain_findExtent(void);
 void domain_exchange(void);
-void domain_findExchangeNumbers(int task, int partner, int sphflag, int *send, int *recv);
 void domain_findSplit(int cpustart, int ncpu, int first, int last);
 void domain_findSplit_balanced(int cpustart, int ncpu, int first, int last);
 void domain_free(void);

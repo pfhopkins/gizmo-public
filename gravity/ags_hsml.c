@@ -294,7 +294,7 @@ void ags_density(void)
                     PPP[i].NumNgb = PPP[i].DhsmlNgbFactor = P[i].Particle_DivVel = 0;
                 }
                 
-                // inverse of SPH volume element (to satisfy constraint implicit in Lagrange multipliers)
+                // inverse of defined volume element (to satisfy constraint implicit in Lagrange multipliers)
                 if(PPP[i].DhsmlNgbFactor > -0.9)	/* note: this would be -1 if only a single particle at zero lag is found */
                     PPP[i].DhsmlNgbFactor = 1 / (1 + PPP[i].DhsmlNgbFactor);
                 else

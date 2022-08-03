@@ -244,7 +244,7 @@
 #ifdef RT_ENHANCED_NUMERICAL_DIFFUSION
                 thold_hll *= 2.0; // allow this term to be more generous //
 #ifdef BH_WIND_SPAWN // 
-		if(local.ConditionNumber < 0 || P[j].ID == All.AGNWindID) {thold_hll *= 0.25;}  // be extra conservative if dealing with fluxes involving jet cells - won't be particularly accurate anyway
+                if(local.ConditionNumber < 0 || P[j].ID == All.AGNWindID) {thold_hll *= 0.25;}  // be extra conservative if dealing with fluxes involving jet cells - won't be particularly accurate anyway
 #endif
 #endif
 

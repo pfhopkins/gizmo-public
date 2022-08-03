@@ -15,7 +15,7 @@
 #include "./proto.h"
 #include "./kernel.h"
 #ifdef BH_WIND_SPAWN
-#define MASS_THRESHOLD_FOR_WINDPROMO (DMAX(5.*All.BAL_wind_particle_mass,0.25*All.MaxMassForParticleSplit))
+#define MASS_THRESHOLD_FOR_WINDPROMO(i) (DMAX(5.*target_mass_for_wind_spawning(i),0.25*All.MaxMassForParticleSplit))
 #endif /* define a mass threshold for this model above which a 'hyper-element' has accreted enough to be treated as 'normal' */
 
 
@@ -36,8 +36,15 @@ int does_particle_need_to_be_merged(int i)
 #ifdef PREVENT_PARTICLE_MERGE_SPLIT
     return 0;
 #else
+#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+    if(check_if_sufficient_mergesplit_time_has_passed(i) == 0) return 0;
+#endif
 #ifdef GRAIN_RDI_TESTPROBLEM
     return 0;
+#endif
+#if defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+    if(P[i].Type>0) {return 0;} // don't allow merging of collisionless particles [only splitting, in these runs]
+    if(P[i].Type==3) {return 0;}
 #endif
 #ifdef BH_WIND_SPAWN
     if(P[i].ID == All.AGNWindID)
@@ -46,8 +53,7 @@ int does_particle_need_to_be_merged(int i)
         MyFloat vr2 = (P[i].Vel[0]*P[i].Vel[0] + P[i].Vel[1]*P[i].Vel[1] + P[i].Vel[2]*P[i].Vel[2]) * All.cf_a2inv; // physical
         if(vr2 <= 0.01 * All.BAL_v_outflow*All.BAL_v_outflow) {return 1;} else {return 0;} // merge only if velocity condition satisfied, even if surrounded by more massive particles //
 #else
-        if(P[i].Mass < (All.MaxMassForParticleSplit*target_mass_renormalization_factor_for_mergesplit(i))) {return 1;}
-        if(P[i].Mass >= MASS_THRESHOLD_FOR_WINDPROMO*target_mass_renormalization_factor_for_mergesplit(i)) {return 1;}
+        if(P[i].Mass >= MASS_THRESHOLD_FOR_WINDPROMO(i)*target_mass_renormalization_factor_for_mergesplit(i,0)) {return 1;}
 #endif
     }
 #endif
@@ -58,8 +64,8 @@ int does_particle_need_to_be_merged(int i)
         if((lambda_J > 4. * PARTICLE_MERGE_SPLIT_TRUELOVE_REFINEMENT * Get_Particle_Size(i)*All.cf_atime) && (P[i].Mass < All.MaxMassForParticleSplit)) {return 1;} // de-refine
     }
 #endif
-    if((P[i].Type>0) && (P[i].Mass > 0.5*All.MinMassForParticleMerger*target_mass_renormalization_factor_for_mergesplit(i))) {return 0;}
-    if(P[i].Mass <= (All.MinMassForParticleMerger*target_mass_renormalization_factor_for_mergesplit(i))) {return 1;}
+    if((P[i].Type>0) && (P[i].Mass > 0.5*All.MinMassForParticleMerger*target_mass_renormalization_factor_for_mergesplit(i,0))) {return 0;}
+    if(P[i].Mass <= (All.MinMassForParticleMerger*target_mass_renormalization_factor_for_mergesplit(i,0))) {return 1;}
     return 0;
 #endif
 }
@@ -73,10 +79,13 @@ int does_particle_need_to_be_split(int i)
 #ifdef PREVENT_PARTICLE_MERGE_SPLIT
     return 0;
 #else
+#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+    if(check_if_sufficient_mergesplit_time_has_passed(i) == 0) return 0;
+#endif
 #ifdef BH_DEBUG_SPAWN_JET_TEST
     if(P[i].ID == All.AGNWindID) {return 0;}
 #endif
-    if(P[i].Mass >= (All.MaxMassForParticleSplit*target_mass_renormalization_factor_for_mergesplit(i))) {return 1;}
+    if(P[i].Mass >= (All.MaxMassForParticleSplit*target_mass_renormalization_factor_for_mergesplit(i,1))) {return 1;}
 #ifdef PARTICLE_MERGE_SPLIT_TRUELOVE_REFINEMENT
     if(P[i].Type == 0)
     {
@@ -88,13 +97,50 @@ int does_particle_need_to_be_split(int i)
 #endif
 }
 
-/*! A multiplicative factor that determines the target mass of a particle for the (de)refinement routines */
-double target_mass_renormalization_factor_for_mergesplit(int i)
+/*! A multiplicative factor that determines the target mass of a particle for the (de)refinement routines; split_key tells you if this is for a split (1) or merge (0) */
+double target_mass_renormalization_factor_for_mergesplit(int i, int split_key)
 {
     double ref_factor=1.0;
 #if defined(SINGLE_STAR_AND_SSP_HYBRID_MODEL)
     if(P[i].Type==0)
     {
+#ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM
+        double dt_to_ramp_refinement = 0.00001;
+        double minimum_refinement_mass_in_solar = 0.005; // aims at 0.01 effective
+        
+        double mcrit_0=1.*(4000.), T_eff = 1.23 * (5./3.-1.) * U_TO_TEMP_UNITS * SphP[i].InternalEnergyPred, nH_cgs = SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_NHCGS, MJ = 9.e6 * pow( 1 + T_eff/1.e4, 1.5) / sqrt(1.e-12 + nH_cgs);
+        if(All.ComovingIntegrationOn) {MJ *= pow(1. + (100.*COSMIC_BARYON_DENSITY_CGS) / (SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_CGS), 3);}
+        double m_ref_mJ = 0.001 * MJ; int k; double dx,r2=0; for(k=0;k<3;k++) {dx=(P[i].Pos[k]-All.SMBH_SpecialParticle_Position_ForRefinement[k])*All.cf_atime; r2+=dx*dx;}
+        double rbh = sqrt(r2) * UNIT_LENGTH_IN_PC/1000.;
+        if(rbh > 1.e-10 && isfinite(rbh) && rbh < 1.e10)
+        {
+            double mc=1.e10, m_r1=DMIN(mcrit_0, 7.e3), m_r2=10.*m_r1, m_r3=10.*m_r2, r1=1., r2=10., r3=20.;
+            if(rbh<r1) {mc=m_r1;} else {if(rbh<r2) {mc=m_r1*exp(log(m_r2/m_r1)*log(rbh/r1)/log(r2/r1));} else
+            {if(rbh<r3) {mc=m_r2*exp(log(m_r3/m_r2)*log(rbh/r2)/log(r3/r2));} else {mc=m_r3*pow(rbh/r3,3);}}}
+            m_ref_mJ = DMIN(m_ref_mJ , mc);
+        }
+        double r_pc = rbh*1000.,r0, f0=1, target_slope=1.2;
+        double slope=0; slope = target_slope * (1. - exp(-(All.Time - All.TimeBegin) / dt_to_ramp_refinement)); // gradually ramp up refinement from snapshot
+
+        double t_00 = All.TimeBegin;
+        double dtau = (All.Time - t_00) / dt_to_ramp_refinement, dtdelay=0.1, tfinal=1.;
+        if(dtau < dtdelay) {slope=0;} else {slope=target_slope * (1. - exp(- ((dtau-dtdelay) / (tfinal - dtdelay)) ));} // alt model
+
+        if(dtau < dtdelay) {slope=0;} else {if(dtau>tfinal) {slope=target_slope;} else {slope = target_slope * (dtau-dtdelay) / (tfinal - dtdelay);}}
+        r0=1000.; if(r_pc<r0) {f0 *= pow(r_pc/r0,slope);}
+        if(dtau < 2.*dtdelay) {slope*=0;} else if(dtau < 3.*dtdelay) {slope*=(dtau-2.*dtdelay)/dtdelay;}
+        r0=100.; if(r_pc<r0) {f0 *= pow(r_pc/r0,slope);}
+        if(dtau < 4.*dtdelay) {slope*=0;} else if(dtau < 5.*dtdelay) {slope*=(dtau-4.*dtdelay)/dtdelay;}
+        r0=10.; if(r_pc<r0) {f0 *= pow(r_pc/r0,slope);}
+        if(dtau < 6.*dtdelay) {slope*=0;} else if(dtau < 7.*dtdelay) {slope*=(dtau-6.*dtdelay)/dtdelay;}
+        r0=1.; if(r_pc<r0) {f0 *= pow(r_pc/r0,slope);}
+
+        double M_target = f0 * DMAX( mcrit_0, m_ref_mJ ) / UNIT_MASS_IN_SOLAR;
+        double M_min_absolute = minimum_refinement_mass_in_solar / UNIT_MASS_IN_SOLAR; // arbitrarily set minimum mass for refinement at any level
+        double normal_median_mass = All.MaxMassForParticleSplit / 3.;
+        ref_factor = DMAX(M_min_absolute / normal_median_mass, DMIN( M_target / normal_median_mass , 1));
+        return ref_factor;
+#endif
         return 1; // need to determine appropriate desired refinement criterion, if resolution is not strictly pre-defined //
     }
 #endif
@@ -146,13 +192,13 @@ void merge_and_split_particles(void)
             /* do a neighbor loop ON THE SAME DOMAIN to determine the neighbors */
             int n_search_min = 32;
             int n_search_max = 320;
-            double h_search_max = 10. * All.ForceSoftening[P[i].Type];
-            double h_search_min = 0.1 * All.ForceSoftening[P[i].Type];
+            double h_search_max = 10. * ForceSoftening_KernelRadius(i);
+            double h_search_min = 0.1 * ForceSoftening_KernelRadius(i);
             double h_guess; numngb_inbox=0; int NITER=0, NITER_MAX=30;
 #ifdef AGS_HSML_CALCULATION_IS_ACTIVE
             h_guess = PPP[i].AGS_Hsml; if(h_guess > h_search_max) {h_search_max=h_guess;} if(h_guess < h_search_min) {h_search_min=h_guess;}
 #else
-            h_guess = 5.0 * All.ForceSoftening[P[i].Type];
+            h_guess = 5.0 * ForceSoftening_KernelRadius(i);
 #endif
             startnode=All.MaxPart;
             do {
@@ -189,11 +235,10 @@ void merge_and_split_particles(void)
                     }
                 } // for(n=0; n<numngb_inbox; n++)
             }
-            //printf("Particle %d clipping %d low/hi-res DM: neighbors=%d h_search=%g soft=%g iterations=%d \n",i,do_clipping,numngb_inbox,h_guess,All.ForceSoftening[P[i].Type],NITER);
             if(do_clipping)
             {
                 /* ok, the particle has neighbors but is completely surrounded by high-res particles, it should be clipped */
-                printf("Particle %d clipping low/hi-res DM: neighbors=%d h_search=%g soft=%g iterations=%d \n",i,numngb_inbox,h_guess,All.ForceSoftening[P[i].Type],NITER);
+                printf("Particle %d clipping low/hi-res DM: neighbors=%d h_search=%g soft=%g iterations=%d \n",i,numngb_inbox,h_guess,ForceSoftening_KernelRadius(i),NITER);
                 Ptmp[i].flag = -1;
             }
         }
@@ -221,17 +266,16 @@ void merge_and_split_particles(void)
 #ifdef BH_WIND_SPAWN
                         if(P[i].ID==All.AGNWindID)
                         {
-                            if(P[i].Mass>=MASS_THRESHOLD_FOR_WINDPROMO)
+                            if(P[i].Mass>=MASS_THRESHOLD_FOR_WINDPROMO(i))
                             {
-                                if((P[j].ID!=All.AGNWindID) || (P[j].Mass>=MASS_THRESHOLD_FOR_WINDPROMO)) {do_allow_merger=1;}
+                                if((P[j].ID != All.AGNWindID) || (P[j].Mass >= MASS_THRESHOLD_FOR_WINDPROMO(j))) {do_allow_merger *= 1;} else {do_allow_merger = 0;}
                             } else if(do_allow_merger) {
                                 double v2_tmp=0,vr_tmp=0; int ktmp=0; for(ktmp=0;ktmp<3;ktmp++) {v2_tmp+=(P[i].Vel[ktmp]-P[j].Vel[ktmp])*(P[i].Vel[ktmp]-P[j].Vel[ktmp]); vr_tmp+=(P[i].Vel[ktmp]-P[j].Vel[ktmp])*(P[i].Pos[ktmp]-P[j].Pos[ktmp]);}
-                                if(vr_tmp > 0) {do_allow_merger=0;}
+                                if(vr_tmp > 0) {do_allow_merger = 0;}
                                 if(v2_tmp > 0) {v2_tmp=sqrt(v2_tmp*All.cf_a2inv);} else {v2_tmp=0;}
-#if defined(SINGLE_STAR_FB_JETS) || defined(SINGLE_STAR_FB_WINDS)
-                                if(v2_tmp >  DMIN(Get_Gas_effective_soundspeed_i(i),Get_Gas_effective_soundspeed_i(j))) {do_allow_merger = 0;}
                                 if(P[j].ID == All.AGNWindID) {do_allow_merger = 0;} // wind particles can't intermerge
-#else
+                                if(v2_tmp >  DMIN(Get_Gas_effective_soundspeed_i(i),Get_Gas_effective_soundspeed_i(j))*All.cf_afac3) {do_allow_merger = 0;}
+#if !(defined(SINGLE_STAR_FB_JETS) || defined(SINGLE_STAR_FB_WINDS))
                                 if((v2_tmp > 0.25*All.BAL_v_outflow) && (v2_tmp > 0.9*Get_Gas_effective_soundspeed_i(j)*All.cf_afac3)) {do_allow_merger=0;}
 #endif
                             }
@@ -290,13 +334,12 @@ void merge_and_split_particles(void)
         }
 #endif
         if (Ptmp[i].flag == 1) { // merge this particle
-            merge_particles_ij(i, Ptmp[i].target_index);
-            n_particles_merged++;
+            int did_merge = merge_particles_ij(i, Ptmp[i].target_index);
+            if(did_merge == 1) {n_particles_merged++;}
         }
         if (Ptmp[i].flag == 2) {
-            split_particle_i(i, n_particles_split, Ptmp[i].target_index);
-            n_particles_split++;
-            if(P[i].Type==0) {n_particles_gas_split++;}
+            int did_split = split_particle_i(i, n_particles_split, Ptmp[i].target_index);
+            if(did_split == 1) {n_particles_split++; if(P[i].Type==0) {n_particles_gas_split++;}}
         }
     }
 
@@ -333,18 +376,17 @@ void merge_and_split_particles(void)
     so care needs to be taken modifying this so that it's done in a way that is (1) conservative, (2) minimizes perturbations to the
     volumetric quantities of the flow, and (3) doesn't crash the tree or lead to particle 'overlap'
     Modified by Takashi Okamoto on 20/6/2019.  */
-//void split_particle_i(int i, int n_particles_split, int i_nearest, double r2_nearest)
-void split_particle_i(int i, int n_particles_split, int i_nearest)
+int split_particle_i(int i, int n_particles_split, int i_nearest)
 {
     double mass_of_new_particle;
-    if( ((P[i].Type==0) && (NumPart + n_particles_split >= All.MaxPartSph)) || ((P[i].Type!=0) && (NumPart + n_particles_split >= All.MaxPart)) )
+    if( ((P[i].Type==0) && (NumPart + n_particles_split >= All.MaxPartGas)) || ((P[i].Type!=0) && (NumPart + n_particles_split >= All.MaxPart)) )
     {
-        printf ("On Task=%d with NumPart=%d we tried to split a particle, but there is no space left...(All.MaxPart=%d). Try using more nodes, or raising PartAllocFac, or changing the split conditions to avoid this.\n", ThisTask, NumPart, All.MaxPart);
-        fflush(stdout);
+        printf ("On Task=%d with NumPart=%d we tried to split a particle, but there is no space left...(All.MaxPart=%d). Try using more nodes, or raising PartAllocFac, or changing the split conditions to avoid this.\n", ThisTask, NumPart, All.MaxPart); fflush(stdout);
+        return 0;
         endrun(8888);
     }
 #ifndef SPAWN_PARTICLES_VIA_SPLITTING
-    if(P[i].Type != 0) {printf("SPLITTING NON-GAS-PARTICLE: i=%d ID=%llu Type=%d \n",i,(unsigned long long) P[i].ID,P[i].Type);} //fflush(stdout); endrun(8889);
+    if(P[i].Type != 0) {printf("Splitting Non-Gas Particle: i=%d ID=%llu Type=%d \n",i,(unsigned long long) P[i].ID,P[i].Type);} //fflush(stdout); endrun(8889);
 #endif
 
     /* here is where the details of the split are coded, the rest is bookkeeping */
@@ -369,7 +411,7 @@ void split_particle_i(int i, int n_particles_split, int i_nearest)
     d_r = DMAX( DMAX(0.1*r_near , 0.005*hsml) , DMIN(d_r , r_near) ); // use a 'buffer' to limit to some multiple of the distance to the nearest particle //
     */ // the change above appears to cause some numerical instability //
 #ifndef SELFGRAVITY_OFF
-    d_r = DMAX(d_r , 2.0*EPSILON_FOR_TREERND_SUBNODE_SPLITTING * All.ForceSoftening[P[i].Type]);
+    d_r = DMAX(d_r , 2.0*EPSILON_FOR_TREERND_SUBNODE_SPLITTING * ForceSoftening_KernelRadius(i));
 #endif
 #ifdef BOX_BND_PARTICLES
     if(P[i].Type != 0 && P[i].ID == 0) {d_r *= 1.e-3;}
@@ -421,7 +463,7 @@ void split_particle_i(int i, int n_particles_split, int i_nearest)
     {
         /* set the pointers equal to one another -- all quantities get copied, we only have to modify what needs changing */
         SphP[j] = SphP[i];
-        //memcpy(SphP[j],SphP[i],sizeof(struct sph_particle_data)); // safer copy to make sure we don't just end up with a pointer re-direct
+        //memcpy(SphP[j],SphP[i],sizeof(struct gas_cell_data)); // safer copy to make sure we don't just end up with a pointer re-direct
         /* boost the condition number to be conservative, so we don't trigger madness in the kernel */
         SphP[i].ConditionNumber *= 10.0;
         SphP[j].ConditionNumber = SphP[i].ConditionNumber;
@@ -511,21 +553,24 @@ void split_particle_i(int i, int n_particles_split, int i_nearest)
 #if (NUMDIMS > 1)        
         double norm=0, dp[3]; int m; dp[0]=dp[1]=dp[2]=0;
 
-        // get the eigenvector of NV_T that has the smallest eigenvalue (= sparsest sampling direction)
+        // get the eigenvector of NV_T that has the largest eigenvalue (= sparsest sampling direction, if assume equal-mass particles, for our definition of NV_T)
         double nvt[NUMDIMS*NUMDIMS]={0}; for(k=0;k<NUMDIMS;k++) {for(m=0;m<NUMDIMS;m++) {nvt[NUMDIMS*k + m]=SphP[i].NV_T[k][m];}} // auxiliary array to store NV_T in for feeding to GSL eigen routine
         gsl_matrix_view M = gsl_matrix_view_array(nvt,NUMDIMS,NUMDIMS); gsl_vector *eigvals = gsl_vector_alloc(NUMDIMS); gsl_matrix *eigvecs = gsl_matrix_alloc(NUMDIMS,NUMDIMS);
         gsl_eigen_symmv_workspace *v = gsl_eigen_symmv_alloc(NUMDIMS); gsl_eigen_symmv(&M.matrix, eigvals, eigvecs, v);
-        int min_eigvec_index = 0; double min_eigval = MAX_REAL_NUMBER;
-        for(k=0;k<NUMDIMS;k++) {if(gsl_vector_get(eigvals,k) < min_eigval){min_eigval = gsl_vector_get(eigvals,k); min_eigvec_index=k;}}
+        int min_eigvec_index = 0; double max_eigval = -MAX_REAL_NUMBER; //
+        for(k=0;k<NUMDIMS;k++) {if(gsl_vector_get(eigvals,k) > max_eigval) {max_eigval = gsl_vector_get(eigvals,k); min_eigvec_index=k;}}
         for(k=0;k<NUMDIMS;k++) {dp[k] = gsl_matrix_get(eigvecs, k, min_eigvec_index);}
         gsl_eigen_symmv_free(v); gsl_vector_free(eigvals); gsl_matrix_free(eigvecs);
         for(k=0;k<NUMDIMS;k++) {norm += dp[k] * dp[k];}
         if(norm > 0)
         {
-            norm = 1/sqrt(norm); for(k=0;k<NUMDIMS;k++) {dp[k] *= norm;}
+            norm = 1/sqrt(norm);
+            double qq = get_random_number(63432*k + 84*i + 99*j + 358453 + 84537*ThisTask);
+            if(qq < 0.5) {norm *= -1.;} // randomly decide which direction along principle axis to orient split (since this is arbitrary, this helps prevent accidental collisions)
+            for(k=0;k<NUMDIMS;k++) {dp[k] *= norm;}
             dx=d_r*dp[0]; dy=d_r*dp[1]; dz=d_r*dp[2];
-            /* rotate to 90-degree offset from above orientation, if using the density gradient */
-            // if(dp[2]==1) {dx=d_r; dy=0; dz=0;} else {dz = sqrt(dp[1]*dp[1] + dp[0]*dp[0]); dx = -d_r * dp[1]/dz; dy = d_r * dp[0]/dz; dz = 0.0;}
+            /* rotate to 90-degree offset from above orientation, if using the density gradient, to get uniform sampling (otherwise get 'ridges' along sampled axis) */
+            //if(dp[2]==1) {dx=d_r; dy=0; dz=0;} else {double dr2d = sqrt(dp[1]*dp[1] + dp[0]*dp[0]); dx = -d_r*dp[1]/dr2d; dy = d_r*dp[0]/dr2d; dz = d_r*dp[2];}
         }
 #endif
 #ifdef WAKEUP  /* TO: rather conservative. But we want to update Density and Hsml after the particle masses were changed */
@@ -539,6 +584,10 @@ void split_particle_i(int i, int n_particles_split, int i_nearest)
      any other operations on the particles */
     P[i].Pos[0] += dx; P[j].Pos[0] -= dx; P[i].Pos[1] += dy; P[j].Pos[1] -= dy; P[i].Pos[2] += dz; P[j].Pos[2] -= dz;
 
+#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+    P[i].Time_Of_Last_MergeSplit = All.Time; P[j].Time_Of_Last_MergeSplit = All.Time;
+#endif
+    
     /* Note: New tree construction can be avoided because of  `force_add_star_to_tree()' */
 #ifdef PARTICLE_MERGE_SPLIT_EVERY_TIMESTEP    
     long bin = P[i].TimeBin;
@@ -547,6 +596,7 @@ void split_particle_i(int i, int n_particles_split, int i_nearest)
     force_add_star_to_tree(i, j);
 #endif    
     /* we solve this by only calling the merge/split algorithm when we're doing the new domain decomposition */
+    return 1; // completed routine successfully
 }
 
 
@@ -557,18 +607,18 @@ void split_particle_i(int i, int n_particles_split, int i_nearest)
     all conserved quantities are appropriately dealt with. This also requires some care, to be
     done appropriately, but is a little bit less sensitive and more well-defined compared to
     particle splitting */
-void merge_particles_ij(int i, int j)
+int merge_particles_ij(int i, int j)
 {
     int k;
     if(P[i].Mass <= 0)
     {
         P[i].Mass = 0;
-        return;
+        return 0;
     }
     if(P[j].Mass <= 0)
     {
         P[j].Mass = 0;
-        return;
+        return 0;
     }
     double mtot = P[j].Mass + P[i].Mass;
     double wt_i = P[i].Mass / mtot;
@@ -610,7 +660,7 @@ void merge_particles_ij(int i, int j)
             P[i].dp[k] += P[i].Mass*P[i].Vel[k] - p_old_i[k];
             P[j].dp[k] += P[j].Mass*P[j].Vel[k] - p_old_j[k];
         }
-        return;
+        return 1;
     } // closes merger of non-gas particles, only gas particles will see the blocks below //
 
 
@@ -801,6 +851,10 @@ void merge_particles_ij(int i, int j)
     }
 #endif
 
+#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+    P[i].Time_Of_Last_MergeSplit = All.Time; P[j].Time_Of_Last_MergeSplit = All.Time;
+#endif
+    
     /* finally zero out the particle mass so it will be deleted */
     P[i].Mass = 0;
     P[j].Mass = mtot;
@@ -812,7 +866,7 @@ void merge_particles_ij(int i, int j)
     }
     /* call the pressure routine to re-calculate pressure (and sound speeds) as needed */
     SphP[j].Pressure = get_pressure(j);
-    return;
+    return 1;
 }
 
 
@@ -901,10 +955,10 @@ void remove_particle_from_treewalk(int i){
  */
 void rearrange_particle_sequence(void)
 {
-    int i, j, flag = 0, flag_sum;
+    int i, j, flag = 0, flag_sum, j_next;
     int count_elim, count_gaselim, count_bhelim, tot_elim, tot_gaselim, tot_bhelim;
     struct particle_data psave;
-    struct sph_particle_data sphsave;
+    struct gas_cell_data gascellsave;
 #ifdef CHIMES
     struct gasVariables gasVarsSave;
 #endif
@@ -931,25 +985,27 @@ void rearrange_particle_sequence(void)
     /* if more gas than stars, need to be sure the block ordering is correct (gas first, then stars) */
     if(do_loop_check)
     {
+        j_next = N_gas;
         for(i = 0; i < N_gas; i++) /* loop over the gas block */
             if(P[i].Type != 0) /* and look for a particle converted to non-gas */
             {
                 /* ok found a non-gas particle: */
-                for(j = N_gas; j < NumPart; j++) /* loop from N_gas to Numpart, to find first labeled as gas */
+                for(j = j_next; j < NumPart; j++) /* loop from N_gas to Numpart, to find first labeled as gas */
                     if(P[j].Type == 0) break; /* break on that to record the j of interest */
                 if(j >= NumPart) endrun(181170); /* if that j is too large, exit with error */
-
+                
+                if(j < NumPart-1) {j_next = j + 1;} else {j_next = NumPart - 1;}
                 psave = P[i]; /* otherwise, save the old pointer */
                 P[i] = P[j]; /* now set the pointer equal to this new P[j] */
                 P[j] = psave; /* now set the P[j] equal to the old, saved pointer */
                 /* so we've swapped the two P[i] and P[j] */
-                sphsave = SphP[i];
+                gascellsave = SphP[i];
                 SphP[i] = SphP[j];
-                SphP[j] = sphsave;  /* have the gas particle take its sph pointer with it */
+                SphP[j] = gascellsave;  /* have the gas particle take its gas/fluid cell pointer with it */
 #ifdef MAINTAIN_TREE_IN_REARRANGE
                 swap_treewalk_pointers(i,j);
 #endif
-#ifdef CHIMES /* swap chimes-specific 'gasvars' structure which is separate from SphP */
+#ifdef CHIMES /* swap chimes-specific 'gasvars' structure which is separate from the default code gas cell structure */
                 gasVarsSave = ChimesGasVars[i]; ChimesGasVars[i] = ChimesGasVars[j]; ChimesGasVars[j] = gasVarsSave;
                 /* Old particle (now at position j) is no longer a gas particle, so delete its abundance array. */
                 free_gas_abundances_memory(&(ChimesGasVars[j]), &ChimesGlobalVars);
@@ -974,7 +1030,7 @@ void rearrange_particle_sequence(void)
 
             if(P[i].Type == 0)
             {
-                TimeBinCountSph[P[i].TimeBin]--;
+                TimeBinCountGas[P[i].TimeBin]--;
 
                 P[i] = P[N_gas - 1];
                 SphP[i] = SphP[N_gas - 1];
@@ -1000,7 +1056,7 @@ void rearrange_particle_sequence(void)
             {
                 if(P[i].Type == 5) {count_bhelim++;} /* record elimination if BH */
                 P[i] = P[NumPart - 1]; /* re-directs pointer for this particle to pointer at final particle -- so we
-                                        swap the two; note that ordering -does not- matter among the non-SPH particles
+                                        swap the two; note that ordering -does not- matter among the non-fluid/gas cells
                                         so its fine if this mixes up the list ordering of different particle types */
 #ifdef MAINTAIN_TREE_IN_REARRANGE
                 swap_treewalk_pointers(i, NumPart - 1);
@@ -1035,6 +1091,9 @@ void rearrange_particle_sequence(void)
 /* function to apply -optional- cell excision for special cases where e.g. cells go far outside of the desired 'zoom-in region' or target region of a multi-scale simulation */
 void apply_pm_hires_region_clipping_selection(int i)
 {
+#if defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+    if(P[i].Type==3) {return;}
+#endif
 #ifdef PM_HIRES_REGION_CLIPPING
     int clip_flag = 0; // flag for clipping
     if(All.Time <= All.TimeBegin) {return;} // no clips before run properly starts
@@ -1057,3 +1116,19 @@ void apply_pm_hires_region_clipping_selection(int i)
 #endif
     return; // done
 }
+
+
+
+#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+/* subroutine to check if too little time has passed since the last merge-split, in which case we won't allow it again */
+int check_if_sufficient_mergesplit_time_has_passed(int i)
+{
+    double N_timesteps_fac = 30.; // require > N timesteps before next merge/split, default was 100, but can be more aggressive - something between 10-100 works well in practice [definitely shorter than 10 can cause problems]
+    if(P[i].Time_Of_Last_MergeSplit <= All.TimeBegin) {N_timesteps_fac *= 10. * get_random_number(832LL*i + 890345645LL + 83457LL*ThisTask + 12313403LL*P[i].ID);} // spread initial timing out over a broader range so it doesn't all happen at once after the startup
+    double dtime_code = All.Time - P[i].Time_Of_Last_MergeSplit; // time [in code units] since last merge/split
+    double dt_incodescale = (GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i) * All.cf_hubble_a) * All.cf_atime; // timestep converted appropriately to code units [physical if non-comoving, else scale factor]
+    if(dtime_code < N_timesteps_fac*dt_incodescale) {return 0;} // not enough time passed, prohibit
+    if(All.ComovingIntegrationOn) {if(dtime_code < 1.e-8) {return 0;}} // also enforce an absolute time limit
+    return 1; // otherwise, if no check so far to reject, allow this merge/split
+}
+#endif

@@ -82,7 +82,7 @@ void do_second_halfstep_kick(void)
                 tstart = P[i].Ti_begstep + ti_step / 2;	/* midpoint of step */
                 tend = P[i].Ti_begstep + ti_step;	/* end of step */
                 do_the_kick(i, tstart, tend, P[i].Ti_current, 1);
-                set_predicted_sph_quantities_for_extra_physics(i);
+                set_predicted_quantities_for_extra_physics(i);
             }
         }
     } // for(i = 0; i < NumPart; i++) //
@@ -215,7 +215,7 @@ void do_the_kick(int i, integertime tstart, integertime tend, integertime tcurre
             e_old += d_inc * SphP[i].dInternalEnergy; // for(j = 0; j< 3; j++) e_old -= 0.5*mass_new * (P[i].Vel[j]/All.cf_atime)*(P[i].Vel[j]/All.cf_atime); // increment of total (thermal+kinetic) energy; subtract off the new kinetic energy //
             SphP[i].InternalEnergy = e_old / mass_new; check_particle_for_temperature_minimum(i); // obtain the new internal energy per unit mass, check floor // */
              
-            // at the end of this kick, need to re-zero the dInternalEnergy, and other conserved-variable SPH quantities set in the hydro loop, to avoid double-counting them
+            // at the end of this kick, need to re-zero the dInternalEnergy, and other conserved-variable gas/fluid quantities set in the hydro loop, to avoid double-counting them
             if(mode==0) {SphP[i].dMass=0;} /* SphP[i].dInternalEnergy=0; SphP[i].dMomentum[0]=SphP[i].dMomentum[1]=SphP[i].dMomentum[2]=0; */
         }
     } // if(P[i].Type==0) //
@@ -334,7 +334,7 @@ void do_the_kick(int i, integertime tstart, integertime tend, integertime tcurre
             check_particle_for_temperature_minimum(i); /* if we've fallen below the minimum temperature, force the 'floor' */
         }
         
-        /* now, kick for non-SPH quantities (accounting for momentum conservation if masses are changing) */
+        /* now, kick for non-gas/fluid quantities (accounting for momentum conservation if masses are changing) */
         for(j = 0; j < 3; j++)
         {
             dp[j] = 0;
@@ -376,9 +376,9 @@ void do_the_kick(int i, integertime tstart, integertime tend, integertime tcurre
         /* any other gas-specific kicks (e.g. B-fields, radiation) go here */
         if(P[i].Type==0)
         {
-            do_sph_kick_for_extra_physics(i, tstart, tend, dt_entr);
+            do_kick_for_extra_physics(i, tstart, tend, dt_entr);
 
-            /* after completion of a full step, set the predicted values of SPH quantities
+            /* after completion of a full step, set the predicted values of gas/fluid quantities
              * to the current values. They will then predicted further along in drift operations */
             if(mode==1)
             {
@@ -410,7 +410,7 @@ void do_the_kick(int i, integertime tstart, integertime tend, integertime tcurre
 }
 
 
-void set_predicted_sph_quantities_for_extra_physics(int i)
+void set_predicted_quantities_for_extra_physics(int i)
 {
     if(P[i].Type == 0 && P[i].Mass > 0)
     {
@@ -460,7 +460,7 @@ void set_predicted_sph_quantities_for_extra_physics(int i)
 
 
 
-void do_sph_kick_for_extra_physics(int i, integertime tstart, integertime tend, double dt_entr)
+void do_kick_for_extra_physics(int i, integertime tstart, integertime tend, double dt_entr)
 {
     int j; j=0;
 #ifdef MAGNETIC
