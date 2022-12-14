@@ -225,6 +225,9 @@ void set_non_standard_physics_for_current_time(void)
     if(All.ComovingIntegrationOn) {LoadMultiSpeciesTables();}
 #endif
 
+#if defined(GALSF_SFR_IMF_SAMPLING_DISTRIBUTE_SF)
+    update_stellarnumber_and_timedistribofstarformation();
+#endif
 }
 
 
@@ -562,7 +565,7 @@ integertime find_next_outputtime(integertime ti_curr)
 
 	  iter++;
 
-	  if(iter > 1000000)
+	  if(iter > 100000000)
 	    {
 	      printf("Can't determine next output time.\n");
 	      endrun(110);
@@ -586,7 +589,7 @@ integertime find_next_outputtime(integertime ti_curr)
 
 	  iter++;
 
-	  if(iter > 1000000)
+	  if(iter > 100000000)
 	    {
 	      printf("Can't determine next output time.\n");
 	      endrun(111);
@@ -598,17 +601,14 @@ integertime find_next_outputtime(integertime ti_curr)
   if(ti_next == -1)
     {
       ti_next = 2 * TIMEBASE;	/* this will prevent any further output */
-
-      if(ThisTask == 0)
-	printf("\nThere is no valid time for a further snapshot file.\n");
+      if(ThisTask == 0) {printf("\nThere is no valid time for a further snapshot file.\n");}
     }
   else
     {
       if(All.ComovingIntegrationOn) {next = All.TimeBegin * exp(ti_next * All.Timebase_interval);}
       else {next = All.TimeBegin + ti_next * All.Timebase_interval;}
 
-      if(ThisTask == 0)
-	printf("\nSetting next time for snapshot file to Time_next= %.16g  (DumpFlag=%d)\n", next, DumpFlag);
+      if(ThisTask == 0) {printf("\nSetting next time for snapshot file to Time_next= %.16g  (DumpFlag=%d)\n", next, DumpFlag);}
 
     }
 
@@ -858,6 +858,12 @@ void write_cpu_log(void)
 #if defined(GALSF_FB_MECHANICAL) || defined(GALSF_FB_THERMAL)
           "mech_fb_loop  %10.2f  %5.1f%%\n"
 #endif
+#if defined(GALSF_FB_FIRE_RT_HIIHEATING)
+          "hII_fb_loop   %10.2f  %5.1f%%\n"
+#endif
+#if defined(GALSF_FB_FIRE_RT_LOCALRP)
+          "localwindkik  %10.2f  %5.1f%%\n"
+#endif
 #if defined(RADTRANSFER)
           "rt_nonfluxops %10.2f  %5.1f%%\n"
 #endif
@@ -934,6 +940,12 @@ void write_cpu_log(void)
 #endif
 #if defined(GALSF_FB_MECHANICAL) || defined(GALSF_FB_THERMAL)
     All.CPU_Sum[CPU_SNIIHEATING], (All.CPU_Sum[CPU_SNIIHEATING]) / All.CPU_Sum[CPU_ALL] * 100,
+#endif
+#if defined(GALSF_FB_FIRE_RT_HIIHEATING)
+    All.CPU_Sum[CPU_HIIHEATING], (All.CPU_Sum[CPU_HIIHEATING]) / All.CPU_Sum[CPU_ALL] * 100,
+#endif
+#if defined(GALSF_FB_FIRE_RT_LOCALRP)
+    All.CPU_Sum[CPU_LOCALWIND], (All.CPU_Sum[CPU_LOCALWIND]) / All.CPU_Sum[CPU_ALL] * 100,
 #endif
 #if defined(RADTRANSFER)
     All.CPU_Sum[CPU_RTNONFLUXOPS], (All.CPU_Sum[CPU_RTNONFLUXOPS]) / All.CPU_Sum[CPU_ALL] * 100,

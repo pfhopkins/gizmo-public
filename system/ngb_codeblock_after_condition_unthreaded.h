@@ -83,8 +83,9 @@ else
         }
     }
     
+    double hmax = Extnodes[no].hmax;
 #if (SEARCHBOTHWAYS==1)
-    dist = DMAX(Extnodes[no].hmax, hsml) + 0.5 * current->len;
+    dist = DMAX(hmax, hsml) + 0.5 * current->len;
 #else
     dist = hsml + 0.5 * current->len;
 #endif

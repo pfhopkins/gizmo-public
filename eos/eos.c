@@ -118,6 +118,10 @@ double get_pressure(int i)
     soundspeed = sqrt(soundspeed2);
 #endif
     
+#ifdef COSMIC_RAY_SUBGRID_LEBRON
+    soundspeed = sqrt(gamma_eos_index*(gamma_eos_index-1) * SphP[i].InternalEnergyPred + (4./3.)*(1./3.)*SphP[i].SubGrid_CosmicRayEnergyDensity/SphP[i].Density);
+    press += (1./3.) * SphP[i].SubGrid_CosmicRayEnergyDensity;
+#endif
     
     
 #ifdef RT_RADPRESSURE_IN_HYDRO /* add radiation pressure in the Riemann problem directly */
@@ -323,8 +327,16 @@ double Get_Gas_Ionized_Fraction(int i)
 double return_dust_to_metals_ratio_vs_solar(int i)
 {
     if(i<0 || P[i].Type!=0) {return 1;}
+#if defined(RT_OPACITY_FROM_EXPLICIT_GRAINS) /* note since the applications of this module really want a -surface area per unit mass- ratio to scale off of, we actually want to scale this by the geometric opacity, relative to what 'typical' solar conditions would give */
+    double kappa_interp_geo_cgs = SphP[i].InterpolatedGeometricDustCrossSection / UNIT_SURFDEN_IN_CGS; // this should be in cgs, in cm^2/g
+    double kappa_solar_geo_cgs = 3300.; // this is a rough estimate of what one would get as a 'reference' opacity if one assumed a maximum grain size of 0.1 micron, grain density of 2.25 g/cm^3, as in e.g. Weingartner & Draine 2001 (roughly what their models would give, for the size range we usually model, to compare)
+    double Z_scaled = P[i].Metallicity[0]/All.SolarAbundances[0]; // metallicity of the particle in solar
+    return (kappa_interp_geo_cgs / kappa_solar_geo_cgs) / (Z_scaled); // will be multiplied by metallicity to convert later
+#endif
 #if defined(RT_INFRARED)
-    return exp(-DMIN(SphP[i].Dust_Temperature/1500., 40.)); // crudely don't both accounting for size spectrum, just adopt an exponential cutoff above the sublimation temperature
+    double T_evap = 1500.; // 2e3 * pow(SphP[i].Density * All.cf_a3inv * UNIT_DENSITY_IN_CGS, 0.0195); // latter function from Kuiper 2010 eqs 21-22; sublimation temeprature from Isella & Natta 2005, fit to Pollack 1994. works for protostellar environments, but extrapolates poorly to diffuse ISM and/or stellar/AGN atmosphere environments, so for now use a simpler 1500 K which is a rough median between these, with more sophisticated dust modules required to fit all different parameter regimes.
+    return sigmoid_sqrt(-0.006*(SphP[i].Dust_Temperature - T_evap));
+//    return exp(-DMIN(SphP[i].Dust_Temperature/1500., 40.)); // crudely don't both accounting for size spectrum, just adopt an exponential cutoff above the sublimation temperature
 #endif
 #if defined(COOL_LOW_TEMPERATURES)
     double Tdust = get_equilibrium_dust_temperature_estimate(i,0);
@@ -350,6 +362,9 @@ double Get_Gas_Molecular_Mass_Fraction(int i, double temperature, double neutral
     return DMIN(1, DMAX(0, SphP[i].MolecularMassFraction));
 #endif
 
+#if defined(GALSF_FB_FIRE_RT_HIIHEATING)
+    if(SphP[i].DelayTimeHII > 0) {return 0;} // force gas flagged as in HII regions to have zero molecular fraction
+#endif
 
     
 #if defined(COOL_MOLECFRAC_LOCALEQM) || defined(COOL_MOLECFRAC_KMT) || defined(COOL_MOLECFRAC_GD) // here are some of the 'fancy' molecular fraction estimators which need various additional properties
@@ -363,6 +378,9 @@ double Get_Gas_Molecular_Mass_Fraction(int i, double temperature, double neutral
     Z_Zsol = P[i].Metallicity[0]/All.SolarAbundances[0]; // metallicity in solar units [scale to total Z, since this mixes dust and C opacity], and enforce a low-Z floor to prevent totally unphysical behaviors at super-low Z [where there is still finite opacity in reality; e.g. Kramer's type and other opacities enforce floor around ~1e-3]
 #endif
     /* get incident radiation field from whatever module we are using to track it */
+#ifdef GALSF_FB_FIRE_RT_UVHEATING
+    urad_G0 = DMAX(SphP[i].Rad_Flux_UV, 1.e-10); // note this is ALREADY self-shielded, so we need to be careful about 2x-counting the self-shielding approximation below; hence limit this to a rather sizeable value  //
+#endif
 #if defined(RT_PHOTOELECTRIC) || defined(RT_LYMAN_WERNER)
     int whichbin = RT_FREQ_BIN_LYMAN_WERNER;
 #if !defined(RT_LYMAN_WERNER)

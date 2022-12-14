@@ -203,6 +203,6 @@ for(k_CRegy=0;k_CRegy<N_CR_PARTICLE_BINS;k_CRegy++)
     if(j_is_active_for_fluxes) {SphP[j].DtCosmicRayEnergy[k_CRegy] -= Fluxes.CosmicRayPressure[k_CRegy];}
 }
 
-    out.Face_DivVel_ForAdOps += -(All.cf_a3inv/V_i) * Face_Area_Norm * (Riemann_out.S_M + face_area_dot_vel);
-    if(j_is_active_for_fluxes) {SphP[j].Face_DivVel_ForAdOps -= -(All.cf_a3inv/V_j) * Face_Area_Norm * (Riemann_out.S_M + face_area_dot_vel);}
+    out.Face_DivVel_ForAdOps += -(All.cf_a3inv/V_i) * Face_Area_Norm * (Riemann_out.S_M + face_area_dot_vel) / All.cf_a2inv;
+    if(j_is_active_for_fluxes) {SphP[j].Face_DivVel_ForAdOps -= -(All.cf_a3inv/V_j) * Face_Area_Norm * (Riemann_out.S_M + face_area_dot_vel) / All.cf_a2inv;}
 #endif // COSMIC_RAY_FLUID

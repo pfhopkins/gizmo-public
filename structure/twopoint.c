@@ -72,7 +72,7 @@ void twopoint(void)
     /* allocate buffers to arrange communication */
     RsList = (MyFloat *) mymalloc("RsList", NumPart * sizeof(MyFloat));
     size_t MyBufferSize = All.BufferSize;
-    All.BunchSize = (int) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) + 2 * sizeof(struct twopointdata_in)));
+    All.BunchSize = (long) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) + 2 * sizeof(struct twopointdata_in)));
     DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
     DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
     state_buffer = mymalloc("state_buffer", gsl_rng_size(random_generator));

@@ -435,7 +435,7 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
 
         case IO_AGS_ZETA:
 #if defined (AGS_HSML_CALCULATION_IS_ACTIVE) && defined(AGS_OUTPUTZETA)
-            for(n = 0; n < pc; n++) {PPPZ[offset + n].AGS_Zeta = *fp++;}
+            for(n = 0; n < pc; n++) {PPPZ[offset + n].AGS_zeta = *fp++;}
 #endif
             break;
 
@@ -480,7 +480,13 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
              for(n = 0; n < pc; n++) {P[offset + n].IMF_NumMassiveStars = *fp++;}
 #endif
             break;
-            
+
+        case IO_DTOSTAR:
+#ifdef GALSF_SFR_IMF_SAMPLING_DISTRIBUTE_SF
+            for(n = 0; n < pc; n++) {P[offset + n].TimeDistribOfStarFormation = *fp++;}
+#endif
+            break;
+
         case IO_UNSPMASS:
 #if defined(BH_WIND_SPAWN) && defined(BH_DEBUG_SPAWN_JET_TEST)
              for(n = 0; n < pc; n++) {P[offset + n].unspawned_wind_mass = *fp++;}
@@ -512,7 +518,7 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
             break;
 
         case IO_SINK_FORM_MASS:
-#ifdef SINGLE_STAR_SINK_DYNAMICS
+#ifdef BLACK_HOLES
             for(n = 0; n < pc; n++) {P[offset + n].Sink_Formation_Mass = *fp++;}
 #endif
             break;	    
@@ -541,6 +547,8 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
         case IO_HYDROACCEL:
         case IO_DTENTR:
         case IO_RAD_ACCEL:
+        case IO_RAD_TEMP:
+        case IO_DUST_TEMP:
         case IO_GDE_DISTORTIONTENSOR:
         case IO_CRATE:
         case IO_HRATE:
@@ -696,13 +704,13 @@ void read_file(char *fname, int readTask, int lastTask)
 #ifdef INPUT_IN_DOUBLEPRECISION
     if(header.flag_doubleprecision == 0)
     {
-        if(ThisTask == 0) {printf("\nProblem: Code compiled with INPUT_IN_DOUBLEPRECISION, but input files are in single precision!\n");}
+        if(ThisTask == 0) {printf("\nProblem: Code compiled with INPUT_IN_DOUBLEPRECISION, but input files are in single precision!\n"); fflush(stdout);}
         endrun(11);
     }
 #else
     if(header.flag_doubleprecision)
     {
-        if(ThisTask == 0) {printf("\nProblem: Code not compiled with INPUT_IN_DOUBLEPRECISION, but input files are in double precision!\n");}
+        if(ThisTask == 0) {printf("\nProblem: Code not compiled with INPUT_IN_DOUBLEPRECISION, but input files are in double precision!\n"); fflush(stdout);}
         endrun(10);
     }
 #endif
@@ -762,10 +770,10 @@ void read_file(char *fname, int readTask, int lastTask)
                " ..distributing this file to tasks %d-%d\n"
                "Type 0 (gas):   %8d  (tot=%6d%09d) masstab=%g\n"
                "Type 1 (halo):  %8d  (tot=%6d%09d) masstab=%g\n"
-               "Type 2 (disk):  %8d  (tot=%6d%09d) masstab=%g\n"
-               "Type 3 (bulge): %8d  (tot=%6d%09d) masstab=%g\n"
+               "Type 2 (alt):   %8d  (tot=%6d%09d) masstab=%g\n"
+               "Type 3 (pic):   %8d  (tot=%6d%09d) masstab=%g\n"
                "Type 4 (stars): %8d  (tot=%6d%09d) masstab=%g\n"
-               "Type 5 (bndry): %8d  (tot=%6d%09d) masstab=%g\n\n", fname, ThisTask, n_in_file, readTask,
+               "Type 5 (sink):  %8d  (tot=%6d%09d) masstab=%g\n\n", fname, ThisTask, n_in_file, readTask,
                lastTask, header.npart[0], (int) (header.npartTotal[0] / 1000000000),
                (int) (header.npartTotal[0] % 1000000000), All.MassTable[0], header.npart[1],
                (int) (header.npartTotal[1] / 1000000000), (int) (header.npartTotal[1] % 1000000000),
@@ -850,7 +858,7 @@ void read_file(char *fname, int readTask, int lastTask)
 #if defined(BH_GRAVCAPTURE_FIXEDSINKRADIUS) && defined(INPUT_READ_SINKPROPS)
                    && blocknr != IO_SINKRAD
 #endif
-#if defined(SINGLE_STAR_SINK_DYNAMICS) && defined(INPUT_READ_SINKPROPS)
+#if defined(BLACK_HOLES) && defined(INPUT_READ_SINKPROPS)
                    && blocknr != IO_SINK_FORM_MASS
 #endif		   
 #if defined(CHIMES) && !defined(CHIMES_INITIALISE_IN_EQM)
@@ -911,6 +919,7 @@ void read_file(char *fname, int readTask, int lastTask)
             if(RestartFlag == 2 && blocknr == IO_RADGAMMA) {continue;}
             if(RestartFlag == 2 && blocknr == IO_EDDINGTON_TENSOR) {continue;}
             if(RestartFlag == 2 && blocknr == IO_OSTAR) {continue;}
+            if(RestartFlag == 2 && blocknr == IO_DTOSTAR) {continue;}
             if(RestartFlag == 2 && blocknr == IO_HII) {continue;}
             if(RestartFlag == 2 && blocknr == IO_HeI) {continue;}
             if(RestartFlag == 2 && blocknr == IO_HeII) {continue;}
@@ -1099,16 +1108,11 @@ void read_file(char *fname, int readTask, int lastTask)
                         if(All.ICFormat == 1 || All.ICFormat == 2)
                         {
                             SKIP2;
-
                             if(blksize1 != blksize2)
                             {
                                 printf("incorrect block-sizes detected!\n");
                                 printf("Task=%d   blocknr=%d  blksize1=%d  blksize2=%d\n", ThisTask, bnr, blksize1, blksize2);
-                                if(blocknr == IO_ID)
-                                {
-                                    printf
-                                    ("Possible mismatch of 32bit and 64bit ID's in IC file and GIZMO compilation !\n");
-                                }
+                                if(blocknr == IO_ID) {printf("Possible mismatch of 32bit and 64bit ID's in IC file and GIZMO compilation !\n");}
                                 fflush(stdout);
                                 endrun(1889);
                             }
@@ -1324,6 +1328,15 @@ void read_header_attributes_in_hdf5(char *fname)
     }
 #endif
     
+    /* things that are not part of the header 'structure' we define in-code, but used in the hdf5 headers and wanted for read here, can be read below */
+    if(H5Aexists(hdf5_headergrp, "Minimum_Mass_For_Cell_Merge")) { /* test for existence of this field */
+        hdf5_attribute = H5Aopen_name(hdf5_headergrp, "Minimum_Mass_For_Cell_Merge"); /* open it */
+        H5Aread(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.MinMassForParticleMerger); H5Aclose(hdf5_attribute);} /* read it and close */
+    
+    if(H5Aexists(hdf5_headergrp, "Maximum_Mass_For_Cell_Split")) { /* test for existence of this field */
+        hdf5_attribute = H5Aopen_name(hdf5_headergrp, "Maximum_Mass_For_Cell_Split"); /* open it */
+        H5Aread(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.MaxMassForParticleSplit); H5Aclose(hdf5_attribute);} /* read it and close */
+
     H5Gclose(hdf5_headergrp);
     H5Fclose(hdf5_file);
 }

@@ -55,7 +55,7 @@ void determine_where_SNe_occur(void)
         if(P[i].Type == 5) {dt = P[i].dt_since_last_gas_search;}
 #endif
         if(dt<=0) {continue;} // no time, no events
-        star_age = evaluate_stellar_age_Gyr(P[i].StellarAge);
+        star_age = evaluate_stellar_age_Gyr(i);
         if(star_age<=0) {continue;} // unphysical age, no events
         // now use a calculation of mechanical event rates to determine where/when the events actually occur //
         npossible++;
@@ -171,6 +171,14 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     h2 = local.Hsml*local.Hsml; kernel_hinv(local.Hsml, &kernel.hinv, &kernel.hinv3, &kernel.hinv4);
     double unitlength_in_kpc=UNIT_LENGTH_IN_KPC * All.cf_atime, density_to_n=All.cf_a3inv*UNIT_DENSITY_IN_NHCGS, unit_egy_SNe = 1.0e51/UNIT_ENERGY_IN_CGS; // some units (just used below, but handy to define for clarity) //
 
+#if defined(CR_DYNAMICAL_INJECTION_IN_SNE)
+    double CR_energy_to_inject = 0; // account for energy going into CRs, so we don't 'double count' //
+    if((local.SNe_v_ejecta > 1000./UNIT_VEL_IN_KMS))
+    {
+        local.SNe_v_ejecta *= sqrt(1.-All.CosmicRay_SNeFraction);
+        CR_energy_to_inject = (All.CosmicRay_SNeFraction/(1.-All.CosmicRay_SNeFraction)) * 0.5 * local.Msne * local.SNe_v_ejecta * local.SNe_v_ejecta;
+    }
+#endif
 
     // now define quantities that will be used below //
     double Esne51; Esne51 = 0.5*local.SNe_v_ejecta*local.SNe_v_ejecta*local.Msne / unit_egy_SNe;
@@ -467,6 +475,15 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     }
     psi_egycon = DMIN(1 , psi_egycon); // this should be gauranteed by the above checks, but enforce it regardless
 
+#if defined(CR_DYNAMICAL_INJECTION_IN_SNE)
+    // account for energy going into CRs, so we don't 'double count' //
+    double CR_energy_to_inject = 0;
+    if((v_ejecta_eff_init > 1000./UNIT_VEL_IN_KMS))
+    {
+        double post_cr_corr=sqrt(1.-All.CosmicRay_SNeFraction); v_ejecta_eff_init*=post_cr_corr; v_ejecta_eff*=post_cr_corr;
+        CR_energy_to_inject = (All.CosmicRay_SNeFraction/(1.-All.CosmicRay_SNeFraction)) * 0.5 * local.Msne * v_ejecta_eff_init * v_ejecta_eff_init;
+    }
+#endif
 
     double Energy_injected_codeunits = 0.5 * local.Msne * v_ejecta_eff_init * v_ejecta_eff_init;
     double Esne51 = Energy_injected_codeunits / unit_egy_SNe;

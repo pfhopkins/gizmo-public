@@ -36,7 +36,7 @@ void set_turb_ampl(void);
 void add_turb_accel(void);
 void log_turb_temp(void);
 
-void mpi_report_comittable_memory(long long BaseMem);
+double mpi_report_comittable_memory(long long BaseMem, int verbose);
 long long report_comittable_memory(long long *MemTotal,
                                    long long *Committed_AS,
                                    long long *SwapTotal,
@@ -127,14 +127,24 @@ static inline double sigmoid_sqrt(double x) {return 0.5*(1 + x/sqrt(1+x*x));} /*
 
 static inline double ForceSoftening_KernelRadius(int p)
 {
+#ifdef BH_EXCISION_NONGAS
+    if(P[p].Type==5) {if(P[p].Mass > P[p].BH_Mass+P[p].Sink_Formation_Mass) {return All.ForceSoftening[P[p].Type] * pow((P[p].Mass-P[p].BH_Mass)/P[p].Sink_Formation_Mass,1./3.);} else {return All.ForceSoftening[P[p].Type];}} // scale the force softening to the excess mass to avoid a runaway divergence in the galaxy center from artificially collapsing the potential to that of a point mass
+#endif
 #if defined(ADAPTIVE_GRAVSOFT_FORALL)
     if((1 << P[p].Type) & (ADAPTIVE_GRAVSOFT_FORALL)) {return PPP[p].AGS_Hsml;}
 #endif
 #if defined(ADAPTIVE_GRAVSOFT_FORGAS)
+#ifdef ADAPTIVE_GRAVSOFT_MAX_SOFT_HARD_LIMIT
+    if(P[p].Type == 0) {return DMIN(PPP[p].Hsml, ADAPTIVE_GRAVSOFT_MAX_SOFT_HARD_LIMIT/All.cf_atime);}
+#else
     if(P[p].Type == 0) {return PPP[p].Hsml;}
+#endif
 #endif
 #if defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
     if(P[p].Type == 4) {return All.ForceSoftening[P[p].Type] * DMIN(100., DMAX(1., pow(P[p].Mass*UNIT_MASS_IN_SOLAR/100. , 0.33)));}
+#endif
+#if defined(ADAPTIVE_GRAVSOFT_FROM_TIDAL_CRITERION) /* still playing with criterion below, highly experimental for now */
+    if((1 << P[p].Type) & (ADAPTIVE_GRAVSOFT_FROM_TIDAL_CRITERION)) {if((P[p].tidal_tensor_mag_prev>0) && (All.Time>All.TimeBegin)) {return DMIN(1.e2*All.ForceSoftening[P[p].Type] , DMAX(All.ForceSoftening[P[p].Type] , All.ForceSoftening[P[p].Type] + 1.25 * pow( (All.DesNumNgb * All.G * P[p].Mass / P[p].tidal_tensor_mag_prev) , 1./3. )));} else {return 100.*All.ForceSoftening[P[p].Type];}}
 #endif
     return All.ForceSoftening[P[p].Type];
 }
@@ -213,6 +223,7 @@ int MPI_Sizelimited_Sendrecv(void *sendbuf0, size_t sendcount, MPI_Datatype send
 int mpi_calculate_offsets(int *send_count, int *send_offset, int *recv_count, int *recv_offset, int send_identical);
 void sort_based_on_field(void *data, int field_offset, int n_items, int item_size, void **data2ptr);
 void mpi_distribute_items_to_tasks(void *data, int task_offset, int *n_items, int *max_n, int item_size);
+int getNodeCount(void);
 
 void parallel_sort_special_P_GrNr_ID(void);
 void calculate_power_spectra(int num, long long *ntot_type_all);
@@ -441,6 +452,11 @@ void read_file(char *fname, int readTask, int lastTask);
 
 void get_Tab_IO_Label(enum iofields blocknr, char *label);
 
+#ifdef GALSF_MERGER_STARCLUSTER_PARTICLES
+double evaluate_starstar_merger_for_starcluster_particle_pair(int i, int j);
+int evaluate_starstar_merger_for_starcluster_eligibility(int i);
+#endif
+
 
 void long_range_init_regionsize(void);
 
@@ -487,9 +503,10 @@ size_t sizemax(size_t a, size_t b);
 
 void reconstruct_timebins(void);
 void init_peano_map(void);
-peanokey peano_hilbert_key(int x, int y, int z, int bits);
-peanokey peano_and_morton_key(int x, int y, int z, int bits, peanokey *morton);
-peanokey morton_key(int x, int y, int z, int bits);
+peano1D domain_double_to_int(double d);
+peanokey peano_hilbert_key(peano1D x, peano1D y, peano1D z, int bits);
+peanokey peano_and_morton_key(peano1D x, peano1D y, peano1D z, int bits, peanokey *morton);
+peanokey morton_key(peano1D x, peano1D y, peano1D z, int bits);
 
 void catch_abort(int sig);
 void catch_fatal(int sig);
@@ -530,30 +547,15 @@ void st_turbdrive_calc_phases(void);
 double st_return_driving_scale(void);
 #endif
 double evaluate_NH_from_GradRho(MyFloat gradrho[3], double hsml, double rho, double numngb_ndim, double include_h, int target);
-
+double evaluate_time_since_t_initial_in_Gyr(double t_initial);
 
 #ifdef GALSF
 int is_particle_single_star_eligible(long i);
-double evaluate_stellar_age_Gyr(double stellar_tform);
+double evaluate_stellar_age_Gyr(long i);
 double evaluate_light_to_mass_ratio(double stellar_age_in_gyr, int i);
 double calculate_relative_light_to_mass_ratio_from_imf(double stellar_age_in_gyr, int i, int mode);
 double calculate_individual_stellar_luminosity(double mdot, double mass, long i);
 double return_probability_of_this_forming_bh_from_seed_model(int i);
-
-// this structure needs to be defined here, because routines for feedback event rates, etc, are shared among files //
-struct addFB_evaluate_data_in_
-{
-    MyDouble Pos[3], Vel[3], Msne, unit_mom_SNe;
-    MyFloat Hsml, V_i, SNe_v_ejecta;
-#ifdef GALSF_FB_MECHANICAL
-    MyFloat Area_weighted_sum[AREA_WEIGHTED_SUM_ELEMENTS];
-#endif
-#ifdef METALS
-    MyDouble yields[NUM_METAL_SPECIES];
-#endif
-    int NodeList[NODELISTLENGTH];
-}
-*addFB_evaluate_DataIn_, *addFB_evaluate_DataGet_;
 
 void particle2in_addFB_fromstars(struct addFB_evaluate_data_in_ *in, int i, int fb_loop_iteration);
 double mechanical_fb_calculate_eventrates(int i, double dt);
@@ -562,6 +564,12 @@ double Z_for_stellar_evol(int i);
 void get_jet_yields(double *yields, int i);
 #endif
 #endif
+
+
+#if defined(GALSF_SFR_IMF_SAMPLING_DISTRIBUTE_SF)
+void update_stellarnumber_and_timedistribofstarformation(void);
+#endif
+
 
 #ifdef SINGLE_STAR_FB_JETS
 double single_star_jet_velocity(int n);
@@ -579,11 +587,23 @@ double get_min_allowed_dustIRrad_temperature(void);
 double get_rt_ir_lambdadust_effective(double T, double rho, double *nH0_guess, double *ne_guess, int target, int update_Tdust);
 #endif
 
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || (defined(RT_CHEM_PHOTOION) && defined(GALSF))
+#if defined(GALSF_FB_FIRE_RT_HIIHEATING) || (defined(RT_CHEM_PHOTOION) && defined(GALSF))
 double particle_ionizing_luminosity_in_cgs(long i);
 #endif
 
+#ifdef GALSF_FB_FIRE_RT_HIIHEATING
+void HII_heating_singledomain(void);
+int do_the_local_ionization(int target, double dt, int source);
+#ifdef GALSF_FB_FIRE_RT_HIIHEATING_USEMULTIDOMAINSHARE
+void HII_heating_withMPIcomm(void);
+int HIIheating_RHIIest(int target);
+int HIIheating_evaluate(int target, int mode, int *nexport, int *nsend_local);
+#endif
+#endif
 
+#ifdef GALSF_FB_FIRE_RT_UVHEATING
+void selfshield_local_incident_uv_flux(void);
+#endif
 
 #ifdef GALSF_FB_MECHANICAL
 void determine_where_SNe_occur(void);
@@ -616,6 +636,9 @@ double bh_angleweight_localcoupling(int j, double cos_theta, double r, double H_
 void assign_wind_kick_from_sf_routine(int i, double sm, double dtime, double* pvtau_return);
 #endif
 
+#if defined(GALSF_FB_FIRE_RT_LOCALRP)
+void radiation_pressure_winds_consolidated(void);
+#endif
 
 #if defined(BLACK_HOLES)
 int blackhole_evaluate_PREPASS(int target, int mode, int *nexport, int *nSend_local);
@@ -629,6 +652,10 @@ void disp_density(void);
 #endif
 
 
+#ifdef COSMIC_RAY_SUBGRID_LEBRON
+double cr_get_source_injection_rate(int i);
+double cr_get_source_shieldfac(int i);
+#endif
 
 
 #ifdef CHIMES
@@ -771,6 +798,7 @@ int rt_get_donation_target_bin(int bin);
 int rt_get_lum_band_stellarpopulation(int i, int mode, double *lum);
 int rt_get_lum_band_agn(int i, int mode, double *lum);
 int rt_get_lum_band_singlestar(int i, int mode, double *lum);
+void rt_define_effective_frequencies_in_bands(void);
 void eddington_tensor_dot_vector(double ET[6], double vec_in[3], double vec_out[3]);
 double return_flux_limiter(int target, int k_freq);
 double rt_kappa(int j, int k_freq);

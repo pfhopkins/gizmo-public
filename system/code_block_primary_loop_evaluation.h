@@ -19,13 +19,16 @@ exportnodecount = Exportnodecount + thread_id * NTask;
 exportindex = Exportindex + thread_id * NTask;
 /* Note: exportflag is local to each thread */
 for(j = 0; j < NTask; j++) {exportflag[j] = -1;}
+#ifdef _OPENMP
+if(BufferCollisionFlag && thread_id) {return NULL;} /* force to serial for this subloop if threads simultaneously cross the Nexport bunchsize threshold */
+#endif
 /* now begin the actual loop */
 while(1)
 {
     int exitFlag = 0;
     LOCK_NEXPORT;
 #ifdef _OPENMP
-#pragma omp critical(_nexport_)
+#pragma omp critical(_nextlistprimblox_)
 #endif
     {
         if(BufferFullFlag != 0 || NextParticle < 0)
@@ -35,12 +38,12 @@ while(1)
         else
         {
             i = NextParticle;
-            ProcessedFlag[i] = 0;
             NextParticle = NextActiveParticle[NextParticle];
         }
     }
     UNLOCK_NEXPORT;
     if(exitFlag) {break;}
+    if(ProcessedFlag[i]) {continue;}
     CONDITION_FOR_EVALUATION
     {
         if(EVALUATION_CALL < 0) {break;} // export buffer has filled up //

@@ -8,7 +8,7 @@
 /*! \file pm_periodic.c
  *  \brief routines for periodic PM-force computation
  */
-/*
+/*!
  * This file was originally part of the GADGET3 code developed by
  * Volker Springel. The code has been modified
  * slightly by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
@@ -303,7 +303,7 @@ void pm_init_periodic_free(void)
   *(pk2) = *(pk1);      \
 }
 #define QSORT qsort_pm_periodic
-#include "system/myqsort.h"
+#include "../system/myqsort.h"
 #endif
 
 /*! Calculates the long-range periodic force given the particle positions

@@ -431,82 +431,89 @@ long long report_comittable_memory(long long *MemTotal,
   return (*MemTotal - *Committed_AS);
 }
 
-void mpi_report_comittable_memory(long long BaseMem)
+/* task to assess available memory and print it. also returns an estimate of the maximum available memory for an MPI task (assuming equal numbers of tasks per node) */
+double mpi_report_comittable_memory(long long BaseMem, int verbose)
 {
-  long long *sizelist, maxsize[6], minsize[6];
-  double avgsize[6];
-  int i, imem, mintask[6], maxtask[6];
-  long long Mem[6];
-  char label[512];
+    long long *sizelist, maxsize[6], minsize[6], Mem[6];
+    int i, imem, mintask[6], maxtask[6];
+    double avgsize[6];
+    char label[512];
+    
+    Mem[0] = report_comittable_memory(&Mem[1], &Mem[2], &Mem[3], &Mem[4]);
+    Mem[5] = Mem[1] - Mem[0];
 
-  Mem[0] = report_comittable_memory(&Mem[1], &Mem[2], &Mem[3], &Mem[4]);
-  Mem[5] = Mem[1] - Mem[0];
-
-  for(imem = 0; imem < 6; imem++)
+    for(imem = 0; imem < 6; imem++)
     {
-      sizelist = (long long *) malloc(NTask * sizeof(long long));
-      MPI_Allgather(&Mem[imem], sizeof(long long), MPI_BYTE, sizelist, sizeof(long long), MPI_BYTE,
-		    MPI_COMM_WORLD);
-
-      for(i = 1, mintask[imem] = 0, maxtask[imem] = 0, maxsize[imem] = minsize[imem] =
-	  sizelist[0], avgsize[imem] = sizelist[0]; i < NTask; i++)
-	{
-	  if(sizelist[i] > maxsize[imem])
-	    {
-	      maxsize[imem] = sizelist[i];
-	      maxtask[imem] = i;
-	    }
-	  if(sizelist[i] < minsize[imem])
-	    {
-	      minsize[imem] = sizelist[i];
-	      mintask[imem] = i;
-	    }
-	  avgsize[imem] += sizelist[i];
-	}
-
-      free(sizelist);
+        sizelist = (long long *) malloc(NTask * sizeof(long long));
+        MPI_Allgather(&Mem[imem], sizeof(long long), MPI_BYTE, sizelist, sizeof(long long), MPI_BYTE, MPI_COMM_WORLD);
+        
+        for(i = 1, mintask[imem] = 0, maxtask[imem] = 0, maxsize[imem] = minsize[imem] =
+            sizelist[0], avgsize[imem] = sizelist[0]; i < NTask; i++)
+        {
+            if(sizelist[i] > maxsize[imem])
+            {
+                maxsize[imem] = sizelist[i];
+                maxtask[imem] = i;
+            }
+            if(sizelist[i] < minsize[imem])
+            {
+                minsize[imem] = sizelist[i];
+                mintask[imem] = i;
+            }
+            avgsize[imem] += sizelist[i];
+        }
+        free(sizelist);
     }
 
-  if(ThisTask == 0)
+    if(verbose) /* print outputs for the user */
     {
-      printf("-------------------------------------------------------------------------------------------\n");
-      for(imem = 0; imem < 6; imem++)
-	{
-	  switch (imem)
-	    {
-	    case 0:
-	      sprintf(label, "AvailMem");
-	      break;
-	    case 1:
-	      sprintf(label, "Total Mem");
-	      break;
-	    case 2:
-	      sprintf(label, "Committed_AS");
-	      break;
-	    case 3:
-	      sprintf(label, "SwapTotal");
-	      break;
-	    case 4:
-	      sprintf(label, "SwapFree");
-	      break;
-	    case 5:
-	      sprintf(label, "AllocMem");
-	      break;
-	    }
-	  printf
-	    ("%s:\t Largest = %10.2f Mb (on task=%d), Smallest = %10.2f Mb (on task=%d), Average = %10.2f Mb\n",
-	     label, maxsize[imem] / (1024.), maxtask[imem], minsize[imem] / (1024.), mintask[imem],
-	     avgsize[imem] / (1024. * NTask));
-	}
-      printf("-------------------------------------------------------------------------------------------\n");
-    }
-  if(ThisTask == maxtask[2])
-    {
-      printf("Task with the maximum commited memory");
-      system("echo $HOST");
+        if(ThisTask == 0)
+        {
+            printf("-------------------------------------------------------------------------------------------\n");
+            for(imem = 0; imem < 6; imem++)
+            {
+                switch (imem)
+                {
+                    case 0:
+                        sprintf(label, "AvailMem");
+                        break;
+                    case 1:
+                        sprintf(label, "Total Mem");
+                        break;
+                    case 2:
+                        sprintf(label, "Committed_AS");
+                        break;
+                    case 3:
+                        sprintf(label, "SwapTotal");
+                        break;
+                    case 4:
+                        sprintf(label, "SwapFree");
+                        break;
+                    case 5:
+                        sprintf(label, "AllocMem");
+                        break;
+                }
+                printf
+                ("%s:\t Largest = %10.2f Mb (on task=%d), Smallest = %10.2f Mb (on task=%d), Average = %10.2f Mb\n",
+                 label, maxsize[imem] / (1024.), maxtask[imem], minsize[imem] / (1024.), mintask[imem],
+                 avgsize[imem] / (1024. * NTask));
+            }
+            printf("-------------------------------------------------------------------------------------------\n");
+        }
+        if(ThisTask == maxtask[2])
+        {
+            printf("Task with the maximum commited memory");
+            system("echo $HOST");
+        }
+        fflush(stdout);
     }
 
-
-  fflush(stdout);
+    /* do some quick checks on estimating available memory to be safe */
+    int number_of_shared_memory_nodes = getNodeCount();
+    int number_of_mpi_tasks_per_node = NTask / number_of_shared_memory_nodes;
+    double min_memory_mb_in_single_node = minsize[0]/(1024.);
+    double safe_memory_mb_per_mpitask_nobuffer = min_memory_mb_in_single_node / number_of_mpi_tasks_per_node;
+    double safe_memory_mb_per_mpitask_withbuffer = safe_memory_mb_per_mpitask_nobuffer - All.BufferSize;
+    return safe_memory_mb_per_mpitask_withbuffer;
 }
 

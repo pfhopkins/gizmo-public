@@ -85,8 +85,8 @@ void savepositions(int num)
 #endif
 
         sprintf(outputdir, "%s", All.OutputDir);
-#if STARS_ONLY_SNAPSHOT_FREQUENCY > 0
-        if( (All.SnapshotFileCount-1) % (STARS_ONLY_SNAPSHOT_FREQUENCY+1) )
+#if IO_SINKS_ONLY_SNAPSHOT_FREQUENCY > 0
+        if( (All.SnapshotFileCount-1) % (IO_SINKS_ONLY_SNAPSHOT_FREQUENCY+1) )
         {
             sprintf(outputdir, "%s/stars_only", All.OutputDir);
             mkdir(outputdir, 02755);
@@ -513,6 +513,17 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                   }
 #endif
             break;
+            
+        case IO_DTOSTAR:
+#ifdef GALSF_SFR_IMF_SAMPLING_DISTRIBUTE_SF
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) P[pindex].TimeDistribOfStarFormation;
+                    n++;
+                }
+#endif
+            break;
 
         case IO_GRAINSIZE:		/* grain size */
 #ifdef GRAIN_FLUID
@@ -688,6 +699,14 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             break;
 
         case IO_DELAY_TIME_HII:
+#if defined(GALSF_FB_FIRE_RT_HIIHEATING) && defined(OUTPUT_DELAY_TIME_HII)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) SphP[pindex].DelayTimeHII;
+                    n++;
+                }
+#endif
             break;
 
         case IO_MOLECULARFRACTION:
@@ -849,6 +868,14 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                     n++;
                 }
 #endif
+#ifdef COSMIC_RAY_SUBGRID_LEBRON
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) (SphP[pindex].SubGrid_CosmicRayEnergyDensity * P[pindex].Mass / SphP[pindex].Density);
+                    n++;
+                }
+#endif
             break;
 
             
@@ -970,7 +997,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
-                    double ne = SphP[pindex].Ne; u = SphP[pindex].InternalEnergyPred; tcool = GetCoolingTime(u, SphP[pindex].Density * All.cf_a3inv, ne, pindex); /* get cooling time */
+                    double ne = SphP[pindex].Ne, ne_out=ne; u = SphP[pindex].InternalEnergyPred; tcool = GetCoolingTime(u, SphP[pindex].Density * All.cf_a3inv, ne, &ne_out, pindex); /* get cooling time */
                     double coolrate_to_output = 0; if(tcool != 0) {coolrate_to_output = u / tcool;} /* convert cooling time with current thermal energy to du/dt */
                     *fp++ = (MyOutputFloat) coolrate_to_output;
                     n++;
@@ -1086,7 +1113,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             break;
 
         case IO_SINK_FORM_MASS:
-#ifdef SINGLE_STAR_SINK_DYNAMICS
+#ifdef BLACK_HOLES
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
@@ -1096,25 +1123,12 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
 #endif
             break;	    
 
-        case IO_TIDALTENSORPS:   /* 3x3 configuration-space tidal tensor that is driving the GDE */
+        case IO_TIDALTENSORPS:   /* 3x3 configuration-space tidal tensor */
 #ifdef OUTPUT_TIDAL_TENSOR
             for(n = 0; n < pc; pindex++)
-
                 if(P[pindex].Type == type)
                 {
-                    for(k = 0; k < 3; k++)
-                    {
-                        int l_tt_tmp;
-                        for(l_tt_tmp = 0; l_tt_tmp < 3; l_tt_tmp++)
-                        {
-                            fp[k * 3 + l_tt_tmp] = (MyOutputFloat) P[pindex].tidal_tensorps[k][l_tt_tmp];
-#if defined(PMGRID) && !defined(GDE_DISTORTIONTENSOR)
-                            fp[k * 3 + l_tt_tmp] += (MyOutputFloat) P[pindex].tidal_tensorpsPM[k][l_tt_tmp]; // in current code (without GDE_DISTORTIONTENSOR) this isn't necessary because of how the tidal tensor terms are added and diagonalized already in the gravtree operations
-#endif
-
-                        }
-                    }
-                    //fflush(stderr);
+                    for(k = 0; k < 3; k++) {int l_tt_tmp; for(l_tt_tmp = 0; l_tt_tmp < 3; l_tt_tmp++) {fp[k * 3 + l_tt_tmp] = (MyOutputFloat) P[pindex].tidal_tensorps[k][l_tt_tmp];}}
                     n++;
                     fp += 9;
                 }
@@ -1396,6 +1410,28 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
 #endif
             break;
 
+        case IO_RAD_TEMP:
+#if defined(RADTRANSFER) && defined(RT_INFRARED)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) SphP[pindex].Radiation_Temperature;
+                    n++;
+                }
+#endif
+            break;
+
+        case IO_DUST_TEMP:
+#if defined(RADTRANSFER) && defined(RT_INFRARED)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) SphP[pindex].Dust_Temperature;
+                    n++;
+                }
+#endif
+            break;
+            
         case IO_RAD_FLUX:
 #if defined(OUTPUT_RT_RAD_FLUX) && defined(RT_EVOLVE_FLUX)
             for(n = 0; n < pc; pindex++)
@@ -1421,7 +1457,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             break;
 
         case IO_EDDINGTON_TENSOR:
-#ifdef RADTRANSFER
+#if defined(OUTPUT_EDDINGTON_TENSOR)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
@@ -1728,6 +1764,8 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_HII:
         case IO_HeI:
         case IO_HeII:
+        case IO_RAD_TEMP:
+        case IO_DUST_TEMP:
         case IO_IDEN:
         case IO_UNSPMASS:
         case IO_CRATE:
@@ -1739,6 +1777,7 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_SFR:
         case IO_AGE:
         case IO_OSTAR:
+        case IO_DTOSTAR:
         case IO_GRAINSIZE:
         case IO_DELAYTIME:
         case IO_HSMS:
@@ -1811,7 +1850,7 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_COSMICRAY_ENERGY:
         case IO_COSMICRAY_SLOPES:
         case IO_COSMICRAY_KAPPA:
-#if defined(COSMIC_RAY_FLUID) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if defined(COSMIC_RAY_FLUID) || defined(COSMIC_RAY_SUBGRID_LEBRON)
             if(mode)
                 bytes_per_blockelement = (N_CR_PARTICLE_BINS) * sizeof(MyInputFloat);
             else
@@ -1856,7 +1895,7 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
             break;
 
         case IO_EDDINGTON_TENSOR:
-#ifdef RADTRANSFER
+#if defined(OUTPUT_EDDINGTON_TENSOR)
             if(mode)
                 bytes_per_blockelement = (6*N_RT_FREQ_BINS) * sizeof(MyInputFloat);
             else
@@ -2005,6 +2044,8 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_HII:
         case IO_HeI:
         case IO_HeII:
+        case IO_RAD_TEMP:
+        case IO_DUST_TEMP:
         case IO_IDEN:
         case IO_UNSPMASS:
         case IO_CRATE:
@@ -2016,6 +2057,7 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_SFR:
         case IO_AGE:
         case IO_OSTAR:
+        case IO_DTOSTAR:
         case IO_GRAINSIZE:
         case IO_GRAINTYPE:
         case IO_DELAYTIME:
@@ -2089,7 +2131,7 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_COSMICRAY_ENERGY:
         case IO_COSMICRAY_SLOPES:
         case IO_COSMICRAY_KAPPA:
-#if defined(COSMIC_RAY_FLUID) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if defined(COSMIC_RAY_FLUID) || defined(COSMIC_RAY_SUBGRID_LEBRON)
             values = N_CR_PARTICLE_BINS;
 #endif
             break;
@@ -2104,7 +2146,7 @@ int get_values_per_blockelement(enum iofields blocknr)
             break;
 
         case IO_EDDINGTON_TENSOR:
-#ifdef RADTRANSFER
+#if defined(OUTPUT_EDDINGTON_TENSOR)
             values = (6*N_RT_FREQ_BINS);
 #endif
             break;
@@ -2221,6 +2263,7 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_AGS_ZETA:
         case IO_BH_DIST:
         case IO_CBE_MOMENTS:
+        case IO_TIDALTENSORPS:
             return nall;
             break;
 
@@ -2237,6 +2280,8 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_RAD_ACCEL:
         case IO_HYDROACCEL:
         case IO_RADGAMMA:
+        case IO_RAD_TEMP:
+        case IO_DUST_TEMP:
         case IO_RAD_FLUX:
         case IO_EDDINGTON_TENSOR:
         case IO_U:
@@ -2314,6 +2359,7 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
             break;
 
         case IO_OSTAR:
+        case IO_DTOSTAR:
         case IO_HSMS:
             for(i = 0; i < 6; i++) {if(i != 4) {typelist[i] = 0;}}
             return nstars;
@@ -2370,7 +2416,6 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
             return header.npart[5];
             break;
 
-        case IO_TIDALTENSORPS:
         case IO_GDE_DISTORTIONTENSOR:
         case IO_CAUSTIC_COUNTER:
         case IO_FLOW_DETERMINANT:
@@ -2422,6 +2467,18 @@ int blockpresent(enum iofields blocknr)
 
         case IO_RADGAMMA:
 #if defined(RADTRANSFER) || defined(RT_USE_GRAVTREE_SAVE_RAD_ENERGY)
+            return 1;
+#endif
+            break;
+
+        case IO_RAD_TEMP:
+#if defined(RADTRANSFER) && defined(RT_INFRARED)
+            return 1;
+#endif
+            break;
+
+        case IO_DUST_TEMP:
+#if defined(RADTRANSFER) && defined(RT_INFRARED)
             return 1;
 #endif
             break;
@@ -2520,6 +2577,9 @@ int blockpresent(enum iofields blocknr)
             break;
 
         case IO_DELAY_TIME_HII:
+#if defined(GALSF_FB_FIRE_RT_HIIHEATING) && defined(OUTPUT_DELAY_TIME_HII)
+            return 1;
+#endif
             break;
 
         case IO_DELAYTIME:
@@ -2640,8 +2700,14 @@ int blockpresent(enum iofields blocknr)
 #endif
             break;
 
+        case IO_DTOSTAR:
+#ifdef GALSF_SFR_IMF_SAMPLING_DISTRIBUTE_SF
+            return 1;
+#endif
+            break;
+
         case IO_COSMICRAY_ENERGY:
-#if defined(COSMIC_RAY_FLUID) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if defined(COSMIC_RAY_FLUID) || defined(COSMIC_RAY_SUBGRID_LEBRON)
             return 1;
 #endif
             break;
@@ -2712,7 +2778,7 @@ int blockpresent(enum iofields blocknr)
             break;
 
         case IO_SINK_FORM_MASS:
-#ifdef SINGLE_STAR_SINK_DYNAMICS
+#ifdef BLACK_HOLES
             return 1;
 #endif
             break;
@@ -2866,7 +2932,7 @@ int blockpresent(enum iofields blocknr)
             break;
 
         case IO_EDDINGTON_TENSOR:
-#if defined(RADTRANSFER)
+#if defined(OUTPUT_EDDINGTON_TENSOR)
             return 1;
 #endif
             break;
@@ -3099,7 +3165,10 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
             strncpy(label, "IMF ", 4);
             break;
         case IO_OSTAR:
-            strncpy(label, "IMF ", 4);
+            strncpy(label, "NOST", 4);
+            break;
+        case IO_DTOSTAR:
+            strncpy(label, "DTST", 4);
             break;
         case IO_COSMICRAY_ENERGY:
             strncpy(label, "CREG ", 4);
@@ -3245,6 +3314,12 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
         case IO_RADGAMMA:
             strncpy(label, "RADG", 4);
             break;
+        case IO_RAD_TEMP:
+            strncpy(label, "RADT", 4);
+            break;
+        case IO_DUST_TEMP:
+            strncpy(label, "DTMP", 4);
+            break;
         case IO_RAD_FLUX:
             strncpy(label, "RADF", 4);
             break;
@@ -3370,6 +3445,12 @@ void get_dataset_name(enum iofields blocknr, char *buf)
         case IO_RADGAMMA:
             strcpy(buf, "PhotonEnergy");
             break;
+        case IO_RAD_TEMP:
+            strcpy(buf, "IRBand_Radiation_Temperature");
+            break;
+        case IO_DUST_TEMP:
+            strcpy(buf, "Dust_Temperature");
+            break;
         case IO_RAD_FLUX:
             strcpy(buf, "PhotonFluxDensity");
             break;
@@ -3492,6 +3573,9 @@ void get_dataset_name(enum iofields blocknr, char *buf)
             break;
         case IO_OSTAR:
             strcpy(buf, "OStarNumber");
+            break;
+        case IO_DTOSTAR:
+            strcpy(buf, "TimeDistribOfStarFormation");
             break;
         case IO_COSMICRAY_ENERGY:
             strcpy(buf, "CosmicRayEnergy");
@@ -3984,8 +4068,8 @@ void write_file(char *fname, int writeTask, int lastTask)
 
                 for(type = 0; type < 6; type++)
                 {
-#if STARS_ONLY_SNAPSHOT_FREQUENCY > 0
-                    if ( typelist[type] && ( (type!=0) || !( (All.SnapshotFileCount-1) % (STARS_ONLY_SNAPSHOT_FREQUENCY+1) ) ) ) //we skip type 0 (gas) data for the reduced snapshots
+#if IO_SINKS_ONLY_SNAPSHOT_FREQUENCY > 0
+                    if ( typelist[type] && ( (type!=0) || !( (All.SnapshotFileCount-1) % (IO_SINKS_ONLY_SNAPSHOT_FREQUENCY+1) ) ) ) //we skip type 0 (gas) data for the reduced snapshots
 #else
                     if(typelist[type])
 #endif
@@ -4323,7 +4407,7 @@ void write_header_attributes_in_hdf5(hid_t handle)
 #ifdef GRAIN_FLUID
     {int holder=GRAIN_PTYPES; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "GrainCR_Particle_Type_BitFlag", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
     H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &holder); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
-#if !defined(PIC_MHD) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if !defined(PIC_MHD) || defined(GRAIN_FLUID_AND_PIC_BOTH_DEFINED)
     hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Grain_Internal_Density", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
     H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.Grain_Internal_Density); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
     hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Grain_Size_Min", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
@@ -4392,6 +4476,10 @@ void write_header_attributes_in_hdf5(hid_t handle)
     H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.FactorForSofterEQS); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 #endif
 
+#ifdef GALSF_FB_FIRE_RT_LOCALRP
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "LEBRON_Radiation_Pressure_Local_Momentum_Normalization_FromSSP", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.RP_Local_Momentum_Renormalization); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
 
 #ifdef GALSF_SUBGRID_WINDS
     {int holder=GALSF_SUBGRID_WIND_SCALING; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "SubGrid_Wind_Model_Scaling_Key", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
@@ -4413,6 +4501,15 @@ void write_header_attributes_in_hdf5(hid_t handle)
 #endif
 
 
+#if defined(CR_DYNAMICAL_INJECTION_IN_SNE)
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "CosmicRay_SNeFraction", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.CosmicRay_SNeFraction); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
+
+#ifdef GALSF_FB_FIRE_RT_HIIHEATING
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "HIIRegion_fLum_Coupled", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.HIIRegion_fLum_Coupled); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
 
 #ifdef GALSF_FB_FIRE_AGE_TRACERS
     {int holder=NUM_AGE_TRACERS; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "AgeTracer_NumberOfBins", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
@@ -4448,53 +4545,18 @@ void write_header_attributes_in_hdf5(hid_t handle)
 #endif
 
 #if defined(RADTRANSFER) || defined(RT_USE_GRAVTREE)
-    {
-        int k; double numin[N_RT_FREQ_BINS], numax[N_RT_FREQ_BINS]; for(k=0;k<N_RT_FREQ_BINS;k++) {numin[k]=-20; numax[k]=-20;}
-#ifdef RT_CHEM_PHOTOION
-#if defined(RT_PHOTOION_MULTIFREQUENCY)
-        int i_vec[4] = {RT_FREQ_BIN_H0, RT_FREQ_BIN_He0, RT_FREQ_BIN_He1, RT_FREQ_BIN_He2};
-        numin[i_vec[3]]=rt_ion_nu_min[i_vec[3]]; numax[i_vec[3]]=500; for(k=0;k<3;k++) {numin[i_vec[k]]=rt_ion_nu_min[i_vec[k]]; numax[i_vec[k]]=rt_ion_nu_min[i_vec[k+1]];}
-#else
-        k=RT_FREQ_BIN_H0; numin[k]=13.6; numax[k]=500;
-#endif
-#endif
-#ifdef RT_SOFT_XRAY
-        k=RT_FREQ_BIN_SOFT_XRAY; numin[k]=500; numax[k]=2000;
-#endif
-#ifdef RT_HARD_XRAY
-        k=RT_FREQ_BIN_HARD_XRAY; numin[k]=2000; numax[k]=10000;
-#endif
-#ifdef RT_PHOTOELECTRIC
-        k=RT_FREQ_BIN_PHOTOELECTRIC; numin[k]=8; numax[k]=13.6;
-#endif
-#ifdef RT_LYMAN_WERNER
-        k=RT_FREQ_BIN_LYMAN_WERNER; numin[k]=11.2; numax[k]=13.6;
-#endif
-#ifdef RT_NUV
-        k=RT_FREQ_BIN_NUV; numin[k]=3.444; numax[k]=8.;
-#endif
-#ifdef RT_OPTICAL_NIR
-        k=RT_FREQ_BIN_OPTICAL_NIR; numin[k]=0.4133; numax[k]=3.444;
-#endif
-#ifdef RT_GENERIC_USER_FREQ
-        k=RT_FREQ_BIN_GENERIC_USER_FREQ; numin[k]=-1; numax[k]=-1;
-#endif
-#ifdef RT_INFRARED
-        k=RT_FREQ_BIN_INFRARED; numin[k]=0.001; numax[k]=0.4133;
-#endif
-#ifdef RT_FREEFREE
-        k=RT_FREQ_BIN_FREEFREE; numin[k]=-2; numax[k]=-2;
-#endif
-        
-        {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_RT_FREQ_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
-            hdf5_attribute = H5Acreate(handle, "Radiation_RHD_Min_Bin_Freq_in_eV", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
-            H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, numin); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
-        {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_RT_FREQ_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
-            hdf5_attribute = H5Acreate(handle, "Radiation_RHD_Max_Bin_Freq_in_eV", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
-            H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, numax); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
-    }
+    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_RT_FREQ_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
+        hdf5_attribute = H5Acreate(handle, "Radiation_RHD_Min_Bin_Freq_in_eV", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+        H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, All.RHD_bins_nu_min_ev); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+    {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_RT_FREQ_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);
+        hdf5_attribute = H5Acreate(handle, "Radiation_RHD_Max_Bin_Freq_in_eV", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+        H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, All.RHD_bins_nu_max_ev); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
 #endif
 
+#if defined(RT_ISRF_BACKGROUND)
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "InterstellarRadiationFieldStrength", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.InterstellarRadiationFieldStrength); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
     
 #if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_KICK) || defined(BH_WIND_SPAWN)
     hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BAL_f_accretion", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
@@ -4610,8 +4672,12 @@ void write_header_attributes_in_hdf5(hid_t handle)
     H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.MinFoFMassForNewSeed); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 #endif
 #ifdef BH_WIND_SPAWN
-    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BAL_wind_particle_mass", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Cell_Spawn_Mass_ratio", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
     H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BAL_wind_particle_mass); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#ifdef SINGLE_STAR_FB_WINDS
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Cell_Spawn_Mass_ratio_MS", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.Cell_Spawn_Mass_ratio_MS); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
+#endif
     hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BAL_internal_temperature", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
     H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BAL_internal_temperature); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
     {unsigned long long holder = (unsigned long long) All.AGNWindID; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Spawned_Cell_ID", H5T_NATIVE_ULLONG, hdf5_dataspace, H5P_DEFAULT);

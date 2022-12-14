@@ -228,6 +228,12 @@ FILE
 #ifdef GALSF
 FILE *FdSfr;			/*!< file handle for sfr.txt log-file. */
 #endif
+#ifdef GALSF_FB_FIRE_RT_LOCALRP
+FILE *FdMomWinds;	/*!< file handle for MomWinds.txt log-file */
+#endif
+#ifdef GALSF_FB_FIRE_RT_HIIHEATING
+FILE *FdHIIHeating;	/*!< file handle for HIIheating.txt log-file */
+#endif
 #ifdef GALSF_FB_MECHANICAL
 FILE *FdSneIIHeating;	/*!< file handle for SNIIheating.txt log-file */
 #endif
@@ -322,6 +328,9 @@ struct potdata_out *PotDataResult,	/*!< holds the partial results computed for i
  *PotDataOut;			/*!< holds partial results received from other processors. This will overwrite the GravDataIn array */
 
 
+struct addFB_evaluate_data_in_ *addFB_evaluate_DataIn_, *addFB_evaluate_DataGet_; /*!< hold partial results of feedback calls if using various feedback algorithms >*/
+
+
 struct info_block *InfoBlock;
 
 /*! Header for the standard file format.
@@ -340,13 +349,14 @@ struct blackhole_temp_particle_data *BlackholeTempInfo; /*! declare this structu
  */
 
 long Nexport, Nimport;
+int BufferCollisionFlag;
 int BufferFullFlag;
 int NextParticle;
 int NextJ;
 int TimerFlag;
 
 struct NODE *Nodes_base,	/*!< points to the actual memory allocated for the nodes */
-*Nodes;			/*!< this is a pointer used to access the nodes which is shifted such that Nodes[All.MaxPart] gives the first allocated node */
+*Nodes;			            /*!< this is a pointer used to access the nodes which is shifted such that Nodes[All.MaxPart] gives the first allocated node */
 struct extNODE *Extnodes, *Extnodes_base;
 
 

@@ -779,9 +779,11 @@ void hydro_final_operations_and_cleanup(void)
 #endif
                 }
                 double L_particle=Get_Particle_Size(i)*All.cf_atime, Sigma_particle=P[i].Mass/(M_PI*L_particle*L_particle), abs_per_kappa_dt=C_LIGHT_CODE_REDUCED*(SphP[i].Density*All.cf_a3inv)*dt; // effective surface density through particle & fractional absorption over timestep
-                double slabfac_rp=1; if(check_if_absorbed_photons_can_be_reemitted_into_same_band(kfreq)==0) {slabfac_rp=slab_averaging_function(f_kappa_abs*SphP[i].Rad_Kappa[kfreq]*Sigma_particle) * slab_averaging_function(f_kappa_abs*SphP[i].Rad_Kappa[kfreq]*abs_per_kappa_dt);} // reduction factor for absorption over dt
+                int checker_int = 0; // normal default: only use the corrections below for bands which dont re-emit to the same band
+                checker_int = 1; // actually here and above now changed to use the slabfac corrections for all bands. in the resolved limit this should still be correct because the re-emitted photons should be isotropic: otherwise you run into linear momentum conservation problems. this is only an issue if the source is at the center of the distribution.
+                double slabfac_rp=1; if(check_if_absorbed_photons_can_be_reemitted_into_same_band(kfreq)<=checker_int) {slabfac_rp=slab_averaging_function(f_kappa_abs*SphP[i].Rad_Kappa[kfreq]*Sigma_particle) * slab_averaging_function(f_kappa_abs*SphP[i].Rad_Kappa[kfreq]*abs_per_kappa_dt);} // reduction factor for absorption over dt
                 for(k=0;k<3;k++) {radacc_thisband[k] = slabfac_rp * (SphP[i].Rad_Kappa[kfreq]/C_LIGHT_CODE_REDUCED) * (flux_corr*flux_i[k] - vdot_h[k]); rmag += radacc_thisband[k]*radacc_thisband[k];} // acceleration term before accounting for the 'work' term, which is calculated separately in the absorption/emission loop
-                if(check_if_absorbed_photons_can_be_reemitted_into_same_band(kfreq) == 0 && f_kappa_abs > MIN_REAL_NUMBER && rmag > MIN_REAL_NUMBER && dt > 0 && P[i].Mass > 0) { // bands that destroy photons upon absorption (e.g. ionization, dust absorption) should limit the imparted momentum to the total photon momentum available - the flux in the solver normally prevents this but this addresses some edge cases with e.g. pathological ICs, rapidly-varying kappa, etc.
+                if(check_if_absorbed_photons_can_be_reemitted_into_same_band(kfreq)<=checker_int && f_kappa_abs > MIN_REAL_NUMBER && rmag > MIN_REAL_NUMBER && dt > 0 && P[i].Mass > 0) { // bands that destroy photons upon absorption (e.g. ionization, dust absorption) should limit the imparted momentum to the total photon momentum available - the flux in the solver normally prevents this but this addresses some edge cases with e.g. pathological ICs, rapidly-varying kappa, etc.
                     rmag=sqrt(rmag); double r_from_abs=f_kappa_abs*rmag, abs_dt=rt_absorption_rate(i,kfreq)*dt, dE_abs=erad_i*(1.-exp(-abs_dt)); if(abs_dt<0.01) {dE_abs=erad_i*abs_dt;}
                     double rmag_max_abs=dE_abs/(vol_inv*P[i].Mass*C_LIGHT_CODE_REDUCED*dt); if(rmag_max_abs<r_from_abs) {double cfac=1.+(rmag_max_abs-r_from_abs)/rmag; if(cfac>0 && cfac<1) {for(k=0;k<3;k++) {radacc_thisband[k]*=cfac;}}}
                 }
@@ -812,12 +814,17 @@ void hydro_final_operations_and_cleanup(void)
 #endif
             
             
-#if (defined(COSMIC_RAY_FLUID) && !defined(COOLING_OPERATOR_SPLIT)) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if (defined(COSMIC_RAY_FLUID) && !defined(COOLING_OPERATOR_SPLIT)) || defined(COSMIC_RAY_SUBGRID_LEBRON)
             /* with the spectrum model, we account here the adiabatic heating/cooling of the 'fluid', here, which was solved in the hydro solver but doesn't resolve which portion goes to CRs and which to internal energy, with gamma=GAMMA_COSMICRAY */
+#ifdef COSMIC_RAY_SUBGRID_LEBRON
+            double P_cr_spec = (1./3.)*SphP[i].SubGrid_CosmicRayEnergyDensity/SphP[i].Density, P_tot_spec = P_cr_spec + (2./3.)*SphP[i].InternalEnergyPred + (1./2.)*pow(Get_Gas_Alfven_speed_i(i),2); // just include CR+thermal+magnetic here
+            SphP[i].DtInternalEnergy *= (1.-P_cr_spec/P_tot_spec); /* approximate correction, valid to level here [more sophisticated correction can cause problems since the PdV energy isn't actually being taken -out- of the CR field, as it would be if followed explicitly] */
+#else
             double gamma_minus_eCR_tmp=0; for(k=0;k<N_CR_PARTICLE_BINS;k++) {gamma_minus_eCR_tmp+=(GAMMA_COSMICRAY(k)-1.)*SphP[i].CosmicRayEnergyPred[k];} // routine below only depends on the total CR energy, not bin-by-bin energies, when we do it this way here
             double dCR_div = CR_calculate_adiabatic_gasCR_exchange_term(i, dt, gamma_minus_eCR_tmp, 1); // this will handle the update below - separate subroutine b/c we want to allow it to appear in a couple different places
             double u0=DMAX(SphP[i].InternalEnergyPred, All.MinEgySpec) , uf=DMAX(u0 - dCR_div/P[i].Mass , All.MinEgySpec); // final updated value of internal energy per above
             SphP[i].DtInternalEnergy += (uf - u0) / (dt + MIN_REAL_NUMBER); // update gas quantities to be used in cooling function
+#endif
 #endif
 #if defined(COSMIC_RAY_FLUID)
             /* energy transfer from CRs to gas due to the streaming instability (mediated by high-frequency Alfven waves, but they thermalize quickly
@@ -939,9 +946,9 @@ void hydro_force_initial_operations_preloop(void)
     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
         if(P[i].Type==0)
         {
-            SphP[i].MaxSignalVel = -1.e10;
+            SphP[i].MaxSignalVel = MIN_REAL_NUMBER;
 #ifdef ENERGY_ENTROPY_SWITCH_IS_ACTIVE
-            SphP[i].MaxKineticEnergyNgb = -1.e10;
+            SphP[i].MaxKineticEnergyNgb = MIN_REAL_NUMBER;
 #endif
             SphP[i].DtInternalEnergy = 0; //SphP[i].dInternalEnergy = 0;//manifest-indiv-timestep-debug//
             for(k=0;k<3;k++) {SphP[i].HydroAccel[k] = 0;} //SphP[i].dMomentum[k] = 0;//manifest-indiv-timestep-debug//

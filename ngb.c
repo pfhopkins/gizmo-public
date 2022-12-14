@@ -105,9 +105,11 @@ int ngb_treefind_pairs_threads(MyDouble searchcenter[3], MyFloat hsml, int targe
 #include "system/ngb_codeblock_before_condition.h"
     if(P[p].Type > 0) continue; // skip particles with non-gas types
     if(P[p].Mass <= 0) continue; // skip zero-mass particles
+#define NGB_ONLY_OPEN_NODES_CONTAINING_GAS // only want gas
 #define SEARCHBOTHWAYS 1 // need neighbors that can -mutually- see one another, not just single-directional searching here
 #include "system/ngb_codeblock_after_condition_threaded.h"
 #undef SEARCHBOTHWAYS // must be undefined after code block inserted, or compiler will crash
+#undef NGB_ONLY_OPEN_NODES_CONTAINING_GAS
 }
 
 
@@ -120,9 +122,11 @@ int ngb_treefind_variable_threads(MyDouble searchcenter[3], MyFloat hsml, int ta
 #include "system/ngb_codeblock_before_condition.h"
     if(P[p].Type > 0) continue; // skip particles with non-gas types
     if(P[p].Mass <= 0) continue; // skip zero-mass particles
+#define NGB_ONLY_OPEN_NODES_CONTAINING_GAS // only want gas
 #define SEARCHBOTHWAYS 0 // only need neighbors inside of search radius, not particles 'looking at' primary
 #include "system/ngb_codeblock_after_condition_threaded.h"
 #undef SEARCHBOTHWAYS
+#undef NGB_ONLY_OPEN_NODES_CONTAINING_GAS
 }
 
 /* this is the same as above, but the simpler un-threaded version, useful for historical reasons and because some sub-routines use 
@@ -176,7 +180,7 @@ int ngb_treefind_pairs_threads_targeted(MyDouble searchcenter[3], MyFloat hsml, 
 #include "system/ngb_codeblock_before_condition.h"
     if(!((1 << P[p].Type) & (TARGET_BITMASK))) continue; // skip anything not of the desired type
     if(P[p].Mass <= 0) continue; // skip zero-mass particles
-#define SEARCHBOTHWAYS 1 // only need neighbors inside of search radius, not particles 'looking at' primary
+#define SEARCHBOTHWAYS 1 // also want particles 'looking at' primary
 #include "system/ngb_codeblock_after_condition_threaded.h"
 #undef SEARCHBOTHWAYS
 }

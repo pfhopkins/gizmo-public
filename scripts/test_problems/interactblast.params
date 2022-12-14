@@ -8,36 +8,15 @@
 %        BOX_REFLECT_X
 %        SELFGRAVITY_OFF  
 %        EOS_GAMMA=(1.4)
-%        OUTPUT_IN_DOUBLEPRECISION
-%        INPUT_IN_DOUBLEPRECISION  
 %
 InitCondFile                       interactblast_ics
-ICFormat                           3
 OutputDir                          output
-TimeLimitCPU                       50000
-MaxMemSize                         1600
-PartAllocFactor                    5
-BufferSize                         150
-TimeBegin                          0
 TimeMax                            0.038
-ComovingIntegrationOn              0
 BoxSize                            1
-OutputListOn                       0
-TimeOfFirstSnapshot                0
 TimeBetSnapshot                    0.0038
 MaxSizeTimestep                    2e-07
 MinSizeTimestep                    2e-07
-TreeDomainUpdateFrequency          0.005
 DesNumNgb                          4
-UnitLength_in_cm                   1
-UnitMass_in_g                      1
-UnitVelocity_in_cm_per_s           1
-SofteningGas                       0.1
-Softening_Type1                    0
-Softening_Type2                    0
-Softening_Type3                    0
-Softening_Type4                    0
-Softening_Type5                    0
 % -- optional numerical parameters (requires additional Config flags)
 ErrTolIntAccuracy                  0.002
 CourantFac                         0.01

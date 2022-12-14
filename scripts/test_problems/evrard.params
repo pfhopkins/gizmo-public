@@ -11,32 +11,19 @@
 %        ADAPTIVE_GRAVSOFT_FORGAS
 %
 InitCondFile                       evrard_ics
-ICFormat                           3
 OutputDir                          output
-TimeLimitCPU                       50000
-MaxMemSize                         1600
 PartAllocFactor                    5
-BufferSize                         150
-TimeBegin                          0
 TimeMax                            0.8
-ComovingIntegrationOn              0
-BoxSize                            0
-OutputListOn                       0
-TimeOfFirstSnapshot                0
 TimeBetSnapshot                    0.1
 MaxSizeTimestep                    0.001
-TreeDomainUpdateFrequency          0.05
 DesNumNgb                          40
-UnitLength_in_cm                   1
-UnitMass_in_g                      1
-UnitVelocity_in_cm_per_s           1
 GravityConstantInternal            1
 MaxHsml                            2000
 SofteningGas                       0.0001 % set me larger if not using adaptive softenings!
 SofteningHalo                      0.07
-SofteningDisk                      0.003
-SofteningBulge                     0.003
-SofteningStars                     0.003
-SofteningBndry                     0.003
+Softening_Type2                    0.003
+Softening_Type3                    0.003
+Softening_Type4                    0.003
+Softening_Type5                    0.003
 % -- optional numerical parameters (requires additional Config flags)
 CourantFac                         0.1

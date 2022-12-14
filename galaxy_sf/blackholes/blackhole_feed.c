@@ -30,10 +30,13 @@ struct INPUT_STRUCT_NAME
 #if defined(BH_GRAVCAPTURE_GAS)
     MyFloat mass_to_swallow_edd;
 #endif
+#if defined(BH_SWALLOWGAS) && !defined(BH_GRAVCAPTURE_GAS)
+    MyFloat BH_AccretionDeficit;
+#endif
 #ifdef BH_GRAVCAPTURE_FIXEDSINKRADIUS
     MyFloat SinkRadius;
 #endif
-#if (ADAPTIVE_GRAVSOFT_FORALL & 32)
+#if (ADAPTIVE_GRAVSOFT_FORALL & 32) || defined(BH_EXCISION_GAS) || defined(BH_EXCISION_NONGAS)
     MyFloat AGS_Hsml;
 #endif
 #ifdef BH_ALPHADISK_ACCRETION
@@ -54,15 +57,15 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
 #ifdef BH_GRAVCAPTURE_FIXEDSINKRADIUS
     in->SinkRadius = PPP[i].SinkRadius;
 #endif
-#if (ADAPTIVE_GRAVSOFT_FORALL & 32)
-    in->AGS_Hsml = PPP[i].AGS_Hsml;
+#if (ADAPTIVE_GRAVSOFT_FORALL & 32) || defined(BH_EXCISION_GAS) || defined(BH_EXCISION_NONGAS)
+    in->AGS_Hsml = ForceSoftening_KernelRadius(i);
 #endif
 #ifdef BH_ALPHADISK_ACCRETION
     in->BH_Mass_AlphaDisk = BPP(i).BH_Mass_AlphaDisk;
 #endif
     in->Dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i);
 #ifdef BH_INTERACT_ON_GAS_TIMESTEP
-    if(P[i].Type == 5){in->Dt = P[i].dt_since_last_gas_search;}
+    in->Dt = P[i].dt_since_last_gas_search;
 #endif
 #ifdef BH_ACCRETE_NEARESTFIRST
     in->BH_dr_to_NearestGasNeighbor = P[i].BH_dr_to_NearestGasNeighbor;
@@ -76,6 +79,9 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
 #endif
 #if defined(BH_GRAVCAPTURE_GAS)
     in->mass_to_swallow_edd = BlackholeTempInfo[j_tempinfo].mass_to_swallow_edd;
+#endif
+#if defined(BH_SWALLOWGAS) && !defined(BH_GRAVCAPTURE_GAS)
+    in->BH_AccretionDeficit = P[i].BH_AccretionDeficit;
 #endif
 }
 
@@ -122,7 +128,7 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
 #ifdef BH_REPOSITION_ON_POTMIN
     out.BH_MinPot = BHPOTVALUEINIT;
 #endif
-#if (ADAPTIVE_GRAVSOFT_FORALL & 32)
+#if (ADAPTIVE_GRAVSOFT_FORALL & 32) || defined(BH_EXCISION_GAS) || defined(BH_EXCISION_NONGAS)
     ags_h_i = local.AGS_Hsml;
 #endif
 #if defined(BH_CALC_LOCAL_ANGLEWEIGHTS)
@@ -161,7 +167,8 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
                     for(k=0;k<3;k++) {dpos[k] = P[j].Pos[k] - local.Pos[k]; dvel[k]=P[j].Vel[k]-local.Vel[k];}
                     NEAREST_XYZ(dpos[0],dpos[1],dpos[2],-1); r2=0; for(k=0;k<3;k++) {r2 += dpos[k]*dpos[k];}
                     NGB_SHEARBOX_BOUNDARY_VELCORR_(local.Pos,P[j].Pos,dvel,-1); /* wrap velocities for shearing boxes if needed */
-                    if(r2 < h_i2 || r2 < PPP[j].Hsml*PPP[j].Hsml)
+                    double heff_j = DMAX( PPP[j].Hsml , ForceSoftening_KernelRadius(j) );
+                    if(r2 < h_i2 || r2 < heff_j*heff_j)
                     {
                         vrel=0; for(k=0;k<3;k++) {vrel += dvel[k]*dvel[k];}
                         r=sqrt(r2); vrel=sqrt(vrel)/All.cf_atime;  /* relative velocity in physical units. do this once and use below */
@@ -202,7 +209,7 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
                         if(P[j].Type == 5)  /* we may have a black hole merger -- check below if allowed */
                             if((local.ID != P[j].ID) && (SwallowID_j == 0) && (BPP(j).BH_Mass < local.BH_Mass)) /* we'll assume most massive BH swallows the other - simplifies analysis and ensures unique results */
 #ifdef SINGLE_STAR_SINK_DYNAMICS
-                            if((r < 1.0001*P[j].min_dist_to_bh) && (r < PPP[j].Hsml) && (r < sink_radius) && ((P[j].Mass < local.Mass) || ((P[j].Mass == local.Mass) && (P[j].ID < local.ID))) && (P[j].Mass < 10.*P[j].Sink_Formation_Mass)) /* only merge away stuff that is within the softening radius, and is no more massive that a few gas particles */
+                            if((r < 1.0001*P[j].min_dist_to_bh) && (r < heff_j) && (r < sink_radius) && ((P[j].Mass < local.Mass) || ((P[j].Mass == local.Mass) && (P[j].ID < local.ID))) && (P[j].Mass < 10.*P[j].Sink_Formation_Mass)) /* only merge away stuff that is within the softening radius, and is no more massive that a few gas particles */
 #endif
                             {
                                 if((vrel < vesc) && (bh_check_boundedness(j,vrel,vesc,r,sink_radius)==1))
@@ -220,6 +227,13 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
 #endif // BH_DEBUG_DISABLE_MERGERS
                         
                         
+#if defined(BH_EXCISION_NONGAS) /* for the excision of non-gas particles which are 'too close', we can follow a very simple procedure here */
+                        if((P[j].Type > 0) && (P[j].Type < 5) && (SwallowID_j < local.ID)) // valid [non-gas, non-bh] particle not already marked to swallow
+                        {
+                            if((P[j].Mass < 0.01*local.Mass) && (vrel < 0.7*vesc) && (r < DMIN(SinkParticle_GravityKernelRadius,All.ForceSoftening[P[j].Type]))) { // generous criterion on velocity and distance
+                                if(P[j].Type != 4) {SwallowID_j = local.ID;} else {if(evaluate_stellar_age_Gyr(j)>0.05) {SwallowID_j = local.ID;}}} // avoid very young stars, so feedback isn't perturbed too strongly
+                        }
+#endif
                         
                         /* This is a similar loop to what we already did in blackhole_environment, but here we stochastically
                          reduce GRAVCAPT events in order to (statistically) obey the eddington limit */
@@ -227,7 +241,7 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
                         if((P[j].Type != 5) && (SwallowID_j < local.ID)) // we have a particle not already marked to swallow
                         {
 #ifdef SINGLE_STAR_SINK_DYNAMICS
-                            double eps = DMAX( r , DMAX(P[j].Hsml , ags_h_i) * KERNEL_FAC_FROM_FORCESOFT_TO_PLUMMER); // plummer-equivalent
+                            double eps = DMAX( r , DMAX(heff_j , ags_h_i) * KERNEL_FAC_FROM_FORCESOFT_TO_PLUMMER); // plummer-equivalent
 			                if(eps*eps*eps /(P[j].Mass + local.Mass) <= P[j].SwallowTime)
 #endif
 #if defined(BH_ALPHADISK_ACCRETION)
@@ -283,12 +297,17 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
 #if defined(BH_SWALLOWGAS) && !defined(BH_GRAVCAPTURE_GAS) /* compute accretion probability, this below is only meaningful if !defined(BH_GRAVCAPTURE_GAS)... */
                             if(SwallowID_j < local.ID)
                             {
-                                double dm_toacc = bh_mass_withdisk - (local.Mass + mass_markedswallow); if(dm_toacc>0) {p=dm_toacc*wk/local.Density;} else {p=0;}
+                                //double dm_toacc = bh_mass_withdisk - (local.Mass + mass_markedswallow); -- old model, used total mass as 'target' which can be a problem
+                                double dm_toacc = local.BH_AccretionDeficit - mass_markedswallow; // amount of continuous accretion 'deficit' integrated for these BHs
+                                if(dm_toacc>0) {p=dm_toacc*wk/local.Density;} else {p=0;}
 #ifdef BH_WIND_KICK /* DAA: for stochastic winds (BH_WIND_KICK) we remove a fraction of mass from gas particles prior to kicking --> need to increase the probability here to balance black hole growth */
                                 if(f_accreted>0) {p /= f_accreted; if((bh_mass_withdisk - local.Mass) < 0) {p = ( (1-f_accreted)/f_accreted ) * local.Mdot * local.Dt * wk / local.Density;}} /* DAA: compute outflow probability when "bh_mass_withdisk < mass" - we don't need to enforce mass conservation in this case, relevant only in low-res sims where the BH seed mass is much lower than the gas particle mass */
 #endif
 #ifdef BH_ACCRETE_NEARESTFIRST /* put all the weight on the single nearest gas particle, instead of spreading it in a kernel-weighted fashion */
                                 p=0; if(dm_toacc>0 && P[j].Mass>0 && r<1.0001*local.BH_dr_to_NearestGasNeighbor) {p=dm_toacc/P[j].Mass;}
+#endif
+#ifdef BH_EXCISION_GAS /* accrete gas elements which have gotten too close to the central BH purely on the basis of resolution criteria */
+                                if((P[j].Mass>0) && (r<SinkParticle_GravityKernelRadius) && (vrel<0.7*vesc) && (P[j].Mass<0.01*local.Mass)) {p=2.;}
 #endif
                                 w = get_random_number(P[j].ID);
                                 if(w < p)

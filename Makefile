@@ -80,67 +80,7 @@ MPICHLIB = -lmpich	# mpi library (arbitrary default, set for machine below)
 CHIMESINCL = # default to empty, will only be used below if called
 CHIMESLIBS = # default to empty, will only be used below if called
 
-# one annoying thing here is the FFTW libraries, since they are named differently depending on
-#  whether they are compiled in different precision levels, or with different parallelization options, so we
-#  have to have a big block here 'sorting them out'.
-#
-ifeq (NOTYPEPREFIX_FFTW,$(findstring NOTYPEPREFIX_FFTW,$(CONFIGVARS)))  # fftw installed without type prefix?
-    FFTW_LIBNAMES =  #-lrfftw_mpi -lfftw_mpi -lrfftw -lfftw
-else
-ifeq (DOUBLEPRECISION_FFTW,$(findstring DOUBLEPRECISION_FFTW,$(CONFIGVARS)))  # test for double precision libraries
-    FFTW_LIBNAMES =  #-ldrfftw_mpi -ldfftw_mpi -ldrfftw -ldfftw
-else
-    FFTW_LIBNAMES =  #-lsrfftw_mpi -lsfftw_mpi -lsrfftw -lsfftw
-endif
-endif
-# we only need fftw if PMGRID is turned on
-ifneq (USE_FFTW3, $(findstring USE_FFTW3, $(CONFIGVARS)))
-ifeq (PMGRID, $(findstring PMGRID, $(CONFIGVARS)))
-ifeq (NOTYPEPREFIX_FFTW,$(findstring NOTYPEPREFIX_FFTW,$(CONFIGVARS)))  # fftw installed without type prefix?
-  FFTW_LIBNAMES = -lrfftw_mpi -lfftw_mpi -lrfftw -lfftw
-else
-ifeq (DOUBLEPRECISION_FFTW,$(findstring DOUBLEPRECISION_FFTW,$(CONFIGVARS)))  # test for double precision libraries
-  FFTW_LIBNAMES = -ldrfftw_mpi -ldfftw_mpi -ldrfftw -ldfftw
-else
-  FFTW_LIBNAMES = -lsrfftw_mpi -lsfftw_mpi -lsrfftw -lsfftw
-endif
-endif
-else
-# or if TURB_DRIVING_SPECTRUMGRID is activated
-ifeq (TURB_DRIVING_SPECTRUMGRID, $(findstring TURB_DRIVING_SPECTRUMGRID, $(CONFIGVARS)))
-ifeq (NOTYPEPREFIX_FFTW,$(findstring NOTYPEPREFIX_FFTW,$(CONFIGVARS)))  # fftw installed without type prefix?
-  FFTW_LIBNAMES = -lrfftw_mpi -lfftw_mpi -lrfftw -lfftw
-else
-ifeq (DOUBLEPRECISION_FFTW,$(findstring DOUBLEPRECISION_FFTW,$(CONFIGVARS)))  # test for double precision libraries
-  FFTW_LIBNAMES = -ldrfftw_mpi -ldfftw_mpi -ldrfftw -ldfftw
-else
-  FFTW_LIBNAMES = -lsrfftw_mpi -lsfftw_mpi -lsrfftw -lsfftw
-endif
-endif
-else
-  FFTW_LIBNAMES = #
-endif
-endif
-else # use FFTW3 instead of FFTW2.?
-ifeq (PMGRID, $(findstring PMGRID, $(CONFIGVARS)))
-ifeq (DOUBLEPRECISION_FFTW,$(findstring DOUBLEPRECISION_FFTW,$(CONFIGVARS)))  # test for double precision libraries
-  FFTW_LIBNAMES = -lfftw3_mpi -lfftw3
-else #single precision 
-  FFTW_LIBNAMES = -lfftw3f_mpi -lfftw3f
-endif
-else 
-# or if TURB_DRIVING_SPECTRUMGRID is activated
-ifeq (TURB_DRIVING_SPECTRUMGRID, $(findstring TURB_DRIVING_SPECTRUMGRID, $(CONFIGVARS)))
-ifeq (DOUBLEPRECISION_FFTW,$(findstring DOUBLEPRECISION_FFTW,$(CONFIGVARS)))  # test for double precision libraries
-  FFTW_LIBNAMES = -lfftw3_mpi -lfftw3
-else #single precision  
-  FFTW_LIBNAMES = -lfftw3f_mpi -lfftw3f
-endif
-else 
-  FFTW_LIBNAMES = #
-endif
-endif
-endif
+
 
 
 ## read the systype information to use the blocks below for different machines
@@ -262,7 +202,7 @@ ifeq ($(SYSTYPE),"Frontera")
 CC       =  mpicc
 CXX      =  mpic++
 FC       =  mpif90 -nofor_main
-OPTIMIZE = -O2 -xCORE-AVX2
+OPTIMIZE = -O2 -xCORE-AVX2 -Wno-unknown-pragmas
 #OPTIMIZE = -O3 $(TACC_VEC_FLAGS) -ipo -funroll-loops -no-prec-div -fp-model fast=2
 #OPTIMIZE = -O3 -xCORE-AVX512 -ipo -funroll-loops -no-prec-div -fp-model fast=2
 ## above is preferred, $(TACC_VEC_FLAGS) automatically incorporates the TACC preferred flags for both KNL or SKX nodes, but gives tiny performance hit
@@ -279,16 +219,20 @@ MKL_INCL = -I$(TACC_MKL_INC)
 MKL_LIBS = -L$(TACC_MKL_LIB) -mkl=sequential
 GSL_INCL = -I$(TACC_GSL_INC)
 GSL_LIBS = -L$(TACC_GSL_LIB)
-FFTW_INCL= -I$(TACC_FFTW2_INC)
-FFTW_LIBS= -L$(TACC_FFTW2_LIB)
-ifeq (USE_FFTW3, $(findstring USE_FFTW3, $(CONFIGVARS)))
+# Note: (9/22) Deprecating the old option to use FFTW2 on this machine, as it is no longer supported unless via custom installations
+#FFTW_INCL= -I$(TACC_FFTW2_INC)
+#FFTW_LIBS= -L$(TACC_FFTW2_LIB)
+#ifeq (USE_FFTW3, $(findstring USE_FFTW3, $(CONFIGVARS)))
 FFTW_INCL= -I$(TACC_FFTW3_INC)
 FFTW_LIBS= -L$(TACC_FFTW3_LIB)
-endif
+#endif
 HDF5INCL = -I$(TACC_HDF5_INC) -DH5_USE_16_API
 HDF5LIB  = -L$(TACC_HDF5_LIB) -lhdf5 -lz
 MPICHLIB =
 OPT     += -DUSE_MPI_IN_PLACE -DNO_ISEND_IRECV_IN_DOMAIN -DHDF5_DISABLE_VERSION_CHECK
+ifneq (USE_FFTW3, $(findstring USE_FFTW3, $(CONFIGVARS)))
+OPT += -DUSE_FFTW3
+endif
 ##
 # UPDATE (9/19): Intel/19.0.5 is now working, and Intel/18 is actually sometimes running slower now because of some of the changes made to the impi installation.
 #          Depending on when your code was compiled and exactly which flags you used, you may notice a performance drop with intel/18, and should switch to 19.
@@ -421,6 +365,9 @@ HDF5INCL = -I$(CPATH) -DH5_USE_16_API
 HDF5LIB  = -L$(LIBRARY_PATH) -lhdf5 -lz
 MPICHLIB =
 OPT     += -DUSE_MPI_IN_PLACE
+ifneq (USE_FFTW3, $(findstring USE_FFTW3, $(CONFIGVARS)))
+OPT += -DUSE_FFTW3
+endif
 # modules to load: aocc openmpi hdf5 gsl fftw
 # NOTE: this machine does not appear to always parallelize correctly in a hybrid MPI/OpenMP (i.e. when OPENMP is enabled) setup - it can potentially assign multiple threads to the same physical core and get lousy performance. A surefire way to get the correct thread affinity is to generate a rankfile and include as an argument to mpirun, e.g. https://github.com/mikegrudic/make_rankfile
 endif
@@ -673,6 +620,9 @@ HDF5INCL =  -I${SCINET_HDF5_ROOT}/include -DH5_USE_16_API
 HDF5LIB  =  -L${SCINET_HDF5_ROOT}/lib -lhdf5 -lz
 MPICHLIB =
 OPT     += -DUSE_MPI_IN_PLACE -DHDF5_DISABLE_VERSION_CHECK
+ifneq (USE_FFTW3, $(findstring USE_FFTW3, $(CONFIGVARS)))
+OPT += -DUSE_FFTW3
+endif
 ##
 ## Notes [Fergus Horrobin]:
 ## 
@@ -1375,6 +1325,48 @@ endif
 # linking libraries (includes machine-dependent options above)
 CFLAGS = $(OPTIONS) $(GSL_INCL) $(FFTW_INCL) $(HDF5INCL) $(GMP_INCL) \
          $(GRACKLEINCL) $(CHIMESINCL)
+
+
+
+# one annoying thing here is the FFTW libraries, since they are named differently depending on
+#  whether they are compiled in different precision levels, or with different parallelization options, so we
+#  have to have a big block here 'sorting them out'.
+#
+fftw_on_key = # default to 'off'
+fftw_three =  # default to fftw2
+ifeq (PMGRID,$(findstring PMGRID, $(CONFIGVARS)))
+  fftw_on_key = yes # needed for this module
+endif
+ifeq (TURB_DRIVING_SPECTRUMGRID,$(findstring TURB_DRIVING_SPECTRUMGRID, $(CONFIGVARS)))
+  fftw_on_key = yes  # needed for this module
+endif
+ifeq (USE_FFTW3, $(findstring USE_FFTW3, $(CONFIGVARS)))
+  fftw_three = yes # given by user manually
+endif
+ifeq (USE_FFTW3,$(findstring USE_FFTW3, $(OPTIONS)))
+  fftw_three = yes # given by preset options above
+endif
+FFTW_LIBNAMES = # default to 'off'
+ifdef fftw_on_key
+ifdef fftw_three
+ifeq (DOUBLEPRECISION_FFTW,$(findstring DOUBLEPRECISION_FFTW,$(CONFIGVARS)))  # test for double precision libraries
+  FFTW_LIBNAMES = -lfftw3_mpi -lfftw3 # double-precision libraries
+else
+  FFTW_LIBNAMES = -lfftw3f_mpi -lfftw3f # single-precision libraries
+endif
+else
+ifeq (NOTYPEPREFIX_FFTW,$(findstring NOTYPEPREFIX_FFTW,$(CONFIGVARS)))  # fftw installed without type prefix?
+  FFTW_LIBNAMES = -lrfftw_mpi -lfftw_mpi -lrfftw -lfftw # no type prefix libraries
+else
+ifeq (DOUBLEPRECISION_FFTW,$(findstring DOUBLEPRECISION_FFTW,$(CONFIGVARS)))  # test for double precision libraries
+  FFTW_LIBNAMES = -ldrfftw_mpi -ldfftw_mpi -ldrfftw -ldfftw # double-precision libraries
+else
+  FFTW_LIBNAMES = -lsrfftw_mpi -lsfftw_mpi -lsrfftw -lsfftw # single-precision libraries
+endif
+endif
+endif
+endif
+
 
 LIBS = $(HDF5LIB) -g $(MPICHLIB) $(GSL_LIBS) -lgsl -lgslcblas \
 	   $(FFTW_LIBS) $(FFTW_LIBNAMES) -lm $(GRACKLELIBS) $(CHIMESLIBS)

@@ -8,31 +8,14 @@
 %        EOS_GAMMA=(5.0/3.0)
 %
 InitCondFile                       sedov_ics
-ICFormat                           3
 OutputDir                          output
-TimeLimitCPU                       50000
-MaxMemSize                         1600
-PartAllocFactor                    5
-BufferSize                         150
-TimeBegin                          0
 TimeMax                            0.03
-ComovingIntegrationOn              0
 BoxSize                            6
-OutputListOn                       0
-TimeOfFirstSnapshot                0
 TimeBetSnapshot                    0.003
-MaxSizeTimestep                    0.0001
-TreeDomainUpdateFrequency          0.05
 DesNumNgb                          32
 UnitLength_in_cm                   3.085678e+21
 UnitMass_in_g                      1.989e+43
 UnitVelocity_in_cm_per_s           100000
-SofteningGas                       0.05
-Softening_Type1                    0
-Softening_Type2                    0
-Softening_Type3                    0
-Softening_Type4                    0
-Softening_Type5                    0
 MinGasTemp                         10
 % -- optional numerical parameters (requires additional Config flags)
 ErrTolIntAccuracy                  0.002
@@ -40,3 +23,5 @@ CourantFac                         0.05
 MaxRMSDisplacementFac              0.1
 ErrTolForceAcc                     0.0015
 TimeBetStatistics                  0.001
+% -- optional parameter - speed up the test with bigger steps, but maybe bigger errors
+MaxSizeTimestep                    0.0001

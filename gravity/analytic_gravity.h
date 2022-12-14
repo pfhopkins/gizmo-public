@@ -26,6 +26,7 @@ void GravAccel_RayleighTaylorTest(void);
 void GravAccel_ShearingSheet(void);
 void GravAccel_PaczynskyWiita(void);
 void GravAccel_RDITestProblem(void);
+void GravAccel_SpecialCustomNuclearZoomBoundaryConditions(void);
 void GravAccel_GMCTurbInit(void);
 void GravAccel_FilamentTurbInit(void);
 
@@ -50,9 +51,11 @@ void add_analytic_gravitational_forces()
     GravAccel_GMCTurbInit();              // uniform sphere harmonic potential + r^-3 halo outside to confine stirred turbulent gas
 #endif
 #ifdef STARFORGE_FILAMENT_TURBINIT
-    GravAccel_FilamentTurbInit();              // potential of an finitite cylinder with a Plummer density profile, truncated at the ends of the cylinder
+    GravAccel_FilamentTurbInit();         // potential of an finitite cylinder with a Plummer density profile, truncated at the ends of the cylinder
 #endif
-
+#ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES
+    GravAccel_SpecialCustomNuclearZoomBoundaryConditions(); // special potential boundary conditions and clipping/excision application outside zone of re-zoom-in-simulation. must be set by-hand for problem.
+#endif
 #ifdef BOX_SHEARING
     GravAccel_ShearingSheet();            // adds coriolis and centrifugal terms for shearing-sheet approximation
 #endif
@@ -211,6 +214,28 @@ void GravAccel_StaticIsothermalSphere()
         for(k=0;k<3;k++) {P[i].GravAccel[k] += -All.G * m * dp[k]/(r2*r);}
     }
 }
+
+
+
+/* custom boundary conditions (must be edited manually) for the specific setup of some idealized re-tests of our nuclear zoom restarts */
+void GravAccel_SpecialCustomNuclearZoomBoundaryConditions()
+{
+#ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES
+    int i,k; for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
+    {
+        double dp[3], r2=0, r, r_cut; for(k=0;k<3;k++) {dp[k]=All.cf_atime*P[i].Pos[k]; r2+=dp[k]*dp[k];}
+	    r = sqrt(r2); r_cut = 0.2 * All.HubbleParam;
+	    if(r > r_cut)
+        {
+		    double x = r/r_cut, tau = pow(All.cf_atime / 0.18437477681344028, -3.);
+		    double m0 = 0.19*(pow(x,1.15)-1.)/(1.+pow(x/300.,0.8)) + (1.4e-8*tau)*(pow(x,3.)-1.);
+        	for(k=0;k<3;k++) {P[i].GravAccel[k] += -All.G * (dp[k]/r) * (m0/(r*r)) * (1./All.cf_a2inv);}
+		    if(r > 2.*r_cut) {P[i].Mass = 0;} // clip it
+	    }
+    }
+#endif
+}
+
 
 /* potential of a uniform sphere of mass M and radius R, plus a r^-3 density profile outside for a gentle infinite confining potential - used for initializing turbulence in isolated spheres */
 void GravAccel_GMCTurbInit()
@@ -437,4 +462,5 @@ void apply_excision(void)
 #endif
 }
 #endif
+
 

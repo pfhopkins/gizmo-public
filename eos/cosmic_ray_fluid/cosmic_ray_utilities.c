@@ -859,6 +859,54 @@ double return_CRbin_nuplusminus_asymmetry(int i, int k_CRegy)
 #endif // closes block for entire file for COSMIC_RAY_FLUID
 
 
+#ifdef COSMIC_RAY_SUBGRID_LEBRON // block for simplified sub-grid CR model
+/* function to return injection rate of CRs -time-averaged in total energy, extremely boiled-down version */
+double cr_get_source_injection_rate(int i)
+{
+    double Edot = 0;
+#ifdef GALSF
+#ifdef GALSF_FB_MECHANICAL
+    if(P[i].Type == 4)
+    {
+        double star_age=evaluate_stellar_age_Gyr(i), RSNe=0, agemin=0.003401, agebrk=0.01037, agemax=0.03753;
+        if(star_age>agemin) {if(star_age<=agebrk) {RSNe=5.408e-4;} else {if(star_age<=agemax) {RSNe=2.516e-4;}}} // core-collapse rate [super-simple 2-piece constant] //
+        if(star_age>agemax) {RSNe=5.3e-8 + 1.6e-5*exp(-0.5*((star_age-0.05)/0.01)*((star_age-0.05)/0.01));} // Ia (prompt Gaussian+delay, Manucci+06)
+        Edot = All.CosmicRay_SNeFraction * (RSNe*UNIT_TIME_IN_MYR) * (P[i].Mass*UNIT_MASS_IN_SOLAR) * (1.0e51/UNIT_ENERGY_IN_CGS);
+    }
+#endif
+#ifdef BLACK_HOLES
+    if(P[i].Type == 5) {
+        double mdot_eff = BPP(i).BH_Mdot; // code units
+        mdot_eff = DMIN( mdot_eff , BPP(i).BH_Mass / (100./UNIT_TIME_IN_MYR) ); // if time-averaging over ~Gyr, can't have time-averaged injection rate above Mbh/<t> more or less (modulo order-one corrections for all this)
+        Edot = evaluate_blackhole_cosmicray_efficiency(BPP(i).BH_Mdot,BPP(i).BH_Mass,i) * mdot_eff * C_LIGHT_CODE*C_LIGHT_CODE; // injection in code units
+    }
+#endif
+#endif
+    if(Edot > 0) {return Edot * cr_get_source_shieldfac(i);} else {return 0;}
+}
+
+/* function to return shielding/loss factor correction */
+double cr_get_source_shieldfac(int i)
+{
+    double cr_atten_fac = 1;
+    if(PPP[i].Hsml > 0 && PPP[i].NumNgb > 0 && All.Time > All.TimeBegin)
+    {
+        double dx=PPP[i].Hsml/PPP[i].NumNgb, gradrho[3], rho; // code units
+        int k; for(k=0;k<3;k++) {gradrho[k]=P[i].GradRho[k];}
+        if(P[i].Type==0) {rho=SphP[i].Density;} else {rho=P[i].DensAroundStar;}
+        if(rho > 0)
+        {
+            double gradrho_mag = sqrt(gradrho[0]*gradrho[0]+gradrho[1]*gradrho[1]+gradrho[2]*gradrho[2]);
+            if(gradrho_mag > 0) {dx += rho/gradrho_mag;} // code units
+            double R_loss = ((6.37 + 3.09)*1.e-16*UNIT_TIME_IN_CGS) * (rho*All.cf_a3inv*UNIT_DENSITY_IN_NHCGS); // physical units
+            double psi_loss_i = (R_loss / All.CosmicRay_Subgrid_Vstream_0) / sqrt(1. + R_loss*All.CosmicRay_Subgrid_Kappa_0/(All.CosmicRay_Subgrid_Vstream_0*All.CosmicRay_Subgrid_Vstream_0)); // physical units
+            double dtau = 0.5 * psi_loss_i * (dx*All.cf_atime); // physical units in dx, so dimensionless here
+            cr_atten_fac = exp(-DMIN(dtau, 50.));
+        }
+    }
+    return cr_atten_fac;
+}
+#endif // closes block for entire file for COSMIC_RAY_SUBGRID_LEBRON
 
 
 
@@ -869,6 +917,9 @@ double INLINE_FUNC Get_CosmicRayEnergyDensity_cgs(int i)
 #ifdef COSMIC_RAY_FLUID
     double u_cr=0; int k; for(k=0;k<N_CR_PARTICLE_BINS;k++) {u_cr += SphP[i].CosmicRayEnergyPred[k];}
     return u_cr * (SphP[i].Density*All.cf_a3inv / P[i].Mass) * UNIT_PRESSURE_IN_CGS;
+#endif
+#ifdef COSMIC_RAY_SUBGRID_LEBRON
+    return SphP[i].SubGrid_CosmicRayEnergyDensity*All.cf_a3inv * UNIT_PRESSURE_IN_CGS;
 #endif
     return 1.6e-12; // eV/cm-3, approximate from Cummings et al. 2016 V1 data
 }
@@ -902,7 +953,7 @@ double CR_gas_heating(int target, double n_elec, double nH0, double nHcgs)
 #endif
     double a_hadronic, b_coulomb_ion_per_GeV, f_heat_hadronic;
     a_hadronic = 6.37e-16; b_coulomb_ion_per_GeV = 3.09e-16*(n_elec + 0.57*nH0)*HYDROGEN_MASSFRAC; f_heat_hadronic=1./6.; /* some coefficients; a_hadronic is the default coefficient, b_coulomb_ion_per_GeV the default divided by GeV, b/c we need to divide the energy per CR. note there is an extra factor in principle for the ionization term here compared to its version in the CR losses module above: this represents the fraction of CR energy going into the thermal energy of the gas, as opposed to ionization energy, but this is close to unity */
-#if defined(COSMIC_RAY_FLUID) || defined(FLAG_NOT_IN_PUBLIC_CODE)
+#if defined(COSMIC_RAY_FLUID) || defined(COSMIC_RAY_SUBGRID_LEBRON)
 #if (N_CR_PARTICLE_BINS > 2)
     double e_heat=0, e_CR_units_0=(SphP[target].Density*All.cf_a3inv/P[target].Mass) * UNIT_PRESSURE_IN_CGS / nHcgs; int k_CRegy;
     for(k_CRegy=0;k_CRegy<N_CR_PARTICLE_BINS;k_CRegy++)
@@ -937,7 +988,7 @@ double CR_calculate_adiabatic_gasCR_exchange_term(int i, double dt_entr, double 
     
     double divv_p=-dt_entr*P[i].Particle_DivVel*All.cf_a2inv, divv_f=divv_p, divv_u=0; // get locally-estimated gas velocity divergence for cells - if using non-Lagrangian method, need to modify. take negative of this [for sign of change to energy] and multiply by timestep
 #ifdef COSMIC_RAY_FLUID
-    divv_f=-dt_entr*SphP[i].Face_DivVel_ForAdOps;
+    divv_f=-dt_entr*SphP[i].Face_DivVel_ForAdOps*All.cf_a2inv;
 #endif
     if(All.ComovingIntegrationOn) {double divv_h=-dt_entr*(3.*All.cf_hubble_a); divv_p+=divv_h; divv_f+=divv_h;} // include hubble-flow terms
     double P_cr = gamma_minus_eCR_tmp * SphP[i].Density * All.cf_a3inv / P[i].Mass, P_tot = SphP[i].Pressure * All.cf_a3inv; // define the pressure from CRs and total pressure (physical units)

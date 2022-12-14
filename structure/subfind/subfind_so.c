@@ -115,7 +115,7 @@ void Subfind_DensityOtherProps_Loop(void)
     Subfind_DensityOtherPropsEval_GlobalPasser = (struct Subfind_DensityOtherPropsEval_data_out *) mymalloc("Subfind_DensityOtherPropsEval_GlobalPasser",Ngroups * sizeof(struct Subfind_DensityOtherPropsEval_data_out));
     Todo = (char *)mymalloc("Todo", sizeof(char) * Ngroups);
     size_t MyBufferSize = (size_t)All.BufferSize;
-    All.BunchSize = (int) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) + sizeof(struct Subfind_DensityOtherPropsEval_data_in) + sizeof(struct Subfind_DensityOtherPropsEval_data_out) +
+    All.BunchSize = (long) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) + sizeof(struct Subfind_DensityOtherPropsEval_data_in) + sizeof(struct Subfind_DensityOtherPropsEval_data_out) +
                      sizemax(sizeof(struct Subfind_DensityOtherPropsEval_data_in), sizeof(struct Subfind_DensityOtherPropsEval_data_out))));
     DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
     DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));

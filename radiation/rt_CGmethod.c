@@ -228,12 +228,14 @@ void rt_diffusion_cg_matrix_multiply(double **matrixmult_in, double **matrixmult
     NTaskTimesNumPart = maxThreads * NumPart;
     Ngblist = (int *) mymalloc("Ngblist", NTaskTimesNumPart * sizeof(int));
     size_t MyBufferSize = All.BufferSize;
-    All.BunchSize = (int) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
+    All.BunchSize = (long) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
                                                              sizeof(struct rt_cg_data_in) + sizeof(struct rt_cg_data_out) + sizemax(sizeof(struct rt_cg_data_in),sizeof(struct rt_cg_data_out))));
     DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
     DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
     
     NextParticle = FirstActiveParticle;	/* begin with this index */
+    memset(ProcessedFlag, 0, All.MaxPart * sizeof(unsigned char));
+    BufferCollisionFlag = 0; /* set to zero before operations begin */
     do
     {
         BufferFullFlag = 0;
@@ -274,18 +276,33 @@ void rt_diffusion_cg_matrix_multiply(double **matrixmult_in, double **matrixmult
         if(BufferFullFlag)
         {
             int last_nextparticle = NextParticle;
-            NextParticle = save_NextParticle;
+            int processed_particles = 0;
+            int first_unprocessedparticle = -1;
+            NextParticle = save_NextParticle; /* figure out where we are */
             while(NextParticle >= 0)
             {
-                if(NextParticle == last_nextparticle) break;
-                if(ProcessedFlag[NextParticle] != 1) break;
-                ProcessedFlag[NextParticle] = 2;
+                if(NextParticle == last_nextparticle) {break;}
+#ifndef _OPENMP
+                if(ProcessedFlag[NextParticle] != 1) {break;}
+#else
+                if(ProcessedFlag[NextParticle] == 0 && first_unprocessedparticle < 0) {first_unprocessedparticle = NextParticle;}
+                if(ProcessedFlag[NextParticle] == 1)
+#endif
+                {
+                    processed_particles++;
+                    ProcessedFlag[NextParticle] = 2;
+                }
                 NextParticle = NextActiveParticle[NextParticle];
             }
-            if(NextParticle == save_NextParticle)
+#ifdef _OPENMP
+            if(first_unprocessedparticle >= 0) {NextParticle = first_unprocessedparticle;} /* reset the neighbor list properly for the next group since we can get 'jumps' with openmp active */
+            if(processed_particles == 0 && NextParticle == save_NextParticle && NextParticle > -1) {
+                BufferCollisionFlag++; if(BufferCollisionFlag < 2) {continue;}} /* we overflowed without processing a single particle, but this could be because of a collision, try once with the serialized approach, but if it fails then, we're truly stuck */
+            else if(processed_particles && BufferCollisionFlag) {BufferCollisionFlag = 0;} /* we had a problem in a previous iteration but things worked, reset to normal operations */
+#endif
+            if(processed_particles <= 0 && NextParticle == save_NextParticle)
             {
-                /* in this case, the buffer is too small to process even a single particle */
-                endrun(116609);
+                endrun(116609); /* in this case, the buffer is too small to process even a single particle */
             }
             int new_export = 0;
             for(j = 0, k = 0; j < Nexport; j++)
@@ -526,8 +543,7 @@ int rt_diffusion_cg_evaluate(int target, int mode, double **matrixmult_in, doubl
             if(listindex < NODELISTLENGTH)
             {
                 startnode = rt_cg_DataGet[target].NodeList[listindex];
-                if(startnode >= 0)
-                    startnode = Nodes[startnode].u.d.nextnode;	/* open it */
+                if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;}	/* open it */
             }
         } // if(mode == 1)
 #endif

@@ -451,12 +451,14 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
 struct OUTPUT_STRUCT_NAME { /* define variables below as e.g. "double X;" */
     MyDouble Interpolated_Radiation_Acceleration[3]; /* flux values to return to grains */
     MyDouble Interpolated_Opacity[N_RT_FREQ_BINS]; /* opacity values interpolated to gas positions */
+    MyDouble InterpolatedGeometricDustCrossSection; /* geometric opacity (no wavelength dependence) interpolated to gas positions */
 } *DATARESULT_NAME, *DATAOUT_NAME; /* dont mess with these names, they get filled-in by your definitions automatically */
 
 /* this subroutine assigns the values to the variables that need to be sent -back to- the 'searching' element */
 static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration) {  /* "i" is the particle to which data from structure "out" will be assigned. mode=0 for local communication, =1 for data sent back from other processors. you must account for this. */
     int k,k_freq;
-    if(P[i].Type==0) {for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++) {ASSIGN_ADD(SphP[i].Interpolated_Opacity[k_freq],out->Interpolated_Opacity[k_freq],mode);}}
+    if(P[i].Type==0) {ASSIGN_ADD(SphP[i].InterpolatedGeometricDustCrossSection,out->InterpolatedGeometricDustCrossSection,mode);
+        for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++) {ASSIGN_ADD(SphP[i].Interpolated_Opacity[k_freq],out->Interpolated_Opacity[k_freq],mode);}}
     if((1 << P[i].Type) & (GRAIN_PTYPES)) {for(k=0;k<3;k++) {P[i].GravAccel[k] += out->Interpolated_Radiation_Acceleration[k]/All.cf_a2inv;}} /* this simply adds to the 'gravitational' acceleration for kicks */
 }
 
@@ -491,12 +493,14 @@ int interpolate_fluxes_opacities_gasgrains_evaluate(int target, int mode, int *e
 
                     if(local.Type==0) /* sitting on a -gas- element, want to interpolate opacity to it */
                     {
-                        wt = P[j].Mass * (wk_i / P[j].Gas_Density); /* dimensionless weight of this gas element as 'seen' by the grain: = (grain_part_mass/gas_part_mass) * (gas_part_mass * Wk / gas_density [=sum gas_part_mass * Wk]) */
+                        wt = P[j].Mass * (wk_i / P[j].Gas_Density); /* dimensionless weight of this grain element as 'seen' by the gas: = (grain_part_mass/gas_part_mass) * (gas_part_mass * Wk / gas_density [=sum gas_part_mass * Wk]) - using sum as seen by grain and H for grain ensures grain can't be 'double counted' -- sum over all gas elements gives correct total mass of dust distributed over the entire system, as desired */
                         double R_grain_code=P[j].Grain_Size/UNIT_LENGTH_IN_CGS, rho_grain_code=All.Grain_Internal_Density/UNIT_DENSITY_IN_CGS; /* internal grain density in code units */
+                        double geometric_dustcrosssection_factor = wt * 3. / (4. * rho_grain_code * R_grain_code); // interpolated opacity contribution in the absence of any absorption efficiency parameter
+                        out.InterpolatedGeometricDustCrossSection += geometric_dustcrosssection_factor; // add this alone here
                         for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++)
                         {
                             double Q_abs_eff = return_grain_extinction_efficiency_Q(j, k_freq); /* need this to calculate the absorption efficiency in each band */
-                            out.Interpolated_Opacity[k_freq] += wt * Q_abs_eff * 3. / (4. * rho_grain_code * R_grain_code);
+                            out.Interpolated_Opacity[k_freq] += Q_abs_eff * geometric_dustcrosssection_factor; // add the relevant weight for each band
                         }
                     } else { /* sitting on a -grain- element, want to interpolate flux to it and calculate radiation pressure force */
                         wt = SphP[j].Density*All.cf_a3inv * wk_i; /* weight of element to 'i, with appropriate coefficient from above */
@@ -558,7 +562,15 @@ double return_grain_extinction_efficiency_Q(int i, int k_freq)
 #endif
 #else
     /* INSERT PHYSICS HERE -- this is where you want to specify the optical properties of grains relative to the frequency bins being evolved. could code up something for -ALL- the bins we do, but that's a lot, so we'll do these as-needed, for runs with different frequencies */
+#if defined(RADTRANSFER) || defined(RT_USE_GRAVTREE)
+    double nu_min_ev=All.RHD_bins_nu_min_ev[k_freq], nu_max_ev=All.RHD_bins_nu_max_ev[k_freq]; // get the radiation frequency range in eV
+    double x_min = 5.068e4 * P[i].Grain_Size * nu_min_ev, x_max = 5.068e4 * P[i].Grain_Size * nu_max_ev; // this is the 'x' parameter for Q, defined as 2*pi*a_grain/lambda_light
+    /* don't have a detailed model here for dielectric properties of grains, so instead use an extremely simple model as follows */
+    double x_eff=sqrt(x_min*x_max); if(x_min<=MIN_REAL_NUMBER) {x_eff=0.5*x_max;} // take geometric mean or linear mean if former not well-defined
+    return DMIN(x_eff, 1.); // simple model where Q~x for x<<1, Q=1 for x>>1
+#else
     if(ThisTask==0) {PRINT_WARNING("Code does not have entered grain absorption efficiency/optical properties for your specific wavelength being evolved. Please enter that information in the routine 'return_grain_extinction_efficiency_Q'. For now will assume geometric absorption (Q=1). \n");}
+#endif
 #endif
     return Q;
 }

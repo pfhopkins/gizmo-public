@@ -6,7 +6,7 @@ if(P[p].Ti_current != ti_Current)
 {
     LOCK_PARTNODEDRIFT;
 #ifdef _OPENMP
-#pragma omp critical(_partnodedrift_)
+#pragma omp critical(_partdriftngb_)
 #endif
     drift_particle(p, ti_Current);
     UNLOCK_PARTNODEDRIFT;
@@ -54,7 +54,7 @@ else
                 int exitFlag = 0, nexp;
                 LOCK_NEXPORT;
 #ifdef _OPENMP
-#pragma omp critical(_nexport_)
+#pragma omp critical(_nexportngb_)
 #endif
                 {
                     if(Nexport >= bunchSize)
@@ -110,7 +110,7 @@ else
     {
         LOCK_PARTNODEDRIFT;
 #ifdef _OPENMP
-#pragma omp critical(_partnodedrift_)
+#pragma omp critical(_nodedriftngb_)
 #endif
         force_drift_node(no, ti_Current);
         UNLOCK_PARTNODEDRIFT;
@@ -125,8 +125,9 @@ else
         }
     }
     
+    double hmax = Extnodes[no].hmax;
 #if (SEARCHBOTHWAYS==1)
-    dist = DMAX(Extnodes[no].hmax, hsml) + 0.5 * current->len;
+    dist = DMAX(hmax, hsml) + 0.5 * current->len;
 #else
     dist = hsml + 0.5 * current->len;
 #endif

@@ -6,6 +6,7 @@
 
 #include "allvars.h"
 #include "proto.h"
+#include "kernel.h"
 
 
 /*! \file init.c
@@ -38,6 +39,8 @@ void init(void)
 
     All.Time = All.TimeBegin;
     set_cosmo_factors_for_current_time();
+
+    if(RestartFlag != 1) {All.MinMassForParticleMerger = 0; All.MaxMassForParticleSplit = 0;}
 
     if(RestartFlag == 3 && RestartSnapNum < 0)
     {
@@ -137,6 +140,9 @@ void init(void)
 
     All.TotNumOfForces = 0;
     All.TopNodeAllocFactor = 0.008; /* this will start from a low value and be iteratively increased until it is well-behaved */
+#ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM
+    All.TopNodeAllocFactor = 0.1; /* for optimization on startup this needs to be increased for these extreme dynamic range runs */
+#endif
     All.TreeAllocFactor = 0.45; /* this will also iteratively increase to fit the particle distribution */
     /* To construct the BH-tree for N particles, somewhat less than N
      internal tree-nodes are necessary for ‘normal’ particle distributions.
@@ -179,13 +185,12 @@ void init(void)
         for(j = 0; j < 3; j++) {P[i].GravAccel[j] = 0;}
 
 #ifdef COMPUTE_TIDAL_TENSOR_IN_GRAVTREE /* init tidal tensor for first output (not used for calculation) */
-        P[i].tidal_tensorps[0][0]=P[i].tidal_tensorps[0][1]=P[i].tidal_tensorps[0][2]=0;
-        P[i].tidal_tensorps[1][0]=P[i].tidal_tensorps[1][1]=P[i].tidal_tensorps[1][2]=0;
-        P[i].tidal_tensorps[2][0]=P[i].tidal_tensorps[2][1]=P[i].tidal_tensorps[2][2]=0;
+        for(j=0;j<3;j++) {int kt; for(kt=0;kt<3;kt++) {P[i].tidal_tensorps[j][kt]=0;}}
+#ifdef ADAPTIVE_GRAVSOFT_FROM_TIDAL_CRITERION
+        P[i].tidal_tensor_mag_prev = 0; P[i].tidal_zeta=0; for(j=0;j<3;j++) {int kt; for(kt=0;kt<3;kt++) {P[i].tidal_tensorps_prevstep[j][kt]=0;}}
+#endif
 #ifdef PMGRID
-        P[i].tidal_tensorpsPM[0][0]=P[i].tidal_tensorpsPM[0][1]=P[i].tidal_tensorpsPM[0][2]=0;
-        P[i].tidal_tensorpsPM[1][0]=P[i].tidal_tensorpsPM[1][1]=P[i].tidal_tensorpsPM[1][2]=0;
-        P[i].tidal_tensorpsPM[2][0]=P[i].tidal_tensorpsPM[2][1]=P[i].tidal_tensorpsPM[2][2]=0;
+        for(j=0;j<3;j++) {int kt; for(kt=0;kt<3;kt++) {P[i].tidal_tensorpsPM[j][kt]=0;}}
 #endif
 #endif
 #ifdef GDE_DISTORTIONTENSOR
@@ -193,13 +198,8 @@ void init(void)
         P[i].last_determinant = 1.0;
 #ifdef OUTPUT_GDE_LASTCAUSTIC
         P[i].lc_Time = 0.0; /* all entries zero -> no caustic yet */
-        P[i].lc_Pos[0] = 0.0; P[i].lc_Pos[1] = 0.0; P[i].lc_Pos[2] = 0.0;
-        P[i].lc_Vel[0] = 0.0; P[i].lc_Vel[1] = 0.0; P[i].lc_Vel[2] = 0.0;
-        P[i].lc_rho_normed_cutoff = 0.0;
-        P[i].lc_Dir_x[0] = 0.0; P[i].lc_Dir_x[1] = 0.0; P[i].lc_Dir_x[2] = 0.0;
-        P[i].lc_Dir_y[0] = 0.0; P[i].lc_Dir_y[1] = 0.0; P[i].lc_Dir_y[2] = 0.0;
-        P[i].lc_Dir_z[0] = 0.0; P[i].lc_Dir_z[1] = 0.0; P[i].lc_Dir_z[2] = 0.0;
-        P[i].lc_smear_x = 0.0; P[i].lc_smear_y = 0.0; P[i].lc_smear_z = 0.0;
+        for(j=0;j<3;j++) {P[i].lc_Pos[j]=0; P[i].lc_Vel[j]=0; P[i].lc_Dir_x[j]=0; P[i].lc_Dir_y[j]=0; P[i].lc_Dir_z[j]=0;}
+        P[i].lc_rho_normed_cutoff = 0.0; P[i].lc_smear_x = 0.0; P[i].lc_smear_y = 0.0; P[i].lc_smear_z = 0.0;
 #endif
         for(i1 = 0; i1 < 6; i1++) {for(i2 = 0; i2 < 6; i2++) {if(i1 == i2) {P[i].distortion_tensorps[i1][i2] = 1.0;} else {P[i].distortion_tensorps[i1][i2] = 0.0;}}}
         if(All.ComovingIntegrationOn) /* for cosmological simulations we do init here, not read from ICs */
@@ -267,6 +267,9 @@ void init(void)
             P[i].GradRho[0]=0;
             P[i].GradRho[1]=0;
             P[i].GradRho[2]=1;
+#endif
+#if defined(GALSF_FB_FIRE_PROTOSTELLARJETS)
+            P[i].NewStar_Momentum_For_JetFeedback = 0;
 #endif
 #if defined(GALSF_FB_MECHANICAL) || defined(GALSF_FB_THERMAL)
             P[i].SNe_ThisTimeStep = 0;
@@ -445,15 +448,15 @@ void init(void)
             if(RestartFlag == 0)
             {
                 BPP(i).BH_Mass = All.SeedBlackHoleMass;
-#ifdef SINGLE_STAR_SINK_DYNAMICS
                 BPP(i).Sink_Formation_Mass = P[i].Mass;
+#ifdef SINGLE_STAR_SINK_DYNAMICS
                 BPP(i).BH_Mass = P[i].Mass;
 #endif
 #ifdef GRAIN_FLUID
                 BPP(i).BH_Dust_Mass = 0;
 #endif
 #ifdef BH_GRAVCAPTURE_FIXEDSINKRADIUS
-                BPP(i).SinkRadius = All.SofteningTable[P[i].Type];
+                BPP(i).SinkRadius = KERNEL_FAC_FROM_FORCESOFT_TO_PLUMMER * SinkParticle_GravityKernelRadius;
 #endif
 #ifdef BH_ALPHADISK_ACCRETION
                 BPP(i).BH_Mass_AlphaDisk = All.SeedAlphaDiskMass;
@@ -468,9 +471,12 @@ void init(void)
 #endif
             }
 #ifdef BH_INTERACT_ON_GAS_TIMESTEP
-	    P[i].dt_since_last_gas_search = 0;
-	    P[i].do_gas_search_this_timestep = 1;
+            P[i].dt_since_last_gas_search = 0;
+            P[i].do_gas_search_this_timestep = 1;
 #endif 
+#if defined(BH_SWALLOWGAS) && !defined(BH_GRAVCAPTURE_GAS)
+            if(RestartFlag != 1) {BPP(i).BH_AccretionDeficit = 0;}
+#endif
         }
 #endif
     }
@@ -516,7 +522,7 @@ void init(void)
 #if defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(AGS_HSML_CALCULATION_IS_ACTIVE)
         PPPZ[i].AGS_zeta = 0;
 #ifdef ADAPTIVE_GRAVSOFT_FORALL
-        if(1 & ADAPTIVE_GRAVSOFT_FORALL) {PPP[i].AGS_Hsml = PPP[i].Hsml;} else {PPP[i].AGS_Hsml = All.SofteningTable[P[i].Type];}
+        if(1 & ADAPTIVE_GRAVSOFT_FORALL) {PPP[i].AGS_Hsml = PPP[i].Hsml;} else {PPP[i].AGS_Hsml = All.ForceSoftening[P[i].Type];}
 #endif
 #endif
 
@@ -576,6 +582,10 @@ void init(void)
             SphP[i].MolecularMassFraction = 0.0; SphP[i].MolecularMassFraction_perNeutralH = 0.0; // start atomic
 #endif
 #endif
+#ifdef GALSF_FB_FIRE_RT_UVHEATING
+            SphP[i].Rad_Flux_UV = 0;
+            SphP[i].Rad_Flux_EUV = 0;
+#endif
 #ifdef CHIMES_STELLAR_FLUXES
 	    int kc; for (kc = 0; kc < CHIMES_LOCAL_UV_NBINS; kc++) {SphP[i].Chimes_fluxPhotIon[kc] = 0; SphP[i].Chimes_G0[kc] = 0;}
 #endif
@@ -588,6 +598,9 @@ void init(void)
 #if (GALSF_SUBGRID_WIND_SCALING==1)
         SphP[i].HostHaloMass = 0;
 #endif
+#endif
+#if defined(GALSF_FB_FIRE_RT_HIIHEATING)
+        SphP[i].DelayTimeHII = 0;
 #endif
 #ifdef GALSF_FB_TURNOFF_COOLING
         SphP[i].DelayTimeCoolingSNe = 0;
@@ -798,6 +811,10 @@ void init(void)
         SphP[i].Super_Timestep_Dt_Explicit = 0;
         SphP[i].Super_Timestep_j = 0;
 #endif
+#ifdef GALSF_FB_FIRE_RT_UVHEATING
+        SphP[i].Rad_Flux_UV = 0;
+        SphP[i].Rad_Flux_EUV = 0;
+#endif
 #ifdef BH_COMPTON_HEATING
         SphP[i].Rad_Flux_AGN = 0;
 #endif
@@ -806,6 +823,9 @@ void init(void)
 #endif
 #if defined(RT_USE_GRAVTREE_SAVE_RAD_FLUX)
         {int kf; for(kf=0;kf<N_RT_FREQ_BINS;kf++) {for(j=0;j<3;j++) {SphP[i].Rad_Flux[kf][j]=0;}}}
+#endif
+#if defined(COSMIC_RAY_SUBGRID_LEBRON)
+        SphP[i].SubGrid_CosmicRayEnergyDensity = 0;
 #endif
 
 #ifdef COOL_GRACKLE
@@ -848,25 +868,36 @@ void init(void)
             if(P[i].Mass < mass_min) mass_min = P[i].Mass;
         }
         /* broadcast this and get the min and max values over all processors */
-        double mpi_mass_min,mpi_mass_max;
+        double mpi_mass_min, mpi_mass_max;
         MPI_Allreduce(&mass_min, &mpi_mass_min, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
         MPI_Allreduce(&mass_max, &mpi_mass_max, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-        All.MinMassForParticleMerger = 0.49 * mpi_mass_min;
-#ifdef SINGLE_STAR_SINK_DYNAMICS /* Get mean gas mass, used in various subroutiens */
-        double mpi_mass_tot; long mpi_Ngas; long Ngas_l = (long) N_gas;
-        MPI_Allreduce(&mass_tot, &mpi_mass_tot, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        MPI_Allreduce(&Ngas_l, &mpi_Ngas, 1, MPI_LONG, MPI_SUM, MPI_COMM_WORLD);
-        All.MeanGasParticleMass = mpi_mass_tot/( (double)mpi_Ngas );
-#endif
+        double mpi_splitmerge_readmin, mpi_splitmerge_readmax; /* check if this has been initialized by broadcasting to all processors */
+        MPI_Allreduce(&All.MinMassForParticleMerger, &mpi_splitmerge_readmin, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        MPI_Allreduce(&All.MaxMassForParticleSplit, &mpi_splitmerge_readmax, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        if(mpi_splitmerge_readmin <= 0) { /* initialize if this isn't saved in the ICs */
+            All.MinMassForParticleMerger = 0.49 * mpi_mass_min;
 #ifdef GALSF_GENERATIONS
-        All.MinMassForParticleMerger /= (float)GALSF_GENERATIONS;
+            All.MinMassForParticleMerger /= (float)GALSF_GENERATIONS;
 #endif
-        All.MaxMassForParticleSplit  = 3.01 * mpi_mass_max;
+        } else {All.MinMassForParticleMerger = mpi_splitmerge_readmin;} /* use the version from the ICs */
+        if(mpi_splitmerge_readmax <= 0) {All.MaxMassForParticleSplit  = 3.01 * mpi_mass_max;} else {All.MaxMassForParticleSplit = mpi_splitmerge_readmax;}
 #ifdef MERGESPLIT_HARDCODE_MAX_MASS
         All.MaxMassForParticleSplit = MERGESPLIT_HARDCODE_MAX_MASS;
 #endif
 #ifdef MERGESPLIT_HARDCODE_MIN_MASS
         All.MinMassForParticleMerger = MERGESPLIT_HARDCODE_MIN_MASS;
+#endif
+
+#ifdef SINGLE_STAR_SINK_DYNAMICS /* Get mean gas mass, used in various subroutines */
+        double mpi_mass_tot; long mpi_Ngas; long Ngas_l = (long) N_gas;
+        MPI_Allreduce(&mass_tot, &mpi_mass_tot, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(&Ngas_l, &mpi_Ngas, 1, MPI_LONG, MPI_SUM, MPI_COMM_WORLD);
+        All.MeanGasParticleMass = mpi_mass_tot/( (double)mpi_Ngas );
+        if(RestartFlag==0){
+            for(i=0; i<NumPart; i++){
+                if(P[i].Type==5){P[i].Sink_Formation_Mass = All.MeanGasParticleMass;} // will behave as if this sink formed from a gas cell with the average mass
+            }
+        }
 #endif
     }
 
@@ -1048,11 +1079,17 @@ void setup_smoothinglengths(void)
 #if NUMDIMS == 1
                     PPP[i].Hsml = All.DesNumNgb * (P[i].Mass / Nodes[no].u.d.mass) * Nodes[no].len;
 #endif
-                    double soft = All.SofteningTable[P[i].Type];
 #ifndef SELFGRAVITY_OFF
+                    double soft = All.ForceSoftening[P[i].Type];
                     if(soft != 0) {if((PPP[i].Hsml>100.*soft)||(PPP[i].Hsml<=0.01*soft)||(Nodes[no].u.d.mass<=0)||(Nodes[no].len<=0)) {PPP[i].Hsml = soft;}}
 #else
-                    if((Nodes[no].u.d.mass<=0)||(Nodes[no].len<=0)) {PPP[i].Hsml = soft;}
+                    if((Nodes[no].u.d.mass<=0)||(Nodes[no].len<=0)) {
+#if (defined(BOX_PERIODIC) || defined(BOX_SHEARING) || defined(BOX_DEFINED_SPECIAL_XYZ_BOUNDARY_CONDITIONS_ARE_ACTIVE) || defined(BOX_LONG_X) || defined(BOX_LONG_Y) || defined(BOX_LONG_Z))
+                        PPP[i].Hsml = 0.05 * All.BoxSize;
+#else
+                        PPP[i].Hsml = 1;
+#endif
+                    }
 #endif
 #endif // INPUT_READ_HSML
                 } // closes if((RestartFlag == 0)||(P[i].Type != 0))
@@ -1061,7 +1098,7 @@ void setup_smoothinglengths(void)
     if((RestartFlag==0 || RestartFlag==2) && All.ComovingIntegrationOn) {for(i=0;i<N_gas;i++) {PPP[i].Hsml *= pow(All.OmegaMatter/All.OmegaBaryon,1./NUMDIMS);}} /* correct (crudely) for baryon fraction, used in the estimate above for Hsml */
 
 #ifdef BLACK_HOLES
-    if(RestartFlag==0 || RestartFlag==2) {for(i=0;i<NumPart;i++) {if(P[i].Type == 5) {PPP[i].Hsml = All.SofteningTable[P[i].Type];}}}
+    if(RestartFlag==0 || RestartFlag==2) {for(i=0;i<NumPart;i++) {if(P[i].Type == 5) {PPP[i].Hsml = All.ForceSoftening[P[i].Type];}}}
 #endif
 
 #ifdef GRAIN_FLUID
@@ -1118,7 +1155,7 @@ void ags_setup_smoothinglengths(void)
                         no = p;
                     }
                     PPP[i].AGS_Hsml = 2. * pow(1.0/NORM_COEFF * All.AGS_DesNumNgb * P[i].Mass / Nodes[no].u.d.mass, 1.0/NUMDIMS) * Nodes[no].len;
-                    double soft = All.SofteningTable[P[i].Type];
+                    double soft = All.ForceSoftening[P[i].Type];
                     if(soft != 0)
                     {
                         if((PPP[i].AGS_Hsml>1e6*soft)||(PPP[i].AGS_Hsml<=1e-3*soft)||(Nodes[no].u.d.mass<=0)||(Nodes[no].len<=0)) {PPP[i].AGS_Hsml = 1.e2*soft;} /* random guess to get things started here, thats all */
@@ -1127,7 +1164,7 @@ void ags_setup_smoothinglengths(void)
                     PPP[i].AGS_Hsml = PPP[i].Hsml;
                 }
             } else {
-                PPP[i].AGS_Hsml = All.SofteningTable[P[i].Type]; /* not AGS-active, use fixed softening */
+                PPP[i].AGS_Hsml = All.ForceSoftening[P[i].Type]; /* not AGS-active, use fixed softening */
             }
         }
     }
@@ -1158,7 +1195,7 @@ void disp_setup_smoothinglengths(void)
                     no = p;
                 }
                 SphP[i].HsmlDM = pow(1.0/NORM_COEFF * 2.0 * 64 * P[i].Mass / Nodes[no].u.d.mass, 1.0/NUMDIMS) * Nodes[no].len;
-                double soft = All.SofteningTable[P[i].Type];
+                double soft = All.ForceSoftening[P[i].Type];
                 if(soft != 0) {if((SphP[i].HsmlDM >1000.*soft)||(PPP[i].Hsml<=0.01*soft)||(Nodes[no].u.d.mass<=0)||(Nodes[no].len<=0)) {SphP[i].HsmlDM = soft;}}
             }
         }

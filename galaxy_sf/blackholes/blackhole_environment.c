@@ -33,7 +33,7 @@ struct INPUT_STRUCT_NAME
 #if defined(BH_GRAVCAPTURE_FIXEDSINKRADIUS)
     MyFloat SinkRadius;
 #endif  
-#if (ADAPTIVE_GRAVSOFT_FORALL & 32)
+#if (ADAPTIVE_GRAVSOFT_FORALL & 32) || defined(BH_EXCISION_GAS) || defined(BH_EXCISION_NONGAS)
     MyFloat AGS_Hsml;
 #endif
 #ifdef BH_WAKEUP_GAS
@@ -56,8 +56,8 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
 #ifdef BH_GRAVCAPTURE_FIXEDSINKRADIUS
     in->SinkRadius = PPP[i].SinkRadius;
 #endif
-#if (ADAPTIVE_GRAVSOFT_FORALL & 32)
-    in->AGS_Hsml = PPP[i].AGS_Hsml;
+#if (ADAPTIVE_GRAVSOFT_FORALL & 32) || defined(BH_EXCISION_GAS) || defined(BH_EXCISION_NONGAS)
+    in->AGS_Hsml = ForceSoftening_KernelRadius(i);
 #endif
 #ifdef BH_WAKEUP_GAS
     in->TimeBin = P[i].TimeBin;
@@ -196,7 +196,7 @@ int blackhole_environment_evaluate(int target, int mode, int *exportflag, int *e
     int startnode, numngb, listindex = 0, j, k, n; struct INPUT_STRUCT_NAME local; struct OUTPUT_STRUCT_NAME out; memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME)); /* define variables and zero memory and import data for local target*/
     if(mode == 0) {INPUTFUNCTION_NAME(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];} /* imports the data to the correct place and names */
     double ags_h_i, h_i, hinv, hinv3, wk, dwk, u; wk=0; dwk=0; u=0; h_i=local.Hsml; hinv=1./h_i; hinv3=hinv*hinv*hinv; ags_h_i=SinkParticle_GravityKernelRadius;
-#if (ADAPTIVE_GRAVSOFT_FORALL & 32)
+#if (ADAPTIVE_GRAVSOFT_FORALL & 32) || defined(BH_EXCISION_GAS) || defined(BH_EXCISION_NONGAS)
     ags_h_i = local.AGS_Hsml;
 #endif
 #ifdef BH_ACCRETE_NEARESTFIRST

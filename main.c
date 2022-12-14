@@ -45,7 +45,7 @@ int main(int argc, char **argv)
   pin_to_core_set();
 #endif
 
-  mpi_report_comittable_memory(0);
+  double safe_memorypertask = mpi_report_comittable_memory(0,1);
   MPI_Barrier(MPI_COMM_WORLD);
 
   /* initialize OpenMP thread pool and bind (implicitly though OpenMP runtime) */

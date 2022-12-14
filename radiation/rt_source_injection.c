@@ -36,6 +36,7 @@ static struct INPUT_STRUCT_NAME
     int NodeList[NODELISTLENGTH];
 #if defined(RT_REPROCESS_INJECTED_PHOTONS) && defined(RT_CHEM_PHOTOION)
     MyDouble Dt;
+    MyDouble Density;
 #endif
 }
 *DATAIN_NAME, *DATAGET_NAME;
@@ -62,8 +63,12 @@ void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
 #endif
 #endif
     for(k=0; k<N_RT_FREQ_BINS; k++) {if(P[i].Type==0 || active_check==0) {in->Luminosity[k]=0;} else {in->Luminosity[k] = lum[k] * dt;}}
+#ifdef RT_REINJECT_ACCRETED_PHOTONS // if this is enabled, we track how many photons the sink has accreted from gas cells and reinject them here, resetting the photon count
+    if(P[i].Type==5 && active_check) {in->Luminosity[N_RT_FREQ_BINS-1] += P[i].BH_accreted_photon_energy; P[i].BH_accreted_photon_energy = 0;} // nominally inject into the last, lowest-energy bin, intended for problems where optically-thick IR is getting advected into the sink
+#endif
 #if defined(RT_REPROCESS_INJECTED_PHOTONS) && defined(RT_CHEM_PHOTOION)
     in->Dt = dt;
+    if(P[i].Type>0) {in->Density = P[i].DensAroundStar;} else {in->Density = SphP[i].Density;}
 #endif
 }
 
@@ -164,7 +169,7 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
                 if(r2>=h2) {continue;} // outside kernel //
 #endif
 #ifdef BH_WIND_SPAWN
-		if(P[j].StellarAge==All.Time) {continue;} // This is a wind cell that was just spawned, and is not yet part of the volume partition, so don't inject // 
+                if(P[j].StellarAge==All.Time) {continue;} // This is a wind cell that was just spawned, and is not yet part of the volume partition, so don't inject // 
 #endif
                 r = sqrt(r2); // useful variables for below
                 
@@ -189,7 +194,7 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
                 /* now actually apply the photon coupling for each RHD bin */
                 for(k=0;k<N_RT_FREQ_BINS;k++) 
                 {
-                    double dE=0; dE = wk * local.Luminosity[k];
+                    double dE=0; dE = wk * local.Luminosity[k]; int kv; kv=0;
                     double dfluxes[3]; dfluxes[0]=dfluxes[1]=dfluxes[2]=0;
 
 #if !defined(RT_INJECT_PHOTONS_DISCRETELY)
@@ -198,13 +203,12 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
 #endif
                     
 
-#if defined(RT_INJECT_PHOTONS_DISCRETELY_ADD_MOMENTUM_FOR_LOCAL_EXTINCTION)
+#if defined(RT_INJECT_PHOTONS_DISCRETELY_ADD_MOMENTUM_FOR_LOCAL_EXTINCTION) || defined(RT_REPROCESS_INJECTED_PHOTONS)
                     // add discrete photon momentum from un-resolved absorption //
                     double x_abs = 2. * SphP[j].Rad_Kappa[k] * (SphP[j].Density*All.cf_a3inv) * (DMAX(2.*Get_Particle_Size(j), DMAX(local.Hsml, r))) * All.cf_atime; // effective optical depth through particle
                     double slabfac_x = x_abs * slab_averaging_function(x_abs); // 1-exp(-x)
                     if(isnan(slabfac_x)||(slabfac_x<=0)) {slabfac_x=0;} else if(slabfac_x>1) {slabfac_x=1;}
-                    int kv;
-#if !defined(RT_DISABLE_RAD_PRESSURE)
+#if !defined(RT_DISABLE_RAD_PRESSURE) && defined(RT_INJECT_PHOTONS_DISCRETELY_ADD_MOMENTUM_FOR_LOCAL_EXTINCTION)
                     double dv = -slabfac_x * dE / (C_LIGHT_CODE_REDUCED * P[j].Mass); // total absorbed momentum (needs multiplication by dp[kv]/r for directionality)
                     for(kv=0;kv<3;kv++) {
                         double dv_tmp = dv*(dp[kv]/r)*All.cf_atime;
@@ -213,26 +217,28 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
                         #pragma omp atomic
                         SphP[j].VelPred[kv] += dv_tmp;
                     } // applies direction and converts to code units
-#endif                    
+#endif
+#endif
+
 
 #ifdef RT_REPROCESS_INJECTED_PHOTONS // conserving photon energy, put only the un-absorbed component of the current band into that band, putting the rest in its "donation" bin (ionizing->optical, all others->IR). This would happen anyway during the routine for resolved absorption, but this may more realistically handle situations where e.g. your dust destruction front is at totally unresolved scales and you don't want to spuriously ionize stuff on larger scales. Assume isotropic re-radiation, so inject only energy for the donated bin and not net flux/momentum.
-                    double dE_donation=0; int donation_bin=rt_get_donation_target_bin(k), do_donation=0; if(donation_bin > -1){do_donation = 1;}
+                    double dE_donation=0; int donation_bin=rt_get_donation_target_bin(k), do_donation=0; if(donation_bin > -1) {do_donation = 1;}
 #ifdef RT_CHEM_PHOTOION  // figure out if we have enough photons to carve a Stromgren sphere through this cell. If yes, inject ionizing radiation, otherwise more accurate to downgrade it to model an unresolved HII region
 #if (RT_CHEM_PHOTOION==1)
-		    if(k == RT_FREQ_BIN_H0) { // just one ionizing bin
+                    if(k == RT_FREQ_BIN_H0) { // just one ionizing bin
 #else 
                     if((k >= RT_FREQ_BIN_H0) && (k < RT_FREQ_BIN_H0 + 4)) { // do this block for all ionizing bins
 #endif
                         double stellum=0;
-			if(local.Dt > 0) {
+                        if(local.Dt > 0) {
 #if (RT_CHEM_PHOTOION==1)			  
-			    stellum = local.Luminosity[RT_FREQ_BIN_H0];
+                            stellum = local.Luminosity[RT_FREQ_BIN_H0];
 #else			    
-			    int k2; for(k2=RT_FREQ_BIN_H0; k2 < RT_FREQ_BIN_H0 + 4; k2++) { stellum += local.Luminosity[k2]; } // add up total ionizing photon energy
+                            int k2; for(k2=RT_FREQ_BIN_H0; k2 < RT_FREQ_BIN_H0 + 4; k2++) {stellum += local.Luminosity[k2];} // add up total ionizing photon energy
 #endif			    
-			    stellum *= 1. / (C_LIGHT_CODE_REDUCED/C_LIGHT_CODE) / local.Dt * UNIT_LUM_IN_CGS; // convert energy to luminosity in cgs
-			}
-                        double RHII = 4.01e-9*pow(stellum,0.333)*pow(SphP[j].Density*All.cf_a3inv*UNIT_DENSITY_IN_CGS,-0.66667) / UNIT_LENGTH_IN_CGS;
+                            stellum *= 1. / (C_LIGHT_CODE_REDUCED/C_LIGHT_CODE) / local.Dt * UNIT_LUM_IN_CGS; // convert energy to luminosity in cgs
+                        }
+                        double RHII = 4.01e-9*pow(stellum,0.333)*pow(local.Density*All.cf_a3inv*UNIT_DENSITY_IN_CGS,-0.66667) / UNIT_LENGTH_IN_CGS;
                         if(DMAX(r, Get_Particle_Size(j))*All.cf_atime < RHII) {do_donation = 0;} // don't inject ionizing photons outside the Stromgren radius
                     }
 #endif
@@ -242,11 +248,10 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
                     if(do_donation) {dE_donation=slabfac_x*dE; dE *= fabs(1-slabfac_x);}
 #endif // RT_REPROCESS_INJECTED_PHOTONS
 
-#if defined(RT_EVOLVE_FLUX) /* when we use RT_INJECT_PHOTONS_DISCRETELY_ADD_MOMENTUM_FOR_LOCAL_EXTINCTION, we add the 'full' optically-thin flux directly to the neighbor cells. a more general formulation allows these fluxes to build up self-consistently, since we don't know a-priori what these 'should' be */
+#if defined(RT_EVOLVE_FLUX) && defined(RT_INJECT_PHOTONS_DISCRETELY_ADD_MOMENTUM_FOR_LOCAL_EXTINCTION) /* when we use these flags, we add the 'full' optically-thin flux directly to the neighbor cells. a more general formulation allows these fluxes to build up self-consistently, since we don't know a-priori what these 'should' be */
                     double dflux = -dE * C_LIGHT_CODE_REDUCED / r;
                     for(kv=0;kv<3;kv++) {dfluxes[kv] += dflux*dp[kv];}
 #endif
-#endif // RT_INJECT_PHOTONS_DISCRETELY_ADD_MOMENTUM_FOR_LOCAL_EXTINCTION
 
                     
 #if defined(RT_INJECT_PHOTONS_DISCRETELY)
@@ -321,8 +326,7 @@ int rt_sourceinjection_evaluate(int target, int mode, int *exportflag, int *expo
             if(listindex < NODELISTLENGTH)
             {
                 startnode = DATAGET_NAME[target].NodeList[listindex];
-                if(startnode >= 0)
-                    startnode = Nodes[startnode].u.d.nextnode;	/* open it */
+                if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;}	/* open it */
             }
         } // if(mode == 1)
 #endif

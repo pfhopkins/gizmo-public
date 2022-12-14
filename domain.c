@@ -39,12 +39,6 @@
  */
 
 
-#if defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
-#define REDUC_FAC      0.90 /* need to give more 'padding' here to allow for aggressive dynamic splitting */
-#else
-#define REDUC_FAC      0.98
-#endif
-
 /*! toGo[task*NTask + partner] gives the number of particles in task 'task'
  *  that have to go to task 'partner'
  */
@@ -376,7 +370,7 @@ double domain_particle_cost_multiplier(int i)
 #ifndef CHIMES /* With CHIMES, the chemistry dominates the cost, so we boost (dense) gas but not stars. */
     if(((P[i].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[i].Type == 2)||(P[i].Type==3))))&&(P[i].Mass>0))
     {
-        double star_age = evaluate_stellar_age_Gyr(P[i].StellarAge);
+        double star_age = evaluate_stellar_age_Gyr(i);
         if(star_age>0.1) {multiplier = 3.125;} else {if(star_age>0.035) {multiplier = 5.;} else {multiplier = 10.;}}
     }
 #endif 
@@ -427,11 +421,13 @@ int domain_decompose(void)
         if(GrNr >= 0 && P[i].GrNr != GrNr) {continue;}
 #endif
         NtypeLocal[P[i].Type]++;
-        double wt = domain_particle_cost_multiplier(i);
-        gravcost += (1 + wt) * domain_particle_costfactor(i);
-        if(P[i].Type == 0) {if(TimeBinActive[P[i].TimeBin] || UseAllParticles) {gascost += wt;}}
+        double wt_0 = domain_particle_costfactor(i);
+        double wt_mult = domain_particle_cost_multiplier(i);
+        gravcost += (1 + wt_mult) * wt_0;
+        //if(P[i].Type == 0) {if(TimeBinActive[P[i].TimeBin] || UseAllParticles) {gascost += wt_mult;}}
+        if(P[i].Type == 0) {if(TimeBinActive[P[i].TimeBin] || UseAllParticles) {gascost += wt_0;}}
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-        if(P[i].Type == 4 || P[i].Type == 5) {if(TimeBinActive[P[i].TimeBin] || UseAllParticles) {starcost += wt;}}
+        if(P[i].Type == 4 || P[i].Type == 5) {if(TimeBinActive[P[i].TimeBin] || UseAllParticles) {starcost += wt_0;}}
 #endif
     }
     /* because Ntype[] is of type `long long', we cannot do a simple MPI_Allreduce() to sum the total particle numbers */
@@ -756,12 +752,24 @@ void domain_exchange(void)
 
   for(n = 0; n < NumPart; n++)
     {
-      if((P[n].Type & (32 + 16)) == (32 + 16))
+      if((P[n].Type & (32 + 16)) == (32 + 16)) /* flagged with both 16 and 32 */
 	{
-	  P[n].Type &= 15;
+	  P[n].Type &= 15; /* clear 16 and 32 */
 
 	  no = 0;
 
+      /* new code - not clear if strictly necessary or just optimization */
+      /*
+       peanokey mask = ((peanokey)7) << (3 * (BITS_PER_DIMENSION - 1));
+       int shift     = 3 * (BITS_PER_DIMENSION - 1);
+       while(topNodes[no].Daughter >= 0)
+       {
+       no = topNodes[no].Daughter + (int)((Key[n] & mask) >> shift);
+       mask >>= 3;
+       shift -= 3;
+       }
+       */
+      /* old code */
 	  while(topNodes[no].Daughter >= 0) {no = topNodes[no].Daughter + (Key[n] - topNodes[no].StartKey) / (topNodes[no].Size / 8);}
 
 	  no = topNodes[no].Leaf;
@@ -1380,12 +1388,14 @@ void domain_assign_load_or_work_balanced(int mode, int multipledomains)
 
   for(n = 0; n < multipledomains * NTask; n++)
     {
-      domainAssign[n].normalized_load =
-        domainAssign[n].work / (tot_work + 1.0e-30) +
-        domainAssign[n].load_activegas / (tot_loadactivegas + 1.0e-30);
+        if(mode==1) {
+            domainAssign[n].normalized_load = domainAssign[n].work / (tot_work + 1.0e-30) + domainAssign[n].load_activegas / (tot_loadactivegas + 1.0e-30);
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-        domainAssign[n].normalized_load += domainAssign[n].load_activestars / (tot_loadactivestars + 1.0e-30);
+            domainAssign[n].normalized_load += domainAssign[n].load_activestars / (tot_loadactivestars + 1.0e-30);
 #endif
+        } else {
+            domainAssign[n].normalized_load = domainAssign[n].load / (tot_load + 1.0e-30);
+        }
     }
 
   qsort(domainAssign, multipledomains * NTask, sizeof(struct domain_segments_data), domain_sort_load);
@@ -1425,12 +1435,16 @@ void domain_assign_load_or_work_balanced(int mode, int multipledomains)
       target_load_activestars_balance = (domainAssign[n].load_activestars + tasklist[target].load_activestars) / (tot_loadactivestars + 1.0e-30);
 #endif
         
-	  target_max_balance = target_work_balance;
-	  if(target_max_balance < target_load_balance) {target_max_balance = target_load_balance;}
-	  if(target_max_balance < target_load_activegas_balance) {target_max_balance = target_load_activegas_balance;}
+        if(mode==1) {
+            target_max_balance = target_work_balance;
+            if(target_max_balance < target_load_balance) {target_max_balance = target_load_balance;}
+            if(target_max_balance < target_load_activegas_balance) {target_max_balance = target_load_activegas_balance;}
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-      if(target_max_balance < target_load_activestars_balance) {target_max_balance = target_load_activestars_balance;}
+            if(target_max_balance < target_load_activestars_balance) {target_max_balance = target_load_activestars_balance;}
 #endif
+        } else {
+            target_max_balance = target_load_balance;
+        }
 
 	  if(target_max_balance < best_balance)
 	    {
@@ -1669,7 +1683,7 @@ int domain_countToGo(size_t nlimit)
 #ifdef SUBFIND
         if(GrNr >= 0 && P[n].GrNr != GrNr) {continue;}
 #endif
-        //if(P[n].Type & 32)
+        if(P[n].Type & 32)
         {
             no = 0;
             while(topNodes[no].Daughter >= 0) {no = topNodes[no].Daughter + (Key[n] - topNodes[no].StartKey) / (topNodes[no].Size / 8);}
@@ -1686,7 +1700,7 @@ int domain_countToGo(size_t nlimit)
                     nlimit -= sizeof(struct gas_cell_data);
                 }
 #ifdef SEPARATE_STELLARDOMAINDECOMP
-                if(((P[n].Type & 15) == 4) || ((P[n].Type & 15) == 5)) {toGoStars[DomainTask[no]] += 1;} // ???
+                if(((P[n].Type & 15) == 4) || ((P[n].Type & 15) == 5)) {toGoStars[DomainTask[no]] += 1;} 
 #endif
                 P[n].Type |= 16;    /* flag this particle for export */
             }
@@ -1884,7 +1898,7 @@ int domain_countToGo(size_t nlimit)
                 
                 for(n = 0; n < NumPart; n++)
                 {
-                    //if(P[n].Type & 32)
+                    if(P[n].Type & 32)
                     {
                         P[n].Type &= (15 + 32);    /* clear 16 */
                         
@@ -2221,14 +2235,21 @@ int domain_determineTopTree(void)
   for(i = 0, count = 0; i < NumPart; i++)
     {
 #ifdef SUBFIND
-      if(GrNr >= 0 && P[i].GrNr != GrNr)
-	continue;
+      if(GrNr >= 0 && P[i].GrNr != GrNr) {continue;}
 #endif
 
+        /* new code */
+        peano1D xb = domain_double_to_int(((P[i].Pos[0] - DomainCorner[0]) / DomainLen) + 1.0);
+        peano1D yb = domain_double_to_int(((P[i].Pos[1] - DomainCorner[1]) / DomainLen) + 1.0);
+        peano1D zb = domain_double_to_int(((P[i].Pos[2] - DomainCorner[2]) / DomainLen) + 1.0);
+        mp[count].key = Key[i] = peano_hilbert_key(xb, yb, zb, BITS_PER_DIMENSION);
+        
+      /* old code
       mp[count].key = Key[i] = peano_hilbert_key((int) ((P[i].Pos[0] - DomainCorner[0]) * DomainFac),
 						 (int) ((P[i].Pos[1] - DomainCorner[1]) * DomainFac),
 						 (int) ((P[i].Pos[2] - DomainCorner[2]) * DomainFac),
 						 BITS_PER_DIMENSION);
+       */
 
       mp[count].index = i;
       count++;
@@ -2432,18 +2453,32 @@ void domain_sumCost(void)
 
       no = 0;
 
-      while(topNodes[no].Daughter >= 0) {no = topNodes[no].Daughter + (Key[n] - topNodes[no].StartKey) / (topNodes[no].Size >> 3);}
-
+        /* new code - doesn't seem to be strictly necessary here */
+        /*
+        peanokey mask = ((peanokey)7) << (3 * (BITS_PER_DIMENSION - 1));
+        int shift     = 3 * (BITS_PER_DIMENSION - 1);
+        while(topNodes[no].Daughter >= 0)
+        {
+            no = topNodes[no].Daughter + (int)((Key[n] & mask) >> shift);
+            mask >>= 3;
+            shift -= 3;
+        }
+        */
+        
+        /* old code */
+        while(topNodes[no].Daughter >= 0) {no = topNodes[no].Daughter + (Key[n] - topNodes[no].StartKey) / (topNodes[no].Size >> 3);}
+        
       no = topNodes[no].Leaf;
-      double wt = domain_particle_cost_multiplier(n);
-      local_domainWork[no] += (1 + wt) * domain_particle_costfactor(n);
+      double wt_0 = domain_particle_costfactor(n);
+      double wt_mult = domain_particle_cost_multiplier(n);
+      local_domainWork[no] += (1 + wt_mult) * wt_0;
       local_domainCount[no] += 1;
       if(P[n].Type == 0) {
-          if(TimeBinActive[P[n].TimeBin] || UseAllParticles) {local_domainWorkGas[no] += wt;}
+          if(TimeBinActive[P[n].TimeBin] || UseAllParticles) {local_domainWorkGas[no] += wt_0;}
           local_domainCountGas[no] += 1;}
 #ifdef SEPARATE_STELLARDOMAINDECOMP
         if(P[n].Type == 4 || P[n].Type == 5) {
-            if(TimeBinActive[P[n].TimeBin] || UseAllParticles) {local_domainWorkStars[no] += wt;}
+            if(TimeBinActive[P[n].TimeBin] || UseAllParticles) {local_domainWorkStars[no] += wt_0;}
             local_domainCountStars[no] += 1;}
 #endif
     }
@@ -2462,6 +2497,19 @@ void domain_sumCost(void)
   myfree(local_domainCount);
   myfree(local_domainWorkGas);
   myfree(local_domainWork);
+}
+
+
+/*! Coordinate conversion to integer. d is coordinate in double precision. returns coordinate in integer of type peano1D. written as part of arepo code dev, from public arepo code by V Springel. */
+peano1D domain_double_to_int(double d)
+{
+    union
+    {
+        double d;
+        unsigned long long ull;
+    } u;
+    u.d = d;
+    return (peano1D)((u.ull & 0xFFFFFFFFFFFFFllu) >> (52 - BITS_PER_DIMENSION));
 }
 
 

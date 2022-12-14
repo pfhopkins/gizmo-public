@@ -212,6 +212,7 @@ double CallGrackle(double u_old, double rho, double dt, double ne_guess, int tar
             }
             double nH0_guess, nHp_guess, nHe0_guess, nHep_guess, nHepp_guess, mu, temp; nH0_guess = DMAX(0,DMIN(1,1.-ne_guess/1.2));
             temp = convert_u_to_temp(energy, rho, target, &ne_guess, &nH0_guess, &nHp_guess, &nHe0_guess, &nHep_guess, &nHepp_guess, &mu); //need to update *ne_guess for tabular!!, this may be wrong
+            SphP[i].Ne = ne_guess; /* update this value with the new values from the cycle here */
 #ifdef RT_CHEM_PHOTOION
             if(target >= 0)
             {

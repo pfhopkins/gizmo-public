@@ -53,7 +53,7 @@ void subfind_find_linkngb(void)
   Ngblist = (int *) mymalloc("Ngblist", NumPartGroup * sizeof(int));
   Dist2list = (double *) mymalloc("Dist2list", NumPartGroup * sizeof(double));
 
-  All.BunchSize =(int) ((All.BufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
+  All.BunchSize = (long) ((All.BufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
 					     sizeof(struct linkngbdata_in) + sizeof(struct linkngbdata_out) +
 					     sizemax(sizeof(struct linkngbdata_in),sizeof(struct linkngbdata_out))));
   DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));

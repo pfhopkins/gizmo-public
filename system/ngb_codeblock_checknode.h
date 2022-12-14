@@ -1,3 +1,7 @@
+#ifdef NGB_ONLY_OPEN_NODES_CONTAINING_GAS /* additional skip criterion */
+    if(All.Time > All.TimeBegin) {if(hmax <= 0) {continue;}}
+#endif
+
 #if (BOX_SHEARING > 1)
 /* in this case, we have a shearing box with the '1' coordinate being phi, so there is a periodic extra wrap; 
     this requires some extra care, because we can have the situation where the -node- center is wrapped, but 

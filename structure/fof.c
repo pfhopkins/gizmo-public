@@ -358,7 +358,7 @@ void fof_find_groups(void)
   Ngblist = (int *) mymalloc("Ngblist", NumPart * sizeof(int));
 
     size_t MyBufferSize = All.BufferSize;
-    All.BunchSize = (int) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
+    All.BunchSize = (long) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
 					     2 * sizeof(struct fofdata_in)));
     DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
     DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
@@ -1442,7 +1442,7 @@ void fof_find_nearest_dmparticle(void)
   Ngblist = (int *) mymalloc("Ngblist", NumPart * sizeof(int));
 
     size_t MyBufferSize = All.BufferSize;
-    All.BunchSize = (int) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
+    All.BunchSize = (long) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
 					     sizeof(struct fofdata_in) + sizeof(struct fofdata_out) +
 					     sizemax(sizeof(struct fofdata_in), sizeof(struct fofdata_out))));
     DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
@@ -1825,7 +1825,7 @@ void fof_make_black_holes(void)
         {
             /* compute gaussian random number: mean=0, sigma=All.SeedBlackHoleMassSigma */
             random_generator_forbh = gsl_rng_alloc(gsl_rng_ranlxd1);
-            gsl_rng_set(random_generator_forbh,P[import_indices[n]].ID+17);
+            gsl_rng_set(random_generator_forbh, P[import_indices[n]].ID + 17 + All.NumCurrentTiStep);
             random_number_forbh = gsl_ran_gaussian(random_generator_forbh, All.SeedBlackHoleMassSigma);
             BPP(import_indices[n]).BH_Mass = pow( 10., log10(All.SeedBlackHoleMass) + random_number_forbh );
             unitmass_in_msun = UNIT_MASS_IN_SOLAR;

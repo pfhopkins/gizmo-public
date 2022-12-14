@@ -67,7 +67,7 @@ void subfind_contamination(void)
   /* allocate buffers to arrange communication */
 
   All.BunchSize =
-    (int) ((All.BufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
+    (long) ((All.BufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
 					     sizeof(struct contamdata_in) + sizeof(struct contamdata_out) +
 					     sizemax(sizeof(struct contamdata_in),
 						     sizeof(struct contamdata_out))));

@@ -46,7 +46,7 @@ void compute_potential(void)
 
     /* allocate buffers to arrange communication */
     size_t MyBufferSize = All.BufferSize;
-    All.BunchSize = (int) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
+    All.BunchSize = (long) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
                                                            sizeof(struct gravdata_in) + sizeof(struct potdata_out) + sizemax(sizeof(struct gravdata_in),sizeof(struct potdata_out))));
     DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
     DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));
@@ -81,7 +81,7 @@ void compute_potential(void)
             GravDataIn[j].Type = P[place].Type;
             GravDataIn[j].Soft = ForceSoftening_KernelRadius(place);
             GravDataIn[j].OldAcc = P[place].OldAcc;
-#if defined(RT_USE_GRAVTREE) || defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(ADAPTIVE_GRAVSOFT_FORGAS)
+#ifdef GRAVDATA_IN_INCLUDES_MASS_FIELD
             GravDataIn[j].Mass = P[place].Mass;
 #endif
             for(k = 0; k < NODELISTLENGTH; k++) {GravDataIn[j].NodeList[k] = DataNodeList[DataIndexTable[j].IndexGet].NodeList[k];}

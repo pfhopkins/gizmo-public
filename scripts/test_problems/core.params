@@ -43,21 +43,10 @@
 %
 %
 InitCondFile                       core_ics
-ICFormat                           3
 OutputDir                          output
-TimeLimitCPU                       50000
-MaxMemSize                         1600
-PartAllocFactor                    5
-BufferSize                         150
-TimeBegin                          0
 TimeMax                            0.25
-ComovingIntegrationOn              0
 BoxSize                            0.15
-OutputListOn                       0
-TimeOfFirstSnapshot                0
 TimeBetSnapshot                    0.001
-MaxSizeTimestep                    5e-05
-TreeDomainUpdateFrequency          0.005
 DesNumNgb                          32
 BiniX                              0
 BiniY                              0
@@ -66,11 +55,12 @@ UnitLength_in_cm                   3.085678e+18
 UnitMass_in_g                      1.9891e+33
 UnitVelocity_in_cm_per_s           100000
 UnitMagneticField_in_gauss         1
-MaxHsml                            100
-MinGasHsmlFractional               1
 SofteningGas                       5e-6
 Softening_Type1                    5e-6
 Softening_Type2                    5e-6
 Softening_Type3                    5e-6
 Softening_Type4                    5e-6
 Softening_Type5                    5e-6
+% -- optional parameters - speed up the test with bigger steps, but maybe bigger errors
+MaxSizeTimestep                    5e-05
+MaxHsml                            100

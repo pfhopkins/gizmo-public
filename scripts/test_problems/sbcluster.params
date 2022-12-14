@@ -19,12 +19,8 @@
 %
 %
 InitCondFile                       sbcluster_ics
-ICFormat                           3
 OutputDir                          output
-TimeLimitCPU                       50000
-MaxMemSize                         1600
 PartAllocFactor                    5
-BufferSize                         150
 TimeBegin                          0.02
 TimeMax                            1
 ComovingIntegrationOn              1
@@ -33,11 +29,9 @@ Omega_Matter                       1
 Omega_Lambda                       0
 Omega_Baryon                       0.1
 HubbleParam                        0.5
-OutputListOn                       0
 TimeOfFirstSnapshot                0.02
-TimeBetSnapshot                    2
+ScaleFac_Between_Snapshots         2
 MaxSizeTimestep                    0.01
-TreeDomainUpdateFrequency          0.05
 DesNumNgb                          32
 UnitLength_in_cm                   9.87417e+25
 UnitMass_in_g                      1.80886e+49
@@ -49,16 +43,16 @@ MinGasHsmlFractional               1
 %  unless added physics (e.g. star formation) is enabled
 SofteningGas                       0.0001 % alt. 'Softening_Type0'
 SofteningHalo                      0.0005 % alt. 'Softening_Type1'
-SofteningDisk                      0      % alt. 'Softening_Type2'
-SofteningBulge                     0      % alt. 'Softening_Type3'
-SofteningStars                     0      % alt. 'Softening_Type4'
-SofteningBndry                     0      % alt. 'Softening_Type5'
+Softening_Type2                    0
+Softening_Type3                    0
+Softening_Type4                    0
+Softening_Type5                    0
 SofteningGasMaxPhys                0.0001 % alt. 'Softening_Type0_MaxPhysLimit'
 SofteningHaloMaxPhys               0.0005 % alt. 'Softening_Type1_MaxPhysLimit'
-SofteningDiskMaxPhys               0      % alt. 'Softening_Type2_MaxPhysLimit'
-SofteningBulgeMaxPhys              0      % alt. 'Softening_Type3_MaxPhysLimit'
-SofteningStarsMaxPhys              0      % alt. 'Softening_Type4_MaxPhysLimit'
-SofteningBndryMaxPhys              0      % alt. 'Softening_Type5_MaxPhysLimit'
+Softening_Type2_MaxPhysLimit       0
+Softening_Type3_MaxPhysLimit       0
+Softening_Type4_MaxPhysLimit       0
+Softening_Type5_MaxPhysLimit       0
 InitGasTemp                        100
 MinGasTemp                         10
 % -- optional physics parameters (B-field)

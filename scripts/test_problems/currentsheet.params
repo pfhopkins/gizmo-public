@@ -13,30 +13,11 @@
 %  and currentsheet_A1e4_b0pt1_ics
 %
 InitCondFile                       currentsheet_A0pt1_b0pt1_ics % choose
-ICFormat                           3
 OutputDir                          output
-TimeLimitCPU                       50000
-MaxMemSize                         1600
-PartAllocFactor                    5
-BufferSize                         150
-TimeBegin                          0
 TimeMax                            0.1
-ComovingIntegrationOn              0
 BoxSize                            1
-OutputListOn                       0
-TimeOfFirstSnapshot                0
 TimeBetSnapshot                    1
 MaxSizeTimestep                    1e-05
-TreeDomainUpdateFrequency          0.5
 DesNumNgb                          16
+% -- optional numerical parameters (requires additional Config flags)
 CourantFac                         0.1
-UnitMagneticField_in_gauss         3.54491
-UnitLength_in_cm                   1
-UnitMass_in_g                      1
-UnitVelocity_in_cm_per_s           1
-SofteningGas                       0.05
-Softening_Type1                    0
-Softening_Type2                    0
-Softening_Type3                    0
-Softening_Type4                    0
-Softening_Type5                    0

@@ -284,6 +284,7 @@
                 for(k=0;k<3;k++) {Riemann_out.Fluxes.v[k] -= dummy_pressure * n_unit[k];} /* total momentum flux */
                 Riemann_out.Fluxes.p -= dummy_pressure * Riemann_out.S_M; // default: total energy flux = v_frame.dot.mom_flux. note this is in the frame here, will correct for frame motion below. //
             }
+
             
             /* the fluxes have been calculated in the rest frame of the interface: we need to de-boost to the 'simulation frame' which we do following Pakmor et al. 2011 */
             for(k=0;k<3;k++)

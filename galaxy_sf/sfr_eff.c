@@ -9,6 +9,7 @@
 #include <gsl/gsl_eigen.h>
 #include "../allvars.h"
 #include "../proto.h"
+#include "../kernel.h"
 
 /*!
  *  routines for star formation in cosmological/galaxy/single-star/black hole simulations
@@ -80,6 +81,9 @@ void assign_imf_properties_from_starforming_gas(int i)
     for(k=0;k<3;k++) {b_mag += Get_Gas_BField(i,k)*Get_Gas_BField(i,k) * gizmo2gauss_2;}
 #endif
     double rad_flux_uv = 1;
+#ifdef GALSF_FB_FIRE_RT_UVHEATING
+    rad_flux_uv = SphP[i].Rad_Flux_UV;
+#endif
     double cr_energy_density = 0;
 #ifdef COSMIC_RAY_FLUID
     int k_CRegy; for(k_CRegy=0;k_CRegy<N_CR_PARTICLE_BINS;k_CRegy++) {cr_energy_density += SphP[i].CosmicRayEnergyPred[k_CRegy] * SphP[i].Density * All.cf_a3inv / P[i].Mass;}
@@ -107,10 +111,15 @@ void assign_imf_properties_from_starforming_gas(int i)
 #ifdef GALSF_SFR_IMF_SAMPLING
     gsl_rng *random_generator_for_massivestars;
     random_generator_for_massivestars = gsl_rng_alloc(gsl_rng_ranlxd1);
-    gsl_rng_set(random_generator_for_massivestars, P[i].ID+121);
+    gsl_rng_set(random_generator_for_massivestars, P[i].ID + 121 + All.NumCurrentTiStep);
     double mu = 0.0115 * P[i].Mass * UNIT_MASS_IN_SOLAR; // 1 O-star per 100 Msun [more exactly calculated here as number of stars per solar mass with mass > 8 Msun, from our adopted Kroupa IMF from 0.01-100 Msun]
     unsigned int kk = gsl_ran_poisson(random_generator_for_massivestars, mu);
     P[i].IMF_NumMassiveStars = (double)kk;
+#ifdef GALSF_SFR_IMF_SAMPLING_DISTRIBUTE_SF
+    P[i].IMF_NumMassiveStars = 0; // set to zero, these will increase with time now
+    P[i].IMF_WeightedMeanStellarFormationTime = All.Time; // set to the code value the same as the normal StellarAge parameter at this time
+    P[i].TimeDistribOfStarFormation = (GALSF_SFR_IMF_SAMPLING_DISTRIBUTE_SF) * 0.54 / sqrt(All.G * SphP[i].Density * All.cf_a3inv); // distribute over the specified number of free-fall times
+#endif
 #endif
 }
 #endif
@@ -118,34 +127,14 @@ void assign_imf_properties_from_starforming_gas(int i)
 
 
 /* return the stellar age in Gyr for a given labeled age, needed throughout for stellar feedback */
-double evaluate_stellar_age_Gyr(double stellar_tform)
+double evaluate_stellar_age_Gyr(long i)
 {
-    double age,a0,a1,a2,x0,x1,x2;
-    if(All.ComovingIntegrationOn)
-    {
-        a0 = stellar_tform;
-        a2 = All.Time;
-        if(fabs(1-(All.OmegaMatter+All.OmegaLambda))<=0.01)
-        {
-            /* use exact solution for flat universe, ignoring the radiation-dominated epoch [no stars forming then] */
-            x0 = (All.OmegaMatter/(1-All.OmegaMatter))/(a0*a0*a0);
-            x2 = (All.OmegaMatter/(1-All.OmegaMatter))/(a2*a2*a2);
-            age = (2./(3.*sqrt(1-All.OmegaMatter)))*log(sqrt(x0*x2)/((sqrt(1+x2)-1)*(sqrt(1+x0)+1)));
-            age *= 1./All.Hubble_H0_CodeUnits;
-        } else {
-            /* use simple trap rule integration */
-            a1 = 0.5*(a0+a2);
-            x0 = 1./(a0*hubble_function(a0));
-            x1 = 1./(a1*hubble_function(a1));
-            x2 = 1./(a2*hubble_function(a2));
-            age = (a2-a0)*(x0+4.*x1+x2)/6.;
-        }
-    } else {
-        /* time variable is simple time, when not in comoving coordinates */
-        age=All.Time-stellar_tform;
-    }
-    age *= UNIT_TIME_IN_GYR; // convert to absolute Gyr
-    if((age<=1.e-5)||(isnan(age))) {age=1.e-5;}
+    double tform_code = P[i].StellarAge; // formation time as tracked in-code
+#if defined(GALSF_SFR_IMF_SAMPLING_DISTRIBUTE_SF)
+    if(P[i].Type==4) {tform_code = P[i].IMF_WeightedMeanStellarFormationTime;} // use this 'effective' age for this module, to reflect the spread-out duration of SF
+#endif
+    double age = evaluate_time_since_t_initial_in_Gyr(tform_code);
+    age = DMAX(age, 1.e-5); // set a floor for some routines
     return age;
 }
 
@@ -177,11 +166,8 @@ double return_probability_of_this_forming_bh_from_seed_model(int i)
     /* now calculate probability of forming a BH seed particle */
     p = P[i].Mass / All.SeedBlackHolePerUnitMass; /* probability of forming a seed per unit mass [in code units] */
 #ifdef BH_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
-    double Rcrit = PPP[i].Hsml;
+    double Rcrit = ForceSoftening_KernelRadius(i); /* search radius of interest (note for adaptive softenings this will self-consistently take the kernel search radius of interest) */
     Z_threshold_solar = 0.1; /* based on Linhao's paper, we need to allow formation at somewhat higher metallicity or we tail to get BHs in the central density concentrations when they form */
-#if !defined(ADAPTIVE_GRAVSOFT_FORGAS) && !defined(ADAPTIVE_GRAVSOFT_FORALL)
-    Rcrit = ForceSoftening_KernelRadius(i); /* search radius is not h, in this case, but the force softening, but this is really not the case we want to study */
-#endif
     Rcrit = DMAX( Rcrit , 0.1/(UNIT_LENGTH_IN_KPC*All.cf_atime)); /* set a baseline Rcrit_min, otherwise we get statistics that are very noisy */
 #ifdef BH_CALC_DISTANCES
     if(P[i].min_dist_to_bh < 10.*Rcrit) {return 0;} /* don't allow formation if there is already a sink nearby, akin to SF sink rules */
@@ -229,7 +215,8 @@ double get_starformation_rate(int i, int mode)
 #ifdef GALSF_EFFECTIVE_EQS /* do the SFR calc for the Springel-Hernquist EOS, before any 'fancy' sf criteria, when above-threshold, or else risk incorrect entropies */
     double factorEVP = pow(SphP[i].Density * All.cf_a3inv / All.PhysDensThresh, -0.8) * All.FactorEVP; /* evaporation factor */
     double egyhot = All.EgySpecSN / (1 + factorEVP) + All.EgySpecCold; /* specific energy of hot [volume-filling] phase gas */
-    double tcool = GetCoolingTime(egyhot, SphP[i].Density * All.cf_a3inv, SphP[i].Ne, i); /* cooling time of two-phase mix */
+    double ne_in = SphP[i].Ne, ne_out = ne_in; /* free electron fraction */
+    double tcool = GetCoolingTime(egyhot, SphP[i].Density * All.cf_a3inv, ne_in, &ne_out, i); /* cooling time of two-phase mix */
     y = tsfr / tcool * egyhot / (All.FactorSN * All.EgySpecSN - (1 - All.FactorSN) * All.EgySpecCold); /* parameter */
     double cloudmass_fraction = (1 + 1 / (2 * y) - sqrt(1 / y + 1 / (4 * y * y))); /* quasi-equilibrium mass in cold phase */
     rateOfSF = (1 - All.FactorSN) * cloudmass_fraction * P[i].Mass / tsfr; /* SFR given by cold mass (less SNe-entrainment fraction) divided by tSFR */
@@ -253,7 +240,7 @@ double get_starformation_rate(int i, int mode)
             gradv[3*j + k]=vt; dv2abs+=vt*vt; if(j==k) {divv+=vt;} // save for possible use below
         }}
     dv2abs_0=dv2abs; // save for possible use below
-#if defined(SINGLE_STAR_SINK_DYNAMICS) && defined(SINGLE_STAR_SINK_FORMATION) && ((defined(COOLING) && !defined(COOL_LOWTEMP_THIN_ONLY)) || defined(EOS_GMC_BAROTROPIC)) // if we have to deal with optically-thick thermo
+#if defined(SINGLE_STAR_SINK_DYNAMICS) && defined(SINGLE_STAR_SINK_FORMATION) && ((defined(COOLING) && !defined(COOL_LOWTEMP_THIN_ONLY)) || defined(RT_INFRARED) || defined(EOS_GMC_BAROTROPIC)) // if we have to deal with optically-thick thermo
     double nHcgs = HYDROGEN_MASSFRAC * (SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_NHCGS);
     if(nHcgs > 1e13) {v_fast = DMIN(v_fast, 0.2/UNIT_VEL_IN_KMS);} // limiter to permit sink formation in simulations that really resolve the opacity limit and bog down when an optically-thick core forms. Modify this if you want to follow first collapse more/less - scale as c_s ~ n^(1/5)
 #endif
@@ -343,7 +330,17 @@ double get_starformation_rate(int i, int mode)
 #endif
     
 #ifdef GALSF_SFR_TIDAL_HILL_CRITERION /* check that the tidal tensor is negative-definite, ie. converging along all principal axes, indicating that we're dominating our environment gravitationally and are living in our own Hill sphere */
-    if(exceeds_force_softening_threshold==0) {for(k=0;k<3;k++) {if(P[i].tidal_tensorps[k][k] >= 0) {rateOfSF=0;}}} /* we've already diagonized this in gravtree.c, so this is a straightforward check. again should only be applied where force calculation is fully-reliable */
+    if(exceeds_force_softening_threshold==0 && rateOfSF>0) {
+        if(P[i].tidal_tensorps[0][0]+P[i].tidal_tensorps[1][1]+P[i].tidal_tensorps[2][2] >= 0) {rateOfSF=0;} else { /* first check the trace: if this is positive, overall divergence, one eigenvalue must be positive, so don't need to check individual eigenvalues */
+            /* ok, the trace is negative, and SFR non-zero so its possible this could get through, and gravity sufficiently reliable to check individual eigenvalues */
+            double h_i=ForceSoftening_KernelRadius(i), fac_self=-P[i].Mass*kernel_gravity(0.,1.,1.,1)/(h_i*h_i*h_i); /* add the self-contribution (tree loop currently excludes the self-self force, since not needed normally for gravity */
+            double tt[9]; for(j=0;j<3;j++) {for(k=0;k<3;k++) {tt[3*j+k] = P[i].tidal_tensorps[j][k]; if(j==k) {tt[3*j+k] += fac_self;}}} /* copy the tidal tensor to a convenient vector, adding the self-contribution since that is -definitely- potentially important for this self-gravity criterion. note the self-contribution is strictly diagonal for a spherically-symmetric softening */
+            gsl_matrix_view m = gsl_matrix_view_array(tt, 3, 3); gsl_vector *eval = gsl_vector_alloc(3); /* set up our workspace */
+            gsl_eigen_symm_workspace *w = gsl_eigen_symm_alloc(3); gsl_eigen_symm(&m.matrix, eval,  w); /* allocate and solve for the eigenvalues */
+            for(k=0; k<3; k++) {if(gsl_vector_get(eval,k) >= 0) {rateOfSF=0;}} /* this returns the three eigenvalues, check each of them, if any is >= 0, we set the SFR=0 */
+            gsl_eigen_symm_free(w); gsl_vector_free(eval); /* free the structures */
+        }
+    }
 #endif
 
 #if (SINGLE_STAR_SINK_FORMATION & 4) /* restrict to local density/potential maxima */
@@ -378,8 +375,8 @@ void update_internalenergy_for_galsf_effective_eos(int i, double tcool, double t
 {
     double dtime = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i); /*  the actual time-step */
     double x = cloudmass_fraction, factorEVP = pow(SphP[i].Density * All.cf_a3inv / All.PhysDensThresh, -0.8) * All.FactorEVP, trelax = tsfr * (1 - x) / x / (All.FactorSN * (1 + factorEVP));
-    double egyhot = All.EgySpecSN / (1 + factorEVP) + All.EgySpecCold, egyeff = egyhot * (1 - x) + All.EgySpecCold * x, egycurrent = SphP[i].InternalEnergy, ne;
-    ne=1.0;
+    double egyhot = All.EgySpecSN / (1 + factorEVP) + All.EgySpecCold, egyeff = egyhot * (1 - x) + All.EgySpecCold * x, egycurrent = SphP[i].InternalEnergy, ne, ne_out;
+    ne=1.0; ne_out=ne;
 
 #if defined(BH_THERMALFEEDBACK)
     if((SphP[i].Injected_BH_Energy > 0) && (P[i].Mass>0))
@@ -387,7 +384,7 @@ void update_internalenergy_for_galsf_effective_eos(int i, double tcool, double t
         egycurrent += SphP[i].Injected_BH_Energy / P[i].Mass;
         if(egycurrent > egyeff)
         {
-            tcool = GetCoolingTime(egycurrent, SphP[i].Density * All.cf_a3inv, ne, i);
+            tcool = GetCoolingTime(egycurrent, SphP[i].Density * All.cf_a3inv, ne, &ne_out, i);
             if(tcool < trelax && tcool > 0) trelax = tcool;
         }
         SphP[i].Injected_BH_Energy = 0;
@@ -484,10 +481,11 @@ void star_formation_parent_routine(void)
                         if(All.SeedBlackHoleMassSigma > 0)
                         {
                             gsl_rng *random_generator_forbh; /* generate gaussian random number for random BH seed mass */
-                            random_generator_forbh = gsl_rng_alloc(gsl_rng_ranlxd1); gsl_rng_set(random_generator_forbh, P[i].ID+17);
+                            random_generator_forbh = gsl_rng_alloc(gsl_rng_ranlxd1); gsl_rng_set(random_generator_forbh, P[i].ID + 17 + All.NumCurrentTiStep);
                             P[i].BH_Mass = pow( 10., log10(All.SeedBlackHoleMass) + gsl_ran_gaussian(random_generator_forbh, All.SeedBlackHoleMassSigma) );
                         }
-                        
+                        P[i].Sink_Formation_Mass = P[i].Mass; // save the mass we had at the time of sink formation, because we will use this later to understand how the sink has grown
+
                         if(p>1) P[i].BH_Mass *= p; /* assume multiple seeds in particle merge */
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
                         P[i].Mass = SphP[i].MassTrue + SphP[i].dMass;
@@ -497,6 +495,9 @@ void star_formation_parent_routine(void)
 #endif
 #ifdef BH_ALPHADISK_ACCRETION
                         P[i].BH_Mass_AlphaDisk = All.SeedAlphaDiskMass;
+#endif
+#if defined(BH_SWALLOWGAS) && !defined(BH_GRAVCAPTURE_GAS)
+                        P[i].BH_AccretionDeficit = 0;
 #endif
 #if defined(BH_FOLLOW_ACCRETED_ANGMOM)
                         double bh_mu=2.0*get_random_number(P[i].ID+3)-1.0, bh_phi=2*M_PI*get_random_number(P[i].ID+4), bh_sin=sqrt(1-bh_mu*bh_mu);
@@ -541,7 +542,10 @@ void star_formation_parent_routine(void)
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
                             P[i].Mass = SphP[i].MassTrue + SphP[i].dMass;
 #endif
-                            
+#if defined(GALSF_FB_FIRE_PROTOSTELLARJETS)
+                            P[i].NewStar_Momentum_For_JetFeedback = P[i].Mass * 40./UNIT_VEL_IN_KMS;
+#endif
+
 #ifdef SINGLE_STAR_SINK_DYNAMICS
                             if(is_particle_single_star_eligible(i))
                             {
@@ -562,7 +566,7 @@ void star_formation_parent_routine(void)
 #ifdef BH_GRAVCAPTURE_FIXEDSINKRADIUS
                                 P[i].SinkRadius = ForceSoftening_KernelRadius(i);
                                 double cs = 0.2 / UNIT_VEL_IN_KMS;
-#if (defined(COOLING) && !defined(COOL_LOWTEMP_THIN_ONLY)) || defined(EOS_GMC_BAROTROPIC)
+#if (defined(COOLING) && !defined(COOL_LOWTEMP_THIN_ONLY) && !defined(RT_INFRARED)) || defined(EOS_GMC_BAROTROPIC)
                                 double nHcgs = HYDROGEN_MASSFRAC * (SphP[i].Density * All.cf_a3inv * UNIT_DENSITY_IN_NHCGS);
                                 if(nHcgs > 1e10) cs *= pow(nHcgs/1e10, 1./5); // if we're getting opacity-limited then we can set a smaller sink radius, since cs ~ n^1/5
 #endif
@@ -606,7 +610,7 @@ void star_formation_parent_routine(void)
 #endif
                             }
 #endif // SINGLE_STAR_SINK_DYNAMICS			   
-			    if(P[i].Type != 5) {P[i].Type = 4;} // if we didn't set to type 5 above, default to type 4
+                            if(P[i].Type != 5) {P[i].Type = 4;} // if we didn't set to type 5 above, default to type 4
                         } /* closes final generation from original gas particle */
                         else
                         {
@@ -642,6 +646,9 @@ void star_formation_parent_routine(void)
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
                             SphP[i].MassTrue -= P[NumPart + stars_spawned].Mass;
                             if(SphP[i].MassTrue<0) SphP[i].MassTrue=0;
+#endif
+#if defined(GALSF_FB_FIRE_PROTOSTELLARJETS)
+                            P[NumPart + stars_spawned].NewStar_Momentum_For_JetFeedback = P[NumPart + stars_spawned].Mass * 40./UNIT_VEL_IN_KMS;
 #endif
                             sum_mass_stars += P[NumPart + stars_spawned].Mass;
                             P[NumPart + stars_spawned].StellarAge = All.Time;
@@ -831,7 +838,7 @@ void assign_wind_kick_from_sf_routine(int i, double sm, double dtime, double pvt
 /* Routine to initialize quantities needed for the Spingel & Hernquist effective equation of state */
 void init_clouds(void)
 {
-  double A0, dens, tcool, ne, coolrate, egyhot, x, u4, meanweight, gamma_minus1_eff;
+  double A0, dens, tcool, ne, ne_out, coolrate, egyhot, x, u4, meanweight, gamma_minus1_eff;
   double tsfr, y, peff, fac, neff, egyeff, factorEVP, thresholdStarburst;
 #ifdef COOL_METAL_LINES_BY_SPECIES
   int k; double Z[NUM_METAL_SPECIES]; for(k=0;k<NUM_METAL_SPECIES;k++) Z[k]=0;
@@ -854,7 +861,7 @@ void init_clouds(void)
 
       ne = 1.0;
       SetZeroIonization();
-      tcool = GetCoolingTime(egyhot, dens, ne, -1);
+      tcool = GetCoolingTime(egyhot, dens, ne, &ne_out, -1);
       coolrate = egyhot / tcool / dens;
       x = (egyhot - u4) / (egyhot - All.EgySpecCold);
 
@@ -877,7 +884,7 @@ void init_clouds(void)
 	  egyhot = All.EgySpecSN / (1 + factorEVP) + All.EgySpecCold;
 
 	  ne = 0.5;
-      tcool = GetCoolingTime(egyhot, dens, ne, -1);
+      tcool = GetCoolingTime(egyhot, dens, ne, &ne_out, -1);
 
 	  y = tsfr / tcool * egyhot / (All.FactorSN * All.EgySpecSN - (1 - All.FactorSN) * All.EgySpecCold);
 	  x = 1 + 1 / (2 * y) - sqrt(1 / y + 1 / (4 * y * y));
@@ -892,7 +899,7 @@ void init_clouds(void)
 	  egyhot = All.EgySpecSN / (1 + factorEVP) + All.EgySpecCold;
 
 	  ne = 0.5;
-      tcool = GetCoolingTime(egyhot, dens, ne, -1);
+      tcool = GetCoolingTime(egyhot, dens, ne, &ne_out, -1);
 
 	  y = tsfr / tcool * egyhot / (All.FactorSN * All.EgySpecSN - (1 - All.FactorSN) * All.EgySpecCold);
 	  x = 1 + 1 / (2 * y) - sqrt(1 / y + 1 / (4 * y * y));

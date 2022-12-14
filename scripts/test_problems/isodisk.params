@@ -36,41 +36,12 @@
 InitCondFile   isodisk_ics
 OutputDir      output
 
-%---- File formats 
-ICFormat    3  % 1=binary, 3=hdf5, 4=cluster 
-SnapFormat  3  % 1=binary, 3=hdf5 
-
-%---- Output parameters 
-RestartFile                 restart 
-SnapshotFileBase            snapshot 
-OutputListOn                0  % =1 to use list in "OutputListFilename" 
-OutputListFilename          output_times.txt  % list of times for snaps 
-NumFilesPerSnapshot         1 
-NumFilesWrittenInParallel   1  % must be < N_processors & power of 2
-
-%---- Output frequency 
-TimeOfFirstSnapshot     0.0
-TimeBetSnapshot         0.01 
-
-%---- CPU-time limits 
-TimeLimitCPU            50000  % in seconds 
-
-%----- Memory allocation 
-MaxMemSize          1500    % sets maximum MPI process memory use in MByte 
-PartAllocFactor     2.0     % memory load allowed for better cpu balance 
-BufferSize          50     % in MByte 
+%---- Output frequency
+TimeBetSnapshot         0.01
 
 %---- Characteristics of run 
 TimeBegin   0.0    % Beginning of the simulation 
 TimeMax     1.0    % End of the simulation 
-
-%---- Cosmological parameters 
-ComovingIntegrationOn   0       % is it cosmological? (yes=1, no=0)
-BoxSize                 10000.  % in code units
-Omega_Matter            0       % =0 for non-cosmological
-Omega_Lambda            0       % =0 for non-cosmological
-Omega_Baryon            0       % =0 for non-cosmological
-HubbleParam             1       % little 'h'; =1 for non-cosmological runs
 
 %---- Accuracy of time integration 
 MaxSizeTimestep         0.005   % in code units, set for your problem
@@ -83,16 +54,12 @@ UnitLength_in_cm            3.085678e21     % 1.0 kpc/h
 UnitMass_in_g               1.989e43  	    % 1.0e10 solar masses/h
 UnitVelocity_in_cm_per_s    1.0e5   	    % 1 km/sec
 UnitMagneticField_in_gauss  1.0   	        % 1 gauss
-GravityConstantInternal     0		        % calculated by code if =0
 
 %---- Initial temperature & temperature floor 
-InitGasTemp     0	    % set by IC file if =0
 MinGasTemp      10.	    % don't set <10 in explicit feedback runs, otherwise 0
 
 %---- Density/volume estimation (kernel) 
 DesNumNgb               32      % 32 for standard kernel, 60-114 for quintic 
-MaxHsml                 1.e4    % minimum gas kernel length (some very large value to prevent errors)
-MinGasHsmlFractional    0.01    % minimum kernel length relative to gas force softening (<= 1)
 
 %---- Gravitational softening lengths 
 %----- Softening lengths per particle type. If ADAPTIVE_GRAVSOFT is set, these  
@@ -140,7 +107,7 @@ BulkViscosityCoeff      1.0     % set/multiply bulk viscosity coefficient
 TurbDiffusionCoefficient 1.0    % Normalizes diffusion rates relative to Smagorinsky-Lilly theory (~0.5-2)
 
 %--- Cosmic Ray + Gas Fluids (COSMIC_RAY_FLUID)
-CosmicRayDiffusionCoeff     1.0     % multiplies anisotropic diffusion/streaming coefficients
+CosmicRayDiffusionCoeff  690    % diffusion coefficient of the single-bin CR model, or normalization for spectral fit (for ~GeV CRs) in code units
 
 
 
@@ -173,7 +140,6 @@ VariableWindVelFactor    1.0    % wind velocity relative to estimated halo v_esc
 VariableWindSpecMomentum 5000.  % wind momentum per unit stellar mass (code velocity units)
 
 
-
 %-------------- Black Hole accretion & formation (BLACK_HOLES on)
 %--- formation/seeding  
 MinFoFMassForNewSeed         10.	    % log(M_stars) for on-the-fly FoF seeding 
@@ -194,20 +160,3 @@ BAL_v_outflow                30000	    % velocity (code units) of BAL outflow (B
 
 %-------------- Grackle UVB file (GRACKLE on)
 GrackleDataFile		     CloudyData_UVB=HM2012.h5
-
-
-%-------------------------------------------------------------------------
-%------------------ Driven Turbulence (Large-Eddy boxes) -----------------
-%-------------------------------------------------------------------------
-
-%-------------- Turbulent stirring parameters (TURB_DRIVING on)
-ST_decay       1.	    % decay time for driving-mode phase correlations
-ST_energy      0.0002   % energy of driving-scale modes: sets norm of turb
-ST_DtFreq      0.005    % time interval for driving updates (set by hand)
-ST_Kmin        6.27     % minimum driving-k: should be >=2.*M_PI/All.BoxSize
-ST_Kmax        12.57    % maximum driving-k: set to couple times Kmin or more if cascade desired
-ST_SolWeight   1.0      % fractional wt of solenoidal modes (wt*curl + (1-wt)*div)
-ST_AmplFac     1.0      % multiplies turb amplitudes
-ST_SpectForm   2        % driving pwr-spec: 0=Ek~const; 1=sharp-peak at kc; 2=Ek~k^(-5/3); 3=Ek~k^-2
-ST_Seed        42       % random number seed for modes (so you can reproduce it)
-TimeBetTurbSpectrum 0.5 % time (code units) between evaluations of turb pwrspec

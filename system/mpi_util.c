@@ -50,6 +50,23 @@ int intpointer_compare(const void *a, const void *b)
 }
 
 
+/** Function to calculate the number of unique -nodes- (shared memory machine structures), not MPI tasks, on which we are running.
+    often this is specified by global variables by the runtime commands or job scheduler but that is machine-dependent, so we want a
+    way to check internally for some memory allocation purposes. */
+int getNodeCount(void)
+{
+    int rank, is_rank0, nodes;
+    MPI_Comm shmcomm;
+    MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &shmcomm);
+    MPI_Comm_rank(shmcomm, &rank);
+    is_rank0 = (rank == 0) ? 1 : 0;
+    MPI_Allreduce(&is_rank0, &nodes, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Comm_free(&shmcomm);
+    return nodes;
+}
+
+
+
 /** Sort an opaque array into increasing order of an int field, given by the specified offset. (This would typically be field indicating
     the task.) Returns a sorted copy of the data array, that needs to be myfreed.
 
@@ -386,8 +403,9 @@ int MPI_Check_Sendrecv(void *sendbuf, int sendcount, MPI_Datatype sendtype,
 #endif
 
 
-
+#ifdef MPISENDRECV_SIZELIMIT
 #undef MPI_Sendrecv // need to undef before being called below so don't get stuck in loop here
+#endif
 
 int MPI_Sizelimited_Sendrecv(void *sendbuf0, size_t sendcount, MPI_Datatype sendtype,
                              int dest, int sendtag, void *recvbuf0, size_t recvcount,

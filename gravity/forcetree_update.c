@@ -333,9 +333,9 @@ void force_drift_node(int no, integertime time1)
 #ifdef RT_SEPARATELY_TRACK_LUMPOS
     for(j = 0; j < 3; j++) {Nodes[no].rt_source_lum_s[j] += Extnodes[no].rt_source_lum_vs[j] * dt_drift;}
 #endif
-    
-  Extnodes[no].hmax *= exp(Extnodes[no].divVmax * dt_drift_hmax / NUMDIMS);
-  Nodes[no].Ti_current = time1;
+
+    if(Extnodes[no].hmax > 0) {Extnodes[no].hmax *= exp(DMAX(-1.,DMIN(1.,Extnodes[no].divVmax * dt_drift_hmax / NUMDIMS)));}
+    Nodes[no].Ti_current = time1;
 }
 
 
@@ -373,10 +373,14 @@ void force_update_hmax(void)
         while(no >= 0)
         {
             force_drift_node(no, All.Ti_Current);
-            
-            if(PPP[i].Hsml > Extnodes[no].hmax || divVel > Extnodes[no].divVmax)
+#if defined(ADAPTIVE_GRAVSOFT_FORALL)
+            double htmp = DMIN(PPP[i].AGS_Hsml, All.MaxHsml);
+#else
+            double htmp = DMIN(PPP[i].Hsml, All.MaxHsml);
+#endif
+            if(htmp > Extnodes[no].hmax || divVel > Extnodes[no].divVmax)
             {
-                if(PPP[i].Hsml > Extnodes[no].hmax) {Extnodes[no].hmax = PPP[i].Hsml;}
+                if(htmp > Extnodes[no].hmax) {Extnodes[no].hmax = htmp;}
                 if(divVel > Extnodes[no].divVmax) {Extnodes[no].divVmax = divVel;}
                 
                 if(Nodes[no].u.d.bitflags & (1 << BITFLAG_TOPLEVEL))	/* we reached a top-level node */
@@ -432,7 +436,7 @@ void force_update_hmax(void)
 		 domainList_all, counts, offset_list, MPI_INT, MPI_COMM_WORLD);
 
   for(ta = 0; ta < NTask; ta++)
-    counts[ta] *= OffsetSIZE * sizeof(MyFloat);
+    {counts[ta] *= OffsetSIZE * sizeof(MyFloat);}
 
   MPI_Allgatherv(domainHmax_loc, OffsetSIZE * DomainNumChanged * sizeof(MyFloat), MPI_BYTE,
 		 domainHmax_all, counts, offset_hmax, MPI_BYTE, MPI_COMM_WORLD);
@@ -440,29 +444,23 @@ void force_update_hmax(void)
 
   for(i = 0; i < totDomainNumChanged; i++)
     {
-      no = domainList_all[i];
-
-      if(Nodes[no].u.d.bitflags & (1 << BITFLAG_DEPENDS_ON_LOCAL_MASS))	/* to avoid that the hmax is updated twice */
-	no = Nodes[no].u.d.father;
-
-      while(no >= 0)
-	{
-	  force_drift_node(no, All.Ti_Current);
-
-
-	  if(domainHmax_all[OffsetSIZE * i] > Extnodes[no].hmax || domainHmax_all[OffsetSIZE * i + 1] > Extnodes[no].divVmax)
-	    {
-	      if(domainHmax_all[OffsetSIZE * i] > Extnodes[no].hmax)
-		Extnodes[no].hmax = domainHmax_all[OffsetSIZE * i];
-
-	      if(domainHmax_all[OffsetSIZE * i + 1] > Extnodes[no].divVmax)
-		Extnodes[no].divVmax = domainHmax_all[OffsetSIZE * i + 1];
-	    }
-	  else
-	    break;
-
-	  no = Nodes[no].u.d.father;
-	}
+        no = domainList_all[i];
+        if(Nodes[no].u.d.bitflags & (1 << BITFLAG_DEPENDS_ON_LOCAL_MASS))    {no = Nodes[no].u.d.father;} /* to avoid that the hmax is updated twice */
+        
+        while(no >= 0)
+        {
+            force_drift_node(no, All.Ti_Current);
+            
+            if(domainHmax_all[OffsetSIZE * i] > Extnodes[no].hmax || domainHmax_all[OffsetSIZE * i + 1] > Extnodes[no].divVmax)
+            {
+                if(domainHmax_all[OffsetSIZE * i] > Extnodes[no].hmax) {Extnodes[no].hmax = domainHmax_all[OffsetSIZE * i];}
+                if(domainHmax_all[OffsetSIZE * i + 1] > Extnodes[no].divVmax) {Extnodes[no].divVmax = domainHmax_all[OffsetSIZE * i + 1];}
+            }
+            else
+            {break;}
+            
+            no = Nodes[no].u.d.father;
+        }
     }
 
 

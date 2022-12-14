@@ -72,7 +72,7 @@ void subfind_density(int j_in)
   Dist2list = (double *) mymalloc("Dist2list", NumPart * sizeof(double));
 
   All.BunchSize =
-    (int) ((All.BufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
+    (long) ((All.BufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
 					     sizeof(struct densdata_in) + sizeof(struct densdata_out) +
 					     sizemax(sizeof(struct densdata_in),
 						     sizeof(struct densdata_out))));

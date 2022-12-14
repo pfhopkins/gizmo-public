@@ -9,30 +9,10 @@
 %        EOS_GAMMA=(1.4)
 %
 InitCondFile                       square_ics
-ICFormat                           3
 OutputDir                          output
-TimeLimitCPU                       50000
-MaxMemSize                         1600
-PartAllocFactor                    5
-BufferSize                         150
-TimeBegin                          0
 TimeMax                            10
-ComovingIntegrationOn              0
 BoxSize                            1
-OutputListOn                       0
-TimeOfFirstSnapshot                0
 TimeBetSnapshot                    0.5
-MaxSizeTimestep                    0.1
-TreeDomainUpdateFrequency          0.005
 DesNumNgb                          12
-UnitLength_in_cm                   1
-UnitMass_in_g                      1
-UnitVelocity_in_cm_per_s           1
-SofteningGas                       0.05
-Softening_Type1                    0
-Softening_Type2                    0
-Softening_Type3                    0
-Softening_Type4                    0
-Softening_Type5                    0
 % -- optional numerical parameters (requires additional Config flags)
 CourantFac                         0.1

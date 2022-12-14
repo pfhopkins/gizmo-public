@@ -13,7 +13,7 @@ while(1)
 {
     LOCK_NEXPORT;
 #ifdef _OPENMP
-#pragma omp critical(_nexport_)
+#pragma omp critical(_nextlistsecblox_)
 #endif
     {
         j = NextJ;

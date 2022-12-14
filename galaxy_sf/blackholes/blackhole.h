@@ -15,12 +15,25 @@ extern int N_active_loc_BHs;    /*!< number of active black holes on the LOCAL p
 extern struct blackhole_temp_particle_data       // blackholedata_topass
 {
     MyIDType index;
-    MyFloat BH_InternalEnergy, Mgas_in_Kernel, Mstar_in_Kernel, Malt_in_Kernel;
-    MyFloat Jgas_in_Kernel[3], Jstar_in_Kernel[3], Jalt_in_Kernel[3]; // mass/angular momentum for GAS/STAR/TOTAL components computed always now
-    MyLongDouble accreted_Mass, accreted_BH_Mass, accreted_BH_Mass_alphadisk;
+    MyFloat BH_InternalEnergy;
+    MyFloat Mgas_in_Kernel;
+    MyFloat Mstar_in_Kernel;
+    MyFloat Malt_in_Kernel;
+    MyFloat Jgas_in_Kernel[3];
+    MyFloat Jstar_in_Kernel[3];
+    MyFloat Jalt_in_Kernel[3]; // mass/angular momentum for GAS/STAR/TOTAL components computed always now
+    MyLongDouble accreted_Mass;
+    MyLongDouble accreted_BH_Mass;
+    MyLongDouble accreted_BH_Mass_alphadisk;
+#if defined(BH_SWALLOWGAS) && !defined(BH_GRAVCAPTURE_GAS)
+    MyLongDouble BH_AccretionDeficit;
+#endif
 #ifdef GRAIN_FLUID
     MyFloat accreted_dust_Mass;
 #endif    
+#ifdef RT_REINJECT_ACCRETED_PHOTONS
+    MyFloat accreted_photon_energy;
+#endif
 #ifdef BH_ALPHADISK_ACCRETION
     MyFloat mdot_alphadisk;             /*!< gives mdot of mass going into alpha disk */
 #endif
@@ -28,7 +41,8 @@ extern struct blackhole_temp_particle_data       // blackholedata_topass
     MyFloat Sfr_in_Kernel;
 #endif
 #if defined(BH_GRAVACCRETION) && (BH_GRAVACCRETION == 0)
-    MyFloat MgasBulge_in_Kernel, MstarBulge_in_Kernel;
+    MyFloat MgasBulge_in_Kernel;
+    MyFloat MstarBulge_in_Kernel;
 #endif
 #ifdef BH_CALC_LOCAL_ANGLEWEIGHTS
     MyFloat BH_angle_weighted_kernel_sum;

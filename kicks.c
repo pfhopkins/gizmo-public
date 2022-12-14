@@ -97,7 +97,7 @@ int eligible_for_hermite(int i)
 {
     if(!(HERMITE_INTEGRATION & (1<<P[i].Type))) return 0;
 #if defined(BLACK_HOLES) || defined(GALSF)    
-    if(P[i].StellarAge >= DMAX(All.Time - 2*(GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i)*All.cf_hubble_a), 0)) return 0; // if we were literally born yesterday then let things settle down a bit with the less-accurate, but more-robust regular integration
+    if(P[i].StellarAge >= DMAX(All.Time - 2*(GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i)*All.cf_hubble_a), 0)) {return 0;} // if we were literally born yesterday then let things settle down a bit with the less-accurate, but more-robust regular integration
     if(P[i].AccretedThisTimestep) return 0;
 #endif
 #if (SINGLE_STAR_TIMESTEPPING > 0)

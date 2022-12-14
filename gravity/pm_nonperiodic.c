@@ -9,7 +9,7 @@
  *  \brief code for non-periodic FFT to compute long-range PM force
  */
 
-/*
+/*!
  * This file was originally part of the GADGET3 code developed by
  * Volker Springel. The code has been modified
  * slightly by Phil Hopkins (phopkins@caltech.edu) for GIZMO.

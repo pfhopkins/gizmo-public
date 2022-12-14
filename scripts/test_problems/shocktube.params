@@ -7,35 +7,14 @@
 %        BOX_PERIODIC 
 %        SELFGRAVITY_OFF 
 %        EOS_GAMMA=(1.4)
-%        INPUT_IN_DOUBLEPRECISION
-%        OUTPUT_IN_DOUBLEPRECISION 
 %
 InitCondFile                       shocktube_ics_emass % or 'shocktube_ics_diffmass'
-ICFormat                           3
 OutputDir                          output
-TimeLimitCPU                       50000
-MaxMemSize                         1600
-PartAllocFactor                    5
-BufferSize                         150
-TimeBegin                          0
 TimeMax                            5
-ComovingIntegrationOn              0
 BoxSize                            80
-OutputListOn                       0
-TimeOfFirstSnapshot                0
 TimeBetSnapshot                    0.5
 MaxSizeTimestep                    0.001
-TreeDomainUpdateFrequency          0.05
 DesNumNgb                          4
-UnitLength_in_cm                   1
-UnitMass_in_g                      1
-UnitVelocity_in_cm_per_s           1
-SofteningGas                       1
-Softening_Type1                    0
-Softening_Type2                    0
-Softening_Type3                    0
-Softening_Type4                    0
-Softening_Type5                    0
 % -- optional numerical parameters (requires additional Config flags)
 ErrTolIntAccuracy                  0.0025
 CourantFac                         0.05

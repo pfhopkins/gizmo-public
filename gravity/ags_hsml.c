@@ -36,7 +36,11 @@ int ags_gravity_kernel_shared_BITFLAG(short int particle_type_primary)
 #ifdef ADAPTIVE_GRAVSOFT_FORALL
     if(!((1 << particle_type_primary) & (ADAPTIVE_GRAVSOFT_FORALL))) {return 0;} /* particle is NOT one of the designated 'adaptive' types */
 #endif
-    
+
+#ifdef ADAPTIVE_GRAVSOFT_FROM_TIDAL_CRITERION
+    if(!((1 << particle_type_primary) & (ADAPTIVE_GRAVSOFT_FROM_TIDAL_CRITERION))) {return ADAPTIVE_GRAVSOFT_FROM_TIDAL_CRITERION;} /* particle is NOT one of the designated 'adaptive' types */
+#endif
+
     if(particle_type_primary == 0) {return 1;} /* gas particles see gas particles */
 
 #if (ADAPTIVE_GRAVSOFT_FORALL & 32) && defined(BLACK_HOLES)

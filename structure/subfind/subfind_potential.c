@@ -21,7 +21,7 @@
 void subfind_potential_compute(int num, struct unbind_data *d, int phase, double weakly_bound_limit)
 {
     int i, j, k, recvTask, ndone, ndone_flag, dummy, ngrp, place, nexport, nimport; /* allocate buffers to arrange communication */
-    All.BunchSize = (int) ((All.BufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) + sizeof(struct gravdata_in) +
+    All.BunchSize = (long) ((All.BufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) + sizeof(struct gravdata_in) +
                                              sizeof(struct potdata_out) + sizemax(sizeof(struct gravdata_in), sizeof(struct potdata_out))));
     DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));
     DataNodeList = (struct data_nodelist *) mymalloc("DataNodeList", All.BunchSize * sizeof(struct data_nodelist));

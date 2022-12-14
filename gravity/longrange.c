@@ -7,27 +7,26 @@
 #include "../allvars.h"
 #include "../proto.h"
 
-#ifdef USE_FFTW3
-#include <fftw3-mpi.h>
-#include "myfftw3.h"
-#endif
 
 /*! \file longrange.c
- *  \brief driver routines for computation of long-range gravitational PM force
+ *  \brief Driver routines for computation of long-range gravitational PM force
  */
 
-/*
+/*!
  * This file was originally part of the GADGET3 code developed by
  * Volker Springel. The code has been modified
  * significantly by Phil Hopkins (phopkins@caltech.edu) for GIZMO.
  */
 
-
 #ifdef PMGRID
 
-/*! Driver routine to call initializiation of periodic or/and non-periodic FFT
- *  routines.
- */
+#ifdef USE_FFTW3
+#include <fftw3-mpi.h>
+#include "myfftw3.h"
+#endif
+
+
+/*! Driver routine to call initializiation of periodic or/and non-periodic FFT routines. */
 void long_range_init(void)
 {
 #ifdef USE_FFTW3
@@ -64,24 +63,19 @@ void long_range_init_regionsize(void)
  */
 void long_range_force(void)
 {
-  int i;
-
+    int i;
 #ifndef BOX_PERIODIC
-  int j;
-  double fac;
+    int j; double fac;
 #endif
 
-
-  for(i = 0; i < NumPart; i++)
+    for(i = 0; i < NumPart; i++)
     {
-      P[i].GravPM[0] = P[i].GravPM[1] = P[i].GravPM[2] = 0;
+        P[i].GravPM[0] = P[i].GravPM[1] = P[i].GravPM[2] = 0;
 #ifdef EVALPOTENTIAL
-      P[i].PM_Potential = 0;
+        P[i].PM_Potential = 0;
 #endif
 #ifdef COMPUTE_TIDAL_TENSOR_IN_GRAVTREE
-      P[i].tidal_tensorpsPM[0][0] = P[i].tidal_tensorpsPM[0][1] = P[i].tidal_tensorpsPM[0][2] = 0;
-      P[i].tidal_tensorpsPM[1][0] = P[i].tidal_tensorpsPM[1][1] = P[i].tidal_tensorpsPM[1][2] = 0;
-      P[i].tidal_tensorpsPM[2][0] = P[i].tidal_tensorpsPM[2][1] = P[i].tidal_tensorpsPM[2][2] = 0;
+        {int k1,k2; for(k1=0;k1<3;k1++) {for(k2=0;k2<3;k2++) {P[i].tidal_tensorpsPM[k1][k2]=0;}}}
 #endif
     }
 
@@ -149,7 +143,7 @@ void long_range_force(void)
 
         for(i = 0; i < NumPart; i++) {P[i].GravPM[0] = P[i].GravPM[1] = P[i].GravPM[2] = 0;}
 #ifdef COMPUTE_TIDAL_TENSOR_IN_GRAVTREE
-        P[i].tidal_tensorpsPM[0][0] = P[i].tidal_tensorpsPM[0][1] = P[i].tidal_tensorpsPM[0][2] = P[i].tidal_tensorpsPM[1][0] = P[i].tidal_tensorpsPM[1][1] = P[i].tidal_tensorpsPM[1][2] = P[i].tidal_tensorpsPM[2][0] = P[i].tidal_tensorpsPM[2][1] = P[i].tidal_tensorpsPM[2][2] = 0;
+        {int k1,k2; for(k1=0;k1<3;k1++) {for(k2=0;k2<3;k2++) {P[i].tidal_tensorpsPM[k1][k2]=0;}}}
 #endif
         i = pmforce_nonperiodic(0) + pmforce_nonperiodic(1);
 #ifdef COMPUTE_TIDAL_TENSOR_IN_GRAVTREE

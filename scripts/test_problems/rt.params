@@ -11,7 +11,6 @@
 %        EOS_GAMMA=(1.4)
 %        SELFGRAVITY_OFF
 %        GRAVITY_ANALYTIC
-%        OUTPUT_IN_DOUBLEPRECISION
 %
 % remember to go into gravity/analytic_gravity.c and un-comment 
 % the call to GravAccel_RayleighTaylorTest() in add_analytic_gravitational_forces()
@@ -24,33 +23,13 @@
 %        MHD_B_SET_IN_PARAMS
 %
 InitCondFile                       rt_ics.ic
-ICFormat                           3
 OutputDir                          output
-TimeLimitCPU                       50000
-MaxMemSize                         1600
-PartAllocFactor                    5
-BufferSize                         150
-TimeBegin                          0
 TimeMax                            20
-ComovingIntegrationOn              0
 BoxSize                            0.5
-OutputListOn                       0
-TimeOfFirstSnapshot                0
 TimeBetSnapshot                    1
 MaxSizeTimestep                    0.1
-TreeDomainUpdateFrequency          0.5
 DesNumNgb                          20
-UnitLength_in_cm                   1
-UnitMass_in_g                      1
-UnitVelocity_in_cm_per_s           1
-UnitMagneticField_in_gauss         3.54491
 GravityConstantInternal            1
-SofteningGas                       0.05
-Softening_Type1                    0
-Softening_Type2                    0
-Softening_Type3                    0
-Softening_Type4                    0
-Softening_Type5                    0
 % - optional physics parameters (B-field strength)
 BiniX                              0.07
 BiniY                              0

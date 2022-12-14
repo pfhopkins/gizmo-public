@@ -77,7 +77,7 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
 #endif
     in->Dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i);
 #ifdef BH_INTERACT_ON_GAS_TIMESTEP
-    if(P[i].Type == 5){in->Dt = P[i].dt_since_last_gas_search;}
+    in->Dt = P[i].dt_since_last_gas_search;
 #endif
 #if defined(BH_RETURN_ANGMOM_TO_GAS)
     for(k=0;k<3;k++) {in->BH_Specific_AngMom[k] = BPP(i).BH_Specific_AngMom[k];}
@@ -96,9 +96,17 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
 /* this structure defines the variables that need to be sent -back to- the 'searching' element */
 struct OUTPUT_STRUCT_NAME
 { /* define variables below as e.g. "double X;" */
-    MyDouble accreted_Mass, accreted_BH_Mass, accreted_BH_Mass_alphadisk;
+    MyDouble accreted_Mass;
+    MyDouble accreted_BH_Mass;
+    MyDouble accreted_BH_Mass_alphadisk;
+#if defined(BH_SWALLOWGAS) && !defined(BH_GRAVCAPTURE_GAS)
+    MyDouble BH_AccretionDeficit;
+#endif
 #ifdef GRAIN_FLUID
     MyDouble accreted_dust_Mass;
+#endif
+#ifdef RT_REINJECT_ACCRETED_PHOTONS
+    MyDouble accreted_photon_energy;
 #endif
 #if defined(BH_FOLLOW_ACCRETED_MOMENTUM)
     MyDouble accreted_momentum[3];
@@ -130,8 +138,14 @@ static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, in
     ASSIGN_ADD_PRESET(BlackholeTempInfo[target].accreted_Mass, out->accreted_Mass, mode);
     ASSIGN_ADD_PRESET(BlackholeTempInfo[target].accreted_BH_Mass, out->accreted_BH_Mass, mode);
     ASSIGN_ADD_PRESET(BlackholeTempInfo[target].accreted_BH_Mass_alphadisk, out->accreted_BH_Mass_alphadisk, mode);
+#if defined(BH_SWALLOWGAS) && !defined(BH_GRAVCAPTURE_GAS)
+    ASSIGN_ADD_PRESET(BlackholeTempInfo[target].BH_AccretionDeficit, out->BH_AccretionDeficit, mode);
+#endif
 #ifdef GRAIN_FLUID
     ASSIGN_ADD_PRESET(BlackholeTempInfo[target].accreted_dust_Mass, out->accreted_dust_Mass, mode);
+#endif
+#ifdef RT_REINJECT_ACCRETED_PHOTONS
+    ASSIGN_ADD_PRESET(BlackholeTempInfo[target].accreted_photon_energy, out->accreted_photon_energy, mode);
 #endif
 #if defined(BH_FOLLOW_ACCRETED_MOMENTUM)
     for(k=0;k<3;k++) {ASSIGN_ADD_PRESET(BlackholeTempInfo[target].accreted_momentum[k], out->accreted_momentum[k], mode);}
@@ -150,7 +164,7 @@ static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, in
     BPP(i).BH_CountProgs += out->BH_CountProgs;
 #endif
 #ifdef GALSF
-    if(P[i].StellarAge > out->Accreted_Age) P[i].StellarAge = out->Accreted_Age;
+    if(P[i].StellarAge > out->Accreted_Age) {P[i].StellarAge = out->Accreted_Age;}
 #endif
 }
 
@@ -277,6 +291,13 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 #ifdef GRAIN_FLUID
                     if((1<<P[j].Type) & GRAIN_PTYPES) {out.accreted_dust_Mass += FLT(Mass_j);}
 #endif
+#ifdef RT_REINJECT_ACCRETED_PHOTONS 
+		            if(P[j].Type == 0) { // we have to keep track of how much radiation energy is lost when we accrete this gas cell, and reinject it later
+			            double photon_energy = 0;
+			            for(int kfreq=0;kfreq<N_RT_FREQ_BINS;kfreq++) {photon_energy += SphP[j].Rad_E_gamma[kfreq];}
+			            out.accreted_photon_energy += photon_energy;
+		            }
+#endif
 #if defined(BH_FOLLOW_ACCRETED_MOMENTUM)
                     for(k=0;k<3;k++) {out.accreted_momentum[k] += FLT( mcount_for_conserve * dvel[k]);}
 #endif
@@ -310,6 +331,9 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
                         out.accreted_Mass    += FLT(Mass_j);
 #endif
                         out.accreted_BH_Mass += FLT(BPP(j).BH_Mass);
+#if defined(BH_SWALLOWGAS) && !defined(BH_GRAVCAPTURE_GAS)
+                        out.BH_AccretionDeficit += FLT(BPP(j).BH_AccretionDeficit);
+#endif
 #ifdef BH_ALPHADISK_ACCRETION
                         out.accreted_BH_Mass_alphadisk += FLT(BPP(j).BH_Mass_AlphaDisk);
 #endif
@@ -341,26 +365,26 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 
                     
                     
-#ifdef BH_GRAVCAPTURE_NONGAS /* DM and star particles can only be accreted ifdef BH_GRAVCAPTURE_NONGAS */
-                    if((P[j].Type == 1) || (All.ComovingIntegrationOn && (P[j].Type==2||P[j].Type==3)) )
-                    {   /* this is a DM particle: In this case, no kick, so just zero out the mass and 'get rid of' the particle (preferably by putting it somewhere irrelevant) */
-#ifdef BH_OUTPUT_MOREINFO
-                        printf(" ..BH_swallow_DM: j %d Type(j) %d  M(j) %g V(j).xyz %g/%g/%g P(j).xyz %g/%g/%g p(i).xyz %g/%g/%g \n", j,P[j].Type,Mass_j,Vel_j[0],Vel_j[1],Vel_j[2],P[j].Pos[0],P[j].Pos[1],P[j].Pos[2],local.Pos[0],local.Pos[1],local.Pos[2]);
+#if defined(BH_GRAVCAPTURE_NONGAS) || defined(BH_EXCISION_NONGAS) /* DM and star particles can only be accreted ifdef BH_GRAVCAPTURE_NONGAS */
+                    if((P[j].Type > 0) && (P[j].Type < 5))
+                    {
+                        out.accreted_Mass += FLT(Mass_j); /* account for the swallowed mass in the total mass budget */
+                        if((P[j].Type == 1) || (All.ComovingIntegrationOn && (P[j].Type==2||P[j].Type==3)) ) { /* this is a DM particle: In this case, no kick, so just zero out the mass and 'get rid of' the particle (preferably by putting it somewhere irrelevant) */
+#ifndef BH_EXCISION_NONGAS
+                            out.accreted_BH_Mass += FLT(Mass_j); /* if using simple excision, adds to the particle mass, but not assumed to actually be accreted */
 #endif
-                        out.accreted_Mass += FLT(Mass_j); out.accreted_BH_Mass += FLT(Mass_j);
-                        Mass_j = 0;
-                        #pragma omp atomic
-                        N_dm_swallowed++;
+                            #pragma omp atomic
+                            N_dm_swallowed++;
+                        } else { /* this is a star particle: If there is an alpha-disk, we let them go to the disk. If there is no alpha-disk, stars go to the BH directly and won't affect feedback. (Can be simply modified if we need something different.) */
+#ifndef BH_EXCISION_NONGAS
+                            out_accreted_BH_Mass_alphaornot += FLT(Mass_j); /* if using simple excision, adds to the particle mass, but not assumed to actually be accreted */
+#endif
+                            #pragma omp atomic
+                            N_star_swallowed++;
+                        }
+                        Mass_j = 0; /* zero the mass because its been accreted now */
                     }
-                    if((P[j].Type==4) || ((P[j].Type==2||P[j].Type==3) && !(All.ComovingIntegrationOn) ))
-                    {   /* this is a star particle: If there is an alpha-disk, we let them go to the disk. If there is no alpha-disk, stars go to the BH directly and won't affect feedback. (Can be simply modified if we need something different.) */
-                        out.accreted_Mass += FLT(Mass_j);
-                        out_accreted_BH_Mass_alphaornot += FLT(Mass_j);
-                        Mass_j = 0;
-                        #pragma omp atomic
-                        N_star_swallowed++;
-                    }
-#endif // #ifdef BH_GRAVCAPTURE_NONGAS -- BH + DM or Star merger
+#endif // close for -- BH + DM or Star merger
 
 
                     
@@ -373,11 +397,14 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 #ifdef BH_GRAVCAPTURE_GAS
                         out_accreted_BH_Mass_alphaornot += FLT(f_accreted*Mass_j);
 #endif
-			double Mass_initial = Mass_j; // save this for possible IO below
+#if defined(BH_SWALLOWGAS) && !defined(BH_GRAVCAPTURE_GAS)
+                        out.BH_AccretionDeficit -= FLT(f_accreted*Mass_j); /* account for this in the 'continuous accretion' budget, since it is part of the continuous Mdot onto the BH */
+#endif
+                        double Mass_initial = Mass_j; // save this for possible IO below
                         Mass_j *= (1-f_accreted);
 #ifdef BH_WIND_KICK     /* BAL kicking operations. NOTE: we have two separate BAL wind models, particle kicking and smooth wind model. This is where we do the particle kicking BAL model. This should also work when there is alpha-disk. */
                         double v_kick=All.BAL_v_outflow, dir[3]; for(k=0;k<3;k++) {dir[k]=dpos[k];} // DAA: default direction is radially outwards
-#if defined(BH_COSMIC_RAYS) /* inject cosmic rays alongside wind injection */
+#if defined(COSMIC_RAY_FLUID) && defined(BH_COSMIC_RAYS) /* inject cosmic rays alongside wind injection */
                         double dEcr = All.BH_CosmicRay_Injection_Efficiency * Mass_j * (All.BAL_f_accretion/(1.-All.BAL_f_accretion)) * C_LIGHT_CODE*C_LIGHT_CODE;
                         inject_cosmic_rays(dEcr,All.BAL_v_outflow,5,j,dir);
 #endif
@@ -426,7 +453,7 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
                         double v_kick = All.BH_Rad_MomentumFactor * mom_wt * mom / Mass_j;
                         for(k=0;k<3;k++) {Vel_j[k]+=v_kick*All.cf_atime*dir[k];}
 #endif
-#if defined(BH_COSMIC_RAYS) && defined(BH_WIND_CONTINUOUS) /* inject cosmic rays alongside continuous wind injection */
+#if defined(COSMIC_RAY_FLUID) && defined(BH_COSMIC_RAYS) && defined(BH_WIND_CONTINUOUS) /* inject cosmic rays alongside continuous wind injection */
                         double dEcr = (evaluate_blackhole_cosmicray_efficiency(local.Mdot,local.BH_Mass,-1)) * mom_wt * C_LIGHT_CODE*C_LIGHT_CODE * local.Mdot*local.Dt;
                         inject_cosmic_rays(dEcr,All.BAL_v_outflow,5,j,dir);
 #endif
@@ -845,8 +872,7 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
 #endif
 #endif
 #ifdef ADAPTIVE_TREEFORCE_UPDATE
-        P[j].tdyn_step_for_treeforce = 0;
-        P[j].time_since_last_treeforce = MAX_REAL_NUMBER; // make sure we get a new tree force right off the bat
+        P[j].tdyn_step_for_treeforce = 0; P[j].time_since_last_treeforce = MAX_REAL_NUMBER; // make sure we get a new tree force right off the bat
 #endif
 #ifdef CONDUCTION
         SphP[j].Kappa_Conduction = 0;
@@ -864,6 +890,9 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
 #if (GALSF_SUBGRID_WIND_SCALING==1)
         SphP[j].HostHaloMass = 0;
 #endif
+#endif
+#if defined(GALSF_FB_FIRE_RT_HIIHEATING)
+        SphP[j].DelayTimeHII = 0;
 #endif
 #ifdef GALSF_FB_TURNOFF_COOLING
         SphP[j].DelayTimeCoolingSNe = 0;
@@ -930,7 +959,7 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
         /* condition number, smoothing length, and density */
         SphP[j].ConditionNumber *= 100.0; /* boost the condition number to be conservative, so we don't trigger madness in the kernel */
 #if defined(SINGLE_STAR_SINK_DYNAMICS) 
-        SphP[j].MaxSignalVel = 2*DMAX(v_magnitude, SphP[j].MaxSignalVel);// need this to satisfy the Courant condition in the first timestep after spawn
+        SphP[j].MaxSignalVel = 2.*DMAX(v_magnitude, SphP[j].MaxSignalVel);// need this to satisfy the Courant condition in the first timestep after spawn
 #endif
         /* note, if you want to use this routine to inject magnetic flux or cosmic rays, do this below */
 #ifdef BH_DEBUG_SPAWN_JET_TEST
@@ -957,7 +986,7 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
         SphP[j].InternalEnergy = All.BAL_internal_temperature / (  0.59 * (5./3.-1.) * U_TO_TEMP_UNITS ); /* internal energy, determined by desired wind temperature (assume fully ionized primordial gas with gamma=5/3) */
         SphP[j].InternalEnergyPred = SphP[j].InternalEnergy;
 
-#if defined(BH_COSMIC_RAYS) /* inject cosmic rays alongside wind injection */
+#if defined(COSMIC_RAY_FLUID) && defined(BH_COSMIC_RAYS) /* inject cosmic rays alongside wind injection */
         double dEcr = evaluate_blackhole_cosmicray_efficiency(BPP(i).BH_Mdot,BPP(i).BH_Mass,i) * P[j].Mass * (All.BAL_f_accretion/(1.-All.BAL_f_accretion)) * C_LIGHT_CODE*C_LIGHT_CODE;
         inject_cosmic_rays(dEcr,All.BAL_v_outflow,5,j,veldir);
 #endif
@@ -975,11 +1004,6 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
 double target_mass_for_wind_spawning(int i)
 {
 #ifdef BH_WIND_SPAWN
-#ifdef SINGLE_STAR_AND_SSP_HYBRID_MODEL
-    return All.BAL_wind_particle_mass * P[i].Sink_Formation_Mass;
-#endif
-    return All.BAL_wind_particle_mass;
-#else
     return 0; // no well-defined answer, this shouldn't be called in this instance
 #endif
 }

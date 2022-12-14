@@ -13,12 +13,7 @@
 %        ADAPTIVE_GRAVSOFT_FORGAS
 %
 InitCondFile                       zeldovich_ics
-ICFormat                           3
 OutputDir                          output
-TimeLimitCPU                       50000
-MaxMemSize                         1600
-PartAllocFactor                    5
-BufferSize                         150
 TimeBegin                          0.00990099
 TimeMax                            1
 ComovingIntegrationOn              1
@@ -27,23 +22,19 @@ Omega_Lambda                       0
 Omega_Baryon                       1
 HubbleParam                        1
 BoxSize                            64000
-OutputListOn                       0
 TimeOfFirstSnapshot                0.00990099
-TimeBetSnapshot                    1.05
-CourantFac                         0.2
+ScaleFac_Between_Snapshots         1.05
 MaxSizeTimestep                    0.01
-TreeDomainUpdateFrequency          0.05
 DesNumNgb                          32
 UnitLength_in_cm                   3.085678e+21
 UnitMass_in_g                      1.989e+43
 UnitVelocity_in_cm_per_s           100000
-MinGasHsmlFractional               1
 SofteningGas                       100 % adjust me depending on adaptive softenings!
 Softening_Type1                    0 % no DM (OmegaBaryon=1); otherwise set this!
 Softening_Type2                    0 % no type-2 particles
 Softening_Type3                    0 % no type-3 particles
-Softening_Type4                    0 % no type-4 (newly-formed star) particles
-Softening_Type5                    0 % no type-5 (blackhole) particles
+Softening_Type4                    0 % no type-4 particles
+Softening_Type5                    0 % no type-5 particles
 SofteningGasMaxPhys                100 % adjust me depending on adaptive softenings!
 Softening_Type1_MaxPhysLimit       0
 Softening_Type2_MaxPhysLimit       0
@@ -52,7 +43,9 @@ Softening_Type4_MaxPhysLimit       0
 Softening_Type5_MaxPhysLimit       0
 MinGasTemp                         0.001
 % -- optional numerical parameters (requires additional Config flags)
+CourantFac                         0.2
 ArtCondConstant                    0.25
 ViscosityAMin                      0.025
 ViscosityAMax                      2
+MinGasHsmlFractional               1
 

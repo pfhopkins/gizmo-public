@@ -199,17 +199,14 @@ void restart(int modus)
 	  in(&NumPart, modus);
 	  if(NumPart > All.MaxPart)
 	    {
-	      printf
-		("it seems you have reduced(!) 'PartAllocFactor' below the value of %g needed to load the restart file.\n",
-		 NumPart / (((double) All.TotNumPart) / NTask));
+	      printf("it seems you have reduced(!) 'PartAllocFactor' below the value of %g needed to load the restart file.\n", NumPart / (((double) All.TotNumPart) / NTask));
 	      printf("fatal error\n");
 	      endrun(22);
 	    }
 
 	  if(modus)		/* read */
 	    {
-	      if(old_MaxPart)
-		All.MaxPart = old_MaxPart;	/* such that tree is still valid */
+	      if(old_MaxPart) {All.MaxPart = old_MaxPart;}	/* such that tree is still valid */
 	    }
 
 
@@ -221,8 +218,7 @@ void restart(int modus)
 	    {
 	      if(N_gas > All.MaxPartGas)
 		{
-		  printf("GAS: it seems you have reduced(!) 'PartAllocFactor' below the value of %g needed to load the restart file.\n",
-		     N_gas / (((double) All.TotN_gas) / NTask));
+		  printf("GAS: it seems you have reduced(!) 'PartAllocFactor' below the value of %g needed to load the restart file.\n", N_gas / (((double) All.TotN_gas) / NTask));
 		  printf("fatal error\n");
 		  endrun(222);
 		}
@@ -238,7 +234,7 @@ void restart(int modus)
 		  for (partIndex = 0; partIndex < N_gas; partIndex++)
 		    {
 		      for (abunIndex = 0; abunIndex < ChimesGlobalVars.totalNumberOfSpecies; abunIndex++)
-			gasAbundancesBuf[(partIndex * ChimesGlobalVars.totalNumberOfSpecies) + abunIndex] = ChimesGasVars[partIndex].abundances[abunIndex];
+                {gasAbundancesBuf[(partIndex * ChimesGlobalVars.totalNumberOfSpecies) + abunIndex] = ChimesGasVars[partIndex].abundances[abunIndex];}
 		    }
 		}
 
@@ -256,7 +252,7 @@ void restart(int modus)
 		      
 		      /* Read abundances from buffer */
 		      for (abunIndex = 0; abunIndex < ChimesGlobalVars.totalNumberOfSpecies; abunIndex++)
-			ChimesGasVars[partIndex].abundances[abunIndex] = gasAbundancesBuf[(partIndex * ChimesGlobalVars.totalNumberOfSpecies) + abunIndex];
+                {ChimesGasVars[partIndex].abundances[abunIndex] = gasAbundancesBuf[(partIndex * ChimesGlobalVars.totalNumberOfSpecies) + abunIndex];}
 
 #ifdef CHIMES_TURB_DIFF_IONS 
 		      chimes_update_turbulent_abundances(partIndex, 1); 

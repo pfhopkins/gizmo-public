@@ -817,7 +817,7 @@ double powerspec_turb_obtain_fields(void)
   Ngblist = (int *) mymalloc("Ngblist", Ncount * sizeof(int));
 
     size_t MyBufferSize = All.BufferSize;
-    All.BunchSize = (int) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
+    All.BunchSize = (long) ((MyBufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
 					     sizeof(struct data_in) + sizeof(struct data_out) +
 					     sizemax(sizeof(struct data_in), sizeof(struct data_out))));
     DataIndexTable = (struct data_index *) mymalloc("DataIndexTable", All.BunchSize * sizeof(struct data_index));

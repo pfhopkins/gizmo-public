@@ -57,7 +57,7 @@ void subfind_find_nearesttwo(void)
   Dist2list = (double *) mymalloc("Dist2list", NumPartGroup * sizeof(double));
 
   All.BunchSize =
-    (int) ((All.BufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
+    (long) ((All.BufferSize * 1024 * 1024) / (sizeof(struct data_index) + sizeof(struct data_nodelist) +
 					     sizeof(struct nearestdata_in) + sizeof(struct nearestdata_out) +
 					     sizemax(sizeof(struct nearestdata_in),
 						     sizeof(struct nearestdata_out))));

@@ -9,33 +9,18 @@
 %        GRAIN_BACKREACTION
 %
 InitCondFile                       dustywave_ics  % (or try dustybox_ics)
-ICFormat                           3
 OutputDir                          output
-TimeLimitCPU                       50000
-MaxMemSize                         1600
-PartAllocFactor                    5
-BufferSize                         150
-TimeBegin                          0
 TimeMax                            2.5
-ComovingIntegrationOn              0
-OutputListOn                       0
 BoxSize                            1
-TimeOfFirstSnapshot                0
-TimeBetSnapshot                    0.1
-MaxSizeTimestep                    0.0001
-TreeDomainUpdateFrequency          0.5
+TimeBetSnapshot                    0.01
 DesNumNgb                          4
-UnitLength_in_cm                   1
-UnitMass_in_g                      1
-UnitVelocity_in_cm_per_s           1
-Softening_Type0                    0.01 % gas
-Softening_Type3                    0.001 % grains
-Softening_Type1                    0
-Softening_Type2                    0
-Softening_Type4                    0
-Softening_Type5                    0
 % -- grain physics parameters
 Grain_Internal_Density             1
 Grain_Size_Min                     1.23608
 Grain_Size_Max                     1.23608
 Grain_Size_Spectrum_Powerlaw       0.5
+% -- if the code is having trouble starting up on an iteration towards kernel sizes, prompt with
+%Softening_Type0                   0.01 % gas
+%Softening_Type3                   0.001 % grains
+% -- optional parameter - speed up the test with bigger steps, but maybe bigger errors
+MaxSizeTimestep                    0.0001

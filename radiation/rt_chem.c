@@ -172,7 +172,7 @@ void rt_update_chemistry(void)
             {
                 printf("NEGATIVE n_photons_per_volume: %g %d %d \n", n_photons_vol, i, ThisTask);
                 printf("Rad_E_gamma %g mass %g All.cf_a3inv %g \n", SphP[i].Rad_E_gamma[0], P[i].Mass, All.cf_a3inv);
-                endrun(111);
+                fflush(stdout); endrun(111);
             }
             
             A = dtime * gamma_HI * nH * SphP[i].Ne;
@@ -185,7 +185,7 @@ void rt_update_chemistry(void)
             if(nHII < 0 || nHII > 1 || isnan(nHII))
             {
                 printf("ERROR nHII %g \n", nHII);
-                endrun(333);
+                fflush(stdout); endrun(333);
             }
             SphP[i].Ne = nHII;
             SphP[i].HII = nHII;
@@ -213,14 +213,14 @@ void rt_update_chemistry(void)
             nHeII /= 1.0 + G + F + D + J + ((G + F - E) / (1.0 + E)) * (D + L);
             if(nHeII < 0 || nHeII > 1 || isnan(nHeII))
             {
-                printf("ERROR nHeII %g \n", nHeII);
+                printf("ERROR nHeII %g \n", nHeII); fflush(stdout);
                 endrun(333);
             }
             nHeIII = nHeIII + (D + L) * nHeII;
             nHeIII /= 1.0 + E;
             if(nHeIII < 0 || nHeIII > 1 || isnan(nHeIII))
             {
-                printf("ERROR nHeIII %g \n", nHeIII);
+                printf("ERROR nHeIII %g \n", nHeIII); fflush(stdout);
                 endrun(333);
             }
             SphP[i].Ne = SphP[i].HII + nHeII + 2.0 * nHeIII;
@@ -298,7 +298,7 @@ void rt_update_chemistry(void)
                 printf("pressure %g \n",SphP[i].Pressure);
                 printf("kHI %g \n",k_HI);
                 printf("Rad_E_gamma %g \n",SphP[i].Rad_E_gamma[0]);
-                endrun(333);
+                fflush(stdout); endrun(333);
             }
             SphP[i].Ne = nHII;
             SphP[i].HII = nHII;
@@ -327,14 +327,14 @@ void rt_update_chemistry(void)
             nHeII /= 1.0 + G + F + D + J + ((G + F - E) / (1.0 + E)) * (D + L);
             if(nHeII < 0 || nHeII > 1 || isnan(nHeII))
             {
-                printf("ERROR nHeII %g %g %g\n", nHeII, temp, k_HeI);
+                printf("ERROR nHeII %g %g %g\n", nHeII, temp, k_HeI); fflush(stdout);
                 endrun(333);
             }
             nHeIII = nHeIII + (D + L) * nHeII;
             nHeIII /= 1.0 + E;
             if(nHeIII < 0 || nHeIII > 1 || isnan(nHeIII))
             {
-                printf("ERROR nHeIII %g %g %g\n", nHeIII, temp, k_HeII);
+                printf("ERROR nHeIII %g %g %g\n", nHeIII, temp, k_HeII); fflush(stdout); 
                 endrun(333);
             }
             nHeII *= y_fac;

@@ -160,6 +160,22 @@
 #endif
 
 
+#if (KERNEL_FUNCTION == 9) // Wendland C6 kernel
+#define KERNEL_CORE_SIZE (3.0/10.0)
+#if (NUMDIMS==1)
+#define  KERNEL_NORM  (55./32.)                /*!< For 1D-normalized kernel */
+#define  KERNEL_NMIN  12
+#define  KERNEL_NMAX  50
+#elif (NUMDIMS==2)
+#define  KERNEL_NORM  (78./(7.*M_PI))        /*!< For 2D-normalized kernel */
+#define  KERNEL_NMIN  50
+#define  KERNEL_NMAX  150
+#else
+#define  KERNEL_NORM  (1365./(64.*M_PI))        /*!< For 3D-normalized kernel */
+#define  KERNEL_NMIN  180
+#define  KERNEL_NMAX  600
+#endif
+#endif
 
 
 
@@ -335,7 +351,24 @@ static inline void kernel_main(double u, double hinv3, double hinv4, double *wk,
             *wk = (1-u)*(1-u)/(1-KERNEL_U0);
     }
 #endif
-    
+
+
+#if (KERNEL_FUNCTION == 9) /* Wendland C6 */
+    double t1 = (1 - u);
+    double t7 = t1*t1*t1; t7 *= t7*t1;
+#if (NUMDIMS == 1)
+    if(mode >= 0)
+        *dwk = -6.0 * (t7/t1) * u * (3.0 + 18.0*u + 35.0*u*u);
+    if(mode <= 0)
+        *wk = t7 * (1.0 + 7.0*u + 19.0*u*u + 21.0*u*u*u);
+#else
+    if(mode >= 0)
+        *dwk = -22.0 * t7 * u * (1.0 + 7.0*u + 16.0*u*u);
+    if(mode <= 0)
+        *wk = t7 * t1 * (1.0 + 8.0*u + 25.0*u*u + 32.0*u*u*u);
+#endif
+#endif
+
     
   if(mode >= 0) {*dwk *= KERNEL_NORM * hinv4;}
   if(mode <= 0) {*wk *= KERNEL_NORM * hinv3;}
@@ -637,7 +670,36 @@ static inline double kernel_gravity(double u, double hinv, double hinv3, int mod
         return KERNEL_NORM * wk * hinv3*hinv*hinv;
     }
 #endif
+
     
+#if (KERNEL_FUNCTION == 9) /* Wendland C6 */
+    if(mode == 1)
+    {
+        double uu = u*u;
+        wk = 0.0625 * (455. - 3003.*uu + 12870.*uu*uu + uu*uu*uu * (-70070. + u * (144144. + 5.*u*(-28665. + u*(16016. - 4851.*u + 624.*uu)))));
+        return wk * hinv3;
+    }
+    else if(mode == -1)
+    {
+        double uu = u*u;
+        wk = (1./16.) * (-245. + 910.*uu - uu*uu * (3003. - 8580.*uu + 35035.*uu*uu - 64064.*uu*uu*u + 57330.*uu*uu*uu - 29120.*uu*uu*uu*u + 8085.*uu*uu*uu*uu - 960.*uu*uu*uu*uu*u));
+        return wk * hinv;
+    }
+    else if(mode == 0)
+    {
+        double t1 = 1 - u;
+        double t2 = t1*t1*t1*t1; t2 *= t2; t2 *= t1;
+        wk = (35./64.) * t2 * (7. + 3.*u * (21. + u * (79. + u * (151. + 128. * u))));
+        return wk * hinv * hinv;
+    }
+    else if(mode == 2)
+    {
+        double uu = u*u;
+        wk = -(3./8.) * (-1001. + 8580.*uu + uu*uu * (-70070. + u * (168168. + 5.*u * (-38220. + 11.*u * (2184. + u * (-735. + 104.*u))))));
+        return wk * hinv3*hinv*hinv;
+    }
+#endif
+
     
     return 0;
 }

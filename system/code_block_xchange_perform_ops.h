@@ -4,6 +4,8 @@ be copy-pasted and can be generically optimized in a single place */
     int j, k, ndone=0, ndone_flag=0, recvTask, place, save_NextParticle; long long n_exported = 0; double tstart, tend, tstart_loop; /* define some variables used only below */
     NextParticle = FirstActiveParticle;    /* begin the main loop; start with this index */
     tstart_loop = my_second();
+    memset(ProcessedFlag, 0, All.MaxPart * sizeof(unsigned char));
+    BufferCollisionFlag = 0; /* set to zero before operations begin */
     do /* primary point-element loop */
     {
         BufferFullFlag = 0; Nexport = 0; save_NextParticle = NextParticle; tstart = my_second();
@@ -22,18 +24,35 @@ be copy-pasted and can be generically optimized in a single place */
         tend = my_second(); timecomp += timediff(tstart, tend);
         if(BufferFullFlag) /* we've filled the buffer or reached the end of the list, prepare for communications */
         {
-            int last_nextparticle = NextParticle; NextParticle = save_NextParticle; /* figure out where we are */
+            int last_nextparticle = NextParticle;
+            int processed_particles = 0;
+            int first_unprocessedparticle = -1;
+            NextParticle = save_NextParticle; /* figure out where we are */
             while(NextParticle >= 0)
             {
                 if(NextParticle == last_nextparticle) {break;}
+#ifndef _OPENMP
                 if(ProcessedFlag[NextParticle] != 1) {break;}
-                ProcessedFlag[NextParticle] = 2; NextParticle = NextActiveParticle[NextParticle];
+#else
+                if(ProcessedFlag[NextParticle] == 0 && first_unprocessedparticle < 0) {first_unprocessedparticle = NextParticle;}
+                if(ProcessedFlag[NextParticle] == 1)
+#endif
+                {
+                    processed_particles++;
+                    ProcessedFlag[NextParticle] = 2;
+                }
+                NextParticle = NextActiveParticle[NextParticle];
             }
-            if(NextParticle == save_NextParticle)
+#ifdef _OPENMP
+            if(first_unprocessedparticle >= 0) {NextParticle = first_unprocessedparticle;} /* reset the neighbor list properly for the next group since we can get 'jumps' with openmp active */
+            if(processed_particles == 0 && NextParticle == save_NextParticle && NextParticle > -1) {
+                BufferCollisionFlag++; if(BufferCollisionFlag < 2) {continue;}} /* we overflowed without processing a single particle, but this could be because of a collision, try once with the serialized approach, but if it fails then, we're truly stuck */
+            else if(processed_particles && BufferCollisionFlag) {BufferCollisionFlag = 0;} /* we had a problem in a previous iteration but things worked, reset to normal operations */
+#endif
+            if(processed_particles <= 0 && NextParticle == save_NextParticle) // this is still sometimes being triggered with OPENMP, but not without, when it shouldn't. some OPENMP error still needs to be debugged???
             {
                 PRINT_WARNING("NextParticle == save_NextParticle condition (the buffer appears too small to hold a single particle): NextParticle=%d save_NextParticle=%d last_nextparticle=%d ProcessedFlag[NextParticle]=%d NextActiveParticle[NextParticle]=%d NumPart=%d N_gas=%d NTaskTimesNumPart=%llu maxThreads=%d All.BunchSize=%ld All.BufferSize=%llu Nexport=%ld ndone=%d ndone_flag=%d NTask=%d",NextParticle,save_NextParticle,last_nextparticle,ProcessedFlag[NextParticle],NextActiveParticle[NextParticle],NumPart,N_gas,(unsigned long long)NTaskTimesNumPart,maxThreads,All.BunchSize,(unsigned long long)All.BufferSize,Nexport,ndone,ndone_flag,NTask);
                 if(NextParticle >= 0) {PRINT_WARNING("This is a live particle: NextParticle=%d ID=%llu Mass=%g Type=%d",NextParticle,(unsigned long long)P[NextParticle].ID,P[NextParticle].Mass,P[NextParticle].Type);}
-                printf("Extended Debug: Printing Processed Flag for Entire Active Particle Chain on This Task: \n"); int nj=0; for(j=FirstActiveParticle;j>=0;j=NextActiveParticle[j]) {printf("nj=%d j=%d ProcFlag[j]=%d \n",nj,j,ProcessedFlag[j]); nj++; fflush(stdout);} fflush(stdout);
                 endrun(113312);
             } /* in this case, the buffer is too small to process even a single particle */
             
@@ -71,7 +90,9 @@ be copy-pasted and can be generically optimized in a single place */
         {
             place = DataIndexTable[j].Index;
             INPUTFUNCTION_NAME(&DATAIN_NAME[j], place, loop_iteration);
+#ifndef DONOTUSENODELIST
             memcpy(DATAIN_NAME[j].NodeList,DataNodeList[DataIndexTable[j].IndexGet].NodeList, NODELISTLENGTH * sizeof(int));
+#endif
         }
 
         /* ok now we have to figure out if there is enough memory to handle all the tasks sending us their data, and if not, break it into sub-chunks */
