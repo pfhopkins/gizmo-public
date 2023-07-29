@@ -237,7 +237,7 @@ struct INPUT_STRUCT_NAME
 #endif
 
 #if defined(TURB_DIFF_METALS) || (defined(METALS) && defined(HYDRO_MESHLESS_FINITE_VOLUME))
-    MyFloat Metallicity[NUM_METAL_SPECIES];
+    MyFloat Metallicity[NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION];
 #endif
 
 #ifdef CHIMES_TURB_DIFF_IONS
@@ -339,7 +339,7 @@ struct OUTPUT_STRUCT_NAME
 #endif
 
 #if defined(TURB_DIFF_METALS) || (defined(METALS) && defined(HYDRO_MESHLESS_FINITE_VOLUME))
-    MyFloat Dyield[NUM_METAL_SPECIES];
+    MyFloat Dyield[NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION];
 #endif
 
 #ifdef CHIMES_TURB_DIFF_IONS
@@ -413,11 +413,11 @@ static inline void particle2in_hydra(struct INPUT_STRUCT_NAME *in, int i, int lo
     in->FaceClosureError = SphP[i].FaceClosureError;
 #ifdef MHD_CONSTRAINED_GRADIENT
     /* since it is not used elsewhere, we can use the sign of the condition number as a bit
-        to conveniently indicate the status of the parent particle flag, for the constrained gradients */
+     to conveniently indicate the status of the parent particle flag, for the constrained gradients */
     if(SphP[i].FlagForConstrainedGradients == 0) {in->ConditionNumber *= -1;}
 #endif
 #ifdef BH_WIND_SPAWN
-    if(P[i].ID == All.AGNWindID) {in->ConditionNumber *= -1;} /* as above, use sign of condition number as a bitflag to indicate if this is, or is not, a wind particle */
+    //if(P[i].ID == All.AGNWindID) {in->ConditionNumber *= -1;} /* as above, use sign of condition number as a bitflag to indicate if this is, or is not, a wind particle [may no longer be necessary in newest code???] */
 #endif
     in->DhsmlNgbFactor = PPP[i].DhsmlNgbFactor;
 #ifdef HYDRO_SPH
@@ -428,7 +428,7 @@ static inline void particle2in_hydra(struct INPUT_STRUCT_NAME *in, int i, int lo
     in->alpha = SphP[i].alpha_limiter;
 #endif
 #endif
-
+    
 #ifdef HYDRO_PRESSURE_SPH
     in->EgyWtRho = SphP[i].EgyWtDensity;
 #endif
@@ -438,11 +438,11 @@ static inline void particle2in_hydra(struct INPUT_STRUCT_NAME *in, int i, int lo
 #if defined(HYDRO_TENSOR_FACE_CORRECTIONS)
     for(k=0;k<9;k++) {in->Tensor_MFM_Face_Corrections[k] = SphP[i].Tensor_MFM_Face_Corrections[k];}
 #endif
-
+    
     int j;
     for(j=0;j<3;j++) {for(k=0;k<3;k++) {in->NV_T[j][k] = SphP[i].NV_T[j][k];}}
-
-
+    
+    
     /* matrix of the conserved variable gradients: rho, u, vx, vy, vz */
     for(k=0;k<3;k++)
     {
@@ -471,7 +471,7 @@ static inline void particle2in_hydra(struct INPUT_STRUCT_NAME *in, int i, int lo
         for(j=0;j<N_RT_FREQ_BINS;j++) {in->Gradients.Rad_E_gamma_ET[j][k] = SphP[i].Gradients.Rad_E_gamma_ET[j][k];}
 #endif
     }
-
+    
 #ifdef RT_SOLVER_EXPLICIT
     for(k=0;k<N_RT_FREQ_BINS;k++)
     {
@@ -489,12 +489,15 @@ static inline void particle2in_hydra(struct INPUT_STRUCT_NAME *in, int i, int lo
 #endif
     }
 #ifdef RT_INFRARED
-        in->Radiation_Temperature = SphP[i].Radiation_Temperature;
+    in->Radiation_Temperature = SphP[i].Radiation_Temperature;
 #endif
 #endif
-
+    
 #if defined(TURB_DIFF_METALS) || (defined(METALS) && defined(HYDRO_MESHLESS_FINITE_VOLUME))
     for(k=0;k<NUM_METAL_SPECIES;k++) {in->Metallicity[k] = P[i].Metallicity[k];}
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+    for(k=NUM_METAL_SPECIES;k<NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION;k++) {in->Metallicity[k] = return_ismdustchem_species_of_interest_for_diffusion_and_yields(i,k);}
+#endif
 #endif
 
 #ifdef CHIMES_TURB_DIFF_IONS
@@ -584,7 +587,7 @@ static inline void out2particle_hydra(struct OUTPUT_STRUCT_NAME *out, int i, int
     if(SphP[i].MaxKineticEnergyNgb < out->MaxKineticEnergyNgb) {SphP[i].MaxKineticEnergyNgb = out->MaxKineticEnergyNgb;}
 #endif
 #if defined(TURB_DIFF_METALS) || (defined(METALS) && defined(HYDRO_MESHLESS_FINITE_VOLUME))
-    for(k=0;k<NUM_METAL_SPECIES;k++) {SphP[i].Dyield[k] += out->Dyield[k];}
+    for(k=0;k<NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION;k++) {SphP[i].Dyield[k] += out->Dyield[k];}
 #endif
 
 #ifdef CHIMES_TURB_DIFF_IONS
@@ -811,6 +814,11 @@ void hydro_final_operations_and_cleanup(void)
 
 #if defined(TURB_DIFF_METALS) || (defined(METALS) && defined(HYDRO_MESHLESS_FINITE_VOLUME)) /* update the metal masses from exchange */
             for(k=0;k<NUM_METAL_SPECIES;k++) {P[i].Metallicity[k] = DMAX(P[i].Metallicity[k] + SphP[i].Dyield[k] / P[i].Mass , 0.01*P[i].Metallicity[k]);}
+#if defined(GALSF_ISMDUSTCHEM_MODEL) /* update the dust masses from exchange */
+            for(k=0;k<NUM_ISMDUSTCHEM_ELEMENTS;k++) {SphP[i].ISMDustChem_Dust_Metal[k] = DMAX(SphP[i].ISMDustChem_Dust_Metal[k] + SphP[i].Dyield[NUM_METAL_SPECIES+k] / P[i].Mass , 0.01*SphP[i].ISMDustChem_Dust_Metal[k]);}
+            for(k=0;k<NUM_ISMDUSTCHEM_SOURCES;k++) {SphP[i].ISMDustChem_Dust_Source[k] = DMAX(SphP[i].ISMDustChem_Dust_Source[k] + SphP[i].Dyield[NUM_METAL_SPECIES+NUM_ISMDUSTCHEM_ELEMENTS+k] / P[i].Mass , 0.01*SphP[i].ISMDustChem_Dust_Source[k]);}
+            for(k=0;k<NUM_ISMDUSTCHEM_SPECIES;k++) {SphP[i].ISMDustChem_Dust_Species[k] = DMAX(SphP[i].ISMDustChem_Dust_Species[k] + SphP[i].Dyield[NUM_METAL_SPECIES+NUM_ISMDUSTCHEM_ELEMENTS+NUM_ISMDUSTCHEM_SOURCES+k] / P[i].Mass , 0.01*SphP[i].ISMDustChem_Dust_Species[k]);}
+#endif
 #endif
             
             
@@ -904,7 +912,11 @@ void hydro_final_operations_and_cleanup(void)
 
     
 #ifdef TURB_DRIVING
+#ifdef TURB_DRIVING_UPDATE_FORCE_ON_TURBUPDATE // if this is enabled, we only update as frequently as the driving phases are recomputed, as set by TurbDrive_TimeBetweenTurbUpdates. To avoid large errors, must be set by-hand to be << lambda_min / V where V is the typical turbulent velocity and lambda_min is the smallest driven wavelength.
+    if(new_turbforce_needed_this_timestep()){add_turb_accel();}
+#else    
     add_turb_accel(); // update turbulent driving fields and TurbAccel fields at same time as update HydroAccel, here
+#endif    
 #endif
 
 #ifdef NUCLEAR_NETWORK
@@ -956,7 +968,7 @@ void hydro_force_initial_operations_preloop(void)
             SphP[i].DtMass = 0; SphP[i].dMass = 0; for(k=0;k<3;k++) SphP[i].GravWorkTerm[k] = 0;
 #endif
 #if defined(TURB_DIFF_METALS) || (defined(METALS) && defined(HYDRO_MESHLESS_FINITE_VOLUME))
-            for(k=0;k<NUM_METAL_SPECIES;k++) {SphP[i].Dyield[k] = 0;}
+            for(k=0;k<NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION;k++) {SphP[i].Dyield[k] = 0;}
 #endif
 #if defined(RT_SOLVER_EXPLICIT)
 #if defined(RT_EVOLVE_ENERGY)

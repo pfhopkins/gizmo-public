@@ -134,7 +134,9 @@ double diffusion_coefficient_self_confinement(int mode, int target, int k_CRegy,
     Z_sol = P[target].Metallicity[0]/0.014;
 #endif
     double G_dust = vA_code*k_L * Z_sol * f_grainsize; // also can increase by up to a factor of 2 for regimes where charge collisionally saturated, though this is unlikely to be realized
-    if(mode<0) {G_dust = 0;} // for this choice, neglect the dust-damping term 
+    double RGV_dust_crit = 0.01 * (vA_code*UNIT_VEL_IN_KMS) / (1. + pow(cs_thermal*UNIT_VEL_IN_KMS/8.1,2)); // critical rigidity below which there are no gyro-resonant dust grains expected with >10 nm sizes
+    if(R_CR_GV < RGV_dust_crit) {G_dust *= pow(R_CR_GV/RGV_dust_crit, 2);} // suppression factor for the dust-damping term when outside of this relevant rigidity range (thanks to Margot Fitz Axen for helping identify regimes where this would kick in which we were simulating in GMCs)
+    if(mode<0) {G_dust = 0;} // for this choice, neglect the dust-damping term
     double G_ion_neutral = (5.77e-11 * n_cgs * (0.97*nh0 + 0.03*nHe0) * sqrt(temperature)) * UNIT_TIME_IN_CGS / sqrt(M_cr_mp); // ion-neutral damping: need to get thermodynamic quantities [neutral fraction, temperature in Kelvin] to compute here -- // G_ion_neutral = (xiH + xiHe); // xiH = nH * siH * sqrt[(32/9pi) *kB*T*mH/(mi*(mi+mH))]
     double fac_turb = sqrt(k_turb*k_L) * fturb_multiplier; // factor to use below
     double G_turb_plus_linear_landau = (vA_noion + sqrt(M_PI)*cs_thermal/4.) * fac_turb; // linear Landau + turbulent (both have same form, assume k_turb from cascade above)
@@ -405,7 +407,7 @@ void CalculateAndAssign_CosmicRay_DiffusionAndStreamingCoefficients(int i)
 
 
 
-/* utility routine which handles the numerically-necessary parts of the CR 'injection' for you */
+/* utility routine which handles the numerically-necessary parts of the CR 'injection' for you; here 'injection_velocity' should be in physical (not comoving) units */
 void inject_cosmic_rays(double CR_energy_to_inject, double injection_velocity, int source_type, int target, double *dir)
 {
     if(CR_energy_to_inject <= 0) {return;}
@@ -921,6 +923,14 @@ double INLINE_FUNC Get_CosmicRayEnergyDensity_cgs(int i)
 #ifdef COSMIC_RAY_SUBGRID_LEBRON
     return SphP[i].SubGrid_CosmicRayEnergyDensity*All.cf_a3inv * UNIT_PRESSURE_IN_CGS;
 #endif
+#ifdef RT_ISRF_BACKGROUND
+    double column = evaluate_NH_from_GradRho(P[i].GradRho,P[i].Hsml,SphP[i].Density,P[i].NumNgb,1,i) * UNIT_SURFDEN_IN_CGS, sigma_0=2.23e-3; // sigma_0 is N_H = 1e21 cm^-2 in g cm^-2
+    double u_cr_0 = sqrt(All.InterstellarRadiationFieldStrength) * 1.6e-12; // unattenuated energy density; prescription for scaling here assumes ISRF ~ sigma_SFR but zeta_CR ~ t_depletion^-1 ~ sigma_SFR^0.5 assuming the Kennicutt 1998 relation
+    if(column < sigma_0) {return u_cr_0;} else {
+        double atten_fac = exp(DMAX(-column/100.,-90)) * (sigma_0/(column+MIN_REAL_NUMBER)); // attenuates as N_H^{-1} above column of 1e21 cm^-2, with an exponential truncation above 100 g cm^-2; fairly uncertain, closer to predictions of diffusive transport models
+	    return atten_fac * u_cr_0;
+    }
+#endif    
     return 1.6e-12; // eV/cm-3, approximate from Cummings et al. 2016 V1 data
 }
 
@@ -973,6 +983,9 @@ double CR_gas_heating(int target, double n_elec, double nH0, double nHcgs)
 #endif
 #elif defined(COOL_LOW_TEMPERATURES) // no CR module, but low-temperature cooling is on, we account for the CRs as a heating source, assuming a MW-like background scaled cosmologically to avoid over-heating IGM at high redshifts //
     double prefac_CR=1.; if(All.ComovingIntegrationOn) {double rhofac = (PROTONMASS_CGS*nHcgs/HYDROGEN_MASSFRAC) / (1000.*COSMIC_BARYON_DENSITY_CGS); if(rhofac < 0.2) {prefac_CR=0;} else {if(rhofac > 200.) {prefac_CR=1;} else {prefac_CR=exp(-1./(rhofac*rhofac));}}} // in cosmological runs, turn off CR heating for any gas with density unless it's >1000 times the cosmic mean density
+#ifdef RT_ISRF_BACKGROUND
+    prefac_CR *= Get_CosmicRayEnergyDensity_cgs(target)/1.6e-12; // prescription for scaling here assumes ISRF ~ sigma_SFR but zeta_CR ~ t_depletion^-1 ~ sigma_SFR^0.5 assuming the Kennicutt 1998 relation
+#endif
     return (0.87*f_heat_hadronic*a_hadronic + 0.53*b_coulomb_ion_per_GeV) * (1.6e-12*prefac_CR) / (1.e-2 + nHcgs); // assume MW-like CR background modulated by above factor (1.6e-12*prefac_CR)=eCR_cgs here //
 #else
     return 0;

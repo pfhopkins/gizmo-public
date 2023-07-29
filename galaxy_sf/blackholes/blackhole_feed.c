@@ -172,6 +172,10 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
                     {
                         vrel=0; for(k=0;k<3;k++) {vrel += dvel[k]*dvel[k];}
                         r=sqrt(r2); vrel=sqrt(vrel)/All.cf_atime;  /* relative velocity in physical units. do this once and use below */
+#if defined(MAGNETIC) && defined(GRAIN_LORENTZFORCE) /* need to project grain velocities, shouldn't include gyro motion */
+                        if((1<<P[j].Type) & GRAIN_PTYPES) {vrel=0; double bmag2=0; for(k=0;k<3;k++) {vrel+=dvel[k]*P[j].Gas_B[k]; bmag2+=P[j].Gas_B[k]*P[j].Gas_B[k];}
+                            vrel = (fabs(vrel)/sqrt(bmag2)) / All.cf_atime;}
+#endif
                         vesc=bh_vesc(j, local.Mass, r, ags_h_i);
                         
                         /* note that SwallowID is both read and potentially re-written below: we need to make sure this is done in a thread-safe manner */
@@ -220,7 +224,7 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
 #if defined(BH_OUTPUT_MOREINFO)     // DAA: BH merger info will be saved in a separate output file
                                     printf(" ..ThisTask=%d, time=%g: id=%llu would like to swallow %llu, but vrel=%g vesc=%g\n", ThisTask, All.Time, (unsigned long long)local.ID, (unsigned long long)P[j].ID, vrel, vesc);
 #elif !defined(IO_REDUCED_MODE)
-                                    fprintf(FdBlackHolesDetails, "ThisTask=%d, time=%g: id=%llu would like to swallow %llu, but vrel=%g vesc=%g\n", ThisTask, All.Time, (unsigned long long)local.ID, (unsigned long long)P[j].ID, vrel, vesc); fflush(FdBlackHolesDetails);
+                                    fprintf(FdBlackHolesDetails, "ThisTask=%d, time=%.16g: id=%llu would like to swallow %llu, but vrel=%g vesc=%g\n", ThisTask, All.Time, (unsigned long long)local.ID, (unsigned long long)P[j].ID, vrel, vesc); fflush(FdBlackHolesDetails);
 #endif
                                 }
                             } // if eligible for bh-bh mergers //

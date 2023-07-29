@@ -41,7 +41,7 @@ void determine_where_SNe_occur(void)
     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
     {
         P[i].SNe_ThisTimeStep=0;
-
+    
 
 #if defined(SINGLE_STAR_SINK_DYNAMICS)
         if(P[i].Type == 0) {continue;} // any non-gas type is eligible to be a 'star' here
@@ -81,7 +81,7 @@ void determine_where_SNe_occur(void)
         if(mpi_npossible>0)
         {
             mpi_dtmean /= mpi_npossible; mpi_rmean /= mpi_npossible;
-            fprintf(FdSneIIHeating, "%lg %g %g %g %g %g %g \n", All.Time,mpi_npossible,mpi_nhosttotal,mpi_ntotal,mpi_ptotal,mpi_dtmean,mpi_rmean); fflush(FdSneIIHeating);
+            fprintf(FdSneIIHeating, "%.16g %g %g %g %g %g %g \n", All.Time,mpi_npossible,mpi_nhosttotal,mpi_ntotal,mpi_ptotal,mpi_dtmean,mpi_rmean); fflush(FdSneIIHeating);
         }
         if(All.HighestActiveTimeBin == All.HighestOccupiedTimeBin) {fflush(FdSneIIHeating);}
     } // if(ThisTask == 0) //
@@ -94,7 +94,10 @@ void determine_where_SNe_occur(void)
  for example for ensuring conservation if there are many overlapping events */
 static struct temporary_mech_fb_data_tohold
 {
-    int N_injected; double m_injected, p_injected[3], KE_injected, TE_injected, Z_injected[NUM_METAL_SPECIES];
+    int N_injected; double m_injected, p_injected[3], KE_injected, TE_injected, Z_injected[NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION];
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+    double Mass_Fraction_Where_Dust_Destroyed;
+#endif
 }
 *LocalGasMechFBInfoTemp;
 
@@ -124,7 +127,7 @@ void particle2in_addFB(struct addFB_evaluate_data_in_ *in, int i, int loop_itera
     int k; for(k=0;k<3;k++) {in->Pos[k] = P[i].Pos[k]; in->Vel[k] = P[i].Vel[k];}
     double heff = PPP[i].Hsml / PPP[i].NumNgb; in->V_i = heff*heff*heff; in->Hsml = PPP[i].Hsml;
 #ifdef METALS
-    for(k=0;k<NUM_METAL_SPECIES;k++) {in->yields[k]=0.0;}
+    for(k=0;k<NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION;k++) {in->yields[k]=0.0;}
 #endif
     for(k=0;k<AREA_WEIGHTED_SUM_ELEMENTS;k++) {in->Area_weighted_sum[k] = P[i].Area_weighted_sum[k];}
     in->Msne = 0; in->unit_mom_SNe = 0; in->SNe_v_ejecta = 0;
@@ -147,6 +150,9 @@ void out2particle_addFB(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loo
             for(k=kmin;k<kmax;k++) {ASSIGN_ADD(P[i].Area_weighted_sum[k], out->Area_weighted_sum[k], mode);}
         } else {
             P[i].Mass -= out->M_coupled; if((P[i].Mass<0)||(isnan(P[i].Mass))) {P[i].Mass=0;}
+#ifdef SINGLE_STAR_FB_WINDS
+            P[i].BH_Mass -= out->M_coupled; if((P[i].BH_Mass<0)||(isnan(P[i].BH_Mass))) {P[i].BH_Mass=0;}
+#endif
         }
     }
 }
@@ -199,7 +205,9 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
             {
                 j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */
                 if(P[j].Type != 0) {continue;} // require a gas particle //
-                
+#ifdef BH_WIND_SPAWN
+                if(P[j].ID == All.AGNWindID) {continue;} // dont couple to jet cells
+#endif
                 double Mass_j, InternalEnergy_j, rho_j, Vel_j[3]; // initialize holders for the local variables that might change below
                 #pragma omp atomic read
                 Mass_j = P[j].Mass; // this can get modified below, so we need to read it thread-safe now
@@ -261,12 +269,16 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 }
                 double InternalEnergy_j_0 = InternalEnergy_j, Mass_j_0 = Mass_j, rho_j_0 = rho_j, Vel_j_0[3]; for(k=0;k<3;k++) {Vel_j_0[k]=Vel_j[k];} // save initial values to use below
 #ifdef METALS
-                double Metallicity_j[NUM_METAL_SPECIES], Metallicity_j_0[NUM_METAL_SPECIES];
+                double Metallicity_j[NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION], Metallicity_j_0[NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION];
                 for(k=0;k<NUM_METAL_SPECIES;k++) {
                     #pragma omp atomic read
                     Metallicity_j[k] = P[j].Metallicity[k]; // this can get modified below, so we need to read it thread-safe now
-                    Metallicity_j_0[k] = Metallicity_j[k]; // save initial values to  use below
                 }
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+                double Mass_Fraction_Where_Dust_Destroyed = 0;
+                for(k=NUM_METAL_SPECIES;k<NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION;k++) {Metallicity_j[k] = return_ismdustchem_species_of_interest_for_diffusion_and_yields(j,k);} // load local dust properties
+#endif
+                for(k=0;k<NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION;k++) {Metallicity_j_0[k] = Metallicity_j[k];} // save initial values to  use below
 #endif
                 
                 /* define initial mass and ejecta velocity in this 'cone' */
@@ -351,6 +363,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 out.M_coupled += dM_ejecta_in;
 #if defined(METALS) /* inject metals */
                 for(k=0;k<NUM_METAL_SPECIES-NUM_AGE_TRACERS;k++) {Metallicity_j[k]=(1-massratio_ejecta)*Metallicity_j[k] + massratio_ejecta*local.yields[k];}
+                if(NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION>0) {for(k=NUM_METAL_SPECIES;k<NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION;k++) {Metallicity_j[k]=(1-massratio_ejecta)*Metallicity_j[k] + massratio_ejecta*local.yields[k];}}
 #ifdef GALSF_FB_FIRE_AGE_TRACERS
                 if(loop_iteration == 3) {for(k=NUM_METAL_SPECIES-NUM_AGE_TRACERS;k<NUM_METAL_SPECIES;k++) {Metallicity_j[k] += pnorm*local.yields[k]/Mass_j;}} // add age tracers in taking yields to mean MASS, so we can make it large without actually exchanging large masses
 #ifndef GALSF_FB_FIRE_AGE_TRACERS_DISABLE_SURFACE_YIELDS
@@ -358,6 +371,11 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
 #endif
 #endif
 #endif
+
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+                if(loop_iteration == 0) {Mass_Fraction_Where_Dust_Destroyed = ISMDustChem_Return_Mass_Fraction_Where_Dust_Destroyed(rho_j, pnorm*Esne51, mj_preshock);} /* feedback is sne, so destroy some dust in surrounding gas due to SNe shock, taken from McKee 1989 and Cioffi 1988 */
+#endif
+                    
                 if(couple_anything_but_scalar_mass_and_metals)
                 {
                     
@@ -415,8 +433,11 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                     #pragma omp atomic
                     P[j].Metallicity[k] += Metallicity_j[k] - Metallicity_j_0[k]; // delta-update
                 }
-                
-                
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+                double Z_injected[NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION]={0}; for(k=0;k<NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION;k++) {Z_injected[k]=Mass_j*Metallicity_j[k] - Mass_j_0*Metallicity_j_0[k];}
+                #pragma omp critical
+                update_ISMDustChem_after_mechanical_injection(j, Mass_Fraction_Where_Dust_Destroyed, Mass_j_0, Mass_j, Z_injected); /* update dust chemistry quantities */
+#endif
             } // for(n = 0; n < numngb; n++)
         } // while(startnode >= 0)
         if(mode == 1) {listindex++; if(listindex < NODELISTLENGTH) {startnode = DATAGET_NAME[target].NodeList[listindex]; if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;}}}    /* open it */
@@ -450,7 +471,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
     double unitlength_in_kpc= UNIT_LENGTH_IN_KPC * All.cf_atime, density_to_n=All.cf_a3inv*UNIT_DENSITY_IN_NHCGS, unit_egy_SNe = 1.0e51/UNIT_ENERGY_IN_CGS;
 
     // now define quantities that will be used below //
-    double psi_cool=1, psi_egycon=1, v_ejecta_eff_init=local.SNe_v_ejecta, v_ejecta_eff=v_ejecta_eff_init, residual_thermal_frac=0; // separate initial [pre-shock] ejecta velocity, which defines energy, and post-shock
+    double v_speedlim_fac=0, psi_cool=1, psi_egycon=1, v_ejecta_eff_init=local.SNe_v_ejecta, v_ejecta_eff=v_ejecta_eff_init, residual_thermal_frac=0; // separate initial [pre-shock] ejecta velocity, which defines energy, and post-shock
     double wk_norm = 1. / (MIN_REAL_NUMBER + fabs(local.Area_weighted_sum[0])); // normalization for scalar weight sum
     double pnorm_sum = 1./(MIN_REAL_NUMBER + fabs(local.Area_weighted_sum[10])); // re-normalization after second pass for normalized "pnorm" (should be close to ~1)
     double thermal_to_kinetic_ratio_universal = 2.54, f_sedov_kin, thermal_kinetic_ratio_lim_wvinwards = 0; // define ratio of thermal-to-kinetic energy for sedov-taylor phase
@@ -467,6 +488,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
         v_ejecta_eff = v_ejecta_eff_init * sqrt(f_sedov_kin); // effective velocity after reverse shock in sedov phase
         double beta_egycon = sqrt(pnorm_sum / local.Msne) * (1./v_ejecta_eff) * local.Area_weighted_sum[8]; // beta term for re-normalization for energy [can be positive or negative]
         double beta_cool = pnorm_sum * local.Area_weighted_sum[9]; // beta term if all particles in terminal-momentum-limit
+        v_speedlim_fac = DMAX( -beta_cool, v_speedlim_fac ); // save this for below because its needed to limit individually-varying vcool
         psi_egycon = sqrt(1. + beta_egycon*beta_egycon) - beta_egycon; // exact solution for energy equation for constant psi
         if(beta_egycon > 20.) {psi_egycon = 1./(2.*beta_egycon);} // replace with series expansion to avoid roundoff error at high beta
         if(beta_egycon < beta_egycon_thold) {psi_egycon=psi_thold; residual_thermal_frac=DMAX(0., (thermal_kinetic_ratio_lim_wvinwards-2.*beta_egycon*sqrt(1.+thermal_kinetic_ratio_lim_wvinwards))/(1.+thermal_kinetic_ratio_lim_wvinwards) * f_sedov_kin);} // in this case (blastwave in a converging flow) we don't boost the momentum beyond the 'normal' maximum but assign the residual energy to thermal, since the timescale to convert this additional post-shock thermal energy to kinetic is actually quite long for this situation
@@ -513,7 +535,9 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
             {
                 j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */
                 if(P[j].Type != 0) {continue;} // require a gas particle //
-                
+#ifdef BH_WIND_SPAWN
+                if(P[j].ID == All.AGNWindID) {continue;} // dont couple to jet cells
+#endif
                 double Mass_j, InternalEnergy_j, rho_j, Vel_j[3]; // initialize holders for the local variables that might change below
                 #pragma omp atomic read
                 Mass_j = P[j].Mass; // this can get modified below, so we need to read it thread-safe now
@@ -563,12 +587,16 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 }
                 double InternalEnergy_j_0,Mass_j_0,rho_j_0,Vel_j_0[3]; InternalEnergy_j_0=InternalEnergy_j; Mass_j_0=Mass_j; rho_j_0=rho_j; for(k=0;k<3;k++) {Vel_j_0[k]=Vel_j[k];} // save initial values to use below
 #ifdef METALS
-                double Metallicity_j[NUM_METAL_SPECIES], Metallicity_j_0[NUM_METAL_SPECIES];
+                double Metallicity_j[NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION], Metallicity_j_0[NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION];
                 for(k=0;k<NUM_METAL_SPECIES;k++) {
                     #pragma omp atomic read
                     Metallicity_j[k] = P[j].Metallicity[k]; // this can get modified below, so we need to read it thread-safe now
-                    Metallicity_j_0[k] = Metallicity_j[k]; // save initial values to  use below
                 }
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+                double Mass_Fraction_Where_Dust_Destroyed=0.; // mass fraction of gas cleared of dust from SNe
+                for(k=NUM_METAL_SPECIES;k<NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION;k++) {Metallicity_j[k] = return_ismdustchem_species_of_interest_for_diffusion_and_yields(j,k);} // load local dust properties
+#endif
+                for(k=0;k<NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION;k++) {Metallicity_j_0[k] = Metallicity_j[k];} // save initial values to  use below
 #endif
                 
                 RsneKPC = RsneKPC_0;
@@ -576,9 +604,9 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 if(loop_iteration < 2)
                 {
                     double e0 = Esne51;
-                    if(loop_iteration < 0) {e0=1;} else {if(feedback_type_is_SNe == 1) {e0+=1;} else {e0=0.1;}} // set to small number for non-SNe feedback
                     double n0 = rho_j*density_to_n; if(n0 < 0.001) {n0=0.001;}
                     double z0 = Metallicity_j[0]/All.SolarAbundances[0];
+                    if(loop_iteration < 0) {e0=1;} else {if(feedback_type_is_SNe == 1) {e0+=1;} else {e0=0.1;}} // set to small number for non-SNe feedback
                     if(z0 < 0.01) {z0 = 0.01;}
                     double z0_term=1.; if(z0 < 1.) {z0_term = z0*sqrt(z0);} else {z0_term = z0;}
                     double nz_dep  = pow(n0 * z0_term , 0.14);
@@ -676,12 +704,17 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 
 #ifdef METALS   /* inject metals */
                 for(k=0;k<NUM_METAL_SPECIES-NUM_AGE_TRACERS;k++) {Metallicity_j[k]=(1-massratio_ejecta)*Metallicity_j[k] + massratio_ejecta*local.yields[k];}
+                if(NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION>0) {for(k=NUM_METAL_SPECIES;k<NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION;k++) {Metallicity_j[k]=(1-massratio_ejecta)*Metallicity_j[k] + massratio_ejecta*local.yields[k];}}
 #ifdef GALSF_FB_FIRE_AGE_TRACERS
                 if(loop_iteration == 3) {for(k=NUM_METAL_SPECIES-NUM_AGE_TRACERS;k<NUM_METAL_SPECIES;k++) {Metallicity_j[k] += pnorm*local.yields[k]/Mass_j;}} // add age tracers in taking yields to mean MASS, so we can make it large without actually exchanging large masses
 #ifndef GALSF_FB_FIRE_AGE_TRACERS_DISABLE_SURFACE_YIELDS
                 if(loop_iteration != 3) {for(k=NUM_METAL_SPECIES-NUM_AGE_TRACERS;k<NUM_METAL_SPECIES;k++) {Metallicity_j[k]=(1-massratio_ejecta)*Metallicity_j[k] + massratio_ejecta*local.yields[k];}} // treat like any other yield when doing stellar mass exchange
 #endif
 #endif
+#endif
+
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+                if(feedback_type_is_SNe == 1) {Mass_Fraction_Where_Dust_Destroyed = ISMDustChem_Return_Mass_Fraction_Where_Dust_Destroyed(rho_j, pnorm*Esne51, mj_preshock);} /* feedback is sne, so destroy some dust in surrounding gas due to SNe shock, taken from McKee 1989 and Cioffi 1988 */
 #endif
                 
                 double KE_initial=0, KE_final=0;
@@ -711,6 +744,8 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                     if(mj_preshock > m_cooling) {residual_thermal_frac=0; retain_thermal_flag=0;} // figure out if we've passed the cooling time/distance (which is -not- the same as reaching the terminal momentum for an arbitrary inflow structure around the explosion)
                     if(mj_preshock > m_terminal) {mom_boost_fac = DMIN(boost_terminal,boost_egycon);} // if swept mass where reach the terminal solution is less than the cell mass, apply it, otherwise apply the conservative solution
 #endif
+                    double v_speedlim = DMAX(DMAX( v_cooling * v_speedlim_fac , vcool_eff),    v_ejecta_eff_init * sqrt(dM_ejecta_in/mj_preshock)); // maximum physical velocity before must enter cooling phase
+                    mom_boost_fac = DMAX(1., DMIN(mom_boost_fac , v_ejecta_eff_init / v_speedlim)); // restrict boost factor according to this limit
                 } else {mom_boost_fac=DMIN(1,boost_egycon*psi_egycon); residual_thermal_frac=0;} // prevent energy conservation issues when coupling mass-loss
                 
                 /* save summation values for outputs */
@@ -755,7 +790,7 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                 LocalGasMechFBInfoTemp[j].TE_injected += Mass_j*InternalEnergy_j - Mass_j_0*InternalEnergy_j_0; // delta-update of conserved quantity (total internal energy)
                 #pragma omp atomic
                 LocalGasMechFBInfoTemp[j].KE_injected += KE_final - KE_initial; // delta-update of conserved quantity (total kinetic energy)
-                for(k=0;k<NUM_METAL_SPECIES;k++) {
+                for(k=0;k<NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION;k++) {
                     #pragma omp atomic
                     LocalGasMechFBInfoTemp[j].Z_injected[k] += Mass_j*Metallicity_j[k] - Mass_j_0*Metallicity_j_0[k]; // delta-update of conserved quantity (total metal mass)
                 }
@@ -763,7 +798,10 @@ int addFB_evaluate(int target, int mode, int *exportflag, int *exportnodecount, 
                     #pragma omp atomic
                     LocalGasMechFBInfoTemp[j].p_injected[k] += (Mass_j*Vel_j[k] - Mass_j_0*Vel_j_0[k]) / All.cf_atime; // delta-update of conserved quantity (total momentum), converted to physical units
                 }
-                
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+                #pragma omp atomic
+                LocalGasMechFBInfoTemp[j].Mass_Fraction_Where_Dust_Destroyed += Mass_Fraction_Where_Dust_Destroyed; // fractional update (fraction of gas mass cleared of dust)
+#endif
             } // for(n = 0; n < numngb; n++)
         } // while(startnode >= 0)
         if(mode == 1) {listindex++; if(listindex < NODELISTLENGTH) {startnode = DATAGET_NAME[target].NodeList[listindex]; if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;}}}    /* open it */
@@ -793,6 +831,9 @@ void verify_and_assign_local_mechfb_integrals(void)
 #endif
             double mf=m0+dm; /* save for below */
             for(k=0;k<NUM_METAL_SPECIES;k++) {P[j].Metallicity[k] = (m0/mf)*P[j].Metallicity[k] + (1./mf)*LocalGasMechFBInfoTemp[j].Z_injected[k];} /* update metallicity */
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+            update_ISMDustChem_after_mechanical_injection(j, LocalGasMechFBInfoTemp[j].Mass_Fraction_Where_Dust_Destroyed, m0, mf, LocalGasMechFBInfoTemp[j].Z_injected); /* update dust chemistry quantities */
+#endif
             SphP[j].Density *= mf/m0; /* update density [semi-drift] */
             double dTE=LocalGasMechFBInfoTemp[j].TE_injected;
             if(dTE > 0)

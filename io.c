@@ -536,6 +536,17 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
 #endif
             break;
 
+        case IO_DUST_TO_GAS:        /* grain size */
+#ifdef OUTPUT_DUST_TO_GAS_RATIO
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) P[pindex].Metallicity[0]*return_dust_to_metals_ratio_vs_solar(pindex,0);
+                    n++;
+                }
+#endif
+            break;
+
         case IO_GRAINTYPE:      /* grain type */
 #if defined(PIC_MHD)
             for(n = 0; n < pc; pindex++)
@@ -591,6 +602,50 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                 }
 #endif
             break;
+
+        case IO_DUSTCHEMZMET:         /* gas dust metallicity and sources of dust formation */
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    for(k = 0; k < NUM_ISMDUSTCHEM_ELEMENTS; k++) {fp[k] = (MyOutputFloat) SphP[pindex].ISMDustChem_Dust_Metal[k];}
+                    double source_total = 0.; // Convert dust source mass fractions to fraction of dust
+                    for(k = 0; k < NUM_ISMDUSTCHEM_SOURCES; k++) source_total += SphP[pindex].ISMDustChem_Dust_Source[k];
+                    for(k = 0; k < NUM_ISMDUSTCHEM_SOURCES; k++) 
+                    {
+                        if(source_total<=0 || SphP[pindex].ISMDustChem_Dust_Metal[0]<=0) {fp[k+NUM_ISMDUSTCHEM_ELEMENTS] = (MyOutputFloat) 0.;}
+                        else {fp[k+NUM_ISMDUSTCHEM_ELEMENTS] = (MyOutputFloat) SphP[pindex].ISMDustChem_Dust_Source[k]/source_total;}
+                    }
+                    fp += NUM_ISMDUSTCHEM_ELEMENTS + NUM_ISMDUSTCHEM_SOURCES;
+                    n++;
+                }
+#endif
+        break;
+            
+        case IO_DUSTCHEMSPECIESMET:    /* gas dust species following Species routines */
+#if (GALSF_ISMDUSTCHEM_MODEL & 2)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    for(k = 0; k < NUM_ISMDUSTCHEM_SPECIES; k++) {fp[k] = (MyOutputFloat) SphP[pindex].ISMDustChem_Dust_Species[k];}
+                    fp += NUM_ISMDUSTCHEM_SPECIES;
+                    n++;
+                }
+#endif
+        break;
+
+        case IO_ISMDUSTCHEMMOL:    /* sub-resolved molecular gas properties (fraction of C in CO and fraction of gas that is in dense molecular phase) used in dust routines */
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    fp[0] = (MyOutputFloat) SphP[pindex].ISMDustChem_MassFractionInDenseMolecular;
+                    fp[1] = (MyOutputFloat) SphP[pindex].ISMDustChem_C_in_CO;
+                    fp += 2;
+                    n++;
+                }
+#endif
+        break;
 
         case IO_CHIMES_ABUNDANCES:
 #ifdef CHIMES
@@ -1016,7 +1071,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
 #endif
             break;
 
-        case IO_BHDUSTMASS:
+        case IO_SINKDUSTMASSACC:
 #if defined(BLACK_HOLES) && defined(GRAIN_FLUID)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
@@ -1468,8 +1523,19 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
 #endif
             break;
 
-        case IO_AGS_SOFT:		/* Adaptive Gravitational Softening: softening */
-#if defined(AGS_HSML_CALCULATION_IS_ACTIVE) && defined(AGS_OUTPUTGRAVSOFT)
+        case IO_SOFT:		/* Adaptive Gravitational Softening: softening */
+#if defined(OUTPUT_SOFTENING)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) (ForceSoftening_KernelRadius(pindex));
+                    n++;
+                }
+#endif
+            break;
+
+        case IO_AGS_HKERN:        /* neighbor search radius for various particle types */
+#ifdef AGS_HSML_CALCULATION_IS_ACTIVE
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
@@ -1779,6 +1845,7 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_OSTAR:
         case IO_DTOSTAR:
         case IO_GRAINSIZE:
+        case IO_DUST_TO_GAS:
         case IO_DELAYTIME:
         case IO_HSMS:
         case IO_POT:
@@ -1791,7 +1858,7 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_PHI:
         case IO_COOLRATE:
         case IO_BHMASS:
-        case IO_BHDUSTMASS:
+        case IO_SINKDUSTMASSACC:
         case IO_BHMASSALPHA:
         case IO_ACRB:
         case IO_SINKRAD:
@@ -1811,7 +1878,8 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_EOSCS:
         case IO_PRESSURE:
         case IO_INIT_DENSITY:
-        case IO_AGS_SOFT:
+        case IO_SOFT:
+        case IO_AGS_HKERN:
         case IO_AGS_RHO:
         case IO_AGS_QPT:
         case IO_AGS_PSI_RE:
@@ -1913,6 +1981,31 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
 #endif
             break;
 
+            case IO_DUSTCHEMZMET:
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+            if(mode)
+                bytes_per_blockelement = (NUM_ISMDUSTCHEM_ELEMENTS + NUM_ISMDUSTCHEM_SOURCES) * sizeof(MyInputFloat);
+            else
+                bytes_per_blockelement = (NUM_ISMDUSTCHEM_ELEMENTS + NUM_ISMDUSTCHEM_SOURCES) * sizeof(MyOutputFloat);
+#endif
+            break;
+
+            case IO_DUSTCHEMSPECIESMET:
+#if (GALSF_ISMDUSTCHEM_MODEL & 2)
+            if(mode)
+                bytes_per_blockelement = (NUM_ISMDUSTCHEM_SPECIES) * sizeof(MyInputFloat);
+            else
+                bytes_per_blockelement = (NUM_ISMDUSTCHEM_SPECIES) * sizeof(MyOutputFloat);
+#endif
+            break;    
+
+            case IO_ISMDUSTCHEMMOL:
+            if(mode)
+                bytes_per_blockelement = 2 * sizeof(MyInputFloat);
+            else
+                bytes_per_blockelement = 2 * sizeof(MyOutputFloat);
+            break;
+            
         case IO_CHIMES_ABUNDANCES:
 #ifdef CHIMES
             if(mode)
@@ -2059,6 +2152,7 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_OSTAR:
         case IO_DTOSTAR:
         case IO_GRAINSIZE:
+        case IO_DUST_TO_GAS:
         case IO_GRAINTYPE:
         case IO_DELAYTIME:
         case IO_HSMS:
@@ -2072,7 +2166,7 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_PHI:
         case IO_COOLRATE:
         case IO_BHMASS:
-        case IO_BHDUSTMASS:
+        case IO_SINKDUSTMASSACC:
         case IO_BHMASSALPHA:
         case IO_ACRB:
         case IO_SINKRAD:
@@ -2096,7 +2190,8 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_EOSYE:
         case IO_PRESSURE:
         case IO_INIT_DENSITY:
-        case IO_AGS_SOFT:
+        case IO_SOFT:
+        case IO_AGS_HKERN:
         case IO_AGS_RHO:
         case IO_AGS_QPT:
         case IO_AGS_PSI_RE:
@@ -2167,6 +2262,26 @@ int get_values_per_blockelement(enum iofields blocknr)
 #ifdef METALS
             values = NUM_METAL_SPECIES;
 #endif
+            break;
+
+        case IO_DUSTCHEMZMET:
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+            values = NUM_ISMDUSTCHEM_ELEMENTS + NUM_ISMDUSTCHEM_SOURCES;
+#else
+            values = 0;
+#endif
+            break;
+
+        case IO_DUSTCHEMSPECIESMET:
+#if (GALSF_ISMDUSTCHEM_MODEL & 2)
+            values = NUM_ISMDUSTCHEM_SPECIES;
+#else
+            values = 0;
+#endif
+            break; 
+
+        case IO_ISMDUSTCHEMMOL:
+            values = 2;
             break;
 
         case IO_CHIMES_ABUNDANCES:
@@ -2255,7 +2370,8 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_CHILD_ID:
         case IO_GENERATION_ID:
         case IO_POT:
-        case IO_AGS_SOFT:
+        case IO_SOFT:
+        case IO_AGS_HKERN:
         case IO_AGS_RHO:
         case IO_AGS_QPT:
         case IO_AGS_PSI_RE:
@@ -2264,6 +2380,7 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_BH_DIST:
         case IO_CBE_MOMENTS:
         case IO_TIDALTENSORPS:
+        case IO_DUST_TO_GAS:
             return nall;
             break;
 
@@ -2298,7 +2415,6 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_NHRATE:
         case IO_HHRATE:
         case IO_MCRATE:
-        case IO_HSML:
         case IO_DELAYTIME:
         case IO_SFR:
         case IO_DTENTR:
@@ -2349,10 +2465,20 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_CHIMES_NH:
         case IO_CHIMES_FLUX_G0:
         case IO_CHIMES_FLUX_ION:
+        case IO_DUSTCHEMZMET:
+        case IO_DUSTCHEMSPECIESMET:
+        case IO_ISMDUSTCHEMMOL:
             for(i = 1; i < 6; i++) {typelist[i] = 0;}
             return ngas;
             break;
 
+        case IO_HSML:
+#if defined(GRAIN_FLUID)
+            return nall;
+#endif
+            for(i = 1; i < 6; i++) {typelist[i] = 0;}
+            return ngas;
+            
         case IO_AGE:
             for(i=0; i<6; i++) {if(!((1 << i) & (valid_star_types))) {typelist[i]=0;}}
             return nstars_tot;
@@ -2397,7 +2523,7 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
             break;
 
         case IO_BHMASS:
-        case IO_BHDUSTMASS:
+        case IO_SINKDUSTMASSACC:
         case IO_BHMASSALPHA:
         case IO_BH_ANGMOM:
         case IO_UNSPMASS:
@@ -2514,6 +2640,12 @@ int blockpresent(enum iofields blocknr)
 #endif
             break;
 
+        case IO_DUST_TO_GAS:
+#ifdef OUTPUT_DUST_TO_GAS_RATIO
+            return 1;
+#endif
+            break;
+
         case IO_GRAINTYPE:
 #ifdef PIC_MHD
             return 1;
@@ -2525,6 +2657,24 @@ int blockpresent(enum iofields blocknr)
             return 1;
 #endif
             break;
+
+        case IO_DUSTCHEMZMET:
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+            return 1;
+#endif
+            break;               
+          
+        case IO_DUSTCHEMSPECIESMET:
+#if (GALSF_ISMDUSTCHEM_MODEL & 2)
+            return 1;
+#endif
+            break; 
+
+        case IO_ISMDUSTCHEMMOL:
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+            return 1;
+#endif
+            break; 
 
         case IO_CHIMES_ABUNDANCES:
 #if defined(CHIMES_REDUCED_OUTPUT)
@@ -2790,7 +2940,7 @@ int blockpresent(enum iofields blocknr)
 #endif
             break;
 
-        case IO_BHDUSTMASS:
+        case IO_SINKDUSTMASSACC:
 #if defined(BLACK_HOLES) && defined(GRAIN_FLUID)
             return 1;
 #endif
@@ -2937,8 +3087,14 @@ int blockpresent(enum iofields blocknr)
 #endif
             break;
 
-        case IO_AGS_SOFT:
-#if defined (AGS_HSML_CALCULATION_IS_ACTIVE) && defined(AGS_OUTPUTGRAVSOFT)
+        case IO_SOFT:
+#if defined(OUTPUT_SOFTENING)
+            return 1;
+#endif
+            break;
+
+        case IO_AGS_HKERN:
+#if defined(AGS_HSML_CALCULATION_IS_ACTIVE)
             return 1;
 #endif
             break;
@@ -3095,6 +3251,9 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
         case IO_GRAINSIZE:
             strncpy(label, "GRSZ", 4);
             break;
+        case IO_DUST_TO_GAS:
+            strncpy(label, "GRDG", 4);
+            break;
         case IO_GRAINTYPE:
             strncpy(label, "GRTP", 4);
             break;
@@ -3106,6 +3265,15 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
             break;
         case IO_Z:
             strncpy(label, "Z   ", 4);
+            break;
+        case IO_DUSTCHEMZMET:
+            strncpy(label, "DZ  ", 4);
+            break;
+        case IO_DUSTCHEMSPECIESMET:
+            strncpy(label, "SPEZ", 4);
+            break;
+        case IO_ISMDUSTCHEMMOL:
+            strncpy(label, "DMOL", 4);
             break;
         case IO_CHIMES_ABUNDANCES:
             strncpy(label, "CHIM", 4);
@@ -3209,7 +3377,7 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
         case IO_BHMASS:
             strncpy(label, "BHMA", 4);
             break;
-        case IO_BHDUSTMASS:
+        case IO_SINKDUSTMASSACC:
             strncpy(label, "BHDM", 4);
             break;
         case IO_BH_DIST:
@@ -3329,7 +3497,10 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
         case IO_EDDINGTON_TENSOR:
             strncpy(label, "ET", 4);
             break;
-        case IO_AGS_SOFT:
+        case IO_SOFT:
+            strncpy(label, "SOFT", 4);
+            break;
+        case IO_AGS_HKERN:
             strncpy(label, "AGSH", 4);
             break;
         case IO_AGS_RHO:
@@ -3505,6 +3676,9 @@ void get_dataset_name(enum iofields blocknr, char *buf)
         case IO_GRAINSIZE:
             strcpy(buf, "GrainSize");
             break;
+        case IO_DUST_TO_GAS:
+            strcpy(buf, "DustToGasRatio_Local");
+            break;
         case IO_GRAINTYPE:
             strcpy(buf, "PICParticleType");
             break;
@@ -3513,6 +3687,15 @@ void get_dataset_name(enum iofields blocknr, char *buf)
             break;
         case IO_Z:
             strcpy(buf, "Metallicity");
+            break;
+        case IO_DUSTCHEMZMET:
+            strcpy(buf, "DustMetallicity");
+            break;
+        case IO_DUSTCHEMSPECIESMET:
+            strcpy(buf, "DustSpeciesAbundance");
+            break;
+        case IO_ISMDUSTCHEMMOL:
+            strcpy(buf, "DustMolecularSpeciesFractions");
             break;
         case IO_CHIMES_ABUNDANCES:
             strcpy(buf, "ChimesAbundances");
@@ -3616,7 +3799,7 @@ void get_dataset_name(enum iofields blocknr, char *buf)
         case IO_BHMASS:
             strcpy(buf, "BH_Mass");
             break;
-        case IO_BHDUSTMASS:
+        case IO_SINKDUSTMASSACC:
             strcpy(buf, "BH_Dust_Mass");
             break;
         case IO_BH_DIST:
@@ -3721,8 +3904,11 @@ void get_dataset_name(enum iofields blocknr, char *buf)
         case IO_EDDINGTON_TENSOR:
             strcpy(buf, "EddingtonTensor");
             break;
-        case IO_AGS_SOFT:
-            strcpy(buf, "AGS-Softening");
+        case IO_SOFT:
+            strcpy(buf, "Softening_KernelRadius");
+            break;
+        case IO_AGS_HKERN:
+            strcpy(buf, "AGS-KernelRadius");
             break;
         case IO_AGS_RHO:
             strcpy(buf, "AGS-Density");
@@ -4542,7 +4728,16 @@ void write_header_attributes_in_hdf5(hid_t handle)
         for(k=0;k<NUM_AGE_TRACERS;k++) {zkey[1+NUM_LIVE_SPECIES_FOR_COOLTABLES+NUM_RPROCESS_SPECIES+k]=-2;}
         for(k=0;k<NUM_STARFORGE_FEEDBACK_TRACERS;k++) {zkey[1+NUM_LIVE_SPECIES_FOR_COOLTABLES+NUM_RPROCESS_SPECIES+NUM_AGE_TRACERS+k]=-3;}
         H5Awrite(hdf5_attribute, H5T_NATIVE_INT, zkey); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+
+#ifdef GALSF_ISMDUSTCHEM_MODEL
+    {int holder=NUM_ISMDUSTCHEM_SPECIES; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "ISMDustChem_NumberOfSpecies", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &holder); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
+#ifdef GALSF_ISMDUSTCHEM_PASSIVE
+    {int holder=1; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "ISMDustChem_PassiveDustEvolution", H5T_NATIVE_INT, hdf5_dataspace, H5P_DEFAULT);
+    H5Awrite(hdf5_attribute, H5T_NATIVE_INT, &holder); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}    
 #endif
+#endif
+#endif // METALS
 
 #if defined(RADTRANSFER) || defined(RT_USE_GRAVTREE)
     {hdf5_dataspace = H5Screate(H5S_SIMPLE); hsize_t tmp_dim[1]={N_RT_FREQ_BINS}; H5Sset_extent_simple(hdf5_dataspace, 1, tmp_dim, NULL);

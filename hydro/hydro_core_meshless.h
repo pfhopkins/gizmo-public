@@ -12,9 +12,6 @@
 #if (SLOPE_LIMITER_TOLERANCE==0)
 #define HYDRO_FACE_AREA_LIMITER // use more restrictive face-area limiter in the simulations [some applications this is useful, but unclear if we can generally apply it] //
 #endif
-//#if !defined(PROTECT_FROZEN_FIRE) && !defined(HYDRO_FACE_AREA_LIMITER)
-//#define HYDRO_FACE_VOLUME_RECONSTRUCTION_CORRECTION
-//#endif
     
     double s_star_ij,s_i,s_j,v_frame[3],dummy_pressure,distance_from_i[3],distance_from_j[3],leak_vs_tol=0;
 #if !(defined(HYDRO_KERNEL_SURFACE_VOLCORR) || defined(EOS_ELASTIC))
@@ -117,7 +114,7 @@
         /* now we do the reconstruction (second-order reconstruction at the face) */
         int recon_mode = 1; // default to 'normal' reconstruction: some special physics will set this to zero for low-order reconstructions
 #ifdef BH_WIND_SPAWN
-        if((P[j].ID==All.AGNWindID)||(local.ConditionNumber<0)) {recon_mode = 0;} // one of the particles is a wind particle: use a low-order reconstruction for safety
+        //if((P[j].ID==All.AGNWindID)||(local.ConditionNumber<0)) {recon_mode = 0;} // one of the particles is a wind particle: use a low-order reconstruction for safety [may no longer be necessary in newest code???]
 #endif
 #if defined(GALSF) || defined(COOLING)
         if(fabs(vdotr2_phys)*UNIT_VEL_IN_KMS > 1000.) {recon_mode = 0;} // particle approach/recession velocity > 1000 km/s: be extra careful here!

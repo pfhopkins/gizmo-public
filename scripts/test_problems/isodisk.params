@@ -49,6 +49,9 @@ MaxSizeTimestep         0.005   % in code units, set for your problem
 %---- Tree algorithm, force accuracy, domain update frequency 
 TreeDomainUpdateFrequency   0.1	% 0.0005-0.05, dept on core+particle number  
 
+%----- Memory allocation
+PartAllocFactor            5.0     % memory load allowed (ratio of element number to mean) for better cpu balance [Default=2]
+
 %---- System of units 
 UnitLength_in_cm            3.085678e21     % 1.0 kpc/h
 UnitMass_in_g               1.989e43  	    % 1.0e10 solar masses/h

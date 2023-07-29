@@ -290,13 +290,19 @@ void st_turbdrive_calc_phases(void)
     }
 }
 
+/* Check whether the phases of the turbulent driving force must be recomputed this timestep */
+int new_turbforce_needed_this_timestep(void)
+{
+    double delta = (All.Ti_Current - StTPrev) * UNIT_INTEGERTIME_IN_PHYSICAL, Dt_Update=st_return_dt_between_updates();
+    if(delta >= Dt_Update){return 1;} else {return 0;}
+}
 
 /* parent routine to initialize and update turbulent driving fields and to track different variables used for analyzing power spectra of dissipation, etc. */
 void set_turb_ampl(void)
 {
-    double delta = (All.Ti_Current - StTPrev) * UNIT_INTEGERTIME_IN_PHYSICAL, Dt_Update=st_return_dt_between_updates();
-    if(delta >= Dt_Update)
+    if(new_turbforce_needed_this_timestep())
     {
+        double delta = (All.Ti_Current - StTPrev) * UNIT_INTEGERTIME_IN_PHYSICAL;
         if(delta > 0)
         {
             int i; double e_diss_sum=0, e_drive_sum=0, glob_diss_sum=0, glob_drive_sum=0;
@@ -327,7 +333,7 @@ void set_turb_ampl(void)
         st_update_ouseq();
         PRINT_STATUS(" ..calculating coefficients and phases following desired projection");
         st_turbdrive_calc_phases();
-        StTPrev = StTPrev + Dt_Update / All.Timebase_interval;
+        StTPrev = StTPrev + st_return_dt_between_updates() / All.Timebase_interval;
         PRINT_STATUS(" ..updated turbulent stirring field at time %f", StTPrev * All.Timebase_interval);
     }
 }
@@ -444,7 +450,7 @@ void log_turb_temp(void)
     
     if(ThisTask == 0)
     {
-        fprintf(FdTurb, "%g %g %g %g %g %g %g\n", All.Time, mach, (glob_ekin + glob_ethermal) / glob_mass, glob_dudt_drive / glob_mass,
+        fprintf(FdTurb, "%.16g %g %g %g %g %g %g\n", All.Time, mach, (glob_ekin + glob_ethermal) / glob_mass, glob_dudt_drive / glob_mass,
                 glob_dudt_diss / glob_mass, All.TurbInjectedEnergy / glob_mass, All.TurbDissipatedEnergy / glob_mass); fflush(FdTurb);
     }
 #endif

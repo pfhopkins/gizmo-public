@@ -32,7 +32,8 @@ int density_isactive(int n)
 {
     /* first check our 'marker' for particles which have finished iterating to an Hsml solution (if they have, dont do them again) */
     if(P[n].TimeBin < 0) {return 0;}
-
+    if(P[n].Type == 0) {if(SphP[n].recent_refinement_flag == 1) return 1;}
+    
 #if defined(GRAIN_FLUID)
     if((1 << P[n].Type) & (GRAIN_PTYPES)) {return 1;} /* any of the particle types flagged as a valid grain-type is active here */
 #endif
@@ -64,8 +65,8 @@ int density_isactive(int n)
 #endif
         
 #if defined(GALSF)
-        if(P[n].DensAroundStar<=0) return 1;
-        if(All.ComovingIntegrationOn==0) // only do stellar age evaluation if we have to //
+        if(P[n].DensAroundStar <= 0) return 1;
+        if(All.ComovingIntegrationOn == 0) // only do stellar age evaluation if we have to //
         {
             double star_age = evaluate_stellar_age_Gyr(n);
             if(star_age < 0.035) return 1;
@@ -310,7 +311,7 @@ int density_evaluate(int target, int mode, int *exportflag, int *exportnodecount
                     {
                         if(local.Type == 0)
                         {
-                            wk = kernel.wk; /* MAKE SURE THIS MATCHES CHOICE IN GRADIENTS.c!!! */
+                            wk = kernel.wk; /* MAKE SURE THIS MATCHES CHOICE IN GRADIENTS.c! */
                             /* the weights for the MLS tensor used for gradient estimation */
                             out.NV_T[0][0] +=  wk * kernel.dp[0] * kernel.dp[0];
                             out.NV_T[0][1] +=  wk * kernel.dp[0] * kernel.dp[1];
@@ -1018,12 +1019,22 @@ void density(void)
             sure that this operation is the last in the loop here */
             if(PPP[i].NumNgb > 0) {PPP[i].NumNgb=pow(PPP[i].NumNgb,1./NUMDIMS);} else {PPP[i].NumNgb=0;}
 
+#if defined(MAGNETIC)
+            if(P[i].Type == 0) {
+                if(SphP[i].recent_refinement_flag == 1) {
+                    int k; for(k=0;k<3;k++) {
+                        SphP[i].BPred[k] = SphP[i].B[k] = SphP[i].BField_prerefinement[k] * P[i].Mass / SphP[i].Density; // reset B-fields to desired values given the conserved variable is VB, after refinement or de-refinement step
+                        SphP[i].BField_prerefinement[k] = 0; // reset this variable to null
+                    }}}
+#endif
+            if(P[i].Type == 0) {SphP[i].recent_refinement_flag = 0;} // reset this flag after density re-computation
+            
         } // density_isactive(i)
-
+        
 #if defined(BH_WIND_SPAWN_SET_BFIELD_POLTOR) /* re-assign magnetic fields after getting the correct density for newly-spawned cells when these options are enabled */
         if(P[i].Type==0) {if(P[i].ID==All.AGNWindID && SphP[i].IniDen<0) {SphP[i].IniDen=SphP[i].Density; int k; for(k=0;k<3;k++) {SphP[i].BPred[k]=SphP[i].B[k]=SphP[i].IniB[k]*(All.UnitMagneticField_in_gauss/UNIT_B_IN_GAUSS)*(P[i].Mass/(All.cf_a2inv*SphP[i].Density));}}}
 #endif
-
+        
     } // for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
 
     /* collect some timing information */

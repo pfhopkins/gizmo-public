@@ -317,6 +317,10 @@ int blackhole_environment_evaluate(int target, int mode, int *exportflag, int *e
                     {
                         double vrel=0, r2=0; for(k=0;k<3;k++) {vrel+=dv[k]*dv[k]; r2+=dP[k]*dP[k];}
                         double dr_code = sqrt(r2); vrel = sqrt(vrel) / All.cf_atime;
+#if defined(MAGNETIC) && defined(GRAIN_LORENTZFORCE) /* need to project grain velocities, shouldn't include gyro motion */
+                        if((1<<P[j].Type) & GRAIN_PTYPES) {vrel=0; double bmag2=0; for(k=0;k<3;k++) {vrel+=dv[k]*P[j].Gas_B[k]; bmag2+=P[j].Gas_B[k]*P[j].Gas_B[k];}
+                            vrel = (fabs(vrel)/sqrt(bmag2)) / All.cf_atime;}
+#endif
                         double vbound = bh_vesc(j, local.Mass, dr_code, ags_h_i);
                         if(vrel < vbound) { /* bound */
                             double local_sink_radius = SinkParticle_GravityKernelRadius;

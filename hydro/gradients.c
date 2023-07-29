@@ -1322,6 +1322,9 @@ void hydro_gradient_calc(void)
 #endif
                 double temperature = mean_molecular_weight * (GAMMA(i)-1.) * U_TO_TEMP_UNITS * SphP[i].InternalEnergyPred; // will use appropriate EOS to estimate temperature
                 double zeta_cr = 1.0e-17; // cosmic ray ionization rate (fixed as constant for non-CR runs)
+#ifdef RT_ISRF_BACKGROUND
+		        zeta_cr = Get_CosmicRayIonizationRate_cgs(i);
+#endif		
 #ifdef COSMIC_RAY_FLUID
                 double u_cr=0; for(k=0;k<N_CR_PARTICLE_BINS;k++) {u_cr += SphP[i].CosmicRayEnergyPred[k];}
                 zeta_cr = u_cr * 2.2e-6 * ((1. / P[i].Mass * SphP[i].Density * All.cf_a3inv) * (UNIT_PRESSURE_IN_CGS)); // convert to ionization rate
@@ -1329,7 +1332,7 @@ void hydro_gradient_calc(void)
                 double a_grain_micron = 0.1, f_dustgas = 0.01; // effective size of grains that matter at these densities
                 double m_ion = 24.3; // Mg dominates ions in dense gas [where this is relevant]; this is ion mass in units of proton mass
 #ifdef METALS
-		        f_dustgas = 0.5 * P[i].Metallicity[0] * return_dust_to_metals_ratio_vs_solar(i); // appropriate dust-to-metals ratio
+		        f_dustgas = 0.5 * P[i].Metallicity[0] * return_dust_to_metals_ratio_vs_solar(i,0); // appropriate dust-to-metals ratio
 #endif
 		        // now everything should be fully-determined (given the inputs above and the known properties of the gas) //
                 double m_neutral = mean_molecular_weight; // in units of the proton mass

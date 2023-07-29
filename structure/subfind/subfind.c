@@ -619,7 +619,7 @@ int get_sub_entrytype_of_block(enum siofields blocknr)
     case SIO_SLUM:
     case SIO_SLATT:
     case SIO_SLOBS:
-    case SIO_DUST:
+    case SIO_HALODUST:
     case SIO_SAGE:
     case SIO_SZ:
     case SIO_SSFR:
@@ -669,7 +669,7 @@ int get_values_per_sub(enum siofields blocknr)
     case SIO_SLOBS:
       n = 1;
       break;
-    case SIO_DUST:
+    case SIO_HALODUST:
       n = 1;
       break;
     case SIO_DELTA_MSUB:
@@ -802,7 +802,7 @@ void get_IO_Label_HDF5_sub(enum siofields blocknr, char *label)
     case SIO_SLOBS:
       strcpy(label, "SLOB");
       break;
-    case SIO_DUST:
+    case SIO_HALODUST:
       strcpy(label, "DUST");
       break;
     case SIO_SAGE:
@@ -948,7 +948,7 @@ void get_IO_Label_sub(enum siofields blocknr, char *label)
     case SIO_SLOBS:
       strncpy(label, "SLOB", 4);
       break;
-    case SIO_DUST:
+    case SIO_HALODUST:
       strncpy(label, "DUST", 4);
       break;
     case SIO_SAGE:

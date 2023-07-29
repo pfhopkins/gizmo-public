@@ -582,7 +582,7 @@ PRINT_STATUS("Local groups found.");
 }
 
 
-/*!   -- this subroutine is not openmp parallelized at present, so there's not any issue about conflicts over shared memory. if you make it openmp, make sure you protect the writes to shared memory here!!! -- */
+/*!   -- this subroutine is not openmp parallelized at present, so there's not any issue about conflicts over shared memory. if you make it openmp, make sure you protect the writes to shared memory here! -- */
 int fof_find_dmparticles_evaluate(int target, int mode, int *nexport, int *nsend_local)
 {
   int j, n, links, p, s, ss, listindex = 0;
@@ -1629,7 +1629,7 @@ void fof_find_nearest_dmparticle(void)
 }
 
 
-/*!   -- this subroutine is not openmp parallelized at present, so there's not any issue about conflicts over shared memory. if you make it openmp, make sure you protect the writes to shared memory here!!! -- */
+/*!   -- this subroutine is not openmp parallelized at present, so there's not any issue about conflicts over shared memory. if you make it openmp, make sure you protect the writes to shared memory here! -- */
 int fof_find_nearest_dmparticle_evaluate(int target, int mode, int *nexport, int *nsend_local)
 {
   int j, n, index, listindex = 0;

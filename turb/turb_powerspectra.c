@@ -777,7 +777,7 @@ void powerspec_turb_save(char *fname, double *disp)
   if(ThisTask == 0)
     {
       if(!(fd = fopen(fname, "w"))) {sprintf(buf, "can't open file `%s`\n", fname); terminate(buf);}
-      fprintf(fd, "%g\n", All.Time);
+      fprintf(fd, "%.16g\n", All.Time);
       i = TURB_DRIVING_SPECTRUMGRID;
       fprintf(fd, "%d\n", i);
       i = BINS_PS;

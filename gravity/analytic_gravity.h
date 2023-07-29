@@ -401,7 +401,7 @@ void GravAccel_StaticNFW()
 
 
 
-/* Paczysnky Wiita pseudo-Newtonian potential, G = M_sol = c = 1 */
+/* Paczysnki Wiita pseudo-Newtonian potential, G = M_sol = c = 1 */
 void GravAccel_PaczynskyWiita()
 {
     double PACZYNSKY_WIITA_MASS = 1.0; // Mass to use for the Paczynksy-Wiita analytic gravity pseudo-Newtonian potential (in solar masses)
@@ -437,6 +437,10 @@ void apply_excision(void)
             {
                 double r2=0; for(k=0;k<3;k++) {double dp=P[i].Pos[k]-All.SMBH_SpecialParticle_Position_ForRefinement[k]; r2+=dp*dp;}
                 if(r2 < excision_radius2) {All.Mass_Accreted_By_SpecialSMBHParticle+=P[i].Mass; P[i].Mass=0;}
+                /* // can add additional Paczysnky Wiita potential corrections, if desired //
+                r2=r2/All.cf_a2inv; double rG=2.*All.G*All.Mass_of_SpecialSMBHParticle/(C_LIGHT_CODE*C_LIGHT_CODE), r=sqrt(r2), x=r/rG-1, fac=(All.G*All.Mass_of_SpecialSMBHParticle/r2)*((1.+2.*x)/(x*x))*(1./All.cf_a2inv);
+                if(x > 0) {for(k=0;k<3;k++) {P[i].GravAccel[k] -= fac * (P[i].Pos[k]-All.SMBH_SpecialParticle_Position_ForRefinement[k])/r;}}
+                */
             }
         }
     }

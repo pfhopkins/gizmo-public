@@ -36,7 +36,8 @@ int does_particle_need_to_be_merged(int i)
 #ifdef PREVENT_PARTICLE_MERGE_SPLIT
     return 0;
 #else
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+    if(P[i].Type==0) {if(SphP[i].recent_refinement_flag==1) return 0;}
+#if defined(FIRE_SUPERLAGRANGIAN_JEANS_REFINEMENT) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
     if(check_if_sufficient_mergesplit_time_has_passed(i) == 0) return 0;
 #endif
 #ifdef GRAIN_RDI_TESTPROBLEM
@@ -67,6 +68,10 @@ int does_particle_need_to_be_merged(int i)
         if((lambda_J > 4. * PARTICLE_MERGE_SPLIT_TRUELOVE_REFINEMENT * Get_Particle_Size(i)*All.cf_atime) && (P[i].Mass < All.MaxMassForParticleSplit)) {return 1;} // de-refine
     }
 #endif
+#if defined(FIRE_SUPERLAGRANGIAN_JEANS_REFINEMENT)
+    if(P[i].Type>0) {return 0;} // don't allow merging of collisionless particles [only splitting, in these runs]
+    if(P[i].Type==0) {if(Get_Particle_Size(i)*All.cf_atime*UNIT_LENGTH_IN_PC < 700.) {return 0;}} // if too high-res spatially, this equiv to size for m=7000 msun for nH=1e-3, dont let de-refine
+#endif
     if((P[i].Type>0) && (P[i].Mass > 0.5*All.MinMassForParticleMerger*target_mass_renormalization_factor_for_mergesplit(i,0))) {return 0;}
     if(P[i].Mass <= (All.MinMassForParticleMerger*target_mass_renormalization_factor_for_mergesplit(i,0))) {return 1;}
     return 0;
@@ -82,7 +87,8 @@ int does_particle_need_to_be_split(int i)
 #ifdef PREVENT_PARTICLE_MERGE_SPLIT
     return 0;
 #else
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+    if(P[i].Type==0) {if(SphP[i].recent_refinement_flag==1) return 0;}
+#if defined(FIRE_SUPERLAGRANGIAN_JEANS_REFINEMENT) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
     if(check_if_sufficient_mergesplit_time_has_passed(i) == 0) return 0;
 #endif
 #ifdef GALSF_MERGER_STARCLUSTER_PARTICLES
@@ -152,6 +158,31 @@ double target_mass_renormalization_factor_for_mergesplit(int i, int split_key)
         return 1; // need to determine appropriate desired refinement criterion, if resolution is not strictly pre-defined //
     }
 #endif
+#if defined(FIRE_SUPERLAGRANGIAN_JEANS_REFINEMENT)
+    if(P[i].Type==0)
+    {
+        double mcrit_0=1.*(FIRE_SUPERLAGRANGIAN_JEANS_REFINEMENT), T_eff = 1.23 * (5./3.-1.) * U_TO_TEMP_UNITS * SphP[i].InternalEnergyPred, nH_cgs = SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_NHCGS;
+        double MJ = 9.e6 * pow( 1 + T_eff/1.e4, 1.5) / sqrt(1.e-12 + nH_cgs); // Jeans mass, but modified with lower limit for temperature so we refine all cool gas equally, lower limit for numerical convenience for density
+        if(All.ComovingIntegrationOn) {MJ *= pow(1. + (100.*COSMIC_BARYON_DENSITY_CGS) / (SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_CGS), 3);} // ensure that only cells much denser than cosmic mean are eligible for refinement. use 100x so even cells outside Rvir are potentially eligible
+        // to check against hot gas in high-density ISM getting worse than a certain resolution level, we want to check that we don't down-grade the spatial resolution too much
+        double m_ref_mJ = 0.001 * MJ;
+#if defined(BH_CALC_DISTANCES)
+        double rbh = P[i].min_dist_to_bh * All.cf_atime; // distance to nearest BH
+        if(rbh > 1.e-10 && isfinite(rbh) && rbh < 1.e10)
+        {
+            double mc=1.e10, m_r1=DMIN(mcrit_0, 7.e3), m_r2=10.*m_r1, m_r3=10.*m_r2, r1=1., r2=10., r3=20.;
+            if(rbh<r1) {mc=m_r1;} else {if(rbh<r2) {mc=m_r1*exp(log(m_r2/m_r1)*log(rbh/r1)/log(r2/r1));} else
+                {if(rbh<r3) {mc=m_r2*exp(log(m_r3/m_r2)*log(rbh/r2)/log(r3/r2));} else {mc=m_r3*pow(rbh/r3,3);}}}
+            
+            m_ref_mJ = DMIN(m_ref_mJ , mc);
+        }
+#endif
+        double M_target = DMAX( mcrit_0, m_ref_mJ ) / UNIT_MASS_IN_SOLAR; // enforce minimum refinement to 7000 Msun, and convert to code units, compare to 0.001xJeans mass, which is designed to target desired levels
+        double normal_median_mass = All.MaxMassForParticleSplit / 3.; // code median mass from ICs
+        ref_factor = DMAX(1.e-30, DMIN( M_target / normal_median_mass , 1)); // this shouldn't get larger than unity since that would exceed the normal maximum mass
+        return ref_factor; // return it
+    }
+#endif
 /*!
  #if defined(BH_CALC_DISTANCES) && !defined(GRAVITY_ANALYTIC_ANCHOR_TO_PARTICLE) && !defined(SINGLE_STAR_SINK_DYNAMICS)
     ref_factor = DMIN(1.,sqrt(P[i].min_dist_to_bh + 0.0001)); // this is an example of the kind of routine you could use to scale resolution with BH distance //
@@ -164,7 +195,7 @@ double target_mass_renormalization_factor_for_mergesplit(int i, int split_key)
 /*! This is the parent routine to actually determine if mergers/splits need to be performed, and if so, to do them
   modified by Takashi Okamoto (t.t.okamoto@gmail.com) on 20/6/2019
  */
-/*!   -- this subroutine is not openmp parallelized at present, so there's not any issue about conflicts over shared memory. if you make it openmp, make sure you protect the writes to shared memory here!!! -- */
+/*!   -- this subroutine is not openmp parallelized at present, so there's not any issue about conflicts over shared memory. if you make it openmp, make sure you protect the writes to shared memory here! -- */
 void merge_and_split_particles(void)
 {
     struct flags_merg_split {
@@ -448,7 +479,9 @@ int split_particle_i(int i, int n_particles_split, int i_nearest)
     if(P[i].ID_generation > 30) {P[i].ID_generation=0;} // roll over at 32 generations (unlikely to ever reach this)
     P[j].ID_generation = P[i].ID_generation; // ok, all set!
 
-    /* assign masses to both particles (so they sum correctly) */
+    /* assign masses to both particles (so they sum correctly), but first record some numbers in case we need them below */
+    double mass_before_split = 0, density_before_split = 0, volume_before_split = 0; mass_before_split = P[i].Mass; // save for use below
+    if(P[i].Type==0) {density_before_split = SphP[i].Density; volume_before_split = mass_before_split/density_before_split;} // save for use below
     P[j].Mass = mass_of_new_particle * P[i].Mass;
     P[i].Mass -= P[j].Mass;
 #ifdef BOX_BND_PARTICLES
@@ -480,17 +513,24 @@ int split_particle_i(int i, int n_particles_split, int i_nearest)
         SphP[j].ConditionNumber = SphP[i].ConditionNumber;
 #ifdef MAGNETIC
         /* we evolve the -conserved- VB and Vphi, so this must be partitioned */
-        for(k=0;k<3;k++)
-        {
-            SphP[j].B[k] = mass_of_new_particle * SphP[i].B[k]; SphP[i].B[k] -= SphP[j].B[k];
-            SphP[j].BPred[k] = mass_of_new_particle * SphP[i].BPred[k]; SphP[i].BPred[k] -= SphP[j].BPred[k];
-            SphP[j].DtB[k] = mass_of_new_particle * SphP[i].DtB[k]; SphP[i].DtB[k] -= SphP[j].DtB[k];
-        }
+/* // old method below, no longer used, because less stable
+        for(k=0;k<3;k++) {SphP[j].B[k] = mass_of_new_particle * SphP[i].B[k]; SphP[i].B[k] -= SphP[j].B[k]; SphP[j].BPred[k] = mass_of_new_particle * SphP[i].BPred[k]; SphP[i].BPred[k] -= SphP[j].BPred[k]; SphP[j].DtB[k] = mass_of_new_particle * SphP[i].DtB[k]; SphP[i].DtB[k] -= SphP[j].DtB[k];}
         SphP[j].divB = mass_of_new_particle * SphP[i].divB; SphP[i].divB -= SphP[j].divB;
+        #ifdef DIVBCLEANING_DEDNER
+        SphP[j].Phi = mass_of_new_particle * SphP[i].Phi; SphP[i].Phi -= SphP[j].Phi; SphP[j].DtPhi = mass_of_new_particle * SphP[i].DtPhi; SphP[i].DtPhi -= SphP[j].DtPhi; SphP[j].PhiPred = mass_of_new_particle * SphP[i].PhiPred; SphP[i].PhiPred -= SphP[j].PhiPred;
+        #endif
+*/
+        for(k=0;k<3;k++) {
+            double B_before_split = SphP[i].B[k] / volume_before_split; /* calculate the real value of B pre-split to know what we need to correctly re-initialize to once the volume partition can be recomputed */
+            SphP[j].BField_prerefinement[k] = B_before_split; SphP[i].BField_prerefinement[k] = B_before_split; /* record the real value of B pre-split to know what we need to correctly re-initialize to once the volume partition can be recomputed */
+            SphP[j].B[k] = mass_of_new_particle * SphP[i].B[k]; SphP[i].B[k] -= SphP[j].B[k]; /* take a reasonable -guess- for the new updated conserved B */
+            SphP[j].BPred[k] = SphP[j].B[k]; SphP[i].BPred[k] = SphP[i].B[k]; /* set BPred equal to the conserved B */
+            SphP[j].DtB[k] = SphP[i].DtB[k] = 0; /* zero the time derivatives and cleaning terms: these need to be re-calculated self-consistently from the new mesh configuration */
+        }
+        SphP[i].divB = SphP[j].divB = 0; /* this will be self-consistently recomputed on the next timestep */
 #ifdef DIVBCLEANING_DEDNER
-        SphP[j].Phi = mass_of_new_particle * SphP[i].Phi; SphP[i].Phi -= SphP[j].Phi;
-        SphP[j].DtPhi = mass_of_new_particle * SphP[i].DtPhi; SphP[i].DtPhi -= SphP[j].DtPhi;
-        SphP[j].PhiPred = mass_of_new_particle * SphP[i].PhiPred; SphP[i].PhiPred -= SphP[j].PhiPred;
+        for(k=0;k<3;k++) {SphP[i].DtB_PhiCorr[k] = SphP[j].DtB_PhiCorr[k] = 0;} /* zero the time derivatives and cleaning terms: these need to be re-calculated self-consistently from the new mesh configuration */
+        SphP[i].Phi = SphP[i].PhiPred = SphP[i].DtPhi = SphP[j].Phi = SphP[j].PhiPred = SphP[j].DtPhi = 0; /* zero the time derivatives and cleaning terms: these need to be re-calculated self-consistently from the new mesh configuration */
 #endif
         /* ideally, particle-splits should be accompanied by a re-partition of the density via the density() call
          for the particles affected, after the tree-reconstruction, with quantities like B used to re-calculate after */
@@ -595,7 +635,7 @@ int split_particle_i(int i, int n_particles_split, int i_nearest)
      any other operations on the particles */
     P[i].Pos[0] += dx; P[j].Pos[0] -= dx; P[i].Pos[1] += dy; P[j].Pos[1] -= dy; P[i].Pos[2] += dz; P[j].Pos[2] -= dz;
 
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+#if defined(FIRE_SUPERLAGRANGIAN_JEANS_REFINEMENT) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
     P[i].Time_Of_Last_MergeSplit = All.Time; P[j].Time_Of_Last_MergeSplit = All.Time;
 #endif
     
@@ -607,6 +647,10 @@ int split_particle_i(int i, int n_particles_split, int i_nearest)
     force_add_star_to_tree(i, j);
 #endif    
     /* we solve this by only calling the merge/split algorithm when we're doing the new domain decomposition */
+    
+    /* flag cells as having just undergone refinement/derefinement for other subroutines to be aware */
+    SphP[j].recent_refinement_flag = SphP[i].recent_refinement_flag = 1;
+
     return 1; // completed routine successfully
 }
 
@@ -634,7 +678,16 @@ int merge_particles_ij(int i, int j)
     double mtot = P[j].Mass + P[i].Mass;
     double wt_i = P[i].Mass / mtot;
     double wt_j = P[j].Mass / mtot;
+    
+    if(((P[i].Type==0)||(P[j].Type==0)) && (P[j].Type!=P[i].Type)) {printf("WARNING: code is trying to merge a gas cell with a non-gas particle. I dont know how to do this. Exiting the merge subroutine."); fflush(stdout); return 0;}
 
+    int swap_ids = 0; if(P[i].Mass > P[j].Mass) {swap_ids = 1;} /* retain the IDs of the more massive progenitor */
+#ifdef BH_WIND_SPAWN
+    if(P[i].ID == All.AGNWindID) {swap_ids = 0;} /* don't copy an agn wind id */
+    if(P[j].ID == All.AGNWindID) {P[j].ID = All.AGNWindID + 1;} /* offset this to avoid checks through code */
+#endif
+    if(swap_ids) {P[j].ID=P[i].ID; P[j].ID_child_number=P[i].ID_child_number; P[j].ID_generation=P[i].ID_generation;} /* swap the ids so save the desired set */
+    
     // block for merging non-gas particles (much simpler, assume collisionless)
     if((P[i].Type>0)&&(P[j].Type>0))
     {
@@ -692,6 +745,7 @@ int merge_particles_ij(int i, int j)
 
 
     // now we have to deal with gas particle mergers //
+    double mass_before_merger_i,mass_before_merger_j,volume_before_merger_i,volume_before_merger_j; mass_before_merger_i=P[i].Mass; mass_before_merger_j=P[j].Mass; volume_before_merger_i=P[i].Mass/SphP[i].Density; volume_before_merger_j=P[j].Mass/SphP[j].Density; // save some numbers for potential use below
     if(P[i].TimeBin < P[j].TimeBin)
     {
 #ifdef WAKEUP
@@ -771,18 +825,25 @@ int merge_particles_ij(int i, int j)
         P[j].GravPM[k] = wt_j*P[j].GravPM[k] + wt_i*P[i].GravPM[k]; // force-conserving //
 #endif
     }
-#ifdef MAGNETIC
+#ifdef MAGNETIC 
     // we evolve the conservative variables VB and Vpsi, these should simply add in particle-merge operations //
-    for(k=0;k<3;k++)
-    {
-        SphP[j].B[k] += SphP[i].B[k];
-        SphP[j].BPred[k] += SphP[i].BPred[k];
-        SphP[j].DtB[k] += SphP[i].DtB[k];
+    /* // old method below, no longer used, because less stable
+     for(k=0;k<3;k++) {SphP[j].B[k] += SphP[i].B[k]; SphP[j].BPred[k] += SphP[i].BPred[k]; SphP[j].DtB[k] += SphP[i].DtB[k];}
+     #ifdef DIVBCLEANING_DEDNER
+     SphP[j].Phi += SphP[i].Phi; SphP[j].PhiPred += SphP[i].PhiPred; SphP[j].DtPhi += SphP[i].DtPhi;
+     #endif
+     */
+    for(k=0;k<3;k++) {
+        double B_before_split = (SphP[i].B[k] + SphP[j].B[k]) / (volume_before_merger_i + volume_before_merger_j); /* calculate the real value of B pre-split to know what we need to correctly re-initialize to once the volume partition can be recomputed. here since VB is the conserved variable explicitly integrated, that gets added with the pre-summation volumes (so we take a volume-weighted mean here) */
+        SphP[j].BField_prerefinement[k] = B_before_split; SphP[i].BField_prerefinement[k] = B_before_split; /* record the real value of B pre-split to know what we need to correctly re-initialize to once the volume partition can be recomputed */
+        SphP[j].B[k] = SphP[j].B[k] + SphP[i].B[k]; SphP[i].B[k] = 0; /* take a reasonable -guess- for the new updated conserved B */
+        SphP[j].BPred[k] = SphP[j].B[k]; SphP[i].BPred[k] = SphP[i].B[k]; /* set BPred equal to the conserved B */
+        SphP[j].DtB[k] = SphP[i].DtB[k] = 0; /* zero the time derivatives and cleaning terms: these need to be re-calculated self-consistently from the new mesh configuration */
     }
+    SphP[i].divB = SphP[j].divB = 0; /* this will be self-consistently recomputed on the next timestep */
 #ifdef DIVBCLEANING_DEDNER
-    SphP[j].Phi += SphP[i].Phi;
-    SphP[j].PhiPred += SphP[i].PhiPred;
-    SphP[j].DtPhi += SphP[i].DtPhi;
+    for(k=0;k<3;k++) {SphP[i].DtB_PhiCorr[k] = SphP[j].DtB_PhiCorr[k] = 0;} /* zero the time derivatives and cleaning terms: these need to be re-calculated self-consistently from the new mesh configuration */
+    SphP[i].Phi = SphP[i].PhiPred = SphP[i].DtPhi = SphP[j].Phi = SphP[j].PhiPred = SphP[j].DtPhi = 0; /* zero the time derivatives and cleaning terms: these need to be re-calculated self-consistently from the new mesh configuration */
 #endif
 #endif
 
@@ -853,6 +914,11 @@ int merge_particles_ij(int i, int j)
 #endif // CHIMES
 #ifdef METALS
     for(k=0;k<NUM_METAL_SPECIES;k++) {P[j].Metallicity[k] = wt_j*P[j].Metallicity[k] + wt_i*P[i].Metallicity[k];} /* metal-mass conserving */
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+    for(k=0;k<NUM_ISMDUSTCHEM_ELEMENTS;k++) {SphP[j].ISMDustChem_Dust_Metal[k] = wt_j*SphP[j].ISMDustChem_Dust_Metal[k] + wt_i*SphP[i].ISMDustChem_Dust_Metal[k];} /* dust-mass conserving */
+    for(k=0;k<NUM_ISMDUSTCHEM_SOURCES;k++) {SphP[j].ISMDustChem_Dust_Source[k] = wt_j*SphP[j].ISMDustChem_Dust_Source[k] + wt_i*SphP[i].ISMDustChem_Dust_Source[k];} /* dust source-mass conserving */
+    for(k=0;k<NUM_ISMDUSTCHEM_SPECIES;k++) {SphP[j].ISMDustChem_Dust_Species[k] = wt_j*SphP[j].ISMDustChem_Dust_Species[k] + wt_i*SphP[i].ISMDustChem_Dust_Species[k];} /* dust species-mass conserving */
+#endif
 #endif
 #ifdef COSMIC_RAY_FLUID
     int k_CRegy; for(k_CRegy=0;k_CRegy<N_CR_PARTICLE_BINS;k_CRegy++)
@@ -878,7 +944,7 @@ int merge_particles_ij(int i, int j)
     }
 #endif
 
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+#if defined(FIRE_SUPERLAGRANGIAN_JEANS_REFINEMENT) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
     P[i].Time_Of_Last_MergeSplit = All.Time; P[j].Time_Of_Last_MergeSplit = All.Time;
 #endif
     
@@ -893,6 +959,8 @@ int merge_particles_ij(int i, int j)
     }
     /* call the pressure routine to re-calculate pressure (and sound speeds) as needed */
     SphP[j].Pressure = get_pressure(j);
+    /* flag cells as having just undergone refinement/derefinement for other subroutines to be aware */
+    SphP[j].recent_refinement_flag = SphP[i].recent_refinement_flag = 1;
     return 1;
 }
 
@@ -1202,7 +1270,7 @@ int evaluate_starstar_merger_for_starcluster_eligibility(int i)
 
 
 
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+#if defined(FIRE_SUPERLAGRANGIAN_JEANS_REFINEMENT) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
 /* subroutine to check if too little time has passed since the last merge-split, in which case we won't allow it again */
 int check_if_sufficient_mergesplit_time_has_passed(int i)
 {

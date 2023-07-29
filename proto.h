@@ -33,6 +33,7 @@ void get_core_set(void);
 
 void init_turb(void);
 void set_turb_ampl(void);
+int new_turbforce_needed_this_timestep(void);
 void add_turb_accel(void);
 void log_turb_temp(void);
 
@@ -46,7 +47,7 @@ void merge_and_split_particles(void);
 int does_particle_need_to_be_merged(int i);
 int does_particle_need_to_be_split(int i);
 double target_mass_renormalization_factor_for_mergesplit(int i, int split_key);
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+#if defined(FIRE_SUPERLAGRANGIAN_JEANS_REFINEMENT) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
 int check_if_sufficient_mergesplit_time_has_passed(int i);
 #endif
 int merge_particles_ij(int i, int j);
@@ -133,7 +134,7 @@ static inline double ForceSoftening_KernelRadius(int p)
 #if defined(ADAPTIVE_GRAVSOFT_FORALL)
     if((1 << P[p].Type) & (ADAPTIVE_GRAVSOFT_FORALL)) {return PPP[p].AGS_Hsml;}
 #endif
-#if defined(ADAPTIVE_GRAVSOFT_FORGAS)
+#if defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(SELFGRAVITY_OFF) /* softening scale still appears in timestep criterion for problems without self-gravity, so set it adaptively */
 #ifdef ADAPTIVE_GRAVSOFT_MAX_SOFT_HARD_LIMIT
     if(P[p].Type == 0) {return DMIN(PPP[p].Hsml, ADAPTIVE_GRAVSOFT_MAX_SOFT_HARD_LIMIT/All.cf_atime);}
 #else
@@ -357,7 +358,7 @@ double Get_Gas_Alfven_speed_i(int i);
 double Get_Gas_Fast_MHD_wavespeed_i(int i);
 double Get_Gas_Mean_Molecular_Weight_mu(double T_guess, double rho, double *xH0, double *ne_guess, double urad_from_uvb_in_G0, int target);
 void update_explicit_molecular_fraction(int i, double dtime_cgs);
-double return_dust_to_metals_ratio_vs_solar(int i);
+double return_dust_to_metals_ratio_vs_solar(int i, double T_dust_manual_override);
 double yhelium(int target);
 double Get_Gas_Molecular_Mass_Fraction(int i, double temperature, double neutral_fraction, double free_electron_ratio, double urad_from_uvb_in_G0);
 double INLINE_FUNC Get_Gas_BField(int i_particle_id, int k_vector_component);
@@ -396,6 +397,7 @@ void blackhole_accretion(void);
 #ifdef BH_WIND_SPAWN
 void get_random_orthonormal_basis(int seed, double *nx, double *ny, double *nz);
 void get_wind_spawn_direction(int i, int num_spawned_this_call, int mode, double *ny, double *nz, double *veldir, double *dpdir);
+double get_spawned_cell_launch_speed(int i);
 #ifdef MAGNETIC
 void get_wind_spawn_magnetic_field(int j, int mode, double *ny, double *nz,  double *dpdir, double d_r);
 #endif
@@ -566,6 +568,21 @@ void get_jet_yields(double *yields, int i);
 #endif
 
 
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+void update_dust_acc_and_sput(int i, double dtime_gyr);
+void get_SNe_dust(double *yields, double *dust_yields, double *species_yields, double t_gyr);
+void ISMDustChem_get_SNe_dust_yields(double *yields, int i, double t_gyr, int SNeIaFlag, double Msne);
+void ISMDustChem_get_wind_dust_yields(double *yields, int i);
+double specific_Z_AGB_dust(int dust_type, double star_age, int z_bound);
+double cumulative_AGB_dust_returns(int dust_type, double star_age, double z);
+double Lambda_Dust_HighTemperature_Gas_ISM(int target, double T, double n_elec);
+void Initialize_ISMDustChem_Variables(int i);
+double return_ismdustchem_species_of_interest_for_diffusion_and_yields(int i, int k);
+double ISMDustChem_Return_Mass_Fraction_Where_Dust_Destroyed(double rho_cell_in_code_units, double Esne51_into_cell, double mass_preshock_in_code_units);
+void update_ISMDustChem_after_mechanical_injection(int j, double massfrac_destroyed, double m0, double mf, double *Z_injected);
+#endif
+
+
 #if defined(GALSF_SFR_IMF_SAMPLING_DISTRIBUTE_SF)
 void update_stellarnumber_and_timedistribofstarformation(void);
 #endif
@@ -707,7 +724,10 @@ void gravity_tree(void);
 void hydro_force(void);
 void init(void);
 void do_the_cooling_for_particle(int i);
-double get_equilibrium_dust_temperature_estimate(int i, double shielding_factor_for_exgalbg);
+double get_equilibrium_dust_temperature_estimate(int i, double shielding_factor_for_exgalbg, double T);
+double gas_dust_heating_coeff(int i, double T, double Tdust);
+double rt_eqm_dust_temp(int i, double T, double dust_absorption_rate);
+double dust_dEdt(int i, double T, double Tdust, double dust_absorption_rate);
 double return_electron_fraction_from_heavy_ions(int target, double temperature, double density_cgs, double n_elec_HHe);
 void apply_pm_hires_region_clipping_selection(int i);
 double get_starformation_rate(int i, int mode);
@@ -845,6 +865,7 @@ void rt_write_chemistry_stats(void);
 #endif
 
 #endif
+double rt_kappa_dust_IR(int i, double T_dust, double Trad, int do_emission_opacity);
 
 
 void find_block(char *label,FILE *fd);

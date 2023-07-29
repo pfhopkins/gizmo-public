@@ -320,6 +320,27 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
 #endif
             break;
 
+       case IO_DUSTCHEMZMET:
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+            for(n = 0; n < pc; n++) {
+                for(k = 0; k < NUM_ISMDUSTCHEM_ELEMENTS; k++) {SphP[offset + n].ISMDustChem_Dust_Metal[k] = *fp++;} // Get dust fractions
+                for(k = 0; k < NUM_ISMDUSTCHEM_SOURCES; k++) {SphP[offset + n].ISMDustChem_Dust_Source[k] = *fp++;} // Then get the sources of dust
+            }
+#endif
+            break;
+
+        case IO_DUSTCHEMSPECIESMET:
+#if (GALSF_ISMDUSTCHEM_MODEL & 2)
+            for(n = 0; n < pc; n++) {for(k = 0; k < NUM_ISMDUSTCHEM_SPECIES; k++) {SphP[offset + n].ISMDustChem_Dust_Species[k] = *fp++;}}
+#endif
+            break;
+
+        case IO_ISMDUSTCHEMMOL:    /* gas dust species following Species routines */
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+            for(n = 0; n < pc; n++) {SphP[offset + n].ISMDustChem_MassFractionInDenseMolecular = *fp++; SphP[offset + n].ISMDustChem_C_in_CO = *fp++;}
+#endif
+            break;
+
         case IO_BFLD:		/* Magnetic field */
 #ifdef MAGNETIC
             for(n = 0; n < pc; n++)
@@ -340,7 +361,7 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
 #endif
             break;
 
-        case IO_BHDUSTMASS:
+        case IO_SINKDUSTMASSACC:
 #if defined(BLACK_HOLES) && defined(GRAIN_FLUID)
             for(n = 0; n < pc; n++) {P[offset + n].BH_Dust_Mass = *fp++;}
 #endif
@@ -427,8 +448,8 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
             break;
 
             /* adaptive softening parameters */
-        case IO_AGS_SOFT:
-#if defined (AGS_HSML_CALCULATION_IS_ACTIVE) && defined(AGS_OUTPUTGRAVSOFT)
+        case IO_AGS_HKERN:
+#if defined(AGS_HSML_CALCULATION_IS_ACTIVE)
             for(n = 0; n < pc; n++) {PPP[offset + n].AGS_Hsml = *fp++;}
 #endif
             break;
@@ -892,9 +913,6 @@ void read_file(char *fname, int readTask, int lastTask)
 #endif
 
 #ifdef AGS_HSML_CALCULATION_IS_ACTIVE
-#ifndef AGS_OUTPUTGRAVSOFT
-            if(blocknr == IO_AGS_SOFT) {continue;}
-#endif
 #ifndef AGS_OUTPUTZETA
             if(blocknr == IO_AGS_ZETA) {continue;}
 #endif

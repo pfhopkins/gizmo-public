@@ -13,7 +13,7 @@
  */
 
 #if defined(GALSF_FB_FIRE_RT_LOCALRP) /* first the radiation pressure coupled in the immediate vicinity of the star */
-/*!   -- this subroutine is not openmp parallelized at present, so there's not any issue about conflicts over shared memory. if you make it openmp, make sure you protect the writes to shared memory here!!! -- */
+/*!   -- this subroutine is not openmp parallelized at present, so there's not any issue about conflicts over shared memory. if you make it openmp, make sure you protect the writes to shared memory here! -- */
 void radiation_pressure_winds_consolidated(void)
 {
     double age_threshold_in_gyr = 0.15; // don't bother for older populations, they contribute negligibly here //
@@ -84,6 +84,9 @@ void radiation_pressure_winds_consolidated(void)
                             for(n=0; n<numngb_inbox; n++)
                             {
                                 j = Ngblist[n];
+#ifdef BH_WIND_SPAWN
+                                if(P[j].ID == All.AGNWindID) {continue;} // dont couple to jet cells
+#endif
                                 if((P[j].Mass>0) && (SphP[j].Density>0))
                                 {
                                     double dp[3],r2=0; for(k=0;k<3;k++) {dp[k]=P[j].Pos[k]-P[i].Pos[k];}
@@ -108,6 +111,9 @@ void radiation_pressure_winds_consolidated(void)
                         for(n=0; n<numngb_inbox; n++)
                         {
                             j = Ngblist[n];
+#ifdef BH_WIND_SPAWN
+                            if(P[j].ID == All.AGNWindID) {continue;} // dont couple to jet cells
+#endif
                             if((P[j].Mass>0) && (SphP[j].Density>0))
                             {
                                 double dp[3],r2=0; for(k=0;k<3;k++) {dp[k]=P[j].Pos[k]-P[i].Pos[k];}
@@ -178,7 +184,7 @@ void radiation_pressure_winds_consolidated(void)
         if(totMPI_prob_kick>0)
         {
             totMPI_avg_v /= MIN_REAL_NUMBER + totMPI_n_wind; totMPI_avg_taufac /= MIN_REAL_NUMBER + totMPI_mom_wind;
-            fprintf(FdMomWinds, "%lg %g %g %g %g %g \n", All.Time,totMPI_n_wind,totMPI_prob_kick,totMPI_mom_wind,totMPI_avg_v,totMPI_avg_taufac); fflush(FdMomWinds);
+            fprintf(FdMomWinds, "%.16g %g %g %g %g %g \n", All.Time,totMPI_n_wind,totMPI_prob_kick,totMPI_mom_wind,totMPI_avg_v,totMPI_avg_taufac); fflush(FdMomWinds);
             PRINT_STATUS(" ..Ncells_pushed=%g (L/c)dt=%g dP_coupled=%g <dv_cell>=%g <dP_multi/dP_single>=%g",totMPI_n_wind,totMPI_prob_kick,totMPI_mom_wind,totMPI_avg_v,totMPI_avg_taufac);
         }
     } // if(ThisTask==0)
@@ -195,7 +201,7 @@ void radiation_pressure_winds_consolidated(void)
 
 #if defined(GALSF_FB_FIRE_RT_HIIHEATING)
 /* Routines for simple FIRE local photo-ionization heating feedback model. This file was written by Phil Hopkins (phopkins@caltech.edu) for GIZMO. */
-/*!   -- this subroutine is not openmp parallelized at present, so there's not any issue about conflicts over shared memory. if you make it openmp, make sure you protect the writes to shared memory here!!! -- */
+/*!   -- this subroutine is not openmp parallelized at present, so there's not any issue about conflicts over shared memory. if you make it openmp, make sure you protect the writes to shared memory here! -- */
 
 
 void HII_heating_singledomain(void)    /* this version of the HII routine only communicates with particles on the same processor */
@@ -272,9 +278,9 @@ void HII_heating_singledomain(void)    /* this version of the HII routine only c
                         for(n = 0; n < numngb; n++)
                         {
                             if(mionized>=mionizable) {break;}
+                            j = ngb_list_touse[n];
                             if(P[j].Mass <= 0 || P[j].Type !=0) {continue;}
                             if(SphP[j].DelayTimeHII > 0) {continue;}
-                            j = ngb_list_touse[n];
                             if(P[j].Type == 0 && P[j].Mass > 0)
                             {
                                 double dx=pos[0]-P[j].Pos[0], dy=pos[1]-P[j].Pos[1], dz=pos[2]-P[j].Pos[2];
@@ -382,7 +388,7 @@ void HII_heating_singledomain(void)    /* this version of the HII routine only c
         {
             if(totMPI_m_ionized>0) {totMPI_avg_RHII /= totMPI_m_ionized;}
             PRINT_STATUS(" ..Nsources=%g with dN/dt=%g/s ionized N=%g (M=%g sol) cells in <R_HII>=%g kpc",totMPI_N_ionizing_part,totMPI_Ndot_ionizing,totMPI_N_ionized,totMPI_m_ionized*UNIT_MASS_IN_SOLAR,totMPI_avg_RHII);
-            fprintf(FdHIIHeating,"%lg %g %g %g %g %g \n",All.Time,totMPI_N_ionizing_part,totMPI_Ndot_ionizing,totMPI_N_ionized,totMPI_m_ionized*UNIT_MASS_IN_SOLAR,totMPI_avg_RHII); fflush(FdHIIHeating);
+            fprintf(FdHIIHeating,"%.16g %g %g %g %g %g \n",All.Time,totMPI_N_ionizing_part,totMPI_Ndot_ionizing,totMPI_N_ionized,totMPI_m_ionized*UNIT_MASS_IN_SOLAR,totMPI_avg_RHII); fflush(FdHIIHeating);
         }
         if(All.HighestActiveTimeBin == All.HighestOccupiedTimeBin) {fflush(FdHIIHeating);}
     } // ThisTask == 0

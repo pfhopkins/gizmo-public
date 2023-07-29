@@ -406,7 +406,7 @@ void rt_write_chemistry_stats(void)
             fprintf(FdRad, "\n");
 #endif
         }
-        fprintf(FdRad, "%g %g ", All.Time, total_nHI_all / total_V_all);
+        fprintf(FdRad, "%.16g %g ", All.Time, total_nHI_all / total_V_all);
 #ifndef RT_PHOTOION_MULTIFREQUENCY
         fprintf(FdRad, "%g ", total_ng_all / total_V_all);
 #endif

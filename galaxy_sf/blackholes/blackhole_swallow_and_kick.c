@@ -293,9 +293,9 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 #endif
 #ifdef RT_REINJECT_ACCRETED_PHOTONS 
 		            if(P[j].Type == 0) { // we have to keep track of how much radiation energy is lost when we accrete this gas cell, and reinject it later
-			            double photon_energy = 0;
-			            for(int kfreq=0;kfreq<N_RT_FREQ_BINS;kfreq++) {photon_energy += SphP[j].Rad_E_gamma[kfreq];}
-			            out.accreted_photon_energy += photon_energy;
+			        double photon_energy = 0; int kfreq;
+			        for(kfreq=0;kfreq<N_RT_FREQ_BINS;kfreq++) {photon_energy += SphP[j].Rad_E_gamma[kfreq];}
+				out.accreted_photon_energy += photon_energy;
 		            }
 #endif
 #if defined(BH_FOLLOW_ACCRETED_MOMENTUM)
@@ -319,9 +319,9 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
                     if(P[j].Type == 5)  /* this is a BH-BH merger */
                     {
 #ifdef BH_OUTPUT_MOREINFO
-                        fprintf(FdBhMergerDetails,"%g  %llu %g %2.7f %2.7f %2.7f  %llu %g %2.7f %2.7f %2.7f\n", All.Time,  (unsigned long long)local.ID,local.BH_Mass,local.Pos[0],local.Pos[1],local.Pos[2],  (unsigned long long)P[j].ID,BPP(j).BH_Mass,P[j].Pos[0],P[j].Pos[1],P[j].Pos[2]); fflush(FdBhMergerDetails);
+                        fprintf(FdBhMergerDetails,"%.16g  %llu %g %2.16g %2.16g %2.16g  %llu %g %2.16g %2.16g %2.16g\n", All.Time,  (unsigned long long)local.ID,local.BH_Mass,local.Pos[0],local.Pos[1],local.Pos[2],  (unsigned long long)P[j].ID,BPP(j).BH_Mass,P[j].Pos[0],P[j].Pos[1],P[j].Pos[2]); fflush(FdBhMergerDetails);
 #elif !defined(IO_REDUCED_MODE)
-                        fprintf(FdBlackHolesDetails,"ThisTask=%d, time=%g: id=%llu swallows %llu (%g %g)\n", ThisTask, All.Time, (unsigned long long)local.ID, (unsigned long long)P[j].ID, local.BH_Mass, BPP(j).BH_Mass); fflush(FdBlackHolesDetails);
+                        fprintf(FdBlackHolesDetails,"ThisTask=%d, time=%.16g: id=%llu swallows %llu (%g %g)\n", ThisTask, All.Time, (unsigned long long)local.ID, (unsigned long long)P[j].ID, local.BH_Mass, BPP(j).BH_Mass); fflush(FdBlackHolesDetails);
 #endif
 #ifdef BH_INCREASE_DYNAMIC_MASS
                         /* the true dynamical mass of the merging BH is Mass_j/BH_INCREASE_DYNAMIC_MASS unless exceeded by physical growth
@@ -419,7 +419,7 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 #endif
 #ifdef BH_OUTPUT_MOREINFO
                         printf(" ..BAL kick: P[j].ID %llu ID %llu Type(j) %d f_acc %g M(j) %g V(j).xyz %g/%g/%g P(j).xyz %g/%g/%g p(i).xyz %g/%g/%g v_out %g \n",(unsigned long long) P[j].ID, (unsigned long long) P[j].SwallowID,P[j].Type, All.BAL_f_accretion,Mass_j,Vel_j[0],Vel_j[1],Vel_j[2],P[j].Pos[0],P[j].Pos[1],P[j].Pos[2],local.Pos[0],local.Pos[1],local.Pos[2],v_kick);
-                        fprintf(FdBhWindDetails,"%g  %llu %g  %2.7f %2.7f %2.7f  %2.7f %2.7f %2.7f %g %g %g %llu  %2.7f %2.7f %2.7f\n",All.Time, (unsigned long long)P[j].ID, Mass_j, P[j].Pos[0],P[j].Pos[1],P[j].Pos[2],  Vel_j[0],Vel_j[1],Vel_j[2],dir[0]/norm,dir[1]/norm,dir[2]/norm, (unsigned long long)local.ID, local.Pos[0],local.Pos[1],local.Pos[2]); fflush(FdBhWindDetails);
+                        fprintf(FdBhWindDetails,"%.16g  %llu %g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g %g %g %g %llu  %2.16g %2.16g %2.16g\n",All.Time, (unsigned long long)P[j].ID, Mass_j, P[j].Pos[0],P[j].Pos[1],P[j].Pos[2],  Vel_j[0],Vel_j[1],Vel_j[2],dir[0]/norm,dir[1]/norm,dir[2]/norm, (unsigned long long)local.ID, local.Pos[0],local.Pos[1],local.Pos[2]); fflush(FdBhWindDetails);
 #endif
 #endif // #ifdef BH_WIND_KICK
                         #pragma omp atomic
@@ -429,11 +429,11 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 #ifdef MAGNETIC
                         for(k=0;k<3;k++) {tempB[k]=Get_Gas_BField(j,k);} //use particle magnetic field
 #endif
-                        fprintf(FdBhSwallowDetails,"%g %llu %g %2.7f %2.7f %2.7f %llu %g %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f %2.7f\n", All.Time, (unsigned long long)local.ID,local.Mass,local.Pos[0],local.Pos[1],local.Pos[2],  (unsigned long long)P[j].ID, Mass_initial, (P[j].Pos[0]-local.Pos[0]),(P[j].Pos[1]-local.Pos[1]),(P[j].Pos[2]-local.Pos[2]), (Vel_j[0]-local.Vel[0]),(Vel_j[1]-local.Vel[1]),(Vel_j[2]-local.Vel[2]), SphP[j].InternalEnergy, tempB[0], tempB[1], tempB[2], SphP[j].Density); fflush(FdBhSwallowDetails);
+                        fprintf(FdBhSwallowDetails,"%.16g %llu %g %2.16g %2.16g %2.16g %llu %g %2.16g %2.16g %2.16g %2.16g %2.16g %2.16g %2.16g %2.16g %2.16g %2.16g %2.16g\n", All.Time, (unsigned long long)local.ID,local.Mass,local.Pos[0],local.Pos[1],local.Pos[2],  (unsigned long long)P[j].ID, Mass_initial, (P[j].Pos[0]-local.Pos[0]),(P[j].Pos[1]-local.Pos[1]),(P[j].Pos[2]-local.Pos[2]), (Vel_j[0]-local.Vel[0]),(Vel_j[1]-local.Vel[1]),(Vel_j[2]-local.Vel[2]), SphP[j].InternalEnergy, tempB[0], tempB[1], tempB[2], SphP[j].Density); fflush(FdBhSwallowDetails);
 #endif
                     }  // if(P[j].Type == 0)
                     //P[j].SwallowID = 0; /* DAA: make sure it is not accreted (or ejected) by the same BH again if inactive in the next timestep [PFH: no longer necessary with the new way we re-initialize the SwallowIDs] */
-                } // if(P[j].SwallowID == id)  -- particles being entirely or partially swallowed!!!
+                } // if(P[j].SwallowID == id)  -- particles being entirely or partially swallowed
 
                 
                 
@@ -605,7 +605,7 @@ void spawn_bh_wind_feedback(void)
                 {
                     if(P[j].Type==0)
                     {
-                        if((P[j].Mass>0) && (SphP[j].Density>0))
+                        if((P[j].Mass>0) && (SphP[j].Density>0) && (SphP[j].recent_refinement_flag==0))
                         {
                             double dx2=(P[j].Pos[0]-P[i].Pos[0])*(P[j].Pos[0]-P[i].Pos[0]) + (P[j].Pos[1]-P[i].Pos[1])*(P[j].Pos[1]-P[i].Pos[1]) + (P[j].Pos[2]-P[i].Pos[2])*(P[j].Pos[2]-P[i].Pos[2]);
                             if(dx2 < r2) {r2=dx2; dummy_gas_tag=j;}
@@ -691,7 +691,7 @@ void get_wind_spawn_direction(int i, int num_spawned_this_call, int mode, double
 #if defined(BH_DEBUG_SPAWN_JET_TEST)
     else if (mode==4) { // old-style of jet being initialized as a cylinder around the BH
         phi=2.*M_PI*get_random_number(num_spawned_this_call+1+ThisTask), cos_theta=2.*(get_random_number(num_spawned_this_call+3+2*ThisTask)-0.5); sin_theta=sqrt(1-cos_theta*cos_theta), sin_phi=sin(phi), cos_phi=cos(phi);
-        if(P[i].ID_child_number % 2 == 0) {cos_theta=fabs(cos_theta);} else {cos_theta=-1.0*fabs(cos_theta);} // balance vertical directions
+        if(P[i].ID_generation % 2 == 0) {cos_theta=fabs(cos_theta);} else {cos_theta=-1.0*fabs(cos_theta);} // balance vertical directions
         double ct_v=1.-(1-cos((BH_DEBUG_SPAWN_JET_TEST)*(M_PI/180.)))*(1.-fabs(cos_theta)), st_v=sqrt(1-ct_v*ct_v); if(cos_theta<0) {ct_v*=-1;}
         for(k=0;k<3;k++) {dpdir[k] = sin_theta*cos_phi*nx[k] + sin_theta*sin_phi*ny[k] + cos_theta*nz[k]; veldir[k] = st_v*cos_phi*nx[k] + st_v*sin_phi*ny[k] + ct_v*nz[k];}
     }
@@ -699,14 +699,33 @@ void get_wind_spawn_direction(int i, int num_spawned_this_call, int mode, double
     return;
 }
 
-#ifdef MAGNETIC
-void get_wind_spawn_magnetic_field(int j, int mode, double *ny, double *nz,  double *dpdir, double d_r)
-{
-    int k; SphP[j].divB = 0;
-#ifdef DIVBCLEANING_DEDNER
-    SphP[j].DtPhi = SphP[j].PhiPred = SphP[j].Phi = 0;
-#endif
 
+/* return desired cell launch speed for spawned cells, in physical (not comoving) units */
+double get_spawned_cell_launch_speed(int i)
+{
+    double v_magnitude = All.BAL_v_outflow; // velocity of the jet: default mode is to set this manually to a specific value in physical units
+#ifdef BH_WIND_SUBEDDINGTON_MODEL
+    double MBH_4 = BPP(i).BH_Mass * UNIT_MASS_IN_SOLAR / 1.e4; // BH mass in 1e4 Msun to scale
+    double lambda_edd_eff = DMAX( BPP(i).BH_Mdot / bh_eddington_mdot(BPP(i).BH_Mass) , 1.e-10 ); // eddington ratio, with floor just to prevent unphysical behaviors
+    double v_eff_esc_BLR = 270. * sqrt(sqrt(MBH_4 / lambda_edd_eff)) / UNIT_VEL_IN_KMS; // escape velocity from BLR in km/s, using canonical RBLR ~ 20 light-days * (L_bol/1e45)^(1/2)-ish scaling
+    v_magnitude = DMIN(v_magnitude , v_eff_esc_BLR); // the input BAL_v_outflow parameter now sets the maximum efficiency/velocity this is allowed to reach, but it can be arbitrarily lower
+#endif
+#ifdef SINGLE_STAR_FB_JETS
+    v_magnitude = single_star_jet_velocity(i); // get velocity from our more detailed function
+#endif
+    return v_magnitude;
+}
+
+
+#ifdef MAGNETIC
+void get_wind_spawn_magnetic_field(int j, int mode, double *ny, double *nz, double *dpdir, double d_r)
+{
+    int k; SphP[j].divB = 0; for(k=0;k<3;k++) {SphP[j].DtB[k] = 0;}
+#ifdef DIVBCLEANING_DEDNER
+    SphP[j].DtPhi = SphP[j].PhiPred = SphP[j].Phi = 0; for(k=0;k<3;k++) {SphP[j].DtB_PhiCorr[k] = 0;}
+#endif
+    
+    double volume_for_BtoVB = P[j].Mass / SphP[j].Density;
 #ifdef BH_WIND_SPAWN_SET_BFIELD_POLTOR /* user manually sets the poloidal and toroidal components here */
     double inj_scale=All.BH_spawn_rinj/All.cf_atime, Bfield[3]={0}, nx[3]={ny[1]*nz[2]-ny[2]*nz[1], ny[2]*nz[0]-ny[0]*nz[2], ny[0]*nz[1]-ny[1]*nz[0]};
     double cos_theta=nz[0]*dpdir[0]+nz[1]*dpdir[1]+nz[2]*dpdir[2], sin_theta=sqrt(1-cos_theta*cos_theta), cos_phi=(nx[0]*dpdir[0]+nx[1]*dpdir[1]+nx[2]*dpdir[2])/sin_theta, sin_phi=(ny[0]*dpdir[0]+ny[1]*dpdir[1]+ny[2]*dpdir[2])/sin_theta;
@@ -719,12 +738,12 @@ void get_wind_spawn_magnetic_field(int j, int mode, double *ny, double *nz,  dou
     Bfield[1]+=    All.B_spawn_tor*(d_r/inj_scale)*sin_theta*cos_phi*exp(-1.0*d_r*d_r/inj_scale/inj_scale)/exp(-1.0);
     /* assign it back to the actual evolved B in the lab/simulation coordinate frame */
     for(k=0;k<3;k++) {SphP[j].IniB[k] = Bfield[0]*nx[k] + Bfield[1]*ny[k] + Bfield[2]*nz[k]; SphP[j].DtB[k]=0;
-        SphP[j].BPred[k]=SphP[j].B[k]=SphP[j].IniB[k]*(All.UnitMagneticField_in_gauss/UNIT_B_IN_GAUSS)*(P[j].Mass/(All.cf_a2inv*SphP[j].Density));}
+        SphP[j].BPred[k]=SphP[j].B[k]=SphP[j].IniB[k]*(All.UnitMagneticField_in_gauss/UNIT_B_IN_GAUSS)*(volume_for_BtoVB/All.cf_a2inv);}
     
 #else /* set B-fields to be weak relative to local ISM values */
 
     double Bmag=0, Bmag_0=0;
-    for(k=0;k<3;k++) {double B=SphP[j].B[k]*SphP[j].Density/P[j].Mass*All.cf_a2inv; Bmag+=B*B; Bmag_0+=SphP[j].B[k]*SphP[j].B[k];} // get actual Bfield
+    for(k=0;k<3;k++) {double B=SphP[j].B[k]*All.cf_a2inv/volume_for_BtoVB; Bmag+=B*B; Bmag_0+=SphP[j].B[k]*SphP[j].B[k];} // get actual Bfield
     double Bmag_low_rel_to_progenitor = 1.e-10 * sqrt(Bmag); // set to some extremely low value relative to cloned element
     double u_internal_new_cell = All.BAL_internal_temperature / (  0.59 * (5./3.-1.) * U_TO_TEMP_UNITS ); // internal energy of new wind cell
     double Bmag_low_rel_to_pressure = 1.e-3 * sqrt(2.*SphP[j].Density*All.cf_a3inv * u_internal_new_cell); // set to beta = 1e6
@@ -738,12 +757,13 @@ void get_wind_spawn_magnetic_field(int j, int mode, double *ny, double *nz,  dou
 #endif
     Bmag = DMAX(Bmag, MIN_REAL_NUMBER); // floor to prevent underflow errors
     /* add magnetic flux here to 'Bmag' if desired */
-    Bmag *= P[j].Mass / (All.cf_a2inv * SphP[j].Density); // convert back to code units
+    Bmag *= volume_for_BtoVB / All.cf_a2inv; // convert back to code units
     for(k=0;k<3;k++) {if(Bmag_0>0) {SphP[j].B[k]*=Bmag/sqrt(Bmag_0);} else {SphP[j].B[k]=Bmag;}} // assign if valid values
     for(k=0;k<3;k++) {SphP[j].BPred[k]=SphP[j].B[k]; SphP[j].DtB[k]=0;} // set predicted = actual, derivative to null
-    
 #endif
 
+    for(k=0;k<3;k++) {SphP[j].BField_prerefinement[k] = SphP[j].B[k] / volume_for_BtoVB;} /* record the real value of B pre-split to know what we need to correctly re-initialize to once the volume partition can be recomputed */
+    for(k=0;k<3;k++) {SphP[j].BPred[k] = SphP[j].B[k];} /* set predicted/drifted equal to the value above */
     return;
 }
 #endif
@@ -817,7 +837,7 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
     }
 #endif
     if(mode == 3){ // if doing an angular grid, need some fixed coordinates to orient it, but want to switch em up each time to avoid artifacts
-        get_random_orthonormal_basis(P[i].ID_child_number, jx, jy, jz);
+        get_random_orthonormal_basis(P[i].ID_generation, jx, jy, jz);
     }
 #ifdef BH_WIND_SPAWN_SET_JET_PRECESSION /* rotate the jet angle according to the explicitly-included precession parameters */
     double degree = All.BH_jet_precess_degree, period = All.BH_jet_precess_period/UNIT_TIME_IN_GYR, new_dir[3];
@@ -930,8 +950,8 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
         if(mass_of_new_particle >= 0.5*BPP(i).Sink_Formation_Mass) {P[j].ID = All.AGNWindID + 1;} // this just has the nominal mass resolution, so no special treatment - this avoids the P[i].ID == All.AGNWindID checks throughout the code
 #endif
 
-        P[j].ID_child_number = P[i].ID_child_number; P[i].ID_child_number +=1; P[j].ID_generation = P[i].ID; // this allows us to track spawned particles by giving them unique sub-IDs
-
+        P[j].ID_child_number = P[i].ID_child_number + P[i].ID_generation; P[i].ID_generation++; P[j].ID_generation = P[i].ID; // this allows us to track spawned particles by giving them unique sub-IDs. Remember we MUST NEVER alter an existing particle ID OR ID_child_number!
+        
         P[j].Mass = mass_of_new_particle; /* assign masses to both particles (so they sum correctly) */
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
         SphP[j].MassTrue = P[j].Mass;
@@ -941,25 +961,22 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
 #endif
         BPP(i).unspawned_wind_mass -= P[j].Mass; /* remove the mass successfully spawned, to update the remaining unspawned mass */
 
-        double v_magnitude = All.BAL_v_outflow * All.cf_atime; // velocity of the jet: default mode is to set this manually to a specific value
-#ifdef SINGLE_STAR_FB_JETS
-        v_magnitude = single_star_jet_velocity(i); // get velocity from our more detailed function
-#endif
-        
+        double v_magnitude_physical = get_spawned_cell_launch_speed(i); /* call subroutine for this velocity */
 
 #if defined(METALS) && (defined(SINGLE_STAR_FB_JETS) || defined(SINGLE_STAR_FB_WINDS) || defined(SINGLE_STAR_FB_SNE))
-        double yields[NUM_METAL_SPECIES]={0}; get_jet_yields(yields,i); // default to jet-type
+        double yields[NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION]={0}; get_jet_yields(yields,i); // default to jet-type
         for(k=0;k<NUM_METAL_SPECIES;k++) {P[j].Metallicity[k]=yields[k];}  // update metallicity of spawned cell modules
 #endif
         
         // actually lay down position and velocities using coordinate basis
         get_wind_spawn_direction(i, j - (NumPart + num_already_spawned), mode, jy, jz, veldir, dpdir);
-        for(k=0;k<3;k++) {P[j].Pos[k]=P[i].Pos[k] + dpdir[k]*d_r; P[j].Vel[k]=P[i].Vel[k] + veldir[k]*v_magnitude; SphP[j].VelPred[k]=P[j].Vel[k];}
+        for(k=0;k<3;k++) {P[j].Pos[k]=P[i].Pos[k] + dpdir[k]*d_r; P[j].Vel[k]=P[i].Vel[k] + veldir[k]*v_magnitude_physical*All.cf_atime; SphP[j].VelPred[k]=P[j].Vel[k];} // convert to code (comoving) velocity units
 
         /* condition number, smoothing length, and density */
         SphP[j].ConditionNumber *= 100.0; /* boost the condition number to be conservative, so we don't trigger madness in the kernel */
+        SphP[j].recent_refinement_flag = 1; /* tag the newly-created cell as recently-refined for all purposes */
 #if defined(SINGLE_STAR_SINK_DYNAMICS) 
-        SphP[j].MaxSignalVel = 2.*DMAX(v_magnitude, SphP[j].MaxSignalVel);// need this to satisfy the Courant condition in the first timestep after spawn
+        SphP[j].MaxSignalVel = 2.*DMAX(v_magnitude_physical, SphP[j].MaxSignalVel); // need this to satisfy the Courant condition in the first timestep after spawn; note here MaxSignalVel is now defined in physical code units
 #endif
         /* note, if you want to use this routine to inject magnetic flux or cosmic rays, do this below */
 #ifdef BH_DEBUG_SPAWN_JET_TEST
@@ -988,7 +1005,7 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
 
 #if defined(COSMIC_RAY_FLUID) && defined(BH_COSMIC_RAYS) /* inject cosmic rays alongside wind injection */
         double dEcr = evaluate_blackhole_cosmicray_efficiency(BPP(i).BH_Mdot,BPP(i).BH_Mass,i) * P[j].Mass * (All.BAL_f_accretion/(1.-All.BAL_f_accretion)) * C_LIGHT_CODE*C_LIGHT_CODE;
-        inject_cosmic_rays(dEcr,All.BAL_v_outflow,5,j,veldir);
+        inject_cosmic_rays(dEcr, v_magnitude_physical, 5, j, veldir);
 #endif
         /* Note: New tree construction can be avoided because of  `force_add_star_to_tree()' */
         force_add_star_to_tree(i0, j);// (buggy) /* we solve this by only calling the merge/split algorithm when we're doing the new domain decomposition */
@@ -1004,8 +1021,16 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
 double target_mass_for_wind_spawning(int i)
 {
 #ifdef BH_WIND_SPAWN
-    return 0; // no well-defined answer, this shouldn't be called in this instance
+    
+
+#if defined(BH_SCALE_SPAWNINGMASS_WITH_INITIALMASS)
+    return All.BAL_wind_particle_mass * P[i].Sink_Formation_Mass;
+#else
+    return All.BAL_wind_particle_mass;
 #endif
+
+#endif // BH_WIND_SPAWN clause
+    return 0; // no well-defined answer, this shouldn't be called in this instance
 }
 
 

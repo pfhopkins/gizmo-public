@@ -2068,7 +2068,7 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                 pdxx = GRAVITY_NGB_PERIODIC_BOX_LONG_X(dxx,dyy,dzz,-1);
                 pdyy = GRAVITY_NGB_PERIODIC_BOX_LONG_Y(dxx,dyy,dzz,-1);
                 pdzz = GRAVITY_NGB_PERIODIC_BOX_LONG_Z(dxx,dyy,dzz,-1);
-                if((r2 > rcut2) & ((pdxx > eff_dist) | (pdyy > eff_dist) | (pdzz > eff_dist))) /* check whether we can stop walking along this branch */
+                if((r2 > rcut2) && ((pdxx > eff_dist) || (pdyy > eff_dist) || (pdzz > eff_dist))) /* check whether we can stop walking along this branch */
                 {
                     no = nop->u.d.sibling; continue;
                 }
@@ -2122,7 +2122,7 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                         continue;
                     }
 #if defined(REDUCE_TREEWALK_BRANCHING) && defined(PMGRID)
-                    if((mass * nop->len * nop->len > r2 * r2 * aold) | ((pdxx < 0.60 * nop->len) & (pdyy < 0.60 * nop->len) & (pdzz < 0.60 * nop->len))) /* open cell */
+                    if((mass * nop->len * nop->len > r2 * r2 * aold) || ((pdxx < 0.60 * nop->len) && (pdyy < 0.60 * nop->len) && (pdzz < 0.60 * nop->len))) /* open cell */
                     {
                         no = nop->u.d.nextnode;
                         continue;
@@ -3396,8 +3396,8 @@ int force_treeevaluate_potential(int target, int mode, int *nexport, int *nsend_
                     }
 
 #ifdef REDUCE_TREEWALK_BRANCHING
-                    if((mass * nop->len * nop->len > r2 * r2 * aold) |
-                       ((fabs(dxx) < 0.60 * nop->len) & (fabs(dyy) < 0.60 * nop->len) & (fabs(dzz) < 0.60 * nop->len)))
+                    if((mass * nop->len * nop->len > r2 * r2 * aold) ||
+                       ((fabs(dxx) < 0.60 * nop->len) && (fabs(dyy) < 0.60 * nop->len) && (fabs(dzz) < 0.60 * nop->len)))
                     {
                         /* open cell */
                         no = nop->u.d.nextnode;

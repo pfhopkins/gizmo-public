@@ -3230,7 +3230,7 @@ void powerspec_save(void)
 
       for(flag = 0; flag < 2; flag++)
 	{
-	  fprintf(fd, "%g\n", All.Time);
+	  fprintf(fd, "%.16g\n", All.Time);
 	  i = BINS_PS;
 	  fprintf(fd, "%d\n", i);
 	  fprintf(fd, "%g\n", power_spec_totmass);

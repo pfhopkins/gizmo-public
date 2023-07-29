@@ -820,7 +820,7 @@ static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, in
     P[i].NInteractions += out->si_count;
 #endif
 #ifdef DM_FUZZY
-    for(k=0;k<3;k++) {P[i].GravAccel[k] += out->acc[k];}
+    for(k=0;k<3;k++) {P[i].GravAccel[k] += out->acc[k];} // currently incompatible with hermite integrator -- need to update to Other_Accel
     ASSIGN_ADD_PRESET(P[i].AGS_Dt_Numerical_QuantumPotential,out->AGS_Dt_Numerical_QuantumPotential,mode);
 #if (DM_FUZZY > 0)
     ASSIGN_ADD_PRESET(P[i].AGS_Dt_Psi_Re,out->AGS_Dt_Psi_Re,mode);

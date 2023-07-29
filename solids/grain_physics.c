@@ -43,6 +43,12 @@ void apply_grain_dragforce(void)
 #endif
         if(((1 << P[i].Type) & (GRAIN_PTYPES)) && (P[i].Mass>0)) /* only particles of designated type[s] are eligible for this routine */
         {
+#ifdef BLACK_HOLES
+            P[i].SwallowID = 0; /* zero for next cycle */
+#ifdef SINGLE_STAR_SINK_DYNAMICS
+            P[i].SwallowTime = MAX_REAL_NUMBER; /* set to large number to be checked against lower values in next cycle */
+#endif
+#endif
 #if defined(GRAIN_BACKREACTION)
             for(k=0;k<3;k++) {P[i].Grain_DeltaMomentum[k]=0;} /* reset momentum to couple back to gas (or else would diverge) */
 #endif
@@ -163,7 +169,7 @@ void apply_grain_dragforce(void)
                     /* note, we can directly apply this by taking P[i].Vel[k] += dv[k]; but this is not as accurate as our
                      normal leapfrog integration scheme. we can also account for the -gas- acceleration, by including it like vdrift;
                      for a constant t_stop, the gas acceleration term appears as P[i].Vel[l] += Gas_Accel[k] * dt + slow_fac * (Gas-Accel[k] / tstop_inv) */
-                    P[i].GravAccel[k] += dv[k] / (dt * All.cf_a2inv); /* we solve the equations with an external acceleration already (external_forcing above): therefore add to forces like gravity that are acting on the gas and dust in the same manner (in terms of acceleration). put into code units */
+                    P[i].GravAccel[k] += dv[k] / (dt * All.cf_a2inv); /* we solve the equations with an external acceleration already (external_forcing above): therefore add to forces like gravity that are acting on the gas and dust in the same manner (in terms of acceleration). put into code units */ // currently incompatible with hermite integrator -- need to update to Other_Accel
                 }
             } // closes check for gas density, dt, vmag > 0, subtype valid
 
@@ -232,7 +238,7 @@ void apply_grain_dragforce(void)
 #endif
                     P[i].Grain_DeltaMomentum[k] += delta_momentum; /* save to couple back to gas in loop below */
 #endif
-                    P[i].GravAccel[k] += (beta_true_cr_f[k]-beta_true_cr_0[k]) * reduced_C / (dt * All.cf_a2inv); /* update acceleration with the kick from the full boris push above [put into code units] */
+                    P[i].GravAccel[k] += (beta_true_cr_f[k]-beta_true_cr_0[k]) * reduced_C / (dt * All.cf_a2inv); /* update acceleration with the kick from the full boris push above [put into code units] */ // currently incompatible with hermite integrator -- need to update to Other_Accel
                 }
             } /* closes check for gas density, dt, vmag > 0, subtype valid */
 #endif
@@ -459,7 +465,7 @@ static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, in
     int k,k_freq;
     if(P[i].Type==0) {ASSIGN_ADD(SphP[i].InterpolatedGeometricDustCrossSection,out->InterpolatedGeometricDustCrossSection,mode);
         for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++) {ASSIGN_ADD(SphP[i].Interpolated_Opacity[k_freq],out->Interpolated_Opacity[k_freq],mode);}}
-    if((1 << P[i].Type) & (GRAIN_PTYPES)) {for(k=0;k<3;k++) {P[i].GravAccel[k] += out->Interpolated_Radiation_Acceleration[k]/All.cf_a2inv;}} /* this simply adds to the 'gravitational' acceleration for kicks */
+    if((1 << P[i].Type) & (GRAIN_PTYPES)) {for(k=0;k<3;k++) {P[i].GravAccel[k] += out->Interpolated_Radiation_Acceleration[k]/All.cf_a2inv;}} /* this simply adds to the 'gravitational' acceleration for kicks */ // currently incompatible with hermite integrator -- need to update to Other_Accel
 }
 
 /* this subroutine does the actual neighbor-element calculations (this is the 'core' of the loop, essentially) */

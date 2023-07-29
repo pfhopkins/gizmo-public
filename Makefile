@@ -300,6 +300,57 @@ OPT     += -DUSE_MPI_IN_PLACE -DNO_ISEND_IRECV_IN_DOMAIN -DHDF5_DISABLE_VERSION_
 # Compiles with following modules:   1) intel/20.1    2) hdf5/1.10.1   3) gsl/2.4       4) fftw/3.3.7
 endif
 
+#----------------------------------------------------------------------------------------------
+ifeq ($(SYSTYPE),"TSCC")
+CC       = mpicc
+CXX      = mpicxx
+FC       = $(CC)
+OPTIMIZE = -Ofast
+ifeq (OPENMP,$(findstring OPENMP,$(CONFIGVARS)))
+OPTIMIZE += -qopenmp
+endif
+
+GSL_INCL = -I$(GSLHOME)/include
+GSL_LIBS = -L$(GSLHOME)/lib
+FFTW_INCL= -I$(FFTWHOME)/include
+FFTW_LIBS= -L$(FFTWHOME)/lib
+HDF5INCL = -I$(HDF5HOME)/include -DH5_USE_16_API
+HDF5LIB  = -L$(HDF5HOME)/lib -lhdf5 -lz
+MPICHLIB =
+OPT     += -DUSE_MPI_IN_PLACE
+## modules to load
+## module load intel openmpi_ib fftw/2.1.5 gsl hdf5
+##  -- Make sure to use NOTYPEPREFIX_FFTW when compiling
+## run job with
+## mpirun -v -x LD_LIBRARY_PATH ./GIZMO params.txt
+endif
+
+
+#----------------------------------------------------------------------------------------------
+ifeq ($(SYSTYPE),"Expanse")
+CC       = mpicc
+CXX      = mpicxx
+FC       = $(CC)
+OPTIMIZE = -Ofast
+ifeq (OPENMP,$(findstring OPENMP,$(CONFIGVARS)))
+OPTIMIZE += -qopenmp
+endif
+
+GSL_INCL = -I$(GSLHOME)/include
+GSL_LIBS = -L$(GSLHOME)/lib
+FFTW_INCL= -I$(FFTWHOME)/include
+FFTW_LIBS= -L$(FFTWHOME)/lib
+HDF5INCL = -I$(HDF5HOME)/include -DH5_USE_16_API
+HDF5LIB  = -L$(HDF5HOME)/lib -lhdf5 -lz
+MPICHLIB =
+OPT     += -DUSE_MPI_IN_PLACE
+## modules to load
+## module load slurm intel openmpi_ib fftw/2.1.5 gsl hdf5
+##  -- Make sure to use NOTYPEPREFIX_FFTW when compiling
+## run job with
+## mpirun -v -x LD_LIBRARY_PATH ./GIZMO params.txt
+endif
+
 
 #----------------------------------------------------------------------------------------------
 ifeq ($(SYSTYPE),"Bridges2")
@@ -1206,6 +1257,7 @@ EOSCOOL_OBJS =  cooling/cooling.o \
 				eos/cosmic_ray_fluid/cosmic_ray_utilities.o \
 				solids/elastic_physics.o \
 				solids/grain_physics.o \
+				solids/ism_dust_chemistry.o \
 				nuclear/nuclear_network_solver.o \
 				nuclear/nuclear_network.o 
 

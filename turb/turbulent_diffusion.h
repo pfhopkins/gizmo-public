@@ -34,18 +34,20 @@
         
         int k_species;
         double rho_i = local.Density*All.cf_a3inv, rho_j = SphP[j].Density*All.cf_a3inv, rho_ij = 0.5*(rho_i+rho_j); // physical
-        for(k_species=0;k_species<NUM_METAL_SPECIES;k_species++)
+        for(k_species=0;k_species<NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION;k_species++)
         {
-            cmag = 0.0;
-            double grad_dot_x_ij = 0.0;
-            d_scalar = local.Metallicity[k_species]-P[j].Metallicity[k_species]; // physical
+            cmag = 0.0; double grad_dot_x_ij = 0.0; double Z_j = 0;
+            if(k_species < NUM_METAL_SPECIES) {Z_j = P[j].Metallicity[k_species];}
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+            if(k_species >= NUM_METAL_SPECIES) {Z_j = return_ismdustchem_species_of_interest_for_diffusion_and_yields(j,k_species);}
+#endif
+            d_scalar = local.Metallicity[k_species]-Z_j; // physical
             for(k=0;k<3;k++)
             {
                 double grad_direct = d_scalar * kernel.dp[k] * rinv*rinv; // 1/code length
-#ifdef TURB_DIFF_METALS_LOWORDER
                 double grad_ij = grad_direct;
-#else
-                double grad_ij = wt_i*local.Gradients.Metallicity[k_species][k] + wt_j*SphP[j].Gradients.Metallicity[k_species][k]; // 1/code length
+#if !defined(TURB_DIFF_METALS_LOWORDER)
+                if(k_species < NUM_METAL_SPECIES) {grad_ij = wt_i*local.Gradients.Metallicity[k_species][k] + wt_j*SphP[j].Gradients.Metallicity[k_species][k];} // 1/code length
 #endif
                 grad_dot_x_ij += grad_ij * kernel.dp[k]; // physical
                 grad_ij = MINMOD(grad_ij , grad_direct);
@@ -64,10 +66,10 @@
             cmag *= -diffusion_wt * dt_hydrostep; // physical
             if(fabs(cmag) > 0)
             {
-                double zlim = 0.25 * DMIN( DMIN(local.Mass,P[j].Mass)*fabs(d_scalar) , DMAX(local.Mass*local.Metallicity[k_species] , P[j].Mass*P[j].Metallicity[k_species]) );
+                double zlim = 0.25 * DMIN( DMIN(local.Mass,P[j].Mass)*fabs(d_scalar) , DMAX(local.Mass*local.Metallicity[k_species] , P[j].Mass*Z_j) );
                 if(fabs(cmag)>zlim) {cmag*=zlim/fabs(cmag);}
 #ifndef HYDRO_SPH
-                double dmet = (P[j].Metallicity[k_species]-local.Metallicity[k_species]) * fabs(mdot_estimated) * dt_hydrostep;
+                double dmet = (Z_j-local.Metallicity[k_species]) * fabs(mdot_estimated) * dt_hydrostep;
                 cmag = MINMOD(dmet,cmag); // limiter based on mass exchange from MFV HLLC solver //
 #endif
                 out.Dyield[k_species] += cmag;
@@ -75,6 +77,5 @@
             }
         }
     }
-    
 #endif
 }

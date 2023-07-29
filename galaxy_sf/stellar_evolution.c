@@ -218,7 +218,6 @@ double mechanical_fb_calculate_eventrates(int i, double dt)
 
 
 
-
 double Z_for_stellar_evol(int i)
 {
     if(i<0) {return 1;}
@@ -274,10 +273,10 @@ void get_jet_yields(double *yields, int i) {
 
 
 #ifdef SINGLE_STAR_FB_JETS
-/* Calculates the launch velocity of jets*/
+/* Calculates the launch velocity of jets, in physical (not comoving) units */
 double single_star_jet_velocity(int n)
 {
-    return (All.BAL_f_launch_v * sqrt(All.G * P[n].BH_Mass / (10. / UNIT_LENGTH_IN_SOLAR)) * All.cf_atime); // we use the flag as a multiplier times the Kepler velocity at the protostellar radius. Really we'd want v_kick = v_kep * m_accreted / m_kicked to get the right momentum; without a better guess, assume fiducial protostellar radius of 10*Rsun, as in Federrath 2014
+    return (All.BAL_f_launch_v * sqrt(All.G * P[n].BH_Mass / (10. / UNIT_LENGTH_IN_SOLAR))); // we use the flag as a multiplier times the Kepler velocity at the protostellar radius. Really we'd want v_kick = v_kep * m_accreted / m_kicked to get the right momentum; without a better guess, assume fiducial protostellar radius of 10*Rsun, as in Federrath 2014
 }
 #endif
 

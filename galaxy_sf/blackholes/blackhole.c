@@ -37,7 +37,9 @@ void blackhole_accretion(void)
 {
     if(All.TimeStep == 0.) return; /* no evolution */
     PRINT_STATUS("Black-hole operations begin...");
-    //     long i; for(i = 0; i < NumPart; i++) {P[i].SwallowID = 0;} /* zero out accretion */ //  This zero-out loop is effectively performed in density.c now, only on gas particles that are actually going to be looked at this timestep, to reduce overhead when only a few particles are active
+#if defined(BH_EXCISION_NONGAS) || defined(BH_GRAVCAPTURE_NONGAS)
+    long i; for(i = 0; i < NumPart; i++) {P[i].SwallowID = 0;} /* zero out accretion */ // This zero-out loop is effectively performed in density.c now, only on -gas- particles that are actually going to be looked at this timestep, to reduce overhead when only a few particles are active. But it still needs to be done for non-gas particles.
+#endif
     blackhole_start();              /* allocates and cleans BlackholeTempInfo struct */
 
     /* this is the PRE-PASS loop.*/
@@ -70,7 +72,9 @@ void blackhole_accretion(void)
     blackhole_final_operations(); /* final operations on the BH with tabulated quantities (not a neighbor loop) */
     blackhole_end();            /* frees BlackholeTempInfo; cleans up */
     PRINT_STATUS(" ..closing black-hole operations");
-    //    for(i = 0; i < NumPart; i++) {P[i].SwallowID = 0;P[i].SwallowEnergy = MAX_REAL_NUMBER;} /* re-zero accretion */
+#if defined(BH_EXCISION_NONGAS) || defined(BH_GRAVCAPTURE_NONGAS)
+    for(i = 0; i < NumPart; i++) {P[i].SwallowID = 0;} /* re-zero accretion */
+#endif
 }
 
 
@@ -86,7 +90,11 @@ double bh_vesc(int j, double mass, double r_code, double bh_softening)
 #endif
     double m_eff = mass + P[j].Mass; // acount for 2-body mass
 #if defined(BH_SEED_GROWTH_TESTS) || defined(SINGLE_STAR_SINK_DYNAMICS) || defined(BH_GRAVCAPTURE_FIXEDSINKRADIUS)
-    if(P[j].Type==0) {m_eff += 4.*M_PI * r_code*r_code*r_code * SphP[j].Density;} // assume an isothermal sphere interior, for Shu-type solution
+    double gas_density = -1; if(P[j].Type == 0) {gas_density = SphP[j].Density;}
+#ifdef GRAIN_FLUID
+    if((1<<P[j].Type) & GRAIN_PTYPES) {gas_density = P[j].Gas_Density;}
+#endif
+    if(gas_density > 0) {m_eff += 4.*M_PI * r_code*r_code*r_code * gas_density;} // assume an isothermal sphere interior, for Shu-type solution
 #endif
     double hinv = 1./bh_softening, fac=2.*All.G*m_eff/All.cf_atime;
 #if defined(BH_REPOSITION_ON_POTMIN) && !defined(BH_EXCISION_NONGAS)
@@ -110,12 +118,16 @@ int bh_check_boundedness(int j, double vrel, double vesc, double dr_code, double
     } // use the fast MHD wavespeed to account for magnetic+thermal energy (but not e.g. cosmic ray), in allowing accretion //
 
 #ifdef SINGLE_STAR_SINK_DYNAMICS
-    if(P[j].Type == 0)
+    double gas_density = -1; if(P[j].Type == 0) {gas_density = SphP[j].Density;}
+#ifdef GRAIN_FLUID
+    if((1<<P[j].Type) & GRAIN_PTYPES) {gas_density = P[j].Gas_Density;}
+#endif
+    if(gas_density > 0)
     {
-        if(Get_Particle_Size(j) > sink_radius*1.396263) {return 0;} // particle volume should be less than sink volume, enforcing a minimum spatial resolution around the sink
+        if((Get_Particle_Size(j) > sink_radius*1.396263) && (P[j].Type == 0)) {return 0;} // particle volume should be less than sink volume, enforcing a minimum spatial resolution around the sink
 #if defined(COOLING)  // check if we're probably sitting at the bottom of a quasi-hydrostatic Larson core
-        double nHcgs = HYDROGEN_MASSFRAC * (SphP[j].Density * All.cf_a3inv * UNIT_DENSITY_IN_NHCGS);
-        if(nHcgs > 1e13 && cs > 0.1 * vrel) {double m_eff = 4. * M_PI * dr_code * dr_code * dr_code * SphP[j].Density; vesc = DMAX(sqrt(2*All.G * m_eff / dr_code), vesc);} // assume an isothermal sphere interior, for Shu-type solution, and re-estimate vesc using self-gravity of the gas
+        double nHcgs = HYDROGEN_MASSFRAC * (gas_density * All.cf_a3inv * UNIT_DENSITY_IN_NHCGS);
+        if(nHcgs > 1e13 && (cs > 0.1 * vrel || P[j].Type != 0)) {double m_eff = 4. * M_PI * dr_code * dr_code * dr_code * gas_density; vesc = DMAX(sqrt(2*All.G * m_eff / dr_code), vesc);} // assume an isothermal sphere interior, for Shu-type solution, and re-estimate vesc using self-gravity of the gas
 #endif
     }
 #endif
@@ -126,6 +138,9 @@ int bh_check_boundedness(int j, double vrel, double vesc, double dr_code, double
         double apocenter = dr_code / (1.-v2); // furthest distance the cell -could- get from the sink, on a purely radial orbit [ignoring internal energy effects, in e.g. a Keplerian potential, this is approximately twice the equivalent circular orbit, while for a highly-eccentric orbit, this is exactly the apocentric radius]
         double apocenter_max = 2.*SinkParticle_GravityKernelRadius; //  = few x epsilon (softening length); check that this is within 2x epsilon is statement that circular orbit with equivalent energy is entirely inside epsilon //
 #ifdef BH_GRAVCAPTURE_FIXEDSINKRADIUS // Bate 1995-style criterion, with a fixed sink/accretion radius that is distinct from both the force softening and the search radius
+#ifdef GRAIN_FLUID
+        if((1 << P[j].Type) & (GRAIN_PTYPES)) {if(dr_code>1.4*sink_radius) {return 0;} else {return 1;}} // simply yes-no, if bound and within sink radius, gets accreted
+#endif
         if(dr_code>sink_radius) {return 0;} else {return 1;} // simply yes-no, if bound and within sink radius, gets accreted
 #endif
 #if !defined(SINGLE_STAR_SINK_DYNAMICS) && !defined(BH_GRAVCAPTURE_FIXEDSINKRADIUS) && defined(BH_SEED_GROWTH_TESTS)
@@ -377,10 +392,18 @@ void set_blackhole_mdot(int i, int n, double dt)
 #endif
         t_acc_disk = sqrt(reff*reff*reff * Gm_i); // dynamical time at radius "reff", essentially fastest-possible accretion time
 #if defined(BH_FOLLOW_ACCRETED_ANGMOM) && defined(BH_MDOT_FROM_ALPHAMODEL)
+        reff = SinkParticle_GravityKernelRadius; Gm_i = 1./(All.G*P[n].Mass); // these need to be reset in case they are re-defined above
         double j=0; for(k=0;k<3;k++) {j+=P[n].BH_Specific_AngMom[k]*P[n].BH_Specific_AngMom[k];}  // calculate magnitude of specific ang mom
         j = sqrt(j) * (1. + 1./BH_ALPHADISK_ACCRETION); // correction assuming a ratio of accretion disk to sink mass ~BH_ALPHADISK_ACCRETION [max allowed], with the material in the sink having given its angular momentum to the sink [which is what should happen]
         t_acc_disk = 2.*M_PI*j*j*j*Gm_i*Gm_i / fabs(BH_MDOT_FROM_ALPHAMODEL); // orbital time at circularization radius of the alpha-disk: BH_MDOT_FROM_ALPHAMODEL is approximately equivalent to the 'alpha' parameter, setting how rapidly accretion occurs (=0.01 -> 100 orbits)
         if(BH_MDOT_FROM_ALPHAMODEL>0) {t_acc_disk = 100. * t_acc_disk * (1 / (Gm_i * DMIN(reff, j*j*Gm_i))) / soundspeed2;} // Shakura-Sunyaev prescription with alpha=0.01, using minimum of sink and circularization radius
+#endif
+#if defined(TIDAL_TIMESTEP_CRITERION) /* limit the accretion timescale to not be more than some multiple of the maximum disk dynamical time allowed by tidal truncation */
+        double tidal_tensor_mag2 = 0.; {int k,j; for(k=0;k<3;k++) {for(j=0;j<3;j++) {tidal_tensor_mag2 += P[n].tidal_tensorps[k][j]*P[n].tidal_tensorps[k][j];}}} /* get the frobenius norm */
+        if(tidal_tensor_mag2 > 0) {
+            double t_dyn_extgrav = sqrt(1. / (All.cf_a3inv * sqrt(tidal_tensor_mag2 / 6.))); /* recovers tdyn=1/Omega=sqrt[r^3/GM] for a Keplerian potential */
+            t_acc_disk = DMIN(t_acc_disk, 100. * t_dyn_extgrav); /* coefficient here is the arbitrary number of dynamical times to limit accretion timescale to */
+        }
 #endif
 #endif
 
@@ -512,7 +535,6 @@ void set_blackhole_new_mass(int i, int n, double dt)
     }
     BPP(n).Mgas_in_Kernel=BlackholeTempInfo[i].Mgas_in_Kernel;
 #endif
-
 }
 
 
@@ -530,7 +552,7 @@ void set_blackhole_drag(int i, int n, double dt)
         fac = meddington * dt / BPP(n).BH_Mass; /* make the force stronger to keep the BH from wandering */
 #endif
         if(fac>1) fac=1;
-        for(k = 0; k < 3; k++) {P[n].GravAccel[k] += All.cf_atime*All.cf_atime * fac * BlackholeTempInfo[i].BH_SurroundingGasVel[k] / dt;}
+        for(k = 0; k < 3; k++) {P[n].GravAccel[k] += All.cf_atime*All.cf_atime * fac * BlackholeTempInfo[i].BH_SurroundingGasVel[k] / dt;} // currently incompatible with hermite integrator -- need to update to Other_Accel
     } // if((dt>0)&&(BPP(n).BH_Mass>0))
 #endif
 
@@ -538,7 +560,6 @@ void set_blackhole_drag(int i, int n, double dt)
 
 #ifdef BH_DYNFRICTION
     double bh_mass, x;
-
     if(BlackholeTempInfo[i].DF_mmax_particles>0) /* found something in the kernel, we can proceed */
     {
         /* averaged value for colomb logarithm and integral over the distribution function */
@@ -597,14 +618,13 @@ void set_blackhole_drag(int i, int n, double dt)
             for(k = 0; k < 3; k++) {P[n].Vel[k] += BlackholeTempInfo[i].DF_mean_vel[k]*All.cf_atime * fac_vel;}
         }
 #else
-        for(k = 0; k < 3; k++) {P[n].GravAccel[k] += All.cf_atime*All.cf_atime * fac_friction * BlackholeTempInfo[i].DF_mean_vel[k];}
+        for(k = 0; k < 3; k++) {P[n].GravAccel[k] += All.cf_atime*All.cf_atime * fac_friction * BlackholeTempInfo[i].DF_mean_vel[k];} // currently incompatible with hermite integrator -- need to update to Other_Accel
 #endif
     }
-#endif
-
+#endif // BH_DYNFRICTION
 
 }
-#endif
+#endif // BH_DRAG) || BH_DYNFRICTION
 
 
 
@@ -819,14 +839,14 @@ void blackhole_final_operations(void)
 #endif
 
 #if defined(BH_OUTPUT_MOREINFO)
-        fprintf(FdBlackHolesDetails, "%2.12f %llu  %g %g %g %g %g %g  %g %g %g %g %g %g %g %g  %2.10f %2.10f %2.10f  %2.7f %2.7f %2.7f  %g %g %g  %g %g %g\n",
+        fprintf(FdBlackHolesDetails, "%.16g %llu  %g %g %g %g %g %g  %g %g %g %g %g %g %g %g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %g %g %g  %g %g %g\n",
                 All.Time, (unsigned long long)P[n].ID,  P[n].Mass, BPP(n).BH_Mass, mass_disk, BPP(n).BH_Mdot, mdot_disk, dt, BPP(n).DensAroundStar*All.cf_a3inv, BlackholeTempInfo[i].BH_InternalEnergy, BlackholeTempInfo[i].Sfr_in_Kernel,
                 BlackholeTempInfo[i].Mgas_in_Kernel, BlackholeTempInfo[i].Mstar_in_Kernel, MgasBulge, MstarBulge, r0, P[n].Pos[0], P[n].Pos[1], P[n].Pos[2],  P[n].Vel[0], P[n].Vel[1], P[n].Vel[2],
                 BlackholeTempInfo[i].Jgas_in_Kernel[0], BlackholeTempInfo[i].Jgas_in_Kernel[1], BlackholeTempInfo[i].Jgas_in_Kernel[2], BlackholeTempInfo[i].Jstar_in_Kernel[0], BlackholeTempInfo[i].Jstar_in_Kernel[1], BlackholeTempInfo[i].Jstar_in_Kernel[2] ); fflush(FdBlackHolesDetails);
 #else
 
 #ifndef IO_REDUCED_MODE
-        fprintf(FdBlackHolesDetails, "BH=%llu %g %g %g %g %g %g %g %g   %2.7f %2.7f %2.7f\n", (unsigned long long)P[n].ID, All.Time, BPP(n).BH_Mass, mass_disk, P[n].Mass, BPP(n).BH_Mdot, mdot_disk,
+        fprintf(FdBlackHolesDetails, "BH=%llu %.16g %g %g %g %g %g %g %g   %2.16g %2.16g %2.16g\n", (unsigned long long)P[n].ID, All.Time, BPP(n).BH_Mass, mass_disk, P[n].Mass, BPP(n).BH_Mdot, mdot_disk,
                 P[n].DensAroundStar*All.cf_a3inv, BlackholeTempInfo[i].BH_InternalEnergy, P[n].Pos[0], P[n].Pos[1], P[n].Pos[2]); fflush(FdBlackHolesDetails);           // DAA: DensAroundStar is actually not defined in BHP->BPP...
 #endif
 #endif

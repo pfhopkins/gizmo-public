@@ -159,6 +159,9 @@ SfEffPerFreeFall             1.0     %  SFR/(Mgas/tfreefall) for gas which meets
 %---- initialize metallicity+ages of gas+stars in simulation (for GALSF or metal-dependent COOLING)
 InitMetallicity              1e-5   % initial gas+stellar metallicity [for all pre-existing elements] (in solar) [Default=0]
 InitStellarAge               1      % initial mean age (in Gyr; for pre-existing stars in sim ICs) [Default=10]
+%---- initialize dust depletion of gas in simulation (for GALSF_ISMDUSTCHEM_MODEL)
+Initial_ISMDustChem_Depletion                 0.       % initial silicate dust depletion (fraction of Si locked in dust and Fe if using the iron nanoparticles option)
+Initial_ISMDustChem_SiltoCarbRatio           0.       % initial silicate to carbonaceous dust mass ratio (MW value ~2)
 
 
 %---- sub-grid (Springel+Hernquist/GADGET/AREPO) "effective equation of state"

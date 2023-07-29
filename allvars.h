@@ -315,7 +315,8 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 
 
 
-#if defined(SINGLE_STAR_AND_SSP_HYBRID_MODEL) /* options for hybrid/combined FIRE+STARFORGE simulations */
+#if defined(SINGLE_STAR_AND_SSP_HYBRID_MODEL_DEFAULTS) /* options for hybrid/combined FIRE+STARFORGE simulations */
+#define SINGLE_STAR_AND_SSP_HYBRID_MODEL (SINGLE_STAR_AND_SSP_HYBRID_MODEL_DEFAULTS) /* do single-star routines below this mass resolution in solar, FIRE-like above */
 #define GALSF_SFR_IMF_SAMPLING           /* use discrete sampling of 'number of O-stars' so we can handle the intermediate-mass regime in at least a simple approximate manner */
 #define COOLING              /* only physical if include cooling for both sides, using same cooling functions */
 #define MAGNETIC             /* enable MHD, important for systems here */
@@ -329,7 +330,9 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 #define SINGLE_STAR_FB_RAD   /* enable RHD feedback */
 #define RT_COMOVING          /* significantly more stable and accurate formulation given the structure of the problem and method we use */
 #define RT_SOURCES (16+32)   /* need to allow -both- ssp-particles and single-star particles to emit */
+#if !defined(RT_SPEEDOFLIGHT_REDUCTION)
 #define RT_SPEEDOFLIGHT_REDUCTION (0.1)   /* for many problems on these scales, need much larger RSOL than default starforge values (dynamical velocities are big, without this they will severely lag behind) */
+#endif
 #define ADAPTIVE_TREEFORCE_UPDATE (0.0625) /* rough typical value we use for ensuring stability */
 #ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM
 #define PARTICLE_EXCISION
@@ -698,6 +701,9 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 #endif
 #endif
 
+#if defined(RT_OPACITY_FROM_EXPLICIT_GRAINS) || defined(GALSF_ISMDUSTCHEM_MODEL) || defined(RT_INFRARED)
+#define OUTPUT_DUST_TO_GAS_RATIO // helpful if these special modules are on to see this output and save it for use in analysis
+#endif
 
 #if defined(OUTPUT_POTENTIAL) && !defined(EVALPOTENTIAL)
 #define EVALPOTENTIAL
@@ -888,7 +894,7 @@ static MPI_Datatype MPI_TYPE_TIME = MPI_INT;
 
 
 #ifdef AGS_HSML_CALCULATION_IS_ACTIVE
-#define AGS_OUTPUTGRAVSOFT 1  /*! output softening to snapshots */
+#define OUTPUT_SOFTENING  /*! output softening to snapshots */
 //#define AGS_OUTPUTZETA 1 /*! output correction zeta term to snapshots */
 #endif
 
@@ -1182,6 +1188,34 @@ typedef unsigned long long peano1D;
 #define NUM_METAL_SPECIES (1+NUM_LIVE_SPECIES_FOR_COOLTABLES+NUM_RPROCESS_SPECIES+NUM_AGE_TRACERS+NUM_STARFORGE_FEEDBACK_TRACERS)
 #endif // METALS //
 
+#define NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION 0 /* placeholder for arbitrary number of additional species to be used for different operations like yields, etc. */
+
+
+#if defined(GALSF_ISMDUSTCHEM_MODEL) /* define some global and other useful variables for dust chemistry modules which also utilize the metals info above */
+#if defined(COOLING)
+#define GALSF_ISMDUSTCHEM_HIGHTEMPDUSTCOOLING // optional, can turn off
+#endif
+#define NUM_ISMDUSTCHEM_ELEMENTS (1+NUM_LIVE_SPECIES_FOR_COOLTABLES) // number of metal species evolved for dust
+#define NUM_ISMDUSTCHEM_SOURCES (4) // Sources of dust creation/growth 0=gas-dust accretion, 1=SNe Ia, 2=SNe II, 3=AGB outflows
+#if (GALSF_ISMDUSTCHEM_MODEL & 2)
+#if (GALSF_ISMDUSTCHEM_MODEL & 4) && (GALSF_ISMDUSTCHEM_MODEL & 8)
+#define NUM_ISMDUSTCHEM_SPECIES 6 /* 0=silicates, 1=carbonaceous, 2=SiC, 3=free-flying iron, 4=O reservoir, 5=iron inclusions in silicates */
+#elif (GALSF_ISMDUSTCHEM_MODEL & 4) || (GALSF_ISMDUSTCHEM_MODEL & 8)
+#define NUM_ISMDUSTCHEM_SPECIES 5 /* 0=silicates, 1=carbonaceous, 2=SiC, 3=free-flying iron, 4=O reservoir or iron inclusions in silicates */
+#else
+#define NUM_ISMDUSTCHEM_SPECIES 4 /* 0=silicates, 1=carbonaceous, 2=SiC, 3=free-flying iron */
+#endif
+#else
+#define NUM_ISMDUSTCHEM_SPECIES 0 /* no explicit dust species evolved */
+#endif
+#if (GALSF_ISMDUSTCHEM_MODEL & 4) // explicit iron nanoparticle model active
+#define GALSF_ISMDUSTCHEM_VAR_ELEM_IN_SILICATES 3 /* Assume only O, Mg, and Si in silicate structure while Fe is already present via iron inclusions */
+#else
+#define GALSF_ISMDUSTCHEM_VAR_ELEM_IN_SILICATES 4 /* O, Mg, Si, and Fe needed to make silicates */
+#endif
+#undef NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION
+#define NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION (NUM_ISMDUSTCHEM_ELEMENTS+NUM_ISMDUSTCHEM_SOURCES+NUM_ISMDUSTCHEM_SPECIES)
+#endif
 
 
 #if defined(CRFLUID_M1)
@@ -1203,6 +1237,7 @@ typedef unsigned long long peano1D;
 
 #if defined(ADAPTIVE_GRAVSOFT_FROM_TIDAL_CRITERION)
 #define OUTPUT_TIDAL_TENSOR
+#define OUTPUT_SOFTENING
 #endif
 
 #ifdef RT_INFRARED
@@ -2189,6 +2224,18 @@ extern struct global_data_all_processes
 #endif
 #endif
 
+    
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+    double Initial_ISMDustChem_Depletion; /* initial depletion for silicate dust species if defined */
+    double Initial_ISMDustChem_SiliconToCarbonRatio; /* sets rough mass ratio between silicates are carbonaceous dust for given initial depletion */
+    double ISMDustChem_AtomicMassTable[NUM_ISMDUSTCHEM_ELEMENTS]; /* atomic mass for each element in metallicity field */
+    double ISMDustChem_SNeSputteringShutOffTime; /* amount of time to turn off thermal sputtering after SNe event to avoid double counting dust destruction */
+    int ISMDustChem_SilicateMetallicityFieldIndexTable[GALSF_ISMDUSTCHEM_VAR_ELEM_IN_SILICATES]; /* index in metallicity field for elements which make up silicate dust (O, Mg, Si, and possibly Fe) */
+    double ISMDustChem_SilicateNumberOfAtomsTable[GALSF_ISMDUSTCHEM_VAR_ELEM_IN_SILICATES]; /* number of O, Mg, Si, and possibly Fe in one formula unit of silicate dust */
+    double ISMDustChem_EffectiveSilicateDustAtomicWeight; /* atomic weight of one formula unit of silicate dust, depends on which optional module you use */
+#endif
+
+    
 #ifdef GR_TABULATED_COSMOLOGY
   double DarkEnergyConstantW;	/*!< fixed w for equation of state */
 #if defined(GR_TABULATED_COSMOLOGY_W) || defined(GR_TABULATED_COSMOLOGY_G) || defined(GR_TABULATED_COSMOLOGY_H)
@@ -2379,9 +2426,9 @@ extern ALIGN(32) struct particle_data
 
     MyDouble GravAccel[3];          /*!< particle acceleration due to gravity */
 #ifdef PMGRID
-    MyFloat GravPM[3];		/*!< particle acceleration due to long-range PM gravity force */
+    MyFloat GravPM[3];		        /*!< particle acceleration due to long-range PM gravity force */
 #endif
-    MyFloat OldAcc;			/*!< magnitude of old gravitational force. Used in relative opening criterion */
+    MyFloat OldAcc;			        /*!< magnitude of old gravitational force. Used in relative opening criterion */
 #ifdef HERMITE_INTEGRATION
     MyFloat Hermite_OldAcc[3];
     MyFloat OldPos[3];
@@ -2646,7 +2693,7 @@ extern ALIGN(32) struct particle_data
     integertime dt_step;
 #endif
 
-#if defined(FLAG_NOT_IN_PUBLIC_CODE) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+#if defined(FIRE_SUPERLAGRANGIAN_JEANS_REFINEMENT) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
     MyFloat Time_Of_Last_MergeSplit;
 #endif
     
@@ -2743,9 +2790,19 @@ extern struct gas_cell_data
     MyDouble Volume_1;              /*!< 1st-order cell volume for mesh-free (MFM/MFV-type) reconstruction at 1st-order volume quadrature */
 #endif
 
+#if defined(GALSF_ISMDUSTCHEM_MODEL)
+    MyDouble ISMDustChem_Dust_Source[NUM_ISMDUSTCHEM_SOURCES];  /*!< amount of dust from each source of dust creation. 0=gas-dust accretion, 1=Sne Ia, 2=SNe II, 3=AGB */
+    MyDouble ISMDustChem_Dust_Metal[NUM_ISMDUSTCHEM_ELEMENTS];  /*!< metallicity (species-by-species) of dust */
+    MyDouble ISMDustChem_Dust_Species[NUM_ISMDUSTCHEM_SPECIES]; /*!< metallicity of dust species types. 0=silicates, 1=carbon, 2=SiC, 3=free-flying iron, (optional) 4=oxygen reservoir, (optional) 5=iron inclusions in silicates */
+    MyDouble ISMDustChem_DelayTimeSNeSputtering;       /*!< delay time for thermal sputtering due to recent SNe, used to not double count dust destruction with thermal sputtering */
+    MyDouble ISMDustChem_C_in_CO;                      /*!< C metallicity locked in CO */
+    MyDouble ISMDustChem_MassFractionInDenseMolecular; /*!< mass fraction of gas in dense MC phase */
+#endif
+
 #ifdef MAGNETIC
     MyDouble Face_Area[3];          /*!< vector sum of effective areas of 'faces'; this is used to check closure for meshless methods */
     MyDouble BPred[3];              /*!< current magnetic field strength */
+    MyDouble BField_prerefinement[3]; /*!< safety variable that stores the B-field before a refinement-type operation to allow it to be more conservatively reset correctly after the (de)refinement completes */
     MyDouble B[3];                  /*!< actual B (conserved variable used for integration; can be B*V for flux schemes) */
     MyDouble DtB[3];                /*!< time derivative of B-field (of -conserved- B-field) */
     MyFloat divB;                   /*!< storage for the 'effective' divB used in div-cleaning procedure */
@@ -2832,7 +2889,7 @@ extern struct gas_cell_data
 #endif
 
 #if defined(TURB_DIFF_METALS) || (defined(METALS) && defined(HYDRO_MESHLESS_FINITE_VOLUME))
-    MyFloat Dyield[NUM_METAL_SPECIES];
+    MyFloat Dyield[NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION];
 #endif
 
 #ifdef HYDRO_SPH
@@ -2848,7 +2905,8 @@ extern struct gas_cell_data
 #endif
 
     MyFloat MaxSignalVel;           /*!< maximum signal velocity (needed for time-stepping) */
-
+    int recent_refinement_flag;     /*!< key that tells the code this cell was just refined or de-refined, to know to treat some other operations with care */
+    
 #ifdef GALSF_FB_FIRE_RT_UVHEATING
     MyFloat Rad_Flux_UV;              /*!< local UV field strength */
     MyFloat Rad_Flux_EUV;             /*!< local (ionizing/hard) UV field strength */
@@ -2947,7 +3005,7 @@ extern struct gas_cell_data
 #endif
 
 #ifdef HYDRO_SPH
-  MyFloat alpha_limiter;                /*!< artificial viscosity limiter (Balsara-like) */
+    MyFloat alpha_limiter;                /*!< artificial viscosity limiter (Balsara-like) */
 #endif
 
 #ifdef CONDUCTION
@@ -3309,7 +3367,7 @@ extern struct addFB_evaluate_data_in_
     MyFloat Area_weighted_sum[AREA_WEIGHTED_SUM_ELEMENTS];
 #endif
 #ifdef METALS
-    MyDouble yields[NUM_METAL_SPECIES];
+    MyDouble yields[NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION];
 #endif
     int NodeList[NODELISTLENGTH];
 }
@@ -3381,14 +3439,18 @@ enum iofields
   IO_SFR,
   IO_AGE,
   IO_GRAINSIZE,
+  IO_DUST_TO_GAS, 
   IO_GRAINTYPE,
   IO_HSMS,
   IO_Z,
+  IO_DUSTCHEMZMET,
+  IO_DUSTCHEMSPECIESMET,
+  IO_ISMDUSTCHEMMOL,
   IO_BHMASS,
   IO_BHMASSALPHA,
   IO_BH_ANGMOM,
   IO_BHMDOT,
-  IO_BHDUSTMASS,
+  IO_SINKDUSTMASSACC,
   IO_R_PROTOSTAR,
   IO_MASS_D_PROTOSTAR,
   IO_ZAMS_MASS,
@@ -3458,7 +3520,8 @@ enum iofields
   IO_VDIV,
   IO_VORT,
   IO_DELAYTIME,
-  IO_AGS_SOFT,
+  IO_SOFT,
+  IO_AGS_HKERN,
   IO_AGS_RHO,
   IO_AGS_QPT,
   IO_AGS_PSI_RE,
@@ -3533,7 +3596,7 @@ enum siofields
   SIO_SLUM,
   SIO_SLATT,
   SIO_SLOBS,
-  SIO_DUST,
+  SIO_HALODUST,
   SIO_SAGE,
   SIO_SZ,
   SIO_SSFR,
