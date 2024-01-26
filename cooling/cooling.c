@@ -369,7 +369,7 @@ double DoCooling(double u_old, double rho, double dt, double ne_guess, double *n
     }
     while(iter_condition); /* iteration condition */
     /* crash condition */
-    if(iter >= MAXITER) {printf("failed to converge in DoCooling(): u_in=%g rho_in=%g dt=%g ne_in=%g ne_out=%g target=%d ID=%ld \n",u_old,rho,dt,ne_guess,*ne_eval,target, P[target].ID); endrun(10);}
+    if(iter >= MAXITER) {printf("failed to converge in DoCooling(): u_in=%g rho_in=%g dt=%g ne_in=%g ne_out=%g target=%d ID=%ld \n",u_old,rho,dt,ne_guess,*ne_eval,target, (long)P[target].ID); endrun(10);}
     double specific_energy_codeunits_toreturn = u / UNIT_SPECEGY_IN_CGS;    /* in internal units */
     SphP[target].Ne = *ne_eval;
 #ifdef RT_CHEM_PHOTOION
@@ -381,14 +381,6 @@ double DoCooling(double u_old, double rho, double dt, double ne_guess, double *n
     SphP[target].HeI = nHeI; SphP[target].HeII = nHeII; SphP[target].HeIII = nHeIII;
 #endif
 #endif
-#ifdef RT_INFRARED // similarly, update the dust temp with the converged solution
-#if !defined(RT_CHEM_PHOTOION)
-    double u_in=specific_energy_codeunits_toreturn, rho_in=SphP[target].Density*All.cf_a3inv, mu=1, temp, ne=1, nHI=0, nHII=1, nHeI=1, nHeII=0, nHeIII=0;
-    temp = ThermalProperties(u_in, rho_in, target, &mu, &ne, &nHI, &nHII, &nHeI, &nHeII, &nHeIII);
-#endif
-    get_rt_ir_lambdadust_effective(temp, rho, &nHI, &ne_guess, target, 0);
-#endif 
-
 
     /* safe return */
     return specific_energy_codeunits_toreturn;
@@ -464,7 +456,7 @@ double DoInstabilityCooling(double m_old, double u, double rho, double dt, doubl
         if(iter >= (MAXITER - 10)) {printf("->m= %g\n", m);}
     }
     while(fabs(dm / m) > 1.0e-6 && iter < MAXITER);
-    if(iter >= MAXITER) {printf("failed to converge in DoInstabilityCooling(): m_in=%g u_in=%g rho=%g dt=%g fac=%g ne_in=%g target=%d ID=%ld\n",m_old,u,rho,dt,fac,ne_guess,target,P[target].ID); endrun(11);}
+    if(iter >= MAXITER) {printf("failed to converge in DoInstabilityCooling(): m_in=%g u_in=%g rho=%g dt=%g fac=%g ne_in=%g target=%d ID=%ld\n",m_old,u,rho,dt,fac,ne_guess,target,(long)P[target].ID); endrun(11);}
     return m;
 }
 
@@ -561,7 +553,7 @@ double convert_u_to_temp(double u, double rho, int target, double *ne_guess, dou
            ((fabs(temp - temp_old) > 0.01 * temp) && (temp > 200.) && (iter<100)) ||
            ((fabs(temp - temp_old) > 1.0e-3 * temp) && (temp > 200.) && (iter<10))) && iter < MAXITER);
 #endif
-    if(iter >= MAXITER) {printf("failed to converge in convert_u_to_temp(): u_input= %g rho_input=%g n_elec_input=%g target=%d ID=%ld\n", u_input, rho_input, *ne_guess, target, P[target].ID); endrun(12);}
+    if(iter >= MAXITER) {printf("failed to converge in convert_u_to_temp(): u_input= %g rho_input=%g n_elec_input=%g target=%d ID=%ld\n", u_input, rho_input, *ne_guess, target, (long)P[target].ID); endrun(12);}
 
     if(temp<=0) temp=pow(10.0,Tmin);
     if(log10(temp)<Tmin) temp=pow(10.0,Tmin);
@@ -578,7 +570,7 @@ double find_abundances_and_rates(double logT, double rho, int target, double shi
                                  double *ne_guess, double *nH0_guess, double *nHp_guess, double *nHe0_guess, double *nHep_guess, double *nHepp_guess,
                                  double *mu_guess, double *LambdaExc_return, double *LambdaIon_return, double *LambdaRec_return, double *LambdaFF_return)
 {
-    int j, niter;
+    int j, jp, niter;
     double Tlow, Thi, flow, fhi, t, gJH0ne, gJHe0ne, gJHepne, logT_input, rho_input, ne_input, neold, nenew;
     double bH0, bHep, bff, aHp, aHep, aHepp, ad, geH0, geHe0, geHep, EPSILON_SMALL=1.e-40;
     double n_elec, nH0, nHe0, nHp, nHep, nHepp; /* ionization states */
@@ -604,11 +596,13 @@ double find_abundances_and_rates(double logT, double rho, int target, double shi
     /* initialize quantities needed for iteration below */
     t = (logT - Tmin) / deltaT;
     j = (int) t;
-    if(j<0){j=0;}
+    if(j<0) {j=0;}
     if(j>NCOOLTAB){
-        PRINT_WARNING("j>NCOOLTAB : j=%d t %g Tlow %g Thi %g logT %g Tmin %g deltaT %g \n",j,t,Tmin+deltaT*j,Tmin+deltaT*(j+1),logT,Tmin,deltaT);fflush(stdout);
+        PRINT_WARNING("j>=NCOOLTAB : j=%d t %g Tlow %g Thi %g logT %g Tmin %g deltaT %g \n",j,t,Tmin+deltaT*j,Tmin+deltaT*(j+1),logT,Tmin,deltaT);fflush(stdout);
         j=NCOOLTAB;
     }
+    jp = j + 1;
+    if(jp > NCOOLTAB) {jp=NCOOLTAB;}
     Tlow = Tmin + deltaT * j;
     Thi = Tlow + deltaT;
     fhi = t - j;
@@ -625,10 +619,10 @@ double find_abundances_and_rates(double logT, double rho, int target, double shi
     if(shieldfac < 0) {shieldfac = return_uvb_shieldfac(target, local_gammamultiplier*gJH0/1.0e-12, nHcgs, logT);} // if < 0, that's a key to tell us this needs to be recalculated
     n_elec = *ne_guess; if(!isfinite(n_elec)) {n_elec=1;}
     neold = n_elec; niter = 0;
-    double dt = 0, fac_noneq_cgs = 0, necgs = n_elec * nHcgs, ne_lower=0, ne_upper=1.; /* more initialized quantities */
+    double dt = 0, fac_noneq_cgs = 0, necgs = n_elec * nHcgs, ne_lower=0, ne_upper=2.; /* more initialized quantities */
     int bisection_mode=0; // 0 if doing the usual fixed-point iteration; 1 if switched to bisection method
     if(target >= 0) {dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(target);} // dtime [code units]
-    fac_noneq_cgs = (dt * UNIT_TIME_IN_CGS) * necgs; // factor needed below to asses whether timestep is larger/smaller than recombination time
+    fac_noneq_cgs = (dt * UNIT_TIME_IN_CGS) * (necgs + 1.e-30*nHcgs); // factor needed below to asses whether timestep is larger/smaller than recombination time
 
 #if defined(RT_CHEM_PHOTOION)
     double c_light_ne=0;
@@ -645,18 +639,18 @@ double find_abundances_and_rates(double logT, double rho, int target, double shi
     do
     {
         niter++;
-
-        aHp = flow * AlphaHp[j] + fhi * AlphaHp[j + 1];
-        aHep = flow * AlphaHep[j] + fhi * AlphaHep[j + 1];
-        aHepp = flow * AlphaHepp[j] + fhi * AlphaHepp[j + 1];
-        ad = flow * Alphad[j] + fhi * Alphad[j + 1];
-        geH0 = flow * GammaeH0[j] + fhi * GammaeH0[j + 1];
+        
+        aHp = flow * AlphaHp[j] + fhi * AlphaHp[jp];
+        aHep = flow * AlphaHep[j] + fhi * AlphaHep[jp];
+        aHepp = flow * AlphaHepp[j] + fhi * AlphaHepp[jp];
+        ad = flow * Alphad[j] + fhi * Alphad[jp];
+        geH0 = flow * GammaeH0[j] + fhi * GammaeH0[jp];
         geH0 = DMAX(geH0, EPSILON_SMALL);
-        geHe0 = flow * GammaeHe0[j] + fhi * GammaeHe0[j + 1];
+        geHe0 = flow * GammaeHe0[j] + fhi * GammaeHe0[jp];
         geHe0 = DMAX(geHe0, EPSILON_SMALL);
-        geHep = flow * GammaeHep[j] + fhi * GammaeHep[j + 1];
+        geHep = flow * GammaeHep[j] + fhi * GammaeHep[jp];
         geHep = DMAX(geHep, EPSILON_SMALL);
-        fac_noneq_cgs = (dt * UNIT_TIME_IN_CGS) * necgs; // factor needed below to asses whether timestep is larger/smaller than recombination time
+        fac_noneq_cgs = (dt * UNIT_TIME_IN_CGS) * (necgs + 1.e-30*nHcgs); // factor needed below to asses whether timestep is larger/smaller than recombination time
         if(necgs <= 1.e-25 || J_UV == 0)
         {
             gJH0ne = gJHe0ne = gJHepne = 0;
@@ -691,7 +685,11 @@ double find_abundances_and_rates(double logT, double rho, int target, double shi
             {
                 if((k==RT_FREQ_BIN_H0)||(k==RT_FREQ_BIN_He0)||(k==RT_FREQ_BIN_He1)||(k==RT_FREQ_BIN_He2))
                 {
-                    double c_ne_time_n_photons_vol = c_light_ne * rt_return_photon_number_density(target,k); // gives photon flux
+                    double n_gamma_tot = rt_return_photon_number_density(target,k);
+#ifdef RT_INFRARED
+                    n_gamma_tot += rt_irband_egydensity_in_band(target,All.RHD_bins_nu_min_ev[k],All.RHD_bins_nu_max_ev[k]) / (DMAX(rt_nu_eff_eV[RT_FREQ_BIN_H0],SphP[target].Radiation_Temperature/2959.81)*ELECTRONVOLT_IN_ERGS/UNIT_ENERGY_IN_CGS);
+#endif
+                    double c_ne_time_n_photons_vol = c_light_ne * n_gamma_tot; // gives photon flux
                     double cross_section_ion, dummy, thold=1.0e20;
 #ifdef GALSF
                     if(All.ComovingIntegrationOn) {thold=1.0e10;}
@@ -700,22 +698,22 @@ double find_abundances_and_rates(double logT, double rho, int target, double shi
                     {
                         cross_section_ion = nH0 * rt_ion_sigma_HI[k];
                         dummy = rt_ion_sigma_HI[k] * c_ne_time_n_photons_vol;// egy per photon x cross section x photon flux (w attenuation factors already included in flux/energy update:) * slab_averaging_function(cross_section_ion * Sigma_particle); // * slab_averaging_function(cross_section_ion * abs_per_kappa_dt); // commented-out terms not appropriate here based on how we treat RSOL terms
-                        if(dummy > thold*gJH0ne_0) {dummy = thold*gJH0ne_0;}
+                        //if(dummy > thold*gJH0ne_0) {dummy = thold*gJH0ne_0;}
                         gJH0ne += dummy;
                     }
-#ifdef RT_CHEM_PHOTOION_HE
+#if 1 //def RT_CHEM_PHOTOION_HE
                     if(rt_ion_G_HeI[k] > 0)
                     {
                         cross_section_ion = nHe0 * rt_ion_sigma_HeI[k];
                         dummy = rt_ion_sigma_HeI[k] * c_ne_time_n_photons_vol;// * slab_averaging_function(cross_section_ion * Sigma_particle); // * slab_averaging_function(cross_section_ion * abs_per_kappa_dt); // commented-out terms not appropriate here based on how we treat RSOL terms
-                        if(dummy > thold*gJHe0ne_0) {dummy = thold*gJHe0ne_0;}
+                        //if(dummy > thold*gJHe0ne_0) {dummy = thold*gJHe0ne_0;}
                         gJHe0ne += dummy;
                     }
                     if(rt_ion_G_HeII[k] > 0)
                     {
                         cross_section_ion = nHep * rt_ion_sigma_HeII[k];
                         dummy = rt_ion_sigma_HeII[k] * c_ne_time_n_photons_vol;// * slab_averaging_function(cross_section_ion * Sigma_particle); // * slab_averaging_function(cross_section_ion * abs_per_kappa_dt); // commented-out terms not appropriate here based on how we treat RSOL terms
-                        if(dummy > thold*gJHepne_0) {dummy = thold*gJHepne_0;}
+                        //if(dummy > thold*gJHepne_0) {dummy = thold*gJHepne_0;}
                         gJHepne += dummy;
                     }
 #endif
@@ -759,44 +757,42 @@ double find_abundances_and_rates(double logT, double rho, int target, double shi
 #endif
         if(!isfinite(n_elec)) {printf("target=%d niter=%d logT=%g n_elec/old=%g/%g nHp/nHep/nHepp=%g/%g/%g nHcgs=%g yHe=%g dt=%g shieldfac/local_gammamult=%g/%g aHp/aHep/aHepp=%g/%g/%g geH0/geHe0/geHep=%g/%g/%g gJH0ne/gJHe0ne/gJHepne=%g/%g/%g \n",target,niter,logT,n_elec,neold,nHp,nHep,nHepp,nHcgs,yhelium(target),dt,shieldfac,local_gammamultiplier,aHp,aHep,aHepp,geH0,geHe0,geHep,gJH0ne,gJHe0ne,gJHepne);}
 
-	double error_old = fabs(n_elec - neold); // save the old error to compare with the new one, so we can check if we're converging
+        double error_old = fabs(n_elec - neold); // save the old error to compare with the new one, so we can check if we're converging
         neold = n_elec;
         n_elec = nHp + nHep + 2 * nHepp;	/* eqn (38) */
 #ifdef COOL_LOW_TEMPERATURES
         n_elec += return_electron_fraction_from_heavy_ions(target, pow(10.,logT), rho, n_elec);
-#endif
+#endif       
 	
-        if(J_UV == 0) break;
-	
-	    // keep track of these bounds in case we need to switch to bisection
-	    if(n_elec > neold) {ne_lower = DMAX(neold, ne_lower);}
-	    if(n_elec < neold) {ne_upper = DMIN(neold, ne_upper);}
+	// keep track of these bounds in case we need to switch to bisection
+	if(n_elec > neold) {ne_lower = DMAX(neold, ne_lower);}
+	if(n_elec < neold) {ne_upper = DMIN(neold, ne_upper);}
 
-	    if(bisection_mode) { // if fixed-point mode is not converging fast enough and we switched to bisection mode
-	        if(n_elec < neold) {nenew = 0.5*(ne_lower + neold); ne_upper=neold;} // go to left midpoint and update the upper bound
-	        else {nenew = 0.5*(ne_upper + neold); ne_lower = neold;} // go to right midpoint and update the lower bound
-	    } else { // otherwise we do the usual fixed-point iteration
-	        nenew = 0.5 * (n_elec + neold);
-	        if(niter>30 && (fabs(n_elec - neold) > 0.6 * error_old) && (nenew > 1e-14)) { // if we're converging slower than bisection, just switch to bisection
-		        bisection_mode = 1;}
-	    }
+        double nenew_tolmin = DMIN(1.0e-14, 0.01 * 1.e-3/nHcgs); // make tolerance 1e-14 (normally more than sufficient), unless super-dense where smaller tolerance needed owing to expectation [-guessed- here for physics] of even smaller ne needed
+	if(bisection_mode) { // if fixed-point mode is not converging fast enough and we switched to bisection mode
+	    if(n_elec < neold) {nenew = 0.5*(ne_lower + neold); ne_upper=neold;} // go to left midpoint and update the upper bound
+	    else {nenew = 0.5*(ne_upper + neold); ne_lower = neold;} // go to right midpoint and update the lower bound
+        } else { // otherwise we do the usual fixed-point iteration
+	    nenew = 0.5 * (n_elec + neold);
+	    if(niter>30 && (fabs(n_elec - neold) > 0.6 * error_old) && (nenew > nenew_tolmin)) { bisection_mode = 1;}  // if we're converging slower than bisection, just switch to bisection
+	} 
 
         n_elec = nenew;
         if(!isfinite(n_elec)) {n_elec=1;}
         necgs = n_elec * nHcgs;
 
-        double dneTHhold = DMAX(n_elec*0.01 , 1.0e-14); // desired absolute tolerance for n_elec
+        double dneTHhold = DMAX(n_elec*0.01 , nenew_tolmin); // desired absolute tolerance for n_elec
         if(fabs(n_elec - neold) < dneTHhold) break;
 
         if(niter > (MAXITER - 10)) {printf("n_elec= %g/%g/%g yh=%g nHcgs=%g niter=%d\n", n_elec,neold,nenew, yhelium(target), nHcgs, niter);}
     }
     while(niter < MAXITER);
 
-    if(niter >= MAXITER) {printf("failed to converge in find_abundances_and_rates(): logT_input=%g  rho_input=%g  ne_input=%g target=%d ID=%ld shieldfac=%g cooling_return=%d", logT_input, rho_input, ne_input, target, P[target].ID, shieldfac, return_cooling_mode); endrun(13);}
+    if(niter >= MAXITER) {printf("failed to converge in find_abundances_and_rates(): logT_input=%g  rho_input=%g  ne_input=%g target=%d ID=%ld shieldfac=%g cooling_return=%d", logT_input, rho_input, ne_input, target, (long)P[target].ID, shieldfac, return_cooling_mode); endrun(13);}
 
-    bH0 = flow * BetaH0[j] + fhi * BetaH0[j + 1];
-    bHep = flow * BetaHep[j] + fhi * BetaHep[j + 1];
-    bff = flow * Betaff[j] + fhi * Betaff[j + 1];
+    bH0 = flow * BetaH0[j] + fhi * BetaH0[jp];
+    bHep = flow * BetaHep[j] + fhi * BetaHep[jp];
+    bff = flow * Betaff[j] + fhi * Betaff[jp];
     *nH0_guess=nH0; *nHe0_guess=nHe0; *nHp_guess=nHp; *nHep_guess=nHep; *nHepp_guess=nHepp; *ne_guess=n_elec; /* write to send back */
     *mu_guess=Get_Gas_Mean_Molecular_Weight_mu(pow(10.,logT), rho, nH0_guess, ne_guess, sqrt(shieldfac)*(gJH0/2.29e-10), target);
     if(target >= 0) /* if this is a cell, update some of its thermodynamic stored quantities */
@@ -862,13 +858,13 @@ double CoolingRate(double logT, double rho, double n_elec_guess, double *n_elec_
 {
     double n_elec=n_elec_guess, nH0, nHe0, nHp, nHep, nHepp, mu; /* ionization states [computed below] */
     double Lambda, Heat, LambdaFF, LambdaCompton, LambdaExc, LambdaExcH0, LambdaExcHep, LambdaIon, LambdaIonH0, LambdaIonHe0, LambdaIonHep;
-    double LambdaRec, LambdaRecHp, LambdaRecHep, LambdaRecHepp, LambdaRecHepd, T, T_cmb, shieldfac, LambdaMol, LambdaMetal, LambdaPElec, LambdaDust;
+    double LambdaRec, LambdaRecHp, LambdaRecHep, LambdaRecHepp, LambdaRecHepd, T, T_cmb_radeff, shieldfac, LambdaMol, LambdaMetal, LambdaPElec, LambdaDust;
     double nHcgs = HYDROGEN_MASSFRAC * rho / PROTONMASS_CGS;	/* hydrogen number dens in cgs units */
     Lambda=0; Heat=0; LambdaMol=0; LambdaFF=0; LambdaRec=0; LambdaExc=0; LambdaIon=0; LambdaMetal=0; LambdaCompton=0; LambdaPElec=0; LambdaDust=0; /* make sure these are all initialized to zero */
     if(logT <= Tmin) {logT = Tmin + 0.5 * deltaT;}	/* floor at Tmin */
     if(!isfinite(rho)) {return 0;}
     T = pow(10.0, logT);
-    T_cmb = 2.73 / All.cf_atime; /* CMB temperature, used below */
+    T_cmb_radeff = get_background_radiation_temperature_for_emission_corrections(target); /* CMB temperature, used below */
 
     /* some blocks below to define useful variables before calculation of cooling rates: */
 
@@ -988,8 +984,8 @@ double CoolingRate(double logT, double rho, double n_elec_guess, double *n_elec_
 #endif
             LambdaMol *= truncation_factor; // cutoff factor from above for where the tabulated rates take over at high temperatures
             if(!isfinite(LambdaMol)) {LambdaMol=0;} // here to check vs underflow errors since dividing by some very small numbers, but in that limit Lambda should be negligible
-            LambdaMol *= ((T-T_cmb)/(T+T_cmb)); // account (approximately) for the CMB temperature 'bath' (could more accurately subtract Lambda(T[cmb]), but that's an approximation as well that can give some odd results owing to not treating the solve for molecules indepedently there, so we use this form instead, which is generally good)
-            Lambda += LambdaMol;
+            LambdaMol *= ((T-T_cmb_radeff)/(T+T_cmb_radeff)); // account (approximately) for the CMB temperature 'bath' (could more accurately subtract Lambda(T[cmb]), but that's an approximation as well that can give some odd results owing to not treating the solve for molecules indepedently there, so we use this form instead, which is generally good)
+            if(LambdaMol > 0) {Lambda += LambdaMol;}
 
             /* now add the dust cooling/heating terms */
             LambdaDust = gas_dust_heating_coeff(target,T,Tdust) * (T-Tdust);// Note our sign convention is such that positive lambda = gas cooling
@@ -1022,7 +1018,11 @@ double CoolingRate(double logT, double rho, double n_elec_guess, double *n_elec_
             {
                 if((k==RT_FREQ_BIN_H0)||(k==RT_FREQ_BIN_He0)||(k==RT_FREQ_BIN_He1)||(k==RT_FREQ_BIN_He2))
                 {
-                    double c_nH_time_n_photons_vol = c_light_nH * rt_return_photon_number_density(target,k); // gives photon flux
+                    double n_gamma_tot = rt_return_photon_number_density(target,k);
+#ifdef RT_INFRARED
+                    n_gamma_tot += rt_irband_egydensity_in_band(target,All.RHD_bins_nu_min_ev[k],All.RHD_bins_nu_max_ev[k]) / (DMAX(rt_nu_eff_eV[RT_FREQ_BIN_H0],SphP[target].Radiation_Temperature/2959.81)*ELECTRONVOLT_IN_ERGS/UNIT_ENERGY_IN_CGS);
+#endif
+                    double c_nH_time_n_photons_vol = c_light_nH * n_gamma_tot; // gives photon flux
                     double cross_section_ion, kappa_ion, dummy;
                     if(rt_ion_G_HI[k] > 0)
                     {
@@ -1053,6 +1053,7 @@ double CoolingRate(double logT, double rho, double n_elec_guess, double *n_elec_
         Heat += CR_gas_heating(target, n_elec, nH0, nHcgs); // CR hadronic+Coulomb+ionization heating //
 #if defined(COOL_LOW_TEMPERATURES)
         if(LambdaDust<0) {Heat -= LambdaDust;} // Dust collisional heating (Tdust > Tgas) //
+        if(LambdaMol<0) {Heat -= LambdaMol;} // Molecular line heating (Trad_mol_cooling_batch > Tgas) //
         if(LambdaMetal<0) {Heat -= LambdaMetal;} // potential net heating from low-temperature gas-phase metal line absorption //
 #endif
         if(LambdaCompton<0) {Heat -= LambdaCompton;} /* Compton heating rather than cooling */
@@ -1099,12 +1100,20 @@ double CoolingRate(double logT, double rho, double n_elec_guess, double *n_elec_
         Lambda = LambdaFF + DMAX(LambdaCompton,0);
     }
 
+#if defined(RT_INFRARED)
+    if(target >= 0) { /* attempt to account for gas-phase absorption self-opacity to cooling radiation here in limit where optically-thick regions are poorly resolved: only valid in some limits, so not really general here */
+        double gas_self_absorption_opacity = rt_kappa_adaptive_IR_band(target,T,T,-1,-1), surface_density_fromcenter = 0.5 * (SphP[target].Density*All.cf_a3inv) * (Get_Particle_Size(target)*All.cf_atime);
+        double tau_self = gas_self_absorption_opacity * surface_density_fromcenter, fcorr = 1./(1.+tau_self*tau_self);
+        Heat*=fcorr; Lambda*=fcorr; LambdaMetal*=fcorr; LambdaExc*=fcorr; LambdaRec*=fcorr; LambdaIon*=fcorr; LambdaPElec*=fcorr; LambdaFF*=fcorr; LambdaMol*=fcorr; LambdaDust*=fcorr; LambdaCompton*=fcorr;
+    }
+#endif
+
+    
     double Q = Heat - Lambda;
 #if defined(OUTPUT_COOLRATE_DETAIL)
     if(target>=0) {SphP[target].CoolingRate = Lambda; SphP[target].HeatingRate = Heat;}
 #endif
 
-    
 #if defined(RT_NUV)
     double Lambda_rad_NUV = LambdaMetal; // most of LambdaMetal coming out in the NUV, as we define it
     Lambda_rad_NUV += LambdaExc + LambdaIon; // this represents gas kinetic energy lost to collisional ionization and excitation. but each is assumed to produce a recombination or cascade back to the ground state, which should re-emit. we're usually assuming case B recombination (UV emitted photons re-absorbed), so we'll assume a cascade for these into NUV/optical and other bands [otherwise should be added to photo-ionizing band]. still ignore LambdaRec, because otherwise this will double-count the UV background
@@ -1114,7 +1123,13 @@ double CoolingRate(double logT, double rho, double n_elec_guess, double *n_elec_
 #if !defined(RT_FREEFREE) // if this module is active, these photons are accounted for explicitly in the free-free bands
     if(logT >= 5.) {Lambda_rad_NUV += LambdaFF;} // this can be coming at a wide range of wavelengths of course, but if not explicitly followed, it will go in one bin or another depending on the gas temperature
 #endif
-    if(target>=0) {SphP[target].Lambda_RadiativeCooling_toRHDBins[RT_FREQ_BIN_NUV] = Lambda_rad_NUV;} // save this to be used later (include all misc terms that will appear in our NUV radiation umbrella)
+    if(target>=0) {
+        int which_bin_to_cool_to = RT_FREQ_BIN_NUV; // default to NUV bin
+#if defined(RT_INFRARED)
+        SphP[target].Lambda_RadiativeCooling_toRHDBins[RT_FREQ_BIN_NUV] = SphP[target].Lambda_RadiativeCooling_toRHDBins[RT_FREQ_BIN_INFRARED] = 0; // set to nil before deciding if we will add radiation here, to avoid double-counting with previous-loop information
+        if(SphP[target].Radiation_Temperature > 1.e4) {which_bin_to_cool_to = RT_FREQ_BIN_INFRARED;} // our more-accurate effective/adaptive IR band is already covering these wavelengths, rather than do the noisy step of cooling to NUV, re-absorbing with less accurate opacities and down-grading to the grey-band, just dump directly to the grey-band
+#endif
+        SphP[target].Lambda_RadiativeCooling_toRHDBins[which_bin_to_cool_to] += Lambda_rad_NUV;} // save this to be used later (include all misc terms that will appear in our NUV radiation umbrella)
 #endif
     
 #if defined(RT_INFRARED)
@@ -1123,7 +1138,7 @@ double CoolingRate(double logT, double rho, double n_elec_guess, double *n_elec_
 #if !defined(RT_FREEFREE) // if this module is active, these photons are accounted for explicitly in the free-free bands
     if(logT < 5.) {Lambda_rad_IR += LambdaFF;} // this can be coming at a wide range of wavelengths of course, but if not explicitly followed, it will go in one bin or another depending on the gas temperature
 #endif
-    if(target>=0) {SphP[target].Lambda_RadiativeCooling_toRHDBins[RT_FREQ_BIN_INFRARED] = Lambda_rad_IR;} // save this to be used later (include all misc terms that will appear in our IR radiation umbrella)
+    if(target>=0) {SphP[target].Lambda_RadiativeCooling_toRHDBins[RT_FREQ_BIN_INFRARED] += Lambda_rad_IR;} // save this to be used later (include all misc terms that will appear in our IR radiation umbrella)
 #endif
     
     
@@ -1156,9 +1171,8 @@ double CoolingRate(double logT, double rho, double n_elec_guess, double *n_elec_
         double effective_area = 2.3 * PROTONMASS_CGS / surface_density; // since cooling rate is ultimately per-particle, need a particle-weight here
         double kappa_eff; // effective kappa, accounting for metal abundance, temperature, and density //
 	
-	    kappa_eff = rt_kappa_dust_IR(target,T,T,0); // will return simple opacity law kappa = 0.1cm^2/g (T/10K)^2, capped at 5 cm^2/g
+	    kappa_eff = rt_kappa_adaptive_IR_band(target,T,T,0,1) / UNIT_SURFDEN_IN_CGS; // will return simple opacity law kappa = 0.1cm^2/g (T/10K)^2, capped at 5 cm^2/g, in code units [convert to physical here]
         if(kappa_eff < 0.1) {kappa_eff=0.1;}
-	
         if(T>1500.){
             /* this is an approximate result for high-temperature opacities, but provides a pretty good fit from 1.5e3 - 1.0e9 K */
             double k_electron = 0.2 * (1. + HYDROGEN_MASSFRAC); //0.167 * n_elec; /* Thompson scattering (non-relativistic) */
@@ -1174,6 +1188,7 @@ double CoolingRate(double logT, double rho, double n_elec_guess, double *n_elec_
         if(Q > 0) {if(Q > Lambda_Thick_BlackBody) {Q=Lambda_Thick_BlackBody;}} else {if(Q < -Lambda_Thick_BlackBody) {Q=-Lambda_Thick_BlackBody;}}
     }
 #endif
+    
 
 #if defined(OUTPUT_COOLRATE_DETAIL)
     if(target>=0) {SphP[target].NetHeatingRateQ = Q;}
@@ -1349,7 +1364,7 @@ char *GetMultiSpeciesFilename(int i, int hk)
 
 /* table input (from file TREECOOL) for ionizing parameters */
 #define JAMPL	1.0		/* amplitude factor relative to input table */
-#define TABLESIZE 250		/* Max # of lines in TREECOOL */
+#define TABLESIZE 250		/* Max # of lines in TREECOOL -- needs to be at least one larger than number of non-zero lines */
 static float inlogz[TABLESIZE];
 static double gH0[TABLESIZE], gHe[TABLESIZE], gHep[TABLESIZE]; // upgrade from float to double, should read fine
 static double eH0[TABLESIZE], eHe[TABLESIZE], eHep[TABLESIZE]; // upgrade from float to double, should read fine
@@ -1360,7 +1375,7 @@ void ReadIonizeParams(char *fname)
 {
     int i; FILE *fdcool;
     if(!(fdcool = fopen(fname, "r"))) {printf(" Cannot read ionization table in file `%s'. Make sure the correct TREECOOL file is placed in the code run-time directory, and that any leading comments (e.g. lines preceded by ##) are deleted from the file.\n", fname); endrun(456);}
-    for(i=0; i<TABLESIZE; i++) {gH0[i]=0;}
+    for(i=0; i<TABLESIZE; i++) {inlogz[i]=100; gH0[i]=0; gHe[i]=0; gHep[i]=0; eH0[i]=0; eHe[i]=0; eHep[i]=0;}
     for(i=0; i<TABLESIZE; i++) {if(fscanf(fdcool, "%g %lg %lg %lg %lg %lg %lg", &inlogz[i], &gH0[i], &gHe[i], &gHep[i], &eH0[i], &eHe[i], &eHep[i]) == EOF) {break;}}
     fclose(fdcool);
     for(i=0, nheattab=0; i<TABLESIZE; i++) {if(gH0[i] != 0.0) {nheattab++;} else {break;}} /*  nheattab is the number of entries in the table */
@@ -1377,7 +1392,7 @@ void IonizeParams(void)
 
 void IonizeParamsTable(void)
 {
-    int i, ilow;
+    int i, ilow, ihi;
     double logz, dzlow, dzhi;
     double redshift;
 
@@ -1395,23 +1410,25 @@ void IonizeParamsTable(void)
 
     logz = log10(redshift + 1.0);
     ilow = 0;
+    if(nheattab <= 0) {gJHe0 = gJHep = gJH0 = epsHe0 = epsHep = epsH0 = J_UV = 0; return;}
     for(i=0; i<nheattab; i++) {if(inlogz[i] < logz) {ilow = i;} else {break;}}
+    ihi = i + 1;
+    if(ilow >= nheattab) {ihi = i;}
     dzlow = logz - inlogz[ilow];
-    dzhi = inlogz[ilow + 1] - logz;
-
-    if(logz > inlogz[nheattab - 1] || gH0[ilow] == 0 || gH0[ilow + 1] == 0 || nheattab == 0)
+    dzhi = inlogz[ihi] - logz;
+    if((logz > inlogz[nheattab - 1]) || (gH0[ilow] == 0) || (gH0[ihi] == 0) || (ilow > nheattab))
     {
-        gJHe0 = gJHep = gJH0 = 0; epsHe0 = epsHep = epsH0 = 0; J_UV = 0;
+        gJHe0 = gJHep = gJH0 = epsHe0 = epsHep = epsH0 = J_UV = 0;
         return;
     }
     else {J_UV = 1.e-21;}		/* irrelevant as long as it's not 0 */
 
-    gJH0 = JAMPL * pow(10., (dzhi * log10(gH0[ilow]) + dzlow * log10(gH0[ilow + 1])) / (dzlow + dzhi));
-    gJHe0 = JAMPL * pow(10., (dzhi * log10(gHe[ilow]) + dzlow * log10(gHe[ilow + 1])) / (dzlow + dzhi));
-    gJHep = JAMPL * pow(10., (dzhi * log10(gHep[ilow]) + dzlow * log10(gHep[ilow + 1])) / (dzlow + dzhi));
-    epsH0 = JAMPL * pow(10., (dzhi * log10(eH0[ilow]) + dzlow * log10(eH0[ilow + 1])) / (dzlow + dzhi));
-    epsHe0 = JAMPL * pow(10., (dzhi * log10(eHe[ilow]) + dzlow * log10(eHe[ilow + 1])) / (dzlow + dzhi));
-    epsHep = JAMPL * pow(10., (dzhi * log10(eHep[ilow]) + dzlow * log10(eHep[ilow + 1])) / (dzlow + dzhi));
+    gJH0 = JAMPL * pow(10., (dzhi * log10(gH0[ilow]) + dzlow * log10(gH0[ihi])) / (dzlow + dzhi));
+    gJHe0 = JAMPL * pow(10., (dzhi * log10(gHe[ilow]) + dzlow * log10(gHe[ihi])) / (dzlow + dzhi));
+    gJHep = JAMPL * pow(10., (dzhi * log10(gHep[ilow]) + dzlow * log10(gHep[ihi])) / (dzlow + dzhi));
+    epsH0 = JAMPL * pow(10., (dzhi * log10(eH0[ilow]) + dzlow * log10(eH0[ihi])) / (dzlow + dzhi));
+    epsHe0 = JAMPL * pow(10., (dzhi * log10(eHe[ilow]) + dzlow * log10(eHe[ihi])) / (dzlow + dzhi));
+    epsHep = JAMPL * pow(10., (dzhi * log10(eHep[ilow]) + dzlow * log10(eHep[ihi])) / (dzlow + dzhi));
 
     return;
 }
@@ -1710,6 +1727,9 @@ void update_explicit_molecular_fraction(int i, double dtime_cgs)
 #endif
     urad_G0 += urad_from_uvb_in_G0; // include whatever is contributed from the meta-galactic background, fed into this routine
     urad_G0 = DMIN(DMAX( urad_G0 , 1.e-10 ) , 1.e10 ); // limit values, because otherwise exponential self-shielding approximation easily artificially gives 0 incident field
+#ifdef RT_INFRARED
+    urad_G0 += rt_irband_egydensity_in_band(i,11.2,500.) * UNIT_PRESSURE_IN_CGS / 3.9e-14; // add contribution from the adaptive band
+#endif
     // define a number of variables needed in the shielding module
     double dx_cell = Get_Particle_Size(i) * All.cf_atime; // cell size
     double surface_density_H2_0 = 5.e14 * PROTONMASS_CGS, x_exp_fac=0.00085, w0=0.2; // characteristic cgs column for -molecular line- self-shielding
@@ -1883,10 +1903,10 @@ double get_equilibrium_dust_temperature_estimate(int i, double shielding_factor_
 	        absorption_rate += fac_abs * rt_kappa(i,k) * SphP[i].Rad_E_gamma_Pred[k] * vol_inv;
 	    }
 #endif
-	    absorption_rate += (e_CMB/UNIT_PRESSURE_IN_EV) * fac_abs * rt_kappa_dust_IR(i,T_cmb, T_cmb, 0); // CMB absorption; assume cloud is optically-thin to the CMB 
+	    absorption_rate += (e_CMB/UNIT_PRESSURE_IN_EV) * fac_abs * rt_kappa_adaptive_IR_band(i,T_cmb,T_cmb,0,1); // CMB absorption; assume cloud is optically-thin to the CMB
 #if defined(RT_ISRF_BACKGROUND) // account for additional optical + IR radiation field with extinction
 	    double column = evaluate_NH_from_GradRho(P[i].GradRho,PPP[i].Hsml,SphP[i].Density,PPP[i].NumNgb,1,i); // column density in code units
-	    double kappa_IR = rt_kappa_dust_IR(i,20.,20.,0); // assume Trad=20 for IR dust opacity
+	    double kappa_IR = rt_kappa_adaptive_IR_band(i,20.,20.,0,1); // assume Trad=20 for IR dust opacity
 	    double Zfac = 1.;
 #ifdef METALS
 	    Zfac = P[i].Metallicity[0]/All.SolarAbundances[0];
@@ -1932,7 +1952,7 @@ double gas_dust_heating_coeff(int i, double T, double Tdust)
 {
     double Z_sol=1;
 #ifdef METALS
-    Z_sol = P[i].Metallicity[0]/All.SolarAbundances[0];
+    if(i>=0) {Z_sol = P[i].Metallicity[0]/All.SolarAbundances[0];}
 #endif
     double fdust = return_dust_to_metals_ratio_vs_solar(i,Tdust); // accounting for dust destruction; we avoid calling the function for this because it can create a circular dependency
     return 1.116e-32 * sqrt(T)*(1.-0.8*exp(-75./T)) * Z_sol * fdust;  // Meijerink & Spaans 2005; Hollenbach & McKee 1979,1989. Assumes 10 Angstrom minimum grain size.
@@ -1955,20 +1975,23 @@ double return_electron_fraction_from_heavy_ions(int target, double temperature, 
     /* Regime I: highly/photo-ionized, any contributions here would be negligible -- no need to continue */
     if(n_elec_HHe > 0.01) {return n_ion_max;} // contribute something negligible, doesn't matter here //
     double a_grain_micron=0.1, m_ion=24.305*PROTONMASS_CGS, mu_eff=2.38, m_neutrals=mu_eff*PROTONMASS_CGS, m_grain=4.189e-12*(2.4)*a_grain_micron*a_grain_micron*a_grain_micron, ngrain_ngas=(m_neutrals/m_grain)*f_dustgas; // effective size of grains that matter at these densities, and ions [here Mg] that dominate
-    double k_ei=9.77e-8, y=sqrt(m_ion/ELECTRONMASS_CGS), ln_y=log(y), psi_0=-ln_y+(1.+ln_y)*log(1.+ln_y)/(2.+ln_y), k_eg_00=0.0195*a_grain_micron*a_grain_micron*sqrt(temperature), k_eg_0=k_eg_00*exp(psi_0), n_crit=k_ei*zeta_cr/(k_eg_0*ngrain_ngas*k_eg_0*ngrain_ngas), n_eff=density_cgs/m_neutrals;
+    double k_ei=9.77e-8, y0=sqrt(m_ion/ELECTRONMASS_CGS);
+    double y = exp(1.)*y0, ln_oneplusy=log(1.+y), psi_0 = 1.-ln_oneplusy + ln_oneplusy/(1.+ln_oneplusy) * log(ln_oneplusy*(1.+1./y)); // changed convention: using second-order expansion to solve for psi, psi should be < 0, and electron absorption should be suppressed for larger psi because of grain charge leading to coulomb repulsion
+    double k_eg_00=0.0195*a_grain_micron*a_grain_micron*sqrt(temperature), k_eg_0=k_eg_00*exp(psi_0);
+    double n_crit=k_ei*zeta_cr/(k_eg_0*ngrain_ngas*k_eg_0*ngrain_ngas), n_eff=density_cgs/m_neutrals;
 
     /* Regime II: CR-ionized with high enough ionization fraction that gas-phase recombinations dominate */
-    if(n_eff < 0.01*n_crit) {return DMIN(n_ion_max , sqrt(zeta_cr / (k_ei * n_eff)) / (XH*mu_eff) );} // CR-dominated off gas with recombination -- put into appropriate units here
-    if(n_eff < 100.*n_crit) {return DMIN(n_ion_max , 0.5 * (sqrt(4.*n_crit/n_eff + 1.) - 1.) * (k_eg_0*ngrain_ngas)/(k_ei*XH*mu_eff));} // interpolates between gas-recombination and dust-dominated regimes
+    if(n_eff < 0.01*n_crit) {return DMIN(n_ion_max , sqrt(zeta_cr / (k_ei * n_eff)) / (XH*mu_eff) );} // CR-dominated off gas with recombination via ions -- put into appropriate units here, but basically just what we would expect here. mu_eff factor transforms from n_e/n_neutrals to n_e/n_H because neutrals if molecular not as numerous
+    if(n_eff < 100.*n_crit) {return DMIN(n_ion_max , 0.5 * (sqrt(4.*n_crit/n_eff + 1.) - 1.) * (k_eg_0*ngrain_ngas)/(k_ei*XH*mu_eff));} // interpolates between gas-recombination and dust-dominated regimes (just a simple interpolation function)
     
-    /* Regime III: recombination dominated by dust, but dust has a 'normal' efficiency of absorbing grains */
-    double psi_fac=16.71/(a_grain_micron*temperature), alpha=zeta_cr*psi_fac/(k_eg_00 * ngrain_ngas*ngrain_ngas * n_eff), alpha_min=0.02, alpha_max=10.; /* Z*psi_fac = Z*e^2/(a_grain*kB*T) to dimensionless [psi] units; alpha=prefactor in charge equation: psi = alpha*(exp[-psi] - y/(1-psi)) */
-    if(alpha > alpha_max) {return DMIN(n_ion_max , zeta_cr / (k_eg_0*ngrain_ngas * XH*mu_eff*n_eff ) );}
+    /* Regime III: recombination dominated by dust, but dust has a 'normal' efficiency of absorbing grains, and most of the charge is still free+ion (n_ions ~ n_free_electrons >> Z_grains*n_grains, even if -rate- of grain absorption of free e- dominates over k_ei) */
+    double psi_fac=16.71/(a_grain_micron*temperature), alpha=zeta_cr*psi_fac/(k_eg_00 * ngrain_ngas*ngrain_ngas * n_eff), alpha_min=0.02, alpha_max=10.; /* Z*psi_fac = Z*e^2/(a_grain*kB*T) to dimensionless [psi] units; alpha=prefactor in charge equation: psi = alpha*(exp[-psi] - y/(1-psi)); this alpha factor gives n_e/n_charge_summed_grains = (this)/(exp[psi]*psi) -- when this gets to smaller than ~10, can start to deplete all the charge onto grains, need to move to the next regime [note here psi only puts you more-safely into free e- regime, so dont need solution below if psi very small, hence ignore it here to be conservative */
+    if(alpha > alpha_max) {return DMIN(n_ion_max , zeta_cr / (k_eg_0*ngrain_ngas * XH*mu_eff*n_eff ) );} // regime III limit above: here XH*mu_eff factor again just converts to the correct units. here balancing ionization [zeta_cr*n_neutrals] with absorption by dust grains [k_eg_0*ngrain_ngas*n_neutrals*x_e*n_neutrals]
     
-    /* Regime IV: recombination dominated by dust and grains dominate the charge, strongly suppressing the free charges */
-    if(alpha < 1.e-4) {return DMIN(n_ion_max , zeta_cr / (k_eg_00*ngrain_ngas * XH*mu_eff*n_eff) );} // psi->small, negligible correction here
-    if(alpha < alpha_min) {double psi=0.5*(1.-sqrt(1.+4.*y*alpha)); return DMIN(n_ion_max , zeta_cr / (k_eg_00*exp(psi)*ngrain_ngas * XH*mu_eff*n_eff) );} // small-psi-limit
-    double psi_xmin=0.5*(1.-sqrt(1.+4.*y*alpha_min)), psi=psi_0 + (psi_xmin-psi_0)*2./(1.+alpha_min/alpha); // this interpolates between the asymptotic limmits at low and high alpha, where we can obtain high-accuracy solutions here
+    /* Regime IV: recombination dominated by dust and grains dominate the charge, strongly suppressing the free charges (n_ion ~ Z_grains*n_grains >> n_free_electrons) */
+    if(alpha < 1.e-4) {return DMIN(n_ion_max , zeta_cr / (k_eg_00*ngrain_ngas * XH*mu_eff*n_eff) );} // alpha very small means that there is a very tiny number of free e- per dust grain to potentially absorb. this means the mean grain charge must be << 1, so psi->small, negligible correction here, just same expression as above with k_eg_0 (no psi correction, or k_eg calculated without any charge correction here. note in this limit, the ion fraction is larger than the free electron fraction by a ratio sqrt[m_ion/m_e] ~ k_eg/k_ig [see Keith+Wardle 2014, section 3.2, which adopts this limit
+    if(alpha < alpha_min) {double psi=0.5*(1.-sqrt(1.+4.*y0*alpha)); return DMIN(n_ion_max , zeta_cr / (k_eg_00*exp(psi)*ngrain_ngas * XH*mu_eff*n_eff) );} // small-psi-limit. when alpha is sufficiently small, here in limit where [already above] can safely neglect k_ei, so solution for x_e is same as above/below, but with a different psi, here need to solve psi = exp[-psi]*alpha - y0*alpha/(1-psi). if alpha is small, psi should also be small, can drop the exp[-psi]*alpha term and this becomes a reasonable approximation here.
+    double psi_xmin=0.5*(1.-sqrt(1.+4.*y0*alpha_min)), psi=psi_0 + (psi_xmin-psi_0)*2./(1.+alpha/alpha_min); // this interpolates between the asymptotic limmits at low and high alpha, where we can obtain high-accuracy solutions here. this is a completely ad-hoc fitting function for the numerical solutions in this intermediate range, which only relates to a rather modest range of alpha and is ensured to interpolate correctly to the extremes we already pulled out above.
     return DMIN(n_ion_max , zeta_cr / (k_eg_00*exp(psi)*ngrain_ngas * XH*mu_eff*n_eff));
 }
 
@@ -2003,7 +2026,7 @@ double evaluate_Compton_heating_cooling_rate(int target, double T, double nHcgs,
             if(k==RT_FREQ_BIN_FIRE_UV) {Teff=15000.;}
 #endif
 #if defined(RT_INFRARED) /* special mid-through-far infrared band, which includes IR radiation temperature evolution */
-            if(k==RT_FREQ_BIN_INFRARED) {Teff=SphP[target].Dust_Temperature;}
+            if(k==RT_FREQ_BIN_INFRARED) {Teff=SphP[target].Radiation_Temperature;}
 #endif
 #if defined(RT_OPTICAL_NIR) /* Optical-NIR approximate spectra for stars as used in the FIRE (Hopkins et al.) models; from 0.41-3.4 eV */
             if(k==RT_FREQ_BIN_OPTICAL_NIR) {Teff=2800.;}
@@ -2050,8 +2073,8 @@ double evaluate_Compton_heating_cooling_rate(int target, double T, double nHcgs,
 #ifdef MAGNETIC /* include sychrotron losses as well as long as we're here, since these scale more or less identically just using the magnetic instead of radiation energy */
     if(target >= 0)
     {
-        double b_muG = get_cell_Bfield_in_microGauss(target), U_mag_ev=0.0248342*b_muG*b_muG;
-        Lambda += compton_prefac_eV * U_mag_ev * T; // synchrotron losses proportional to temperature (non-relativistic here), as inverse compton, just here without needing to worry about "T-T_eff", as if T_eff->0
+        double b_muG = get_cell_Bfield_in_microGauss(target), U_mag_ev=0.0248342*b_muG*b_muG, T_rad_background_at_emission = get_background_radiation_temperature_for_emission_corrections(target);
+        Lambda += compton_prefac_eV * U_mag_ev * (T-T_rad_background_at_emission); // synchrotron losses proportional to temperature (non-relativistic here), as inverse compton, just here without needing to worry about "T-T_eff", as if T_eff->0
     }
 #endif
 
@@ -2067,8 +2090,20 @@ double evaluate_Compton_heating_cooling_rate(int target, double T, double nHcgs,
 }
 
 
-
-
+/* this function defines an effective background radiation temperature for purposes of computing the emission corrections above */
+double get_background_radiation_temperature_for_emission_corrections(int target)
+{
+    double T_cmb = 2.73/All.cf_atime;
+#if defined(RT_INFRARED)
+    if(target >= 0)
+    {
+        double e_tmp_CMB = 0.262*All.cf_a3inv/All.cf_atime, e_tot_to_evol_eVcgs = (SphP[target].Density*All.cf_a3inv/P[target].Mass) * UNIT_PRESSURE_IN_EV;
+        double e_tmp_IR = SphP[target].Rad_E_gamma_Pred[RT_FREQ_BIN_INFRARED] * e_tot_to_evol_eVcgs, T_tmp_IR = SphP[target].Radiation_Temperature;
+        return (e_tmp_IR * T_tmp_IR + e_tmp_CMB * T_cmb) / (e_tmp_IR + e_tmp_CMB); // if evolving IR band, use sum of it plus cmb for background
+    }
+#endif
+    return T_cmb; // default to assume total radiation temperature is cmb-dominated
+}
 
 
 

@@ -203,6 +203,32 @@ for(k_CRegy=0;k_CRegy<N_CR_PARTICLE_BINS;k_CRegy++)
     if(j_is_active_for_fluxes) {SphP[j].DtCosmicRayEnergy[k_CRegy] -= Fluxes.CosmicRayPressure[k_CRegy];}
 }
 
-    out.Face_DivVel_ForAdOps += -(All.cf_a3inv/V_i) * Face_Area_Norm * (Riemann_out.S_M + face_area_dot_vel) / All.cf_a2inv;
-    if(j_is_active_for_fluxes) {SphP[j].Face_DivVel_ForAdOps -= -(All.cf_a3inv/V_j) * Face_Area_Norm * (Riemann_out.S_M + face_area_dot_vel) / All.cf_a2inv;}
+
+out.Face_DivVel_ForAdOps += -(All.cf_a3inv/V_i) * Face_Area_Norm * (Riemann_out.S_M + face_area_dot_vel) / All.cf_a2inv;
+if(j_is_active_for_fluxes) {SphP[j].Face_DivVel_ForAdOps -= -(All.cf_a3inv/V_j) * Face_Area_Norm * (Riemann_out.S_M + face_area_dot_vel) / All.cf_a2inv;}
+
+
+#if defined(CRFLUID_INJECTION_AT_SHOCKS)
+/* use a simple pairwise shock-detection algorithm */
+double min_shockvel_for_accel = 100., min_machnum_for_accel = 5., machnum_estimator = 0, min_machnum_for_pressurecrit = 1.3, saturation_fraction_for_craccel=(double)(CRFLUID_INJECTION_AT_SHOCKS);
+double vdotf2_phys = face_vel_i - face_vel_j, vdotr2_phys = kernel.vdotr2 / (kernel.r * All.cf_atime);
+if(All.ComovingIntegrationOn) {vdotr2_phys -= All.cf_hubble_a2 * kernel.r / All.cf_atime;}
+if(vdotr2_phys < 0 && vdotf2_phys < 0 && (DMAX(vdotf2_phys, vdotr2_phys)*UNIT_VEL_IN_KMS > min_shockvel_for_accel)) { // particles must be approaching, with some normal to face, above some relative velocity
+    if((local.InternalEnergyPred - SphP[j].InternalEnergyPred)*(local.Density - SphP[j].Density) > 0) { // sign of temperature and density jump must be consistent (help filtering contact discontinuities)
+        if((local.Pressure - SphP[j].Pressure)*(local.InternalEnergyPred - SphP[j].InternalEnergyPred) > 0) { // consistent pressure and temperature jump
+            double gamma_touse = 5./3., m2 = min_machnum_for_accel*min_machnum_for_accel, gplus = gamma_touse+1., gminus = gamma_touse-1., pjump_crit = (2.*gamma_touse*min_machnum_for_pressurecrit*min_machnum_for_pressurecrit - gminus)/gplus, tjump_crit = (2.*gamma_touse*m2 - gminus)*(gminus*m2 + 2.)/(gplus*gplus*m2); // various critical definitions
+            double tjump = local.InternalEnergyPred/SphP[j].InternalEnergyPred, pjump = local.Pressure/SphP[j].Pressure; // temperature and pressure ratios used to estimate shock strength
+            if(tjump < 1.) {tjump=1./tjump; pjump=1./pjump;} // make sure have correct upwind/downwind assignment
+            if((tjump > tjump_crit) && (pjump > pjump_crit)) { // ok, sufficiently strong shock to justify some application of the scalings here, and passes pressure minimum check
+                double m2_guess = (16./5.)*tjump, dissipation_fac = (0.5625 - 2.9607/m2_guess), upwind_density = DMIN(local.Density,SphP[j].Density), zeta_obliquity_fac = 1., velforflux = fabs(vdotf2_phys);
+#ifdef MAGNETIC
+                double cos_t=0,dvmag=0,bmag=0; for(k=0;k<3;k++) {double dv=local.Vel[k]-VelPred_j[k]; cos_t+=bhat[k]*dv; dvmag+=dv*dv; bmag+=bhat[k]*bhat[k];}
+                if(dvmag>0 && bmag>0) {cos_t/=sqrt(dvmag*bmag);} else {cos_t=0;}
+                double q = (1.-fabs(cos_t))/0.34; zeta_obliquity_fac = exp(-q*q*q);
+#endif
+                double DtCREgyNewInjection = saturation_fraction_for_craccel * zeta_obliquity_fac * dissipation_fac * 0.5 * upwind_density * velforflux*velforflux*velforflux * Face_Area_Norm;
+                if(local.InternalEnergyPred > SphP[j].InternalEnergyPred) {out.DtCREgyNewInjectionFromShocks += DtCREgyNewInjection;} else {if(j_is_active_for_fluxes) {SphP[j].DtCREgyNewInjectionFromShocks += DtCREgyNewInjection;}} // do injection upstream
+            }}}}
+#endif
+
 #endif // COSMIC_RAY_FLUID

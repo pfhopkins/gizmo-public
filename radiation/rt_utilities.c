@@ -145,9 +145,9 @@ double rt_kappa(int i, int k_freq)
 #endif
 
 #ifdef RT_CHEM_PHOTOION
-    /* opacity to ionizing radiation for Petkova & Springel bands. note rt_update_chemistry is where ionization is actually calculated */
+    /* opacity to ionizing radiation for Petkova & Springel bands. note cooling.c or rt_update_chemistry is where ionization is actually calculated */
     double nH_over_Density = HYDROGEN_MASSFRAC / PROTONMASS_CGS * UNIT_MASS_IN_CGS;
-    double kappa = nH_over_Density * (SphP[i].HI + MIN_REAL_NUMBER) * rt_ion_sigma_HI[k_freq];
+    double kappa = nH_over_Density * (SphP[i].HI + MIN_REAL_NUMBER) * rt_ion_sigma_HI[k_freq]; // note this is designed for specific applications: does not include dust, or free-free, or free-electron scattering contributions here, all of which can be important.
 #if defined(RT_CHEM_PHOTOION_HE) && defined(RT_PHOTOION_MULTIFREQUENCY)
     kappa += nH_over_Density * ((SphP[i].HeI + MIN_REAL_NUMBER) * rt_ion_sigma_HeI[k_freq] + (SphP[i].HeII + MIN_REAL_NUMBER) * rt_ion_sigma_HeII[k_freq]);
     if(k_freq==RT_FREQ_BIN_He0)  {return kappa;}
@@ -220,47 +220,7 @@ double rt_kappa(int i, int k_freq)
         double Trad = SphP[i].Radiation_Temperature; // radiation temperature in K //
         if((Trad <= 0) || (T_dust_em<=0)) {PRINT_WARNING("\n Cell-ID=%llu  has T_rad=%g and T_dust=%g\n", (unsigned long long) P[i].ID, Trad, T_dust_em);}
         if(Trad <= 0) {Trad = 5600.;}
-        double kappa = 0.0, x_elec = 1.;
-#ifdef COOLING
-        x_elec = SphP[i].Ne; // actual free electron fraction
-#endif
-
-#if defined(RT_INFRARED) || defined(COOL_LOW_TEMPERATURES)
-        T_dust_em = DMIN(T_dust_em , 1499.9); // limit to <1500 so always use opacities for 'capped' value at 1500 below, but don't ignore, because we're assuming the dust destruction above 1500K is accounted for in the self-consistent calculation of the dust-to-metals ratio, NOT in the opacities here //
-#endif
-        if(T_dust_em < 1500.) {kappa = rt_kappa_dust_IR(i,T_dust_em,Trad,0)/fac;} // < 1500 K, dust is present; here flag 0 uses the radiation temperature because we want to know the Planck-mean *absorption* opacity. Divide by fac because the function outputs in code units but we're working in CGS here
-
-        { // non-dust IR opacities
-            /* this is an approximate result for a wide range of low-to-high-temperature opacities -not- from the dust phase, but provides a pretty good fit from 1.5e3 - 1.0e9 K, and valid at O(1) level down to <10 K, with updates from PFH in Sept 2022 */
-            double f_neutral_approx = DMAX(0., 1.-x_elec); /* approximate neutral fraction (good enough for us for what we need below) */
-            double f_free_metals_approx = P[i].Metallicity[0] * DMAX(0, 1.-0.5*dust_to_metals_vs_standard); /* metal mass fraction times the free (not locked in dust abundance), assuming the default solar scaling is 1/2 */
-            double Tgas=1. + 0.59*(GAMMA(i)-1.)*U_TO_TEMP_UNITS*SphP[i].InternalEnergyPred, rho_cgs = SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_CGS; /* crude estimate of gas temperature to use with scalings below, and gas density in cgs */
-            double k_electron = 0.2 * (1. + HYDROGEN_MASSFRAC) * x_elec; /* Thompson scattering (non-relativistic), scaling with free electron fraction */
-            double k_molecular = 0.1 * (f_free_metals_approx + 3.e-9) * f_neutral_approx; /* molecular line opacities, which should only dominate at low-temperatures in the fits below, but are not really assumed to extrapolate to the very low densities we apply this to here; this works ok comparing e.g. Lenzuni, Chernoff & Salpeter 1991 ApJS 76 759L [opacities for metal free gases], using the 3e-9 to represent the H2 molecular opacity (really low, only here for completeness) */
-#if defined(COOL_MOLECFRAC_NONEQM)
-            k_molecular *= SphP[i].MolecularMassFraction;
-#endif
-            double k_Kramers = 4.0e25 * (1.+HYDROGEN_MASSFRAC) * (f_free_metals_approx * exp(-DMIN(1.5e5/Trad,40.)) + 0.001*x_elec) * rho_cgs / (Trad*Trad*Trad*sqrt(Tgas)); /* free-free, bound-free, bound-bound transitions. bound-bound is small except at discrete wavelengths, so in a mean for a broad-band like we have here, is negligible. the 0.001 term is free-free, independent of metallicity, but note the power of the free electron fraction. the bound-free depends on metal ions here by assumption, specifically those not locked in dust, being ionized -- hence the exponential suppression at low radiation temperatures where the bound states cannot be ionized. the overall Tgas dependence here comes from the sound speed, the Trad from the wavelength (1/nu^3) dependence of the opacity */
-            double k_Rayleigh = f_neutral_approx * DMIN(5.e-19 * pow(Trad,4) , 0.2*(1.+ HYDROGEN_MASSFRAC)); /* rayleigh scattering from atomic gas [caps at thompson, much lower at low-T here] */
-#ifdef COOLING
-#ifdef RT_CHEM_PHOTOION
-            double x_Hp = SphP[i].HII, x_H0 = SphP[i].HI;
-#else
-            double u_in=SphP[i].InternalEnergy, rho_in=SphP[i].Density*All.cf_a3inv, mu=1, ne=1, nHI=0, nHII=0, nHeI=1, nHeII=0, nHeIII=0;
-            double temp = ThermalProperties(u_in, rho_in, i, &mu, &ne, &nHI, &nHII, &nHeI, &nHeII, &nHeIII);
-            double x_Hp = nHII, x_H0 = nHI;
-#endif
-            double x_Hminus = 4.e-10 * Tgas * x_elec * x_H0 / ((1. + x_Hp*300. + x_elec*1000.*(Tgas/1.3e4)*(Tgas/1.3e4)/(1.+(Tgas/1.3e4)*(Tgas/1.3e4)) + 4.e-17*1.) * (1. + Tgas/3.e4)); /* H- abundance: see series of equations in our non-equilbrium molecular solver (from e.g. Glover and Jappsen 2007 and other sources), with simple but accurate enough for our purposes replacements to make it quick to compute these to the needed accuracy for our purposes. note we need the free-electron fraction, neutral fraction, and free proton fraction. these denominator terms quantify differences from the idealized scaling assumed here, which assumes an idealized scaling of xH0~1~constant and near-vanishing xHp and x_e, for lower temperatures. last term assumes a constant photon-to-baryon ratio for scaling to different environments */
-            double k_Hminus_bf = 4.2e7 * pow(8760./Trad, 1.5) * exp(-DMIN(8760./Trad,40.)); /* bound-free H- opacity, from using the fitting functions in John 1988 [A&A, 193, 189], integrating over the Planck function for a flux-mean opacity (Rosseland mean ill-defined here because need all components since this vanishes outside certain ranges) */
-            double phi_hm = DMIN(Tgas/5040.,2.), k_Hminus_ff = 1.9e6 * pow(8760./Trad, 2) * exp(-DMIN(8760./Trad,40.)) * (0.6-2.5*sqrt(phi_hm)+2.5*phi_hm+2.7*phi_hm*sqrt(phi_hm)); /* free-free H- opacity, mixing the fits from John and references in Lenzuni, Chernoff, & Salpeter, but re-calculated for arbitrary radiation vs gas temperature. note this will appear to give differences from their opacities, the main difference comes not from this expression (which is simplified) but from the different x_H- and x_e, which owes to a very different chain of expressions, which give a quite different result in the end. */
-            double k_Hminus = x_Hminus * (k_Hminus_bf + k_Hminus_ff); /* add both together */
-#else
-            double k_Hminus = 1.1e-25 * sqrt((P[i].Metallicity[0] + 1.e-5) * rho_cgs) * pow(Tgas,7.7) * exp(-DMIN(8760./Trad,40.)); /* negative H- ion opacity (this is a fit for stellar atmospheres, which has a very strong temp dependence because of implicit free-electron and H- scaling with T, but that's not as useful for us since we're tracking the chemistry we need here) */
-#endif
-            double k_radiative = k_molecular + k_Kramers + k_Hminus + k_electron + k_Rayleigh; /* we don't want a rosseland mean here given our band divisions (already kramers and H- and molecular are rosseleand-mean-ized in fact within themselves), but here different sources should add linearly for a flux-mean */
-            kappa += k_radiative; /* add this to the dust opacity we have already calculated above */
-        }
-		return kappa * fac; // convert units and return
+        return rt_kappa_adaptive_IR_band(i,T_dust_em,Trad,0,0); // < 1500 K, dust is present; here first flag 0 uses the radiation temperature because we want to know the Planck-mean *absorption* opacity. Second flag 0 says to include both dust and gas opacities. In the subroutine, divide by fac because the function outputs in code units but we're working in CGS here
     }
 #endif
 #endif    
@@ -299,7 +259,7 @@ double rt_absorb_frac_albedo(int i, int k_freq)
     {
         double fA_tmp = (1.-0.5/(1.+((725.*725.)/(1.+SphP[i].Radiation_Temperature*SphP[i].Radiation_Temperature)))); // rough interpolation depending on the radiation temperature: high Trad, this is 1/2, low Trad, gets closer to unity */
 #ifdef COOLING
-		if (rt_kappa(i,k_freq)>0) {fA_tmp *= (1.-DMIN(1.,0.35*SphP[i].Ne*fac/rt_kappa(i,k_freq)));} else {return 1.0;} // the value should not matter if rt_kappa=0
+		if(rt_kappa(i,k_freq)>0) {fA_tmp *= (1.-DMIN(1.,0.35*SphP[i].Ne*fac/rt_kappa(i,k_freq)));} else {return 1.0;} // the value should not matter if rt_kappa=0
 #endif
         return fA_tmp;
     }
@@ -737,6 +697,7 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
 #endif
     double T_min = get_min_allowed_dustIRrad_temperature();
     if(SphP[i].Dust_Temperature <= T_min) {SphP[i].Dust_Temperature = T_min;} // dust temperature shouldn't be below CMB
+    double IRBand_opacity_fraction_from_gas_absorption = 0; // needed below to know what fraction is immediately re-radiated or not
 #endif    
 
     for(k_tmp=0; k_tmp<N_RT_FREQ_BINS; k_tmp++)
@@ -784,8 +745,6 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
                     a0_abs = -rt_absorption_rate(i,kf); // update absorption rate using the new radiation temperature //
                 }
                 double total_absorption_rate = E_abs_tot + fabs(a0_abs)*e0; // add the summed absorption and equate to dust emission //
-		        double total_emission_rate = total_absorption_rate + SphP[i].Rad_Je[kf]; // we will re-radiate this much because the component due to gas-dust coupling is accounted for in the cooling loop
-                total_de_dt = E_abs_tot + SphP[i].Rad_Je[kf] + dt_e_gamma_band;                
 #ifdef COOLING  // we account for gas-dust coupling as an additional heat source to be radiated away
 		        double u_in=SphP[i].InternalEnergy, rho_in=SphP[i].Density*All.cf_a3inv, mu=1, ne=1, nHI=0, nHII=0, nHeI=1, nHeII=0, nHeIII=0;
 		        double temp = ThermalProperties(u_in, rho_in, i, &mu, &ne, &nHI, &nHII, &nHeI, &nHeII, &nHeIII);
@@ -794,12 +753,16 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
 #else
                 SphP[i].Dust_Temperature = rt_eqm_dust_temp(i, 0, total_absorption_rate * vol_inv_phys / RT_SPEEDOFLIGHT_REDUCTION); // Calling with T=0 will account for dust absorption only
 #endif
-                double Tdust_eff = SphP[i].Dust_Temperature;                
+		if(SphP[i].Dust_Temperature < T_min){SphP[i].Dust_Temperature = T_min;}
+                double Tdust_eff = SphP[i].Dust_Temperature, Trad_eff = SphP[i].Radiation_Temperature;
+                IRBand_opacity_fraction_from_gas_absorption = rt_kappa_adaptive_IR_band(i,Tdust_eff,Trad_eff,-1,-1) / rt_kappa_adaptive_IR_band(i,Tdust_eff,Trad_eff,0,0); /* gas absorption opacity only, relative to total opacity (all sources+scattering) */
+                double total_emission_rate = total_absorption_rate * (1.-IRBand_opacity_fraction_from_gas_absorption) + SphP[i].Rad_Je[kf]; /* we will re-radiate this much because the component due to gas-dust coupling is accounted for in the cooling loop */
+                total_de_dt = E_abs_tot + SphP[i].Rad_Je[kf] + dt_e_gamma_band;
                 if(mode==0) // only update temperatures on kick operations //
                 {
-                    // dust absorption and re-emission brings T_rad towards T_dust: //
-                    double dE_abs = -e0 * (1. - exp(a0_abs*dt_entr)); // change in energy from absorption
-                    double T_max = DMAX(SphP[i].Radiation_Temperature , Tdust_eff); // should not exceed either initial temperature //
+                    /* dust absorption and re-emission brings T_rad towards T_dust: */
+                    double dE_abs = -e0 * (1. - exp(a0_abs*dt_entr)); /* change in energy from absorption */
+                    double T_max = DMAX(SphP[i].Radiation_Temperature , Tdust_eff); /* should not exceed either initial temperature */
                     SphP[i].Radiation_Temperature = (e0 + dE_abs + total_emission_rate*dt_entr) / (MIN_REAL_NUMBER + (e0 + dE_abs) / SphP[i].Radiation_Temperature + total_emission_rate*dt_entr / Tdust_eff);
                     SphP[i].Radiation_Temperature = DMIN(SphP[i].Radiation_Temperature, T_max);
                 }
@@ -871,8 +834,15 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
             
             int donation_target_bin = rt_get_donation_target_bin(kf); // frequency into which the photons will be deposited, if any //
 #ifdef RT_INFRARED
-            if(donation_target_bin==RT_FREQ_BIN_INFRARED) {E_abs_tot += de_abs/(MIN_REAL_NUMBER + dt_entr);} /* donor bin is yourself in the IR - all self-absorption is re-emitted */
-            if(kf==RT_FREQ_BIN_INFRARED) {ef = e0 + total_de_dt * dt_entr;} /* donor bin is yourself in the IR - all self-absorption is re-emitted */
+            if((donation_target_bin == RT_FREQ_BIN_INFRARED) && (kf != RT_FREQ_BIN_INFRARED)) {E_abs_tot += de_abs/(MIN_REAL_NUMBER + dt_entr);} /* donor bin is yourself in the IR - some self-absorption is re-emitted, but this is handled explicitly below, so don't need to include it in sum here */
+            if(kf==RT_FREQ_BIN_INFRARED) {
+#ifdef COOLING
+                ef += de_abs*(1.-IRBand_opacity_fraction_from_gas_absorption); /* update: assume a fraction de_abs * IRBand_opacity_fraction_from_gas_absorption is absorbed by the gas, which will not be instantly re-emitted here, but later in the cooling subroutines */
+                if(mode==0) {SphP[i].DtInternalEnergy += (de_abs * IRBand_opacity_fraction_from_gas_absorption) / ((MIN_REAL_NUMBER + dt_entr) * P[i].Mass);} /* this fraction absorbed by gas goes into a heating rate which can be balanced implicitly in the cooling function later */
+#else
+                ef = e0 + total_de_dt * dt_entr; // previous version: assumes all self-absorption is re-emitted
+#endif
+            } /* donor bin is yourself in the IR - just need to decide what to do with the photons */
 #endif
             // isotropically re-emit the donated radiation into the target bin[s] //
 #if defined(RT_EVOLVE_INTENSITIES)
@@ -1347,7 +1317,7 @@ double dust_dEdt(int i, double T, double Tdust, double dust_absorption_rate)
 #ifdef COOLING
     if(T>0) {LambdaDust_fac = gas_dust_heating_coeff(i,T,Tdust) * nHcgs * nHcgs /(UNIT_PRESSURE_IN_CGS/UNIT_TIME_IN_CGS);}
 #endif    
-    double kappa_emission = rt_kappa_dust_IR(i, Tdust, Tdust,1);
+    double kappa_emission = rt_kappa_adaptive_IR_band(i, Tdust, Tdust, 1, 0);
     double dust_emission = fac_emission * kappa_emission * pow(Tdust,4);
 #if defined(COOLING) && !defined(RT_INFRARED) // if we aren't doing RT self-consistently, approximate outward radiative transport rate in optically-thick regime
     double column = evaluate_NH_from_GradRho(SphP[i].Gradients.Density,PPP[i].Hsml,SphP[i].Density,PPP[i].NumNgb,1,i);
@@ -1380,8 +1350,8 @@ double rt_eqm_dust_temp(int i, double T, double dust_absorption_rate)
     Tdust_guess = DMAX(Tdust_guess, sqrt(sqrt(dust_absorption_rate / (rho_c_arad_fac * (5.*UNIT_SURFDEN_IN_CGS) * Zfac)))); // account for how opacity tops out around 5 Z cm^2/g
 #ifdef COOLING // account for gas-dust coupling
     double nHcgs = HYDROGEN_MASSFRAC * UNIT_DENSITY_IN_CGS * SphP[i].Density * All.cf_a3inv / PROTONMASS_CGS;    /* hydrogen number dens in cgs units */
-    double LambdaDust_fac = gas_dust_heating_coeff(i,T,Tdust) * nHcgs * nHcgs /(UNIT_PRESSURE_IN_CGS/UNIT_TIME_IN_CGS);
-    double Tdust_coupled = T - rho_c_arad_fac * rt_kappa_dust_IR(i,T,T,1) * pow(T,4) / (LambdaDust_fac+MIN_REAL_NUMBER); // bound for the gas-dust coupled regime assuming T ~ Td
+    double LambdaDust_fac = gas_dust_heating_coeff(i,T,Tdust_guess) * nHcgs * nHcgs /(UNIT_PRESSURE_IN_CGS/UNIT_TIME_IN_CGS);
+    double Tdust_coupled = T - rho_c_arad_fac * rt_kappa_adaptive_IR_band(i,T,T,1,0) * pow(T,4) / (LambdaDust_fac+MIN_REAL_NUMBER); // bound for the gas-dust coupled regime assuming T ~ Td
     Tdust_guess = DMAX(Tdust_coupled, Tdust_guess);
 #endif
 #endif // end non-RT case for guess
@@ -1437,7 +1407,7 @@ double rt_eqm_dust_temp(int i, double T, double dust_absorption_rate)
 
     	n_iter++;
 	    if(n_iter > MAXITER-10) {
-	        PRINT_WARNING("Warning: Dust temperature iteration converging slowly: ID=%lld iter=%d T=%g Tdust=%g Tdust_guess=%g T_upper=%g T_lower=%g dEdt=%g fac=%g.\n",P[i].ID,n_iter,T,Tdust,Tdust_guess, T_upper, T_lower,dEdt, fac);
+	        PRINT_WARNING("Warning: Dust temperature iteration converging slowly: ID=%lld iter=%d T=%g Tdust=%g Tdust_guess=%g T_upper=%g T_lower=%g dEdt=%g fac=%g.\n",(long long)P[i].ID,n_iter,T,Tdust,Tdust_guess, T_upper, T_lower,dEdt, fac);
 	        if(n_iter > MAXITER){break;}
 	    }
     } while(fabs(dT_dustgas - (T-Tdust)) > 1.e-3 * fabs(T-Tdust)); // sufficient to converge dust cooling to 10^-3 tolerance, at this point uncertainties in dust properties will dominate the error budget    
@@ -1458,14 +1428,28 @@ double blackbody_lum_frac(double E_lower, double E_upper, double T_eff)
     if(x1 < 3.40309){
       f_lower = (131.4045728599595*x1*x1*x1)/(2560. + x1*(960. + x1*(232. + 39.*x1))); // approximation of integral of Planck function from 0 to x1, valid for x1 << 1
     } else {
-      f_lower = 1 - (0.15398973382026504*(6. + x1*(6. + x1*(3. + x1))))*exp(-x1); // approximation of Planck integral for large x
+      f_lower = 1 - (0.15398973382026504*(6. + x1*(6. + x1*(3. + x1))))*exp(-DMIN(x1,40.)); // approximation of Planck integral for large x
     }
     if(x2 < 3.40309){
       f_upper = (131.4045728599595*x2*x2*x2)/(2560. + x2*(960. + x2*(232. + 39.*x2))); // approximation of integral of Planck function from 0 to x2, valid for x2 << 1
     } else {
-      f_upper = 1 - (0.15398973382026504*(6. + x2*(6. + x2*(3. + x2))))*exp(-x2); // approximation of Planck integral for large x
+      f_upper = 1 - (0.15398973382026504*(6. + x2*(6. + x2*(3. + x2))))*exp(-DMIN(x2,40.)); // approximation of Planck integral for large x
     }
-    return DMAX(f_upper - f_lower, 0);
+    double df = f_upper - f_lower;
+    if(df<=0) {if(x2<=x1) {return 0;} else {if(x1>4.) {if(x1<120.) {return 0.15398973382026504*(6.+x1*(6.+x1*(3.+x1)))*exp(-DMIN(x1,120.));} else {return 2.e-47;}}}}
+    return DMAX(df, 0);
+}
+
+/* subroutine to return the photon energy density [in physical code units] in a given band range [i - index of star particle, E_lower - lower end of the energy band in eV, E_upper - upper end of the energy band in eV] */
+double rt_irband_egydensity_in_band(int i, double E_lower, double E_upper)
+{
+#if defined(RT_INFRARED)
+    double u_gamma = SphP[i].Rad_E_gamma[RT_FREQ_BIN_INFRARED] * (SphP[i].Density*All.cf_a3inv/P[i].Mass) * blackbody_lum_frac(E_lower, E_upper, SphP[i].Radiation_Temperature);
+    if(!isfinite(u_gamma) || (u_gamma<0)) {u_gamma = 0;}
+    return u_gamma;
+#else
+    return 0;
+#endif
 }
 
 /***********************************************************************************************************/
@@ -1530,57 +1514,112 @@ int rt_get_source_luminosity_chimes(int i, int mode, double *lum, double *chimes
 
 
 
-/***********************************************************************************************************/
-/* calculate the IR dust opacity [in physical code units = Length^2/Mass]. 
-/* NOTE: The flag do_emission_opacity toggles special behaviour.
-/* 0: returns the scattering+absorption opacity using the radiation temperature (usually want this)
-/* 1: returns the *emission* opacity, assuming the dust radiates as a blackbody (depends only on T_dust)
-/***********************************************************************************************************/
-double rt_kappa_dust_IR(int i, double T_dust, double Trad, int do_emission_opacity)
+/*--------------------------------------------------------------------
+  calculate the IR dust opacity [in physical code units = Length^2/Mass].
+   NOTE: The flag do_emission_absorption_scattering_opacity toggles special behaviour.
+   -1: returns the absorption opacity only, using the radiation temperature
+    0: returns the scattering+absorption opacity using the radiation temperature (usually want this)
+    1: returns the *emission* opacity, assuming the dust+gas radiates as a blackbody (depends only on T_dust)
+   likewise, dust_or_gas_opacity_only_flag toggles different behaviors:
+    0: total IR-band opacity,
+    1: opacity -only- from dust,
+   -1: opacity -only- from non-dust 
+--------------------------------------------------------------------*/
+double rt_kappa_adaptive_IR_band(int i, double T_dust, double Trad, int do_emission_absorption_scattering_opacity, int dust_or_gas_opacity_only_flag)
 {
-    if(do_emission_opacity) {Trad = T_dust;} // if we want the emissivity then we assume radiation emitted at T_dust
+    if(do_emission_absorption_scattering_opacity==1) {Trad = T_dust;} // if we want the emissivity then we assume radiation emitted at T_dust
     double fac=UNIT_SURFDEN_IN_CGS, x = 4.*log10(Trad) - 8., kappa=0; // needed for fitting functions to opacities (may come up with cheaper function later)
     double dx_excess=0; if(x > 7.) {dx_excess=x-7.; x=7.;} // cap for maximum temperatures at which fit-functions should be used //
     //if(x < -4.) {x=-4.;} // cap for minimum temperatures at which fit functions below should be used //
-
-#ifdef RT_INFRARED // use fancy detailed fit with composition varying by dust temperature
-    /* opacities are from tables of Semenov et al 2003; we use their 'standard'
-    model, for each -dust- temperature range (which gives a different dust composition, 
-    hence different wavelength-dependent specific opacity). We then integrate to 
-    get the Rosseland-mean opacity for the given dust composition, assuming 
-    the radiation is a blackbody with the specified -radiation- temperature. 
-    We adopt their 'porous 5-layered sphere' model for dust composition. 
-    We use simple fitting functions to the full tabulated data: however, note that
-    (because the blackbody assumption smoothes fine structure in the opacities), 
-    the deviations from the fit functions are much smaller than the deviations owing 
-    to different grain composition choices (porous/non, composite/non, 5-layer/aggregated/etc) 
-    in Semenov et al's paper */
-
-    if(T_dust < 160.) // Tdust < 160 K (all dust constituents present)
-    {
-        kappa = exp(0.72819004 + 0.75142468*x - 0.07225763*x*x - 0.01159257*x*x*x + 0.00249064*x*x*x*x);
-    } else if(T_dust < 275.) { // 160 < Tdust < 275 (no ice present)
-        kappa = exp(0.16658241 + 0.70072926*x - 0.04230367*x*x - 0.01133852*x*x*x + 0.0021335*x*x*x*x);
-    } else if(T_dust < 425.) { // 275 < Tdust < 425 (no ice or volatile organics present)
-        kappa = exp(0.03583845 + 0.68374146*x - 0.03791989*x*x - 0.01135789*x*x*x + 0.00212918*x*x*x*x);        
-    } else if(T_dust < 680.) { // 425 < Tdust < 680 (silicates, iron, & troilite present)
-        kappa = exp(-0.76576135 + 0.57053532*x - 0.0122809*x*x - 0.01037311*x*x*x + 0.00197672*x*x*x*x);
-    } else { // 680 < Tdust < 1500 (silicates & iron present)
-        kappa = exp(-2.23863222 + 0.81223269*x + 0.08010633*x*x + 0.00862152*x*x*x - 0.00271909*x*x*x*x);
-    }
-    if(dx_excess > 0) {kappa *= exp(0.57*dx_excess);} // assumes kappa scales linearly with temperature (1/lambda) above maximum in fit; pretty good approximation //
-    kappa = DMIN(1.e-3 * Trad * Trad, kappa); // ensure that we extrapolate to low temperatures with a beta=2 law, like in the S03 paper fiducial model
-#else
-    kappa = DMIN(1.e-3 * Trad * Trad, 5.); // beta=2 law capped at 5 cm^2/g, rough approximation of Semenov model neglecting jumps in composition
-#endif
-#ifdef RADTRANSFER
-    if(do_emission_opacity) {kappa *= rt_absorb_frac_albedo(i, RT_FREQ_BIN_INFRARED);} // multiply by (1-albedo) because emission cross section depends only on kappa_absorption
+#if defined(RT_INFRARED) || defined(COOL_LOW_TEMPERATURES)
+    T_dust = DMIN(T_dust , 1499.9); // limit to <1500 so always use opacities for 'capped' value at 1500 below, but don't ignore, because we're assuming the dust destruction above 1500K is accounted for in the self-consistent calculation of the dust-to-metals ratio, NOT in the opacities here //
 #endif
     double Zfac = 1.0, dust_to_metals_vs_standard = return_dust_to_metals_ratio_vs_solar(i,T_dust); // avoid call to return_dust_to_metals_ratio_vs_solar to avert circular dependency
 #ifdef METALS
     if(i>=0) {Zfac = P[i].Metallicity[0]/All.SolarAbundances[0];}
 #endif
-    kappa *= Zfac*dust_to_metals_vs_standard; // the above are all dust opacities, so they scale with dust content per our usual expressions        
 
-    return kappa*fac;
+    if(dust_or_gas_opacity_only_flag >= 0) // dust opacities
+    {
+#ifdef RT_INFRARED // use fancy detailed fit with composition varying by dust temperature
+        /* opacities are from tables of Semenov et al 2003; we use their 'standard'
+         model, for each -dust- temperature range (which gives a different dust composition,
+         hence different wavelength-dependent specific opacity). We then integrate to
+         get the Rosseland-mean opacity for the given dust composition, assuming
+         the radiation is a blackbody with the specified -radiation- temperature.
+         We adopt their 'porous 5-layered sphere' model for dust composition.
+         We use simple fitting functions to the full tabulated data: however, note that
+         (because the blackbody assumption smoothes fine structure in the opacities),
+         the deviations from the fit functions are much smaller than the deviations owing
+         to different grain composition choices (porous/non, composite/non, 5-layer/aggregated/etc)
+         in Semenov et al's paper */
+        
+        if(T_dust < 160.) // Tdust < 160 K (all dust constituents present)
+        {
+            kappa = exp(0.72819004 + 0.75142468*x - 0.07225763*x*x - 0.01159257*x*x*x + 0.00249064*x*x*x*x);
+        } else if(T_dust < 275.) { // 160 < Tdust < 275 (no ice present)
+            kappa = exp(0.16658241 + 0.70072926*x - 0.04230367*x*x - 0.01133852*x*x*x + 0.0021335*x*x*x*x);
+        } else if(T_dust < 425.) { // 275 < Tdust < 425 (no ice or volatile organics present)
+            kappa = exp(0.03583845 + 0.68374146*x - 0.03791989*x*x - 0.01135789*x*x*x + 0.00212918*x*x*x*x);
+        } else if(T_dust < 680.) { // 425 < Tdust < 680 (silicates, iron, & troilite present)
+            kappa = exp(-0.76576135 + 0.57053532*x - 0.0122809*x*x - 0.01037311*x*x*x + 0.00197672*x*x*x*x);
+        } else { // 680 < Tdust < 1500 (silicates & iron present)
+            kappa = exp(-2.23863222 + 0.81223269*x + 0.08010633*x*x + 0.00862152*x*x*x - 0.00271909*x*x*x*x);
+        }
+        if(dx_excess > 0) {kappa *= exp(0.57*dx_excess);} // assumes kappa scales linearly with temperature (1/lambda) above maximum in fit; pretty good approximation //
+        kappa = DMIN(1.e-3 * Trad * Trad, kappa); // ensure that we extrapolate to low temperatures with a beta=2 law, like in the S03 paper fiducial model
+#else
+        kappa = DMIN(1.e-3 * Trad * Trad, 5.); // beta=2 law capped at 5 cm^2/g, rough approximation of Semenov model neglecting jumps in composition
+#endif
+#ifdef RADTRANSFER
+        if((do_emission_absorption_scattering_opacity==1) || (do_emission_absorption_scattering_opacity==-1)) {
+            kappa *= (1.-0.5/(1.+((725.*725.)/(1.+Trad*Trad)))); /* rough interpolation for dust depending on the radiation temperature: high Trad, this is 1/2, low Trad, gets closer to unity */
+        } /* multiply by (1-albedo) because absorption depends only on albedo, and emission cross section depends only on kappa_absorption */
+#endif
+        kappa *= Zfac*dust_to_metals_vs_standard; // the above are all dust opacities, so they scale with dust content per our usual expressions
+    }
+    
+    if(dust_or_gas_opacity_only_flag <= 0) // non-dust (e.g. gas-phase) IR opacities
+    {
+        /* this is an approximate result for a wide range of low-to-high-temperature opacities -not- from the dust phase, but provides a pretty good fit from 1.5e3 - 1.0e9 K, and valid at O(1) level down to <10 K, with updates from PFH in Sept 2022 */
+        double x_elec = 1., zmetals = 0.014;
+#ifdef COOLING
+        x_elec = SphP[i].Ne; // actual free electron fraction
+#endif
+#ifdef METALS
+        zmetals = P[i].Metallicity[0];
+#endif
+        double f_neutral_approx = DMAX(0., 1.-x_elec); /* approximate neutral fraction (good enough for us for what we need below) */
+        double f_free_metals_approx = zmetals * DMAX(0, 1.-0.5*dust_to_metals_vs_standard); /* metal mass fraction times the free (not locked in dust abundance), assuming the default solar scaling is 1/2 */
+        double Tgas=1. + 0.59*(GAMMA(i)-1.)*U_TO_TEMP_UNITS*SphP[i].InternalEnergyPred, rho_cgs = SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_CGS; /* crude estimate of gas temperature to use with scalings below, and gas density in cgs */
+        double k_electron = 0.2 * (1. + HYDROGEN_MASSFRAC) * x_elec; /* Thompson scattering (non-relativistic), scaling with free electron fraction */
+        double k_molecular = 0.1 * (f_free_metals_approx + 3.e-9) * f_neutral_approx; /* molecular line opacities, which should only dominate at low-temperatures in the fits below, but are not really assumed to extrapolate to the very low densities we apply this to here; this works ok comparing e.g. Lenzuni, Chernoff & Salpeter 1991 ApJS 76 759L [opacities for metal free gases], using the 3e-9 to represent the H2 molecular opacity (really low, only here for completeness) */
+#if defined(COOL_MOLECFRAC_NONEQM)
+        k_molecular *= SphP[i].MolecularMassFraction;
+#endif
+        double k_Kramers = 4.0e25 * (1.+HYDROGEN_MASSFRAC) * (f_free_metals_approx * exp(-DMIN(1.5e5/Trad,40.)) + 0.001*x_elec) * rho_cgs / (Trad*Trad*Trad*sqrt(Tgas)); /* free-free, bound-free, bound-bound transitions. bound-bound is small except at discrete wavelengths, so in a mean for a broad-band like we have here, is negligible. the 0.001 term is free-free, independent of metallicity, but note the power of the free electron fraction. the bound-free depends on metal ions here by assumption, specifically those not locked in dust, being ionized -- hence the exponential suppression at low radiation temperatures where the bound states cannot be ionized. the overall Tgas dependence here comes from the sound speed, the Trad from the wavelength (1/nu^3) dependence of the opacity */
+        double k_effective_Fe = 1.5e20 * f_free_metals_approx * rho_cgs / (Trad*Trad) * exp(-DMIN(pow(0.8e4/Trad,4),40.)) * exp(-DMIN(pow(Trad/0.7e6,2),40.)); /* crude approximation to the iron line-blanketing opacity calculations from Jiang et al. 2015+2016 */
+        k_Kramers += k_effective_Fe;
+        double k_Rayleigh = f_neutral_approx * DMIN(5.e-19 * pow(Trad,4) , 0.2*(1.+ HYDROGEN_MASSFRAC)); /* rayleigh scattering from atomic gas [caps at thompson, much lower at low-T here] */
+#ifdef COOLING
+#ifdef RT_CHEM_PHOTOION
+        double x_Hp = SphP[i].HII, x_H0 = SphP[i].HI;
+#else
+        double u_in=SphP[i].InternalEnergy, rho_in=SphP[i].Density*All.cf_a3inv, mu=1, ne=1, nHI=0, nHII=0, nHeI=1, nHeII=0, nHeIII=0;
+        double temp = ThermalProperties(u_in, rho_in, i, &mu, &ne, &nHI, &nHII, &nHeI, &nHeII, &nHeIII);
+        double x_Hp = nHII, x_H0 = nHI;
+#endif
+        double x_Hminus = 4.e-10 * Tgas * x_elec * x_H0 / ((1. + x_Hp*300. + x_elec*1000.*(Tgas/1.3e4)*(Tgas/1.3e4)/(1.+(Tgas/1.3e4)*(Tgas/1.3e4)) + 4.e-17*1.) * (1. + Tgas/3.e4)); /* H- abundance: see series of equations in our non-equilbrium molecular solver (from e.g. Glover and Jappsen 2007 and other sources), with simple but accurate enough for our purposes replacements to make it quick to compute these to the needed accuracy for our purposes. note we need the free-electron fraction, neutral fraction, and free proton fraction. these denominator terms quantify differences from the idealized scaling assumed here, which assumes an idealized scaling of xH0~1~constant and near-vanishing xHp and x_e, for lower temperatures. last term assumes a constant photon-to-baryon ratio for scaling to different environments */
+        double k_Hminus_bf = 4.2e7 * pow(8760./Trad, 1.5) * exp(-DMIN(8760./Trad,40.)); /* bound-free H- opacity, from using the fitting functions in John 1988 [A&A, 193, 189], integrating over the Planck function for a flux-mean opacity (Rosseland mean ill-defined here because need all components since this vanishes outside certain ranges) */
+        double phi_hm = DMIN(Tgas/5040.,2.), k_Hminus_ff = 1.9e6 * pow(8760./Trad, 2) * exp(-DMIN(8760./Trad,40.)) * (0.6-2.5*sqrt(phi_hm)+2.5*phi_hm+2.7*phi_hm*sqrt(phi_hm)); /* free-free H- opacity, mixing the fits from John and references in Lenzuni, Chernoff, & Salpeter, but re-calculated for arbitrary radiation vs gas temperature. note this will appear to give differences from their opacities, the main difference comes not from this expression (which is simplified) but from the different x_H- and x_e, which owes to a very different chain of expressions, which give a quite different result in the end. */
+        double k_Hminus = x_Hminus * (k_Hminus_bf + k_Hminus_ff); /* add both together */
+#else
+        double k_Hminus = 1.1e-25 * sqrt((zmetals + 1.e-5) * rho_cgs) * pow(Tgas,7.7) * exp(-DMIN(8760./Trad,40.)); /* negative H- ion opacity (this is a fit for stellar atmospheres, which has a very strong temp dependence because of implicit free-electron and H- scaling with T, but that's not as useful for us since we're tracking the chemistry we need here) */
+#endif
+        double k_radiative = k_molecular + k_Kramers + k_Hminus + k_electron + k_Rayleigh; /* we don't want a rosseland mean here given our band divisions (already kramers and H- and molecular are rosseleand-mean-ized in fact within themselves), but here different sources should add linearly for a flux-mean */
+        if((do_emission_absorption_scattering_opacity==1) || (do_emission_absorption_scattering_opacity==-1)) {k_radiative -= k_electron;} /* here we just want absorption/emission, not scattering opacity, so we do not include the free electron term */
+        kappa += k_radiative; /* add this to the dust opacity we have already calculated above */
+    }
+    
+    return kappa * fac;
 }

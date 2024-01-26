@@ -254,7 +254,7 @@
 # ----- star (+planet) formation-specific modules (feedback, jets, radiation, protostellar evolution, etc)
 ## ----------------------------------------------------------------------------------------------------
 #SINGLE_STAR_FB_JETS            # kinematic jets from sinks: outflow rate+velocity set by BAL_f_accretion+BAL_v_outflow. for now cite Angles-Alcazar et al., 2017, MNRAS, 464, 2840 (for algorithm, developed for black hole jets), though now using SPAWN algorithm developed by KY Su. cite Su et al, arXiv:2102.02206, and Grudic et al., arXiv:2010.11254, for the methods here.
-#SINGLE_STAR_FB_WINDS           # enable continuous main-sequence mechanical feedback from single stellar sources accounting for OB/AGB/WR winds. with STARFORGE parent flag[s] enabled, this will following STARFORGE methods (Grudic+ arXiv:2010.11254). Otherwise, this will follow a simpler Castor, Abbot, & Klein scaling, for type=4 particles representing single stars, using the standard GALSF_FB_MECHNICAL algorithms in code, for which you should cite Hopkins et al. 2018MNRAS.477.1578H
+#SINGLE_STAR_FB_WINDS=0+1+2      # enable continuous main-sequence mechanical feedback from single stellar sources accounting for OB/AGB/WR winds. with STARFORGE parent flag[s] enabled, this will following STARFORGE methods (Grudic+ arXiv:2010.11254). Otherwise, this will follow a simpler Castor, Abbot, & Klein scaling, for type=4 particles representing single stars, using the standard GALSF_FB_MECHNICAL algorithms in code, for which you should cite Hopkins et al. 2018MNRAS.477.1578H. With STARFORGE model enabled, the numerical value encodes a bitflag toggling use of the Vink 2001 mass loss prescription (&1) and Eddington-limit floor by Sabhahit et al. arXiv:2205.09125 (&2)
 #SINGLE_STAR_FB_SNE             # enable supernovae from single stellar sources at end of main-sequence lifetime. with STARFORGE flag[s] enabled this will use particle spawning in shells following STARFORGE methods (Grudic+ arXiv:2010.11254). Otherwise, this will act uniformly and in a single timestep at the end of the stellar main-sequence lifetime for type=4 particles representing single stars, using the standard GALSF_FB_MECHNICAL algorithms in code, for which you should cite Hopkins et al. 2018MNRAS.477.1578H
 #SINGLE_STAR_FB_RAD             # enable radiative feedback from stars, hooking into the standard radiation hydrodynamics algorithms. you need to determine how the effective temperatures of the stars scale, which will be used to determine their input fluxes into the different explicitly-evolved bands.
 #EOS_SUBSTELLAR_ISM             # allows for the local equation of state polytropic index to vary between 7/5 and 5/3 and outside this range following the detailed fit from Vaidya et al. A&A 580, A110 (2015) for n_H ~ 10^7, which accounts for collisional dissociation at 2000K and ionization at 10^4K, and take the fmol-weighted average with 5./3 at the end to interpolate between atomic/not self-shielding and molecular/self-shielding. Gamma should technically really come from calculating the species number-weighted specific heats, but fmol is very approximate so this should be OK. See the code and uncomment the noted lines in EOS.c if you want to use the exact version from Vaidya+15, which rolls the heat of ionization into the EOS. cite Grudic+ arXiv:2010.11254
@@ -485,6 +485,7 @@
 #OUTPUT_SINK_FORMATION_PROPS    # save at-formation properties of sink particles
 #OUTPUT_BH_DISTANCES            # saves the distance to the nearest sink, if BH_CALC_DISTANCES is enabled, to snapshots
 #OUTPUT_RT_RAD_FLUX             # save flux vector for radiation methods that explictly evolve the flux (e.g. M1)
+#OUTPUT_RT_RAD_OPACITY          # save opacities for the different bands for explicit radiation-hydro methods
 #INPUT_READ_HSML                # force reading hsml from IC file (instead of re-computing them; in general this is redundant but useful if special guesses needed)
 #INPUT_READ_SINKPROPS           # force reading sink properties including sink radius, zams mass, luminosity, age, etc, from ICs file if it includes sink particles and the IC is designed for use with the single-star modules
 #OUTPUT_TWOPOINT_ENABLED        # allows user to calculate mass 2-point function by enabling and setting restartflag=5
@@ -627,6 +628,7 @@
 #ALLOW_IMBALANCED_GASPARTICLELOAD # increases All.MaxPartGas to All.MaxPart: can allow better load-balancing in some cases, but uses more memory. But use me if you run into errors where it can't fit the domain (where you would increase PartAllocFac, but can't for some reason)
 #SEPARATE_STELLARDOMAINDECOMP   # separate stars (ptype=4+5) and other non-gas particles in domain decomposition (may help load-balancing)
 ####################################################################################################
+
 
 
 

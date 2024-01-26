@@ -337,7 +337,7 @@ void CalculateAndAssign_CosmicRay_DiffusionAndStreamingCoefficients(int i)
     {
         v_streaming=Get_CosmicRayStreamingVelocity(i,k_CRegy);
         DiffusionCoeff=0; CR_kappa_streaming=0; CRPressureGradScaleLength=Get_CosmicRayGradientLength(i,k_CRegy); /* set these for the bin as we get started */
-#ifndef CRFLUID_ALT_DISABLE_STREAMING /* self-consistently calculate the diffusion coefficients for cosmic ray fluids; first the streaming part of this (kappa~v_stream*L_CR_grad) following e.g. Wentzel 1968, Skilling 1971, 1975, Holman 1979, as updated in Kulsrud 2005, Yan & Lazarian 2008, Ensslin 2011 */
+#if !defined(CRFLUID_ALT_DISABLE_STREAMING) && (!defined(CRFLUID_M1) || defined(CRFLUID_ALT_FLUX_FORM_JOCH)) /* estimate the diffusion coefficients for cosmic ray fluids; first the streaming part of this (kappa~v_stream*L_CR_grad) following e.g. Wentzel 1968, Skilling 1971, 1975, Holman 1979, as updated in Kulsrud 2005, Yan & Lazarian 2008, Ensslin 2011. note if default m1 formalism is used, this should remain nil, because streaming speeds will be handled more self-consistently down below (relevant if streaming speed >> diffusion speed, which could happen in some extremes) */
         CR_kappa_streaming = GAMMA_COSMICRAY(k_CRegy) * v_streaming * CRPressureGradScaleLength; /* the diffusivity is now just the product of these two coefficients (all physical units) */
 #endif
 #if (CRFLUID_DIFFUSION_MODEL == 0) /* set diffusivity to a universal power-law scaling (constant per-bin)  */
@@ -704,7 +704,7 @@ double CosmicRay_Update_DriftKick(int i, double dt_entr, int mode)
         if(mode==0) {SphP[i].CosmicRayEnergy[k_CRegy]=eCR_tmp;} else {SphP[i].CosmicRayEnergyPred[k_CRegy]=eCR_tmp;} // updated energy
         eCR_0 = eCR_tmp; // save this value for below
         
-        
+    
 #if defined(COOLING_OPERATOR_SPLIT)
         /* now need to account for the adiabatic heating/cooling of the 'fluid', here, with gamma=GAMMA_COSMICRAY(k_CRegy) */
         double dCR_div = CR_calculate_adiabatic_gasCR_exchange_term(i, dt_entr, (GAMMA_COSMICRAY(k_CRegy)-1.)*eCR_tmp, mode); // this will handle the update below - separate subroutine b/c we want to allow it to appear in a couple different places
@@ -714,6 +714,28 @@ double CosmicRay_Update_DriftKick(int i, double dt_entr, int mode)
 #endif
 
     } // loop over CR bins complete
+    
+#if defined(CRFLUID_INJECTION_AT_SHOCKS)
+    if(SphP[i].DtCREgyNewInjectionFromShocks > 0) /* now perform the actual CR injection using the rates estimated in the hydro solver */
+    {
+        double dir[3]; int k; for(k=0;k<3;k++) {dir[k] = -SphP[i].Gradients.Pressure[k];} /* initial flux direction down pressure gradient */
+        inject_cosmic_rays(SphP[i].DtCREgyNewInjectionFromShocks * dt_entr, 1000./UNIT_VEL_IN_KMS, 2, i, dir); /* inject the energy */
+        SphP[i].DtCREgyNewInjectionFromShocks = 0; // reset to nil, we've successfully injected the energy
+    }
+#endif
+#if defined(BH_CR_INJECTION_AT_TERMINATION)
+    if(SphP[i].BH_CR_Energy_Available_For_Injection > 0) {
+        /* need to determine whether or not sufficient deceleration has occurred in order to inject CRs from our 'reservoir */
+        double vmag=0; int k; for(k=0;k<3;k++) {double v0=P[i].Vel[k]/All.cf_atime; vmag+=v0*v0;} /* we will base this on a simple estimate of the velocity and how much things have decelerated */
+        if(vmag>0) {vmag=sqrt(vmag);}
+        if((P[i].ID != All.AGNWindID) || (vmag < ((double)(BH_CR_INJECTION_AT_TERMINATION))*All.BAL_v_outflow)) {
+            double dir[3]; for(k=0;k<3;k++) {dir[k] = -SphP[i].Gradients.Pressure[k];} /* initial flux direction down pressure gradient */
+            inject_cosmic_rays(SphP[i].BH_CR_Energy_Available_For_Injection, All.BAL_v_outflow, 5, i, dir); /* inject the energy */
+            SphP[i].BH_CR_Energy_Available_For_Injection = 0;  // reset its value to nil, now that it has been injected
+        }
+    }
+#endif
+    
     return 1;
 }
 #endif
@@ -840,12 +862,14 @@ int return_CRbin_CR_species_ID(int k_CRegy)
 /* calculate the -ion- Alfven speed in a given element, relevant for very short-wavelength modes with frequency larger than the ion-neutral collision timescale (relevant for CRs in particular) */
 double Get_Gas_ion_Alfven_speed_i(int i)
 {
-#if defined(MAGNETIC)
+#if !defined(MAGNETIC)
     return Get_Gas_thermal_soundspeed_i(i); // if no B-fields, just assume Alfven speed equal to thermal sound speed
 #endif
     double vA = Get_Gas_Alfven_speed_i(i); // normal ideal-MHD Alfven speed
 #ifdef CRFLUID_ION_ALFVEN_SPEED
-    vA /= sqrt(1.e-10 + Get_Gas_Ionized_Fraction(i)); // Alfven speed of interest is that of the ions alone, not the ideal MHD Alfven speed //
+    double f_ion = Get_Gas_Ionized_Fraction(i);
+    double mu_eff_ion = 1. + (24.305 - 1.)/(1. + pow(f_ion/1.e-3,2)); // -very- crude approximation to transition to heavy-ion dominance at very low ion fractions
+    vA /= sqrt(1.e-15 + mu_eff_ion * f_ion); // Alfven speed of interest is that of the ions alone, not the ideal MHD Alfven speed [corrected for weight with crude approximation above - note that in grain-charge dominated regime, this becomes deeply ambiguous] //
 #endif
     return vA;
 }
@@ -915,7 +939,7 @@ double cr_get_source_shieldfac(int i)
 /* return total CR energy density associated with a cell */
 double INLINE_FUNC Get_CosmicRayEnergyDensity_cgs(int i)
 {
-    if(i<=0) {return 0;}
+    if(i<0) {return 0;}
 #ifdef COSMIC_RAY_FLUID
     double u_cr=0; int k; for(k=0;k<N_CR_PARTICLE_BINS;k++) {u_cr += SphP[i].CosmicRayEnergyPred[k];}
     return u_cr * (SphP[i].Density*All.cf_a3inv / P[i].Mass) * UNIT_PRESSURE_IN_CGS;

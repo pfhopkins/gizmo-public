@@ -325,7 +325,7 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 #define VISCOSITY            /* enable viscosity */
 #define VISCOSITY_BRAGINSKII /* compute proper coefficients and anisotropy for viscosity */
 #define SINGLE_STAR_FB_JETS  /* enable jets from protostars */
-#define SINGLE_STAR_FB_WINDS /* enable continuous mass-loss feedback - will also enable ssp mass-loss */
+#define SINGLE_STAR_FB_WINDS 0 /* enable continuous mass-loss feedback - will also enable ssp mass-loss */
 #define SINGLE_STAR_FB_SNE   /* enable SNe feedback - will also enable ssp mechanical feedback */
 #define SINGLE_STAR_FB_RAD   /* enable RHD feedback */
 #define RT_COMOVING          /* significantly more stable and accurate formulation given the structure of the problem and method we use */
@@ -336,6 +336,19 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 #define ADAPTIVE_TREEFORCE_UPDATE (0.0625) /* rough typical value we use for ensuring stability */
 #ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM
 #define PARTICLE_EXCISION
+#define OUTPUT_ACCELERATION
+#define OUTPUT_HYDROACCELERATION
+#define OUTPUT_GRADIENT_RHO
+#define OUTPUT_GRADIENT_VEL
+#define OUTPUT_MOLECULAR_FRACTION
+#define OUTPUT_TEMPERATURE
+#define OUTPUT_RT_RAD_FLUX
+#define OUTPUT_RT_RAD_OPACITY
+#define RT_RAD_PRESSURE_OUTPUT
+#define OUTPUT_ADDITIONAL_RUNINFO
+#ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES
+#define GRAVITY_ANALYTIC
+#endif
 #endif
 #endif // closes hybrid FIRE+STARFORGE model settings
 
@@ -2343,6 +2356,7 @@ extern struct global_data_all_processes
 #ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM
     double SMBH_SpecialParticle_Position_ForRefinement[3];
     double Mass_Accreted_By_SpecialSMBHParticle;
+    double Mass_of_SpecialSMBHParticle;
 #endif
 
 #ifdef NUCLEAR_NETWORK
@@ -2539,7 +2553,7 @@ extern ALIGN(32) struct particle_data
     MyFloat SNe_ThisTimeStep; /* flag that indicated number of SNe for the particle in the timestep */
 #endif
 #ifdef GALSF_FB_MECHANICAL
-#define AREA_WEIGHTED_SUM_ELEMENTS 11 /* number of weights needed for full momentum-and-energy conserving system */
+#define AREA_WEIGHTED_SUM_ELEMENTS 12 /* number of weights needed for full momentum-and-energy conserving system */
     MyFloat Area_weighted_sum[AREA_WEIGHTED_SUM_ELEMENTS]; /* normalized weights for particles in kernel weighted by area, not mass */
 #endif
 #ifdef GALSF_FB_FIRE_PROTOSTELLARJETS
@@ -2798,7 +2812,7 @@ extern struct gas_cell_data
     MyDouble ISMDustChem_C_in_CO;                      /*!< C metallicity locked in CO */
     MyDouble ISMDustChem_MassFractionInDenseMolecular; /*!< mass fraction of gas in dense MC phase */
 #endif
-
+    
 #ifdef MAGNETIC
     MyDouble Face_Area[3];          /*!< vector sum of effective areas of 'faces'; this is used to check closure for meshless methods */
     MyDouble BPred[3];              /*!< current magnetic field strength */
@@ -2832,7 +2846,13 @@ extern struct gas_cell_data
     MyFloat CosmicRayEnergyPred[N_CR_PARTICLE_BINS];    /*!< total energy of cosmic ray fluid (the conserved variable) */
     MyFloat DtCosmicRayEnergy[N_CR_PARTICLE_BINS];      /*!< time derivative of cosmic ray energy */
     MyFloat CosmicRayDiffusionCoeff[N_CR_PARTICLE_BINS];/*!< diffusion coefficient kappa for cosmic ray fluid */
-    MyFloat Face_DivVel_ForAdOps;                                 /*!< face-centered definition of the velocity divergence, needed to carefully handle adiabatic terms when Pcr >> Pgas */
+    MyFloat Face_DivVel_ForAdOps;                       /*!< face-centered definition of the velocity divergence, needed to carefully handle adiabatic terms when Pcr >> Pgas */
+#if defined(CRFLUID_INJECTION_AT_SHOCKS)
+    MyFloat DtCREgyNewInjectionFromShocks;              /*!< scalar to record energy injection at shock interfaces for acceleration from resolved shocks */
+#endif
+#if defined(BH_CR_INJECTION_AT_TERMINATION) 
+    MyDouble BH_CR_Energy_Available_For_Injection;     /*!< Energy reservoir from CRs */
+#endif
 #ifdef CRFLUID_M1
     MyFloat CosmicRayFlux[N_CR_PARTICLE_BINS][3];       /*!< CR flux vector [explicitly evolved] - conserved-variable */
     MyFloat CosmicRayFluxPred[N_CR_PARTICLE_BINS][3];   /*!< CR flux vector [explicitly evolved] - conserved-variable */
@@ -3509,6 +3529,7 @@ enum iofields
   IO_PARTVEL,
   IO_RADGAMMA,
   IO_RAD_TEMP,
+  IO_RAD_OPACITY,
   IO_DUST_TEMP,
   IO_RAD_ACCEL,
   IO_RAD_FLUX,

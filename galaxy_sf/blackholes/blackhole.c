@@ -398,6 +398,9 @@ void set_blackhole_mdot(int i, int n, double dt)
         t_acc_disk = 2.*M_PI*j*j*j*Gm_i*Gm_i / fabs(BH_MDOT_FROM_ALPHAMODEL); // orbital time at circularization radius of the alpha-disk: BH_MDOT_FROM_ALPHAMODEL is approximately equivalent to the 'alpha' parameter, setting how rapidly accretion occurs (=0.01 -> 100 orbits)
         if(BH_MDOT_FROM_ALPHAMODEL>0) {t_acc_disk = 100. * t_acc_disk * (1 / (Gm_i * DMIN(reff, j*j*Gm_i))) / soundspeed2;} // Shakura-Sunyaev prescription with alpha=0.01, using minimum of sink and circularization radius
 #endif
+#if defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES)
+        t_acc_disk = DMIN(t_acc_disk , 50. / UNIT_TIME_IN_YR); /* custom hack for now for 'fast' disk accretion - will be replaced by physical model later */
+#endif
 #if defined(TIDAL_TIMESTEP_CRITERION) /* limit the accretion timescale to not be more than some multiple of the maximum disk dynamical time allowed by tidal truncation */
         double tidal_tensor_mag2 = 0.; {int k,j; for(k=0;k<3;k++) {for(j=0;j<3;j++) {tidal_tensor_mag2 += P[n].tidal_tensorps[k][j]*P[n].tidal_tensorps[k][j];}}} /* get the frobenius norm */
         if(tidal_tensor_mag2 > 0) {

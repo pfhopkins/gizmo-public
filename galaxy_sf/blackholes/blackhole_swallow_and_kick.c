@@ -761,7 +761,6 @@ void get_wind_spawn_magnetic_field(int j, int mode, double *ny, double *nz, doub
     for(k=0;k<3;k++) {if(Bmag_0>0) {SphP[j].B[k]*=Bmag/sqrt(Bmag_0);} else {SphP[j].B[k]=Bmag;}} // assign if valid values
     for(k=0;k<3;k++) {SphP[j].BPred[k]=SphP[j].B[k]; SphP[j].DtB[k]=0;} // set predicted = actual, derivative to null
 #endif
-
     for(k=0;k<3;k++) {SphP[j].BField_prerefinement[k] = SphP[j].B[k] / volume_for_BtoVB;} /* record the real value of B pre-split to know what we need to correctly re-initialize to once the volume partition can be recomputed */
     for(k=0;k<3;k++) {SphP[j].BPred[k] = SphP[j].B[k];} /* set predicted/drifted equal to the value above */
     return;
@@ -832,7 +831,7 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
         double Jtot=0; for(k=0;k<3;k++) {Jtot+=P[i].BH_Specific_AngMom[k]*P[i].BH_Specific_AngMom[k];}
         if(Jtot>0) {Jtot=1/sqrt(Jtot); for(k=0;k<3;k++) {jz[k]=P[i].BH_Specific_AngMom[k]*Jtot;}}
 #endif
-        Jtot=jz[1]*jz[1]+jz[2]*jz[2]; if(Jtot>0) {Jtot=1/sqrt(Jtot); jy[1]=jz[2]*Jtot; jy[2]=-jz[1]*Jtot;}
+        Jtot=jz[1]*jz[1]+jz[2]*jz[2]; if(Jtot>0) {Jtot=1/sqrt(Jtot); jy[0]=0; jy[1]=jz[2]*Jtot; jy[2]=-jz[1]*Jtot;} else {jy[0]=0; jy[1]=1; jy[2]=0;}
         jx[0]=jz[1]*jy[2]-jz[2]*jy[1]; jx[1]=jz[2]*jy[0]-jz[0]*jy[2]; jx[2]=jz[0]*jy[1]-jz[1]*jy[0];
     }
 #endif
@@ -853,6 +852,7 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
 
     /* create the  new particles to be added to the end of the particle list :
         i is the BH particle tag, j is the new "spawed" particle's location, dummy_cell_i_to_clone is a dummy gas cell's tag to be used to init the wind particle */
+    double v_magnitude_physical_prev = 0; int mode_default = mode, mode_prev = mode;
     for(j = NumPart + num_already_spawned; j < NumPart + num_already_spawned + n_particles_split; j++)
     {   /* first, clone the 'dummy' particle so various fields are set appropriately */
         P[j] = P[dummy_cell_i_to_clone]; SphP[j] = SphP[dummy_cell_i_to_clone]; /* set the pointers equal to one another -- all quantities get copied, we only have to modify what needs changing */
@@ -962,6 +962,11 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
         BPP(i).unspawned_wind_mass -= P[j].Mass; /* remove the mass successfully spawned, to update the remaining unspawned mass */
 
         double v_magnitude_physical = get_spawned_cell_launch_speed(i); /* call subroutine for this velocity */
+#if defined(BH_TEST_WIND_MIXED_FASTSLOW)
+        mode = mode_default; if((j - (NumPart + num_already_spawned)) % 2) {mode = mode_prev; v_magnitude_physical = v_magnitude_physical_prev; /* for every-other particle, need to match previous for conservation */
+        } else {if(get_random_number(j)<0.001) {mode=1; v_magnitude_physical=3.e4/UNIT_VEL_IN_KMS;}} /* collimated jet */
+#endif
+        v_magnitude_physical_prev = v_magnitude_physical; mode_prev = mode;
 
 #if defined(METALS) && (defined(SINGLE_STAR_FB_JETS) || defined(SINGLE_STAR_FB_WINDS) || defined(SINGLE_STAR_FB_SNE))
         double yields[NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION]={0}; get_jet_yields(yields,i); // default to jet-type
@@ -989,6 +994,9 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
         get_wind_spawn_magnetic_field(j, mode, jy, jz, dpdir, d_r);
 #endif
 #ifdef COSMIC_RAY_FLUID
+#if defined(CRFLUID_INJECTION_AT_SHOCKS)
+        SphP[j].DtCREgyNewInjectionFromShocks=0;
+#endif
         int k_CRegy; for(k_CRegy=0;k_CRegy<N_CR_PARTICLE_BINS;k_CRegy++) /* initialize CR energy and other related terms to nil */
         {
             SphP[j].CosmicRayEnergyPred[k_CRegy]=SphP[j].CosmicRayEnergy[k_CRegy]=SphP[j].DtCosmicRayEnergy[k_CRegy]=0;
@@ -1005,7 +1013,11 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
 
 #if defined(COSMIC_RAY_FLUID) && defined(BH_COSMIC_RAYS) /* inject cosmic rays alongside wind injection */
         double dEcr = evaluate_blackhole_cosmicray_efficiency(BPP(i).BH_Mdot,BPP(i).BH_Mass,i) * P[j].Mass * (All.BAL_f_accretion/(1.-All.BAL_f_accretion)) * C_LIGHT_CODE*C_LIGHT_CODE;
-        inject_cosmic_rays(dEcr, v_magnitude_physical, 5, j, veldir);
+#if defined(BH_CR_INJECTION_AT_TERMINATION)
+        SphP[j].BH_CR_Energy_Available_For_Injection = dEcr;     /* store energy for later injection */
+#else
+        inject_cosmic_rays(dEcr, v_magnitude_physical, 5, j, veldir); /* inject directly */
+#endif
 #endif
         /* Note: New tree construction can be avoided because of  `force_add_star_to_tree()' */
         force_add_star_to_tree(i0, j);// (buggy) /* we solve this by only calling the merge/split algorithm when we're doing the new domain decomposition */

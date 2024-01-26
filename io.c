@@ -1465,6 +1465,18 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
 #endif
             break;
 
+        case IO_RAD_OPACITY:
+#if defined(OUTPUT_RT_RAD_OPACITY) && defined(RADTRANSFER)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    for(k=0;k<N_RT_FREQ_BINS;k++) {fp[k] = (MyOutputFloat) SphP[pindex].Rad_Kappa[k];}
+                    fp += N_RT_FREQ_BINS;
+                    n++;
+                }
+#endif
+            break;
+            
         case IO_RAD_TEMP:
 #if defined(RADTRANSFER) && defined(RT_INFRARED)
             for(n = 0; n < pc; pindex++)
@@ -1953,6 +1965,15 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
 #endif
             break;
 
+        case IO_RAD_OPACITY:
+#if defined(OUTPUT_RT_RAD_OPACITY) && defined(RADTRANSFER)
+            if(mode)
+                bytes_per_blockelement = (N_RT_FREQ_BINS) * sizeof(MyInputFloat);
+            else
+                bytes_per_blockelement = (N_RT_FREQ_BINS) * sizeof(MyOutputFloat);
+#endif
+            break;
+            
         case IO_RAD_FLUX:
 #ifdef RADTRANSFER
             if(mode)
@@ -2257,6 +2278,12 @@ int get_values_per_blockelement(enum iofields blocknr)
             values = N_RT_FREQ_BINS;
 #endif
             break;
+            
+        case IO_RAD_OPACITY:
+#if defined(OUTPUT_RT_RAD_OPACITY) && defined(RADTRANSFER)
+            values = N_RT_FREQ_BINS;
+#endif
+            break;
 
         case IO_Z:
 #ifdef METALS
@@ -2397,6 +2424,7 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_RAD_ACCEL:
         case IO_HYDROACCEL:
         case IO_RADGAMMA:
+        case IO_RAD_OPACITY:
         case IO_RAD_TEMP:
         case IO_DUST_TEMP:
         case IO_RAD_FLUX:
@@ -2593,6 +2621,12 @@ int blockpresent(enum iofields blocknr)
 
         case IO_RADGAMMA:
 #if defined(RADTRANSFER) || defined(RT_USE_GRAVTREE_SAVE_RAD_ENERGY)
+            return 1;
+#endif
+            break;
+
+        case IO_RAD_OPACITY:
+#if defined(OUTPUT_RT_RAD_OPACITY) && defined(RADTRANSFER)
             return 1;
 #endif
             break;
@@ -3482,6 +3516,9 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
         case IO_RADGAMMA:
             strncpy(label, "RADG", 4);
             break;
+        case IO_RAD_OPACITY:
+            strncpy(label, "RADO", 4);
+            break;
         case IO_RAD_TEMP:
             strncpy(label, "RADT", 4);
             break;
@@ -3615,6 +3652,9 @@ void get_dataset_name(enum iofields blocknr, char *buf)
             break;
         case IO_RADGAMMA:
             strcpy(buf, "PhotonEnergy");
+            break;
+        case IO_RAD_OPACITY:
+            strcpy(buf, "PhotonOpacity");
             break;
         case IO_RAD_TEMP:
             strcpy(buf, "IRBand_Radiation_Temperature");

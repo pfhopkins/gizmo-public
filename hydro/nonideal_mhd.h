@@ -19,14 +19,14 @@ if((local.Mass > 0) && (P[j].Mass > 0))
     // set the effective scalar coefficients //
     double eta_i, eta_j, eta_ohmic, eta_hall, eta_ad;
     eta_i = local.Eta_MHD_OhmicResistivity_Coeff; eta_j = SphP[j].Eta_MHD_OhmicResistivity_Coeff;
-    if(eta_i>0 && eta_j>0) {eta_ohmic = 2*eta_i*eta_j / (eta_i+eta_j);} else {eta_ohmic = 0;}
+    if(eta_i*eta_j>0) {eta_ohmic = 2*eta_i*eta_j / (eta_i+eta_j);} else {eta_ohmic = 0;}
     eta_i = local.Eta_MHD_HallEffect_Coeff; eta_j = SphP[j].Eta_MHD_HallEffect_Coeff;
-    if(eta_i>0 && eta_j>0) {eta_hall = 2*eta_i*eta_j / (eta_i+eta_j);} else {eta_hall = 0;}
+    if(eta_i*eta_j>0) {eta_hall = 2*eta_i*eta_j / (eta_i+eta_j);} else {eta_hall = 0;}
     eta_i = local.Eta_MHD_AmbiPolarDiffusion_Coeff; eta_j = SphP[j].Eta_MHD_AmbiPolarDiffusion_Coeff;
-    if(eta_i>0 && eta_j>0) {eta_ad = 2*eta_i*eta_j / (eta_i+eta_j);} else {eta_ad = 0;}
+    if(eta_i*eta_j>0) {eta_ad = 2*eta_i*eta_j / (eta_i+eta_j);} else {eta_ad = 0;}
     
     // only go further if these are non-zero //
-    double eta_max = DMAX(eta_ohmic , DMAX(eta_hall, eta_ad));
+    double eta_max = DMAX(fabs(eta_ohmic) , DMAX(fabs(eta_hall), fabs(eta_ad)));
     int k_xyz_A=0, k_xyz_B=0;
     if(eta_max > MIN_REAL_NUMBER)
     {
@@ -50,17 +50,17 @@ if((local.Mass > 0) && (P[j].Mass > 0))
             for(k2=0;k2<3;k2++) {grad_dot_x_ij[k] += 0.5*(local.Gradients.B[k][k2]+SphP[j].Gradients.B[k][k2]) * kernel.dp[k2];}
         }
         
-        // calculate the actual fluxes //
+        // calculate the actual fluxes : need term = -[eta_O*(J) + eta_A*(-(Jxbhat)xbhat) + (-|eta_H|)*(Jxbhat)], assuming we're passed |eta| (=eta for eta_O,eta_A, but =-eta for eta_H) //
         double b_flux[3]={0}, JcrossB[3], JcrossBcrossB[3];
-        JcrossB[0] = (bhat[2]*J_current[1]-bhat[1]*J_current[2]);
+        JcrossB[0] = (bhat[2]*J_current[1]-bhat[1]*J_current[2]); // this is Jxbhat
         JcrossB[1] = (bhat[0]*J_current[2]-bhat[2]*J_current[0]);
         JcrossB[2] = (bhat[1]*J_current[0]-bhat[0]*J_current[1]);
-        JcrossBcrossB[0] = (bhat[2]*JcrossB[1]-bhat[1]*JcrossB[2]);
+        JcrossBcrossB[0] = (bhat[2]*JcrossB[1]-bhat[1]*JcrossB[2]); // this is (Jxbhat)x(bhat)
         JcrossBcrossB[1] = (bhat[0]*JcrossB[2]-bhat[2]*JcrossB[0]);
         JcrossBcrossB[2] = (bhat[1]*JcrossB[0]-bhat[0]*JcrossB[1]);
-        if(eta_ohmic>0) {for(k=0;k<3;k++) {b_flux[k] += -eta_ohmic * J_current[k];}} // ohmic ~ J
-        if(eta_ad>0) {for(k=0;k<3;k++) {b_flux[k] += eta_ad * JcrossBcrossB[k];}} // a.d. ~ (JxB)xB
-        if(eta_hall>0) {for(k=0;k<3;k++) {b_flux[k] += -eta_hall * JcrossB[k];}} // hall ~ (JxB)
+        if(fabs(eta_ohmic)>0) {for(k=0;k<3;k++) {b_flux[k] += -eta_ohmic * J_current[k];}} // ohmic ~ J
+        if(fabs(eta_ad)>0) {for(k=0;k<3;k++) {b_flux[k] += eta_ad * JcrossBcrossB[k];}} // a.d. ~ (JxB)xB
+        if(fabs(eta_hall)>0) {for(k=0;k<3;k++) {b_flux[k] += -eta_hall * JcrossB[k];}} // hall ~ (JxB)
         
         // calculate dB/dt = Area.cross.flux //
         bflux_from_nonideal_effects[0] = Face_Area_Vec[1]*b_flux[2] - Face_Area_Vec[2]*b_flux[1];
@@ -70,9 +70,9 @@ if((local.Mass > 0) && (P[j].Mass > 0))
         // ok now construct the numerical fluxes based on the numerical diffusion coefficients and the direct-difference values between elements
         double eta_0 = v_hll * kernel.r * All.cf_atime; // standard numerical diffusivity needed for stabilizing fluxes
         double eta_ohmic_0=0,eta_ad_0=0,eta_hall_0=0,q=0; // now limit the numerical diffusivity to avoid unphysically fast diffusion
-        if(eta_ohmic>0) {q=eta_0/eta_ohmic; eta_ohmic_0=eta_0*(0.2 + q)/(0.2 + q + q*q);}
-        if(eta_ad>0) {q=eta_0/eta_ad; eta_ad_0=eta_0*(0.2 + q)/(0.2 + q + q*q);}
-        if(eta_hall>0) {q=eta_0/eta_hall; eta_hall_0=eta_0*(0.2 + q)/(0.2 + q + q*q);}
+        if(fabs(eta_ohmic)>0) {q=eta_0/fabs(eta_ohmic); eta_ohmic_0=eta_0*(0.2 + q)/(0.2 + q + q*q);}
+        if(fabs(eta_ad)>0) {q=eta_0/fabs(eta_ad); eta_ad_0=eta_0*(0.2 + q)/(0.2 + q + q*q);}
+        if(fabs(eta_hall)>0) {q=eta_0/fabs(eta_hall); eta_hall_0=eta_0*(0.2 + q)/(0.2 + q + q*q); if(eta_hall<0) {eta_hall_0*=-1;}} // since signed, less clear if numerical term should be signed also, or mono-sign here //
         double b_flux_direct[3]={0}, JcrossB_direct[3], JcrossBcrossB_direct[3], db_direct[3];
         JcrossB_direct[0] = (bhat[2]*J_direct[1]-bhat[1]*J_direct[2]);
         JcrossB_direct[1] = (bhat[0]*J_direct[2]-bhat[2]*J_direct[0]);
@@ -80,9 +80,9 @@ if((local.Mass > 0) && (P[j].Mass > 0))
         JcrossBcrossB_direct[0] = (bhat[2]*JcrossB_direct[1]-bhat[1]*JcrossB_direct[2]);
         JcrossBcrossB_direct[1] = (bhat[0]*JcrossB_direct[2]-bhat[2]*JcrossB_direct[0]);
         JcrossBcrossB_direct[2] = (bhat[1]*JcrossB_direct[0]-bhat[0]*JcrossB_direct[1]);
-        if(eta_ohmic_0>0) {for(k=0;k<3;k++) {b_flux_direct[k] += -eta_ohmic_0 * J_direct[k];}}
-        if(eta_ad_0>0) {for(k=0;k<3;k++) {b_flux_direct[k] += eta_ad_0 * JcrossBcrossB_direct[k];}}
-        if(eta_hall_0>0) {for(k=0;k<3;k++) {b_flux_direct[k] += -eta_hall_0 * JcrossB_direct[k];}}
+        if(fabs(eta_ohmic_0)>0) {for(k=0;k<3;k++) {b_flux_direct[k] += -eta_ohmic_0 * J_direct[k];}}
+        if(fabs(eta_ad_0)>0) {for(k=0;k<3;k++) {b_flux_direct[k] += eta_ad_0 * JcrossBcrossB_direct[k];}}
+        if(fabs(eta_hall_0)>0) {for(k=0;k<3;k++) {b_flux_direct[k] += -eta_hall_0 * JcrossB_direct[k];}}
         db_direct[0] = Face_Area_Vec[1]*b_flux_direct[2] - Face_Area_Vec[2]*b_flux_direct[1];
         db_direct[1] = Face_Area_Vec[2]*b_flux_direct[0] - Face_Area_Vec[0]*b_flux_direct[2];
         db_direct[2] = Face_Area_Vec[0]*b_flux_direct[1] - Face_Area_Vec[1]*b_flux_direct[0];

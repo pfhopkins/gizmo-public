@@ -543,6 +543,35 @@ OPT     += -DDISABLE_ALIGNED_ALLOC -DCHIMES_USE_DOUBLE_PRECISION #
 ##
 endif
 
+#----------------------------
+ifeq ($(SYSTYPE),"PopOS")
+CC       =  mpicc
+CXX      =  mpiccxx
+FC       =  $(CC) #mpifort  ## change this to "mpifort" for packages requiring linking secondary fortran code, currently -only- the helmholtz eos modules do this, so I leave it un-linked for now to save people the compiler headaches
+OPTIMIZE = -O1 -funroll-loops
+OPTIMIZE += -g -Wall # compiler warnings
+ifeq (CHIMES,$(findstring CHIMES,$(CONFIGVARS)))
+CXX     = mpic++
+CHIMESINCL = -I/usr/include/sundials
+CHIMESLIBS = -L/usr/lib -lsundials_cvode -lsundials_nvecserial
+endif
+ifeq (OPENMP,$(findstring OPENMP,$(CONFIGVARS)))
+OPTIMIZE += -fopenmp # openmp required compiler flags
+FC       = $(CC)
+endif
+GMP_INCL =
+GMP_LIBS =
+MKL_INCL =
+MKL_LIBS =
+GSL_INCL = -I/usr/include
+GSL_LIBS = -L/usr/lib 
+FFTW_INCL= -I/usr/include
+FFTW_LIBS= -L/usr/lib
+HDF5INCL = -I/usr/include/hdf5/openmpi -DH5_USE_16_API
+HDF5LIB  = -L/usr/lib/x86_64-linux-gnu/hdf5/openmpi/ -lhdf5 -lz
+MPICHLIB =
+OPT     += -DDISABLE_ALIGNED_ALLOC -DCHIMES_USE_DOUBLE_PRECISION
+endif
 
 
 #----------------------------------------------------------------------------------------------

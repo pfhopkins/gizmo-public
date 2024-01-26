@@ -17,6 +17,7 @@ double ThermalProperties(double u, double rho, int target, double *mu_guess, dou
 double return_uvb_shieldfac(int target, double gamma_12, double nHcgs, double logT);
 double return_local_gammamultiplier(int target);
 double evaluate_Compton_heating_cooling_rate(int target, double T, double nHcgs, double n_elec, double shielding_factor_for_exgalbg);
+double get_background_radiation_temperature_for_emission_corrections(int target);
 void   InitCool(void);
 #ifndef CHIMES 
 void   InitCoolMemory(void);

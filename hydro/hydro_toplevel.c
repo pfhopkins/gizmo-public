@@ -376,6 +376,9 @@ struct OUTPUT_STRUCT_NAME
 #ifdef COSMIC_RAY_FLUID
     MyDouble Face_DivVel_ForAdOps;
     MyDouble DtCosmicRayEnergy[N_CR_PARTICLE_BINS];
+#if defined(CRFLUID_INJECTION_AT_SHOCKS)
+    MyDouble DtCREgyNewInjectionFromShocks;
+#endif
 #ifdef CRFLUID_EVOLVE_SCATTERINGWAVES
     MyDouble DtCosmicRayAlfvenEnergy[N_CR_PARTICLE_BINS][2];
 #endif
@@ -415,9 +418,6 @@ static inline void particle2in_hydra(struct INPUT_STRUCT_NAME *in, int i, int lo
     /* since it is not used elsewhere, we can use the sign of the condition number as a bit
      to conveniently indicate the status of the parent particle flag, for the constrained gradients */
     if(SphP[i].FlagForConstrainedGradients == 0) {in->ConditionNumber *= -1;}
-#endif
-#ifdef BH_WIND_SPAWN
-    //if(P[i].ID == All.AGNWindID) {in->ConditionNumber *= -1;} /* as above, use sign of condition number as a bitflag to indicate if this is, or is not, a wind particle [may no longer be necessary in newest code???] */
 #endif
     in->DhsmlNgbFactor = PPP[i].DhsmlNgbFactor;
 #ifdef HYDRO_SPH
@@ -624,6 +624,9 @@ static inline void out2particle_hydra(struct OUTPUT_STRUCT_NAME *out, int i, int
 
 #ifdef COSMIC_RAY_FLUID
     SphP[i].Face_DivVel_ForAdOps += out->Face_DivVel_ForAdOps;
+#if defined(CRFLUID_INJECTION_AT_SHOCKS)
+    SphP[i].DtCREgyNewInjectionFromShocks += out->DtCREgyNewInjectionFromShocks;
+#endif
     for(k=0;k<N_CR_PARTICLE_BINS;k++)
     {
         SphP[i].DtCosmicRayEnergy[k] += out->DtCosmicRayEnergy[k];
@@ -840,7 +843,7 @@ void hydro_final_operations_and_cleanup(void)
 #if !defined(CRFLUID_EVOLVE_SCATTERINGWAVES) // handled in separate solver if explicitly evolving the relevant wave families
             for(k=0;k<N_CR_PARTICLE_BINS;k++) {
                 double streamfac = fabs(CR_get_streaming_loss_rate_coefficient(i,k));
-                SphP[i].DtInternalEnergy += SphP[i].CosmicRayEnergyPred[k] * streamfac;
+                SphP[i].DtInternalEnergy += SphP[i].CosmicRayEnergyPred[k] * streamfac / P[i].Mass; // make sure to divide by mass here to get the correct units since DtInternalEnergy has been converted to specific energy units (while CR energies are absolute)
                 SphP[i].DtCosmicRayEnergy[k] -= CosmicRayFluid_RSOL_Corrfac(k) * SphP[i].CosmicRayEnergyPred[k] * streamfac; // in the multi-bin formalism, save this operation for the CR cooling ops since can involve bin-to-bin transfer of energy
             }
 #endif
@@ -865,6 +868,14 @@ void hydro_final_operations_and_cleanup(void)
                 for(m=0;m<3;m++) {fcorr[m] += (1.-three_chi) * (gradpcr[m] - bhat[m]*grad_P_dot_B) / (SphP[i].Density*All.cf_a3inv);} // physical units
                 for(m=0;m<3;m++) {SphP[i].HydroAccel[m] += fcorr[m];} // add correction term back into hydro acceleration terms -- need to check that don't end up with nasty terms for badly-initialized/limited scattering rates above
             }}
+#endif
+#if defined(CRFLUID_INJECTION_AT_SHOCKS)
+            if((SphP[i].DtCREgyNewInjectionFromShocks <= 0) || (SphP[i].DtInternalEnergy <= 0) || (P[i].Mass <= 0)) {SphP[i].DtCREgyNewInjectionFromShocks = 0;} // should never be negative, thats an error from above, or a spurious shock detection if dtinternalenergy summed is negative - don't inject here (additional useful check over kernel)
+            if(SphP[i].DtCREgyNewInjectionFromShocks > 0) { // do some checks and adjust the internal energy evolution to ensure total energy conservation now
+                double dtThermal = SphP[i].DtInternalEnergy * P[i].Mass; // correct back to total energy units
+                SphP[i].DtCREgyNewInjectionFromShocks = DMIN(SphP[i].DtCREgyNewInjectionFromShocks, 0.5*dtThermal); // don't allow more than 1/2 of the total internal energy change to go into CRs (should usually be satisfied but since cr injection pairwise, can be violated if shock not well-resolved and flow is chaotic)
+                SphP[i].DtInternalEnergy = (dtThermal - SphP[i].DtCREgyNewInjectionFromShocks) / P[i].Mass; // reset the thermal energy budget appropriately, now total energy will be conserved (just locally shifting from one reservoir to another)
+            }
 #endif
 #endif // COSMIC_RAY_FLUID
 
@@ -1001,6 +1012,9 @@ void hydro_force_initial_operations_preloop(void)
 #endif // magnetic //
 #ifdef COSMIC_RAY_FLUID
             SphP[i].Face_DivVel_ForAdOps = 0;
+#if defined(CRFLUID_INJECTION_AT_SHOCKS)
+            SphP[i].DtCREgyNewInjectionFromShocks = 0;
+#endif
             for(k=0;k<N_CR_PARTICLE_BINS;k++)
             {
                 SphP[i].DtCosmicRayEnergy[k] = 0;

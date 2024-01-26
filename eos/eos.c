@@ -342,9 +342,9 @@ double return_dust_to_metals_ratio_vs_solar(int i, double T_dust_manual_override
 #if defined(RT_INFRARED)
     double T_evap = 1500.; // 2e3 * pow(SphP[i].Density * All.cf_a3inv * UNIT_DENSITY_IN_CGS, 0.0195); // latter function from Kuiper 2010 eqs 21-22; sublimation temeprature from Isella & Natta 2005, fit to Pollack 1994. works for protostellar environments, but extrapolates poorly to diffuse ISM and/or stellar/AGN atmosphere environments, so for now use a simpler 1500 K which is a rough median between these, with more sophisticated dust modules required to fit all different parameter regimes.
     double T_dust = T_dust_manual_override; if(T_dust == 0) {T_dust = SphP[i].Dust_Temperature;} // use this iff the dust temp sent is nil
-    return sigmoid_sqrt(-0.006*(T_dust - T_evap)); // crudely don't both accounting for size spectrum, just adopt an exponential cutoff above the sublimation temperature
+    return sigmoid_sqrt(-0.006*(T_dust - T_evap)) * exp(-DMIN(40.,pow(T_dust/(3.*T_evap),2))); // crudely don't both accounting for size spectrum, just adopt an exponential cutoff above the sublimation temperature
 #endif
-#if defined(COOL_LOW_TEMPERATURES)
+#if defined(COOL_LOW_TEMPERATURES) && !defined(SINGLE_STAR_SINK_DYNAMICS) // skip this and assume fdust=1 if SINGLE_STAR_SINK_DYNAMICS on because it uses the fancy dust temp solver whose result depends implicitly on the dust fraction - if sublimation is important then we should be running full RT anyway
     double Tdust = T_dust_manual_override; if(Tdust == 0) {Tdust = get_equilibrium_dust_temperature_estimate(i,0,0);} // call this iff the dust temp sent is nil
     if(Tdust >= 2000.) {return 1.e-4;} else {return exp(-pow(Tdust/1000.,3));} // this hit the maximum allowed temperature in the routine if it gets >2000; for lower temps, let it smoothly cut off
 #endif

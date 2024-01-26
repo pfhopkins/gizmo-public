@@ -28,3 +28,9 @@ DesNumNgb                          20
 ErrTolIntAccuracy                  0.002
 CourantFac                         0.025
 MaxRMSDisplacementFac              0.125
+ResubmitOn                         0
+ResubmitCommand                    dummy
+TimeBetStatistics                  1e10
+ErrTolTheta                        0.5
+ErrTolForceAcc                     0.001
+MaxNumNgbDeviation                 0.01

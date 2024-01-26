@@ -157,7 +157,7 @@ void init(void)
 
 #ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM
     All.SMBH_SpecialParticle_Position_ForRefinement[0]=All.SMBH_SpecialParticle_Position_ForRefinement[1]=All.SMBH_SpecialParticle_Position_ForRefinement[2]=0;
-    All.Mass_Accreted_By_SpecialSMBHParticle=0;
+    All.Mass_Accreted_By_SpecialSMBHParticle=0; All.Mass_of_SpecialSMBHParticle=0;
 #endif
 
 #ifdef BOX_PERIODIC
@@ -617,6 +617,12 @@ void init(void)
 #endif
 #ifdef COSMIC_RAY_FLUID
         if(RestartFlag == 0) {for(j=0;j<N_CR_PARTICLE_BINS;j++) {SphP[i].CosmicRayEnergy[j] = 0;}}
+#if defined(CRFLUID_INJECTION_AT_SHOCKS)
+        if(RestartFlag != 1) {SphP[i].DtCREgyNewInjectionFromShocks = 0;}
+#endif
+#if defined(BH_CR_INJECTION_AT_TERMINATION)
+        if(RestartFlag != 1) {SphP[i].BH_CR_Energy_Available_For_Injection = 0;}
+#endif
 #endif
 #ifdef MAGNETIC
 #if defined MHD_B_SET_IN_PARAMS
@@ -831,6 +837,10 @@ void init(void)
 #endif
 #if defined(COSMIC_RAY_SUBGRID_LEBRON)
         SphP[i].SubGrid_CosmicRayEnergyDensity = 0;
+#endif
+        
+#if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES==2)
+        if(RestartFlag != 1) {if(P[i].ID == All.AGNWindID) {P[i].ID += 1;}} // reset any of these so can obey desired merge-split rules
 #endif
 
 #ifdef COOL_GRACKLE

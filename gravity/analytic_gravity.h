@@ -24,7 +24,7 @@ void GravAccel_GrowingDiskPotential(void);
 void GravAccel_StaticNFW(void);
 void GravAccel_RayleighTaylorTest(void);
 void GravAccel_ShearingSheet(void);
-void GravAccel_PaczynskyWiita(void);
+void GravAccel_PaczynskiWiita(void);
 void GravAccel_RDITestProblem(void);
 void GravAccel_SpecialCustomNuclearZoomBoundaryConditions(void);
 void GravAccel_GMCTurbInit(void);
@@ -45,7 +45,7 @@ void add_analytic_gravitational_forces()
     //GravAccel_KeplerianTestProblem();   // keplerian disk with special boundaries for test problem
     //GravAccel_GrowingDiskPotential();   // time-dependent (adiabatically growing) disk
     //GravAccel_StaticNFW();              // NFW profile sphere
-    //GravAccel_PaczynskyWiita();         // Paczynsky-Wiita pseudo-Newtonian potential
+    //GravAccel_PaczynskiWiita();         // Paczynski-Wiita pseudo-Newtonian potential
 #endif
 #ifdef STARFORGE_GMC_TURBINIT
     GravAccel_GMCTurbInit();              // uniform sphere harmonic potential + r^-3 halo outside to confine stirred turbulent gas
@@ -221,17 +221,31 @@ void GravAccel_StaticIsothermalSphere()
 void GravAccel_SpecialCustomNuclearZoomBoundaryConditions()
 {
 #ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES
+    if(All.Mass_of_SpecialSMBHParticle <= 0) {return;}
     int i,k; for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
     {
-        double dp[3], r2=0, r, r_cut; for(k=0;k<3;k++) {dp[k]=All.cf_atime*P[i].Pos[k]; r2+=dp[k]*dp[k];}
-	    r = sqrt(r2); r_cut = 0.2 * All.HubbleParam;
-	    if(r > r_cut)
+        double dp[3], r2=0, r, r_cut; for(k=0;k<3;k++) {dp[k]=All.cf_atime*(P[i].Pos[k]-All.SMBH_SpecialParticle_Position_ForRefinement[k]); r2+=dp[k]*dp[k];}
+	    r = sqrt(r2);
+#if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES <= 1)
+        r_cut = 0.2 * All.HubbleParam;
+        if(r > r_cut)
         {
-		    double x = r/r_cut, tau = pow(All.cf_atime / 0.18437477681344028, -3.);
-		    double m0 = 0.19*(pow(x,1.15)-1.)/(1.+pow(x/300.,0.8)) + (1.4e-8*tau)*(pow(x,3.)-1.);
-        	for(k=0;k<3;k++) {P[i].GravAccel[k] += -All.G * (dp[k]/r) * (m0/(r*r)) * (1./All.cf_a2inv);}
-		    if(r > 2.*r_cut) {P[i].Mass = 0;} // clip it
-	    }
+            double x = r/r_cut, tau = pow(All.cf_atime / 0.18437477681344028, -3.);
+            double m0 = 0.19*(pow(x,1.15)-1.)/(1.+pow(x/300.,0.8)) + (1.4e-8*tau)*(pow(x,3.)-1.);
+            for(k=0;k<3;k++) {P[i].GravAccel[k] += -All.G * (dp[k]/r) * (m0/(r*r)) * (1./All.cf_a2inv);}
+            if(r > 2.*r_cut) {P[i].Mass = 0;} // clip it
+        }
+#else
+        r_cut = 0.1 / UNIT_LENGTH_IN_PC;
+        if(r > r_cut) {P[i].Mass = 0;} // clip it
+        if(P[i].Type != 3 && P[i].Mass > 0 && r > 0) // add additional Paczynski-Wiita potential corrections, if desired //
+        {
+            double rG = 2.*All.G*All.Mass_of_SpecialSMBHParticle/(C_LIGHT_CODE*C_LIGHT_CODE); // define gravitational radius
+            double fac_0 = -All.G*All.Mass_of_SpecialSMBHParticle / (r2*r * All.cf_a2inv); // define pre-factor (in appropriate code units) for gravitational acceleration
+            double x = r/rG - 1., fac = fac_0 * (1.+2.*x)/(x*x); // this is defined as the difference between the P.W. accel and the Keplerian accel, since the latter is already included
+            if(x > 0) {for(k=0;k<3;k++) {P[i].GravAccel[k] += fac * dp[k];}}
+        }
+#endif
     }
 #endif
 }
@@ -401,20 +415,20 @@ void GravAccel_StaticNFW()
 
 
 
-/* Paczysnki Wiita pseudo-Newtonian potential, G = M_sol = c = 1 */
-void GravAccel_PaczynskyWiita()
+/* Paczynski-Wiita pseudo-Newtonian potential, G = M_sol = c = 1 */
+void GravAccel_PaczynskiWiita()
 {
-    double PACZYNSKY_WIITA_MASS = 1.0; // Mass to use for the Paczynksy-Wiita analytic gravity pseudo-Newtonian potential (in solar masses)
+    double PACZYNSKI_WIITA_MASS = 1.0; // Mass to use for the Paczynski-Wiita analytic gravity pseudo-Newtonian potential (in solar masses)
     int i,k; for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
     {
         double dp[3]; for(k=0;k<3;k++) {dp[k]=P[i].Pos[k];}
 #ifdef GRAVITY_ANALYTIC_ANCHOR_TO_PARTICLE
         for(k=0;k<3;k++) {dp[k] = -P[i].min_xyz_to_bh[k];}
 #endif
-        double r2 = dp[0]*dp[0]+dp[1]*dp[1]+dp[2]*dp[2], r = sqrt(r2), r_g = 2*PACZYNSKY_WIITA_MASS;
+        double r2 = dp[0]*dp[0]+dp[1]*dp[1]+dp[2]*dp[2], r = sqrt(r2), r_g = 2*PACZYNSKI_WIITA_MASS;
         if(r > r_g)
         {
-            double q = PACZYNSKY_WIITA_MASS/((r - r_g)*(r - r_g));
+            double q = PACZYNSKI_WIITA_MASS/((r - r_g)*(r - r_g));
             for(k=0;k<3;k++) {P[i].GravAccel[k] -= q * P[i].Pos[k]/r;}
         }
     }
@@ -437,10 +451,6 @@ void apply_excision(void)
             {
                 double r2=0; for(k=0;k<3;k++) {double dp=P[i].Pos[k]-All.SMBH_SpecialParticle_Position_ForRefinement[k]; r2+=dp*dp;}
                 if(r2 < excision_radius2) {All.Mass_Accreted_By_SpecialSMBHParticle+=P[i].Mass; P[i].Mass=0;}
-                /* // can add additional Paczysnky Wiita potential corrections, if desired //
-                r2=r2/All.cf_a2inv; double rG=2.*All.G*All.Mass_of_SpecialSMBHParticle/(C_LIGHT_CODE*C_LIGHT_CODE), r=sqrt(r2), x=r/rG-1, fac=(All.G*All.Mass_of_SpecialSMBHParticle/r2)*((1.+2.*x)/(x*x))*(1./All.cf_a2inv);
-                if(x > 0) {for(k=0;k<3;k++) {P[i].GravAccel[k] -= fac * (P[i].Pos[k]-All.SMBH_SpecialParticle_Position_ForRefinement[k])/r;}}
-                */
             }
         }
     }

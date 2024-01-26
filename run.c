@@ -565,7 +565,7 @@ integertime find_next_outputtime(integertime ti_curr)
 
 	  iter++;
 
-	  if(iter > 100000000)
+	  if(iter > 10000000000)
 	    {
 	      printf("Can't determine next output time.\n");
 	      endrun(110);
@@ -589,7 +589,7 @@ integertime find_next_outputtime(integertime ti_curr)
 
 	  iter++;
 
-	  if(iter > 100000000)
+	  if(iter > 10000000000)
 	    {
 	      printf("Can't determine next output time.\n");
 	      endrun(111);

@@ -34,7 +34,7 @@ void find_timesteps(void)
     integertime ti_step, ti_step_old, ti_min;
     double aphys;
 #ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM
-    double xyz_local[3]={-MAX_REAL_NUMBER,-MAX_REAL_NUMBER,-MAX_REAL_NUMBER}, xyz_global[3]; int special_particle_active_with_this_index=-1;
+    double xyz_local[3]={-MAX_REAL_NUMBER,-MAX_REAL_NUMBER,-MAX_REAL_NUMBER}, xyz_global[3]; int special_particle_active_with_this_index=-1; double special_particle_mass_local=0, special_particle_mass_global=0;
 #endif
 
     if(All.HighestActiveTimeBin == All.HighestOccupiedTimeBin || dt_displacement == 0)
@@ -200,7 +200,7 @@ void find_timesteps(void)
 #endif
         
 #ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM
-        if(P[i].Type == 3 && P[i].Mass > 0) {xyz_local[0]=P[i].Pos[0]; xyz_local[1]=P[i].Pos[1]; xyz_local[2]=P[i].Pos[2]; special_particle_active_with_this_index=i;} // active on this processor, set
+        if(P[i].Type == 3 && P[i].Mass > 0) {xyz_local[0]=P[i].Pos[0]; xyz_local[1]=P[i].Pos[1]; xyz_local[2]=P[i].Pos[2]; special_particle_active_with_this_index=i; special_particle_mass_local=P[i].Mass;} // active on this processor, set
 #endif
         
     }
@@ -208,12 +208,14 @@ void find_timesteps(void)
 #ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM
     MPI_Allreduce(xyz_local, xyz_global, 3, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD); // broadcast the new position of the SMBH particle
     double mass_to_sum_local=All.Mass_Accreted_By_SpecialSMBHParticle, mass_to_sum_global=0; // define mass variables for passing
-    MPI_Allreduce(&mass_to_sum_local, &mass_to_sum_global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD); // broadcast the new position of the SMBH particle
+    MPI_Allreduce(&mass_to_sum_local, &mass_to_sum_global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD); // broadcast the mass update of the SMBH particle
     if(xyz_global[0] > -1.e10) { // this indicates that the special particle was active on one task
         All.SMBH_SpecialParticle_Position_ForRefinement[0] = xyz_global[0]; All.SMBH_SpecialParticle_Position_ForRefinement[1] = xyz_global[1]; All.SMBH_SpecialParticle_Position_ForRefinement[2] = xyz_global[2]; // variable was updated, update global variable as needed
-        if(special_particle_active_with_this_index>=0) {P[special_particle_active_with_this_index].Mass += mass_to_sum_global;} // the special particle lives here with this id, so we can update it with this mass
+        if(special_particle_active_with_this_index>=0) {P[special_particle_active_with_this_index].Mass += mass_to_sum_global; special_particle_mass_local += mass_to_sum_global;} // the special particle lives here with this id, so we can update it with this mass
         All.Mass_Accreted_By_SpecialSMBHParticle = 0; // reset this variable on all processors because we have added it now to the special particle, to conserve mass properly
     }
+    MPI_Allreduce(&special_particle_mass_local, &special_particle_mass_global, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD); // broadcast the mass of the SMBH particle
+    All.Mass_of_SpecialSMBHParticle = special_particle_mass_global; // update the mass of the SMBH particle for everyone to use
 #endif
 
 
@@ -348,7 +350,7 @@ integertime get_timestep(int p,		/*!< particle index */
 #ifdef ADAPTIVE_GRAVSOFT_FROM_TIDAL_CRITERION
     double tidal_mag = 0.; {int k,j; for(k=0;k<3;k++) {for(j=0;j<3;j++) {tidal_mag += P[p].tidal_tensorps[k][j]*P[p].tidal_tensorps[k][j];}}} // get the frobenius norm
     tidal_mag = sqrt(tidal_mag); // can estimate time derivative here, via: dt_ttmag = (tidal_mag-P[p].tidal_tensor_mag_prev) / GET_PARTICLE_TIMESTEP_IN_PHYSICAL(p); 
-    double dt_tidalsoft = All.CourantFac * NUMDIMS * GET_PARTICLE_TIMESTEP_IN_PHYSICAL(p) * (tidal_mag+P[p].tidal_tensor_mag_prev) / (fabs(tidal_mag-P[p].tidal_tensor_mag_prev) + MIN_REAL_NUMBER);
+    double dt_tidalsoft = All.CourantFac * NUMDIMS * DMAX(DMAX(GET_PARTICLE_TIMESTEP_IN_PHYSICAL(p), dt), All.MinSizeTimestep) * (tidal_mag+P[p].tidal_tensor_mag_prev) / (fabs(tidal_mag-P[p].tidal_tensor_mag_prev) + MIN_REAL_NUMBER);
     if(((1 << P[p].Type) & (ADAPTIVE_GRAVSOFT_FROM_TIDAL_CRITERION)) && (P[p].tidal_tensor_mag_prev>0 && All.Time>All.TimeBegin)) {dt = DMIN(dt, dt_tidalsoft);} // use as a timestep criterion for tidal-ags-active particles
     P[p].tidal_tensor_mag_prev = tidal_mag; // save it (overwriting previous value)
     {
@@ -532,7 +534,7 @@ integertime get_timestep(int p,		/*!< particle index */
                 }
                 double L_cond_inv = sqrt(b_grad / (1.e-37 + b_mag));
                 double L_cond = DMAX(L_particle , 1./(L_cond_inv + 1./L_particle)) * All.cf_atime;
-                double diff_coeff = SphP[p].Eta_MHD_OhmicResistivity_Coeff + SphP[p].Eta_MHD_HallEffect_Coeff + SphP[p].Eta_MHD_AmbiPolarDiffusion_Coeff;
+                double diff_coeff = fabs(SphP[p].Eta_MHD_OhmicResistivity_Coeff) + fabs(SphP[p].Eta_MHD_HallEffect_Coeff) + fabs(SphP[p].Eta_MHD_AmbiPolarDiffusion_Coeff);
                 double dt_conduction = dt_prefac_diffusion * L_cond*L_cond / (1.0e-37 + diff_coeff);
 #ifdef SUPER_TIMESTEP_DIFFUSION
                 if(dt_conduction < dt_superstep_explicit) dt_superstep_explicit = dt_conduction; // explicit time-step
@@ -972,7 +974,7 @@ integertime get_timestep(int p,		/*!< particle index */
     } // if(P[p].Type == 5)
 
 #if defined(BH_WIND_SPAWN_SET_BFIELD_POLTOR) /* KYSu: here for de-bugging jet injection model right now */
-    if((P[p].Type==5) || (P[p].Type==0 && P[p].ID==All.AGNWindID && SphP[p].IniDen<0)) {if(dt>All.BH_spawn_rinj/All.BAL_v_outflow) {dt=All.BH_spawn_rinj/All.BAL_v_outflow;}}
+    if((P[p].Type==5) || (P[p].Type==0 && P[p].ID==All.AGNWindID && SphP[p].IniDen<0)) {if(dt>All.BH_spawn_rinj/All.BAL_v_outflow && All.BH_spawn_rinj>0 && All.BAL_v_outflow>0) {dt=All.BH_spawn_rinj/All.BAL_v_outflow;}}
 #endif
 #endif // BLACK_HOLES
     
@@ -1016,7 +1018,9 @@ integertime get_timestep(int p,		/*!< particle index */
         }
         else // if(P[p].Type == 0)
         {
-            PRINT_WARNING("Part-ID=%llu  dt=%g ac=%g agrav=%g xyz=(%g|%g|%g) type=%d\n", (unsigned long long) P[p].ID, dt, ac, agrav, P[p].Pos[0], P[p].Pos[1], P[p].Pos[2],P[p].Type);
+            PRINT_WARNING("Part-ID=%llu  dt_desired=%g dt_Accel=%g\n accel_tot=%g accel_gravTree=%g accel_gravPM=%g  mass=%g pos_xyz=(%g|%g|%g) vel_xyz=(%g|%g|%g) soft=%g type=%d\n",
+                          (unsigned long long) P[p].ID, dt, sqrt(2*All.ErrTolIntAccuracy*All.cf_atime*ForceSoftening_KernelRadius(p) / ac)*All.cf_hubble_a,
+                          ac, agrav, agrav_pm, P[p].Mass, P[p].Pos[0], P[p].Pos[1], P[p].Pos[2], P[p].Vel[0], P[p].Vel[1], P[p].Vel[2], ForceSoftening_KernelRadius(p), P[p].Type);
         }
         fflush(stdout); fprintf(stderr, "\n @ fflush \n");
 #ifdef STOP_WHEN_BELOW_MINTIMESTEP
