@@ -1,0 +1,3 @@
+Abort(866720769) on node 0 (rank 0 in comm 0): Fatal error in internal_Allgatherv: Invalid buffer pointer, error stack:
+internal_Allgatherv(3036): MPI_Allgatherv(sendbuf=0x2803c1740, sendcount=4576, MPI_BYTE, recvbuf=0x2803c1740, recvcounts=0x2803caf40, displs=0x2803caf60, MPI_BYTE, MPI_COMM_WORLD) failed
+internal_Allgatherv(2943): Buffers must not be aliased

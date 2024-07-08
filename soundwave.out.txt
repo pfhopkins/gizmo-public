@@ -1,0 +1,205 @@
+-------------------------------------------------------------------------------------------
+AvailMem:	 Largest =       0.04 Mb (on task=0), Smallest =       0.04 Mb (on task=0), Average =       0.04 Mb
+Total Mem:	 Largest = 6022028.19 Mb (on task=0), Smallest = 6022028.19 Mb (on task=0), Average = 6022028.19 Mb
+Committed_AS:	 Largest = 6022028.16 Mb (on task=0), Smallest = 6022028.16 Mb (on task=0), Average = 6022028.16 Mb
+SwapTotal:	 Largest = 5007450835107326.00 Mb (on task=0), Smallest = 5007450835107326.00 Mb (on task=0), Average = 5007450835107326.00 Mb
+SwapFree:	 Largest =       0.00 Mb (on task=0), Smallest =       0.00 Mb (on task=0), Average =       0.00 Mb
+AllocMem:	 Largest = 6022028.16 Mb (on task=0), Smallest = 6022028.16 Mb (on task=0), Average = 6022028.16 Mb
+-------------------------------------------------------------------------------------------
+Task with the maximum commited memory
+
+System time: Mon Jul  8 19:05:12 2024
+This is GIZMO, version 2022, running on air.net as pablo.
+Build on  by pablo from master:5cb76f7 at https://github.com/pablo-mayrgundter/gizmo-public, Jul  8 2024 19:02:43
+
+Code was compiled with settings:
+
+        BOX_SPATIAL_DIMENSION=1
+        BOX_PERIODIC
+        HYDRO_MESHLESS_FINITE_MASS
+        HYDRO_PRESSURE_SPH
+        EOS_GAMMA=(5.0/3.0)
+        SELFGRAVITY_OFF
+        OUTPUT_IN_DOUBLEPRECISION
+        INPUT_IN_DOUBLEPRECISION
+
+Running on 1 MPI tasks.
+
+Size of particle structure       288  [bytes]
+Size of hydro-cell structure   520  [bytes]
+
+Obtaining parameters from file 'scripts/test_problems/soundwave.params':
+InitCondFile                                      soundwave_ics
+OutputDir                                         output
+TimeMax                                           1.5
+BoxSize                                           1
+TimeBetSnapshot                                   0.1
+DesNumNgb                                         4
+Possible warning to be aware of from file scripts/test_problems/soundwave.params:   Tag 'ErrTolIntAccuracy' was specified, but it is being ignored -- make sure this is intended!
+Possible warning to be aware of from file scripts/test_problems/soundwave.params:   Tag 'CourantFac' was specified, but it is being ignored -- make sure this is intended!
+Possible warning to be aware of from file scripts/test_problems/soundwave.params:   Tag 'MaxRMSDisplacementFac' was specified, but it is being ignored -- make sure this is intended!
+Possible warning to be aware of from file scripts/test_problems/soundwave.params:   Tag 'ErrTolForceAcc' was specified, but it is being ignored -- make sure this is intended!
+Possible warning to be aware of from file scripts/test_problems/soundwave.params:   Tag 'TimeBetStatistics' was specified, but it is being ignored -- make sure this is intended!
+MaxMemSize                                        2000
+
+Tag OutputListOn (Use_Tabulated_Snapshot_Times) not set in parameter file: defaulting to assume the snapshots will be output at user-specified intervals rather than adopting a list from a given file (=0) 
+Tag ComovingIntegrationOn (Cosmological_Simulation_On) not set in parameter file: defaulting to assume this is a NON-cosmological (static-spacetime) simulation (=0) 
+Tag BufferSize (MPI_Buffersize_in_MB) not set in parameter file: defaulting to 100MB MPI Buffer allocation (adjust if needed for your machine) (=100) 
+Tag SnapshotFileBase (Snapshot_Filename_Base) not set in parameter file: defaulting to value = 'snapshot' 
+Tag RestartFile (Restart_Filename_Base) not set in parameter file: defaulting to value = 'restart' 
+Tag Omega0 (Omega_Matter) not set in parameter file: defaulting to [non-cosmological] value (assuming integration in flat non-expanding space with physical units) = 1 
+Tag OmegaLambda (Omega_Lambda) not set in parameter file: defaulting to [non-cosmological] value (assuming integration in flat non-expanding space with physical units) = 0 
+Tag HubbleParam (Hubble_Param_Little_h) not set in parameter file: defaulting to [non-cosmological] value (assuming integration in flat non-expanding space with physical units) = 1 
+Tag TimeOfFirstSnapshot (Simulation_Time_of_First_Snapshot) not set in parameter file: defaulting to All.TimeBegin (=0) 
+Tag CpuTimeBetRestartFile (Walltime_in_Seconds_Between_Restartfiles) not set in parameter file: defaulting to write restart checkpoints just under every hour (=3450) 
+Tag TimeBegin (Initial_Simulation_Time) not set in parameter file: since this is a non-cosmological simulation, defaulting to assume time starts at t = 0 
+Tag UnitVelocity_in_cm_per_s (UnitVelocity_in_centimeterspersecond) not set in parameter file: will default to assume code units are cgs (=1), if conversion to physical units for e.g. cooling are needed 
+Tag UnitLength_in_cm (UnitLength_in_centimeters) not set in parameter file: will default to assume code units are cgs (=1), if conversion to physical units for e.g. cooling are needed 
+Tag UnitMass_in_g (UnitMass_in_grams) not set in parameter file: will default to assume code units are cgs (=1), if conversion to physical units for e.g. cooling are needed 
+Tag TreeDomainUpdateFrequency (TreeRebuild_ActiveFraction) not set in parameter file: defaulting to guess that we should re-build whenever 0.5 percent of the system is active. But this should be adjusted manually for performance and accuracy in most cases (=0.005) 
+Tag MinGasHsmlFractional (Minimum_Gas_KernelSize_RelativetoSoftening) not set in parameter file: defaulting to assume no mininum (=0) 
+Tag MaxHsml (Maximum_KernelSize_CodeUnits) not set in parameter file: defaulting to assume no maximum (=1e+56) 
+Tag MaxSizeTimestep (Maximum_Timestep_Allowed) not set in parameter file: it is often unsafe to not set a maximum timestep. We will default to assume 0.1 percent of the maximum time or 1 percent of the time between snapshots (=0.001), but this may need to be set lower. 
+Tag MinSizeTimestep (Minimum_Timestep_Allowed) not set in parameter file: defaulting to minimum allowed by memory table-size (=0) 
+Tag ICFormat (Initial_Conditions_Format) not set in parameter file: defaulting to standard hdf5 ICs format (=3) - change this if needed for your ICs (many codes generate ICs in the old GADGET unformatted binary format, which requires value=1 here) 
+Tag SnapFormat (Snapshot_Format) not set in parameter file: defaulting to standard hdf5 snapshot format (=3) 
+Tag NumFilesPerSnapshot (Number_of_Files_per_Snapshot) not set in parameter file: defaulting to single-file snapshots (=1) 
+Tag NumFilesWrittenInParallel (Number_of_Files_Written_in_Parallel) not set in parameter file: defaulting to only main-task writes (=1) 
+Tag TimeLimitCPU (MaxSimulationWallTime_in_Seconds) not set in parameter file: defaulting to 24-hours before auto-shutdown (=86000) 
+Tag PartAllocFactor (ParticleNumberMemoryImbalance_Limit) not set in parameter file: defaulting to a relatively small value, but this may not work for your problem and machine memory constraints (adjust this as needed to better handle load-balancing) (=2) 
+Tag GravityConstantInternal (GravityConstant_inCodeUnits) not set in parameter file: defaulting to calculating in terms of other specified units if needed (=0) 
+Tag InitGasTemp (Initial_Gas_Temperature) not set in parameter file: defaulting to assume temperatures defined in ICs (=0) 
+Tag MinGasTemp (Minimum_Gas_Temperature) not set in parameter file: defaulting to assume no mininum (=0) 
+WARNING: MaxMemSize (Max_Memory_Per_MPI_Task_in_MB=2000) is currently set to a larger value than the maximum safe amount of memory recommended per task, given by pinging the system for allocatable memory and dividing it among the tasks per node (=0 MB). Depending on the details of your node and core configuration and memory use, this may work, but it is not safe, and can crash if too many processes on a node try to use their full memory at once.
+
+Code units to be used: make sure you check these are correct! 
+  Hubble H0 (internal units) = 3.24078e-18 
+  Gravity G (internal units) = 6.672e-08 
+  unit Mass in g             = 1 
+  unit Length in cm          = 1 
+  unit Time in s             = 1 
+  unit Velocity in cm/s      = 1 
+  unit Energy in erg         = 1 
+  unit Density in g/cm^3     = 1 
+  unit Pressure in erg/cm^3  = 1 
+  unit Luminosity in erg/s   = 1 
+  unit Flux in erg/s/cm^2    = 1 
+  unit B[internal] in gauss  = 3.54491 
+
+Allocated 1.17578 MByte for particle data storage.
+Allocated 2.03125 MByte for storage of hydro data.
+
+Reading file `soundwave_ics.hdf5' on task=0 (contains 2048 particles.)
+ ..distributing this file to tasks 0-0
+Type 0 (gas):       2048  (tot=     0000002048) masstab=0
+Type 1 (halo):         0  (tot=     0000000000) masstab=0
+Type 2 (alt):          0  (tot=     0000000000) masstab=0
+Type 3 (pic):          0  (tot=     0000000000) masstab=0
+Type 4 (stars):        0  (tot=     0000000000) masstab=0
+Type 5 (sink):         0  (tot=     0000000000) masstab=0
+
+reading block 0 (Coordinates)...
+reading block 1 (Velocities)...
+reading block 2 (ParticleIDs)...
+reading block 5 (Masses)...
+reading block 6 (InternalEnergy)...
+Reading done. Total number of particles :  0000002048
+
+Domain decomposition building... LevelToTimeBin[TakeLevel=0]=0  (presently allocated=3.20724 MB)
+ ..allocated 0.00220108 MByte for top-level domain structure
+ ..using 0.065567 MB of temporary storage for domain decomposition... (presently allocated=3.27542 MB)
+
+In 'DOMAIN', domain_Decomposition()/domain.c/208: Largest Allocation = 3.27545 Mbyte (on task=0), Smallest = 3.27545 Mbyte, Average = 3.27545 Mbyte
+------------------------ Allocated Memory Blocks----------------------------------------
+Task   Nr F          Variable      MBytes   Cumulative         Function/File/Linenumber
+----------------------------------------------------------------------------------------
+   0    0 0        Exportflag      0.0000       0.0000  allocate_memory()/system/allocate/31
+   0    1 0       Exportindex      0.0000       0.0001  allocate_memory()/system/allocate/32
+   0    2 0   Exportnodecount      0.0000       0.0001  allocate_memory()/system/allocate/33
+   0    3 0        Send_count      0.0000       0.0001  allocate_memory()/system/allocate/35
+   0    4 0       Send_offset      0.0000       0.0002  allocate_memory()/system/allocate/36
+   0    5 0        Recv_count      0.0000       0.0002  allocate_memory()/system/allocate/37
+   0    6 0       Recv_offset      0.0000       0.0002  allocate_memory()/system/allocate/38
+   0    7 0     ProcessedFlag      0.0039       0.0041  allocate_memory()/system/allocate/40
+   0    8 0   NextActiveParti      0.0156       0.0197  allocate_memory()/system/allocate/43
+   0    9 0     NextInTimeBin      0.0156       0.0354  allocate_memory()/system/allocate/46
+   0   10 0     PrevInTimeBin      0.0156       0.0510  allocate_memory()/system/allocate/49
+   0   11 0    ParticleData_P      1.1250       1.1760  allocate_memory()/system/allocate/55
+   0   12 0     GasCellData_P      2.0312       3.2072  allocate_memory()/system/allocate/69
+   0   13 0   DomainStartList      0.0000       3.2073  domain_allocate()/domain.c/296
+   0   14 0     DomainEndList      0.0000       3.2073  domain_allocate()/domain.c/299
+   0   15 0          TopNodes      0.0022       3.2095  domain_allocate()/domain.c/302
+   0   16 0        domain_key      0.0625       3.2720  domain_Decompos()/domain.c/155
+   0   17 0              toGo      0.0000       3.2720  domain_Decompos()/domain.c/158
+   0   18 0           toGoGas      0.0000       3.2720  domain_Decompos()/domain.c/160
+   0   19 0             toGet      0.0000       3.2721  domain_Decompos()/domain.c/162
+   0   20 0          toGetGas      0.0000       3.2721  domain_Decompos()/domain.c/164
+   0   21 0      list_NumPart      0.0000       3.2721  domain_Decompos()/domain.c/166
+   0   22 0        list_N_gas      0.0000       3.2722  domain_Decompos()/domain.c/168
+   0   23 0         list_load      0.0000       3.2722  domain_Decompos()/domain.c/170
+   0   24 0      list_loadgas      0.0000       3.2722  domain_Decompos()/domain.c/172
+   0   25 0         list_work      0.0000       3.2722  domain_Decompos()/domain.c/174
+   0   26 0      list_workgas      0.0000       3.2723  domain_Decompos()/domain.c/176
+   0   27 0        domainWork      0.0002       3.2724  domain_Decompos()/domain.c/178
+   0   28 0     domainWorkGas      0.0002       3.2726  domain_Decompos()/domain.c/180
+   0   29 0       domainCount      0.0002       3.2727  domain_Decompos()/domain.c/182
+   0   30 0    domainCountGas      0.0002       3.2729  domain_Decompos()/domain.c/184
+   0   31 0          topNodes      0.0025       3.2754  domain_Decompos()/domain.c/197
+----------------------------------------------------------------------------------------
+We are out of Topnodes. We'll try to repeat with a higher value than All.TopNodeAllocFactor=0.008
+Increasing TopNodeAllocFactor=0.008  ..new value=0.0104
+ ..allocated 0.00284958 MByte for top-level domain structure
+ ..using 0.0664825 MB of temporary storage for domain decomposition... (presently allocated=3.27695 MB)
+We are out of Topnodes. We'll try to repeat with a higher value than All.TopNodeAllocFactor=0.0104
+Increasing TopNodeAllocFactor=0.0104  ..new value=0.01352
+ ..allocated 0.00369263 MByte for top-level domain structure
+ ..using 0.0676727 MB of temporary storage for domain decomposition... (presently allocated=3.27887 MB)
+We are out of Topnodes. We'll try to repeat with a higher value than All.TopNodeAllocFactor=0.01352
+Increasing TopNodeAllocFactor=0.01352  ..new value=0.017576
+ ..allocated 0.00473022 MByte for top-level domain structure
+ ..using 0.0691376 MB of temporary storage for domain decomposition... (presently allocated=3.28137 MB)
+We are out of Topnodes. We'll try to repeat with a higher value than All.TopNodeAllocFactor=0.017576
+Increasing TopNodeAllocFactor=0.017576  ..new value=0.0228488
+ ..allocated 0.00615692 MByte for top-level domain structure
+ ..using 0.0711517 MB of temporary storage for domain decomposition... (presently allocated=3.28485 MB)
+We are out of Topnodes. We'll try to repeat with a higher value than All.TopNodeAllocFactor=0.0228488
+Increasing TopNodeAllocFactor=0.0228488  ..new value=0.0297034
+ ..allocated 0.00797272 MByte for top-level domain structure
+ ..using 0.0737152 MB of temporary storage for domain decomposition... (presently allocated=3.28931 MB)
+We are out of Topnodes. We'll try to repeat with a higher value than All.TopNodeAllocFactor=0.0297034
+Increasing TopNodeAllocFactor=0.0297034  ..new value=0.0386145
+ ..allocated 0.0103722 MByte for top-level domain structure
+ ..using 0.0771027 MB of temporary storage for domain decomposition... (presently allocated=3.29501 MB)
+We are out of Topnodes. We'll try to repeat with a higher value than All.TopNodeAllocFactor=0.0386145
+Increasing TopNodeAllocFactor=0.0386145  ..new value=0.0501988
+ ..allocated 0.0134201 MByte for top-level domain structure
+ ..using 0.0814056 MB of temporary storage for domain decomposition... (presently allocated=3.30237 MB)
+We are out of Topnodes. We'll try to repeat with a higher value than All.TopNodeAllocFactor=0.0501988
+Increasing TopNodeAllocFactor=0.0501988  ..new value=0.0652585
+ ..allocated 0.0174408 MByte for top-level domain structure
+ ..using 0.0870819 MB of temporary storage for domain decomposition... (presently allocated=3.3121 MB)
+We are out of Topnodes. We'll try to repeat with a higher value than All.TopNodeAllocFactor=0.0652585
+Increasing TopNodeAllocFactor=0.0652585  ..new value=0.084836
+ ..allocated 0.0226288 MByte for top-level domain structure
+ ..using 0.0944061 MB of temporary storage for domain decomposition... (presently allocated=3.32462 MB)
+We are out of Topnodes. We'll try to repeat with a higher value than All.TopNodeAllocFactor=0.084836
+Increasing TopNodeAllocFactor=0.084836  ..new value=0.110287
+ ..allocated 0.0293732 MByte for top-level domain structure
+ ..using 0.103928 MB of temporary storage for domain decomposition... (presently allocated=3.34088 MB)
+We are out of Topnodes. We'll try to repeat with a higher value than All.TopNodeAllocFactor=0.110287
+Increasing TopNodeAllocFactor=0.110287  ..new value=0.143373
+ ..allocated 0.0381927 MByte for top-level domain structure
+ ..using 0.116379 MB of temporary storage for domain decomposition... (presently allocated=3.36215 MB)
+ ..NTopNodes before=505
+ ..NTopnodes after=505
+ ..NTopleaves= 442  NTopnodes=505 (space for 588)
+Balance: gravity work-load balance=1   memory-balance=1   hydro work-load balance=1
+ ..iter=0 exchange of 0000000000 particles (ret=0)
+ ..domain decomposition done. (took 0.004792 sec)
+Begin Peano-Hilbert order...
+ ..Peano-Hilbert done
+ ..freed 0.00506592 MByte in top-level domain structure
+Allocated 0.463291 MByte for tree, and 0.0016861 Mbyte for top-leaves.  (presently allocated 3.70514 MB)
+Begin Ngb-tree construction.
+task 0: maximum number 2348 of tree-nodes reached for particle 1965.
+Increasing TreeAllocFactor=0.45 new value=0.5175

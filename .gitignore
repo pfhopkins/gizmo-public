@@ -1,0 +1,6 @@
+# Build file types
+*.o
+
+# Working data
+sims
+output

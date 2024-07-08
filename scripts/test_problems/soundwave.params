@@ -8,7 +8,7 @@
 %        SELFGRAVITY_OFF 
 %        EOS_GAMMA=(5.0/3.0)
 %
-InitCondFile                       soundwave_ics
+InitCondFile                       sims/soundwave_ics
 OutputDir                          output
 TimeMax                            1.5
 BoxSize                            1
@@ -21,3 +21,4 @@ MaxRMSDisplacementFac              0.1
 ErrTolForceAcc                     0.001
 TimeBetStatistics                  0.5
 
+MaxMemSize 2000

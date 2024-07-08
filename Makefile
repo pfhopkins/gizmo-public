@@ -485,12 +485,12 @@ GMP_INCL = #
 GMP_LIBS = #
 MKL_INCL = #
 MKL_LIBS = #
-GSL_INCL = -I/usr/local/include #-I$(PORTINCLUDE)
-GSL_LIBS = -L/usr/local/lib #-L$(PORTLIB)
+GSL_INCL = -I/usr/local/include -I$(BREWINCLUDE)
+GSL_LIBS = -L/usr/local/lib -L$(BREWLIB)
 FFTW_INCL= -I/usr/local/include
 FFTW_LIBS= -L/usr/local/lib
-HDF5INCL = -I/usr/local/include -DH5_USE_16_API #-I$(PORTINCLUDE) -DH5_USE_16_API
-HDF5LIB  = -L/usr/local/lib -lhdf5 -lz #-L$(PORTLIB)
+HDF5INCL = -I/usr/local/include -DH5_USE_16_API -I$(BREWINCLUDE) -DH5_USE_16_API
+HDF5LIB  = -L/usr/local/lib -lhdf5 -lz -L$(BREWLIB)
 MPICHLIB = #
 OPT     += -DDISABLE_ALIGNED_ALLOC -DCHIMES_USE_DOUBLE_PRECISION #
 ##
