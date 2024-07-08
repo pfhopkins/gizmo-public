@@ -1,0 +1,7 @@
+InitCondFile                                      sims/soundwave_ics
+OutputDir                                         output
+TimeMax                                           1.5
+BoxSize                                           1
+TimeBetSnapshot                                   0.1
+DesNumNgb                                         4
+MaxMemSize                                        2000
