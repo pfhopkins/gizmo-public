@@ -6,7 +6,7 @@ See the [User Guide](http://www.tapir.caltech.edu/~phopkins/Site/GIZMO_files/giz
 
 The code is descended from P-SPH, itself descended from GADGET-3 (so a huge debt owes to the work of Volker Springel), and many of the GADGET conventions remain (for compatibility with GADGET outputs and codes). See the source code for appropriate attribution of the code elements. 
 
-Both the [public code](https://bitbucket.org/phopkins/gizmo-public) and the [development (private) code](https://bitbucket.org/phopkins/gizmo) are hosted on Bitbucket version-controlled repositories, but for code issues, feature requests, or bugs, please post to the [GIZMO Google Group](https://groups.google.com/d/forum/gizmo-code).
+Both the [public code](https://github.com/pfhopkins/gizmo-public) ([alternative repo here](https://bitbucket.org/phopkins/gizmo-public)) and the [development (private) code](https://bitbucket.org/phopkins/gizmo) are hosted on git version-controlled repositories. For code issues, feature requests, or bugs, please post Discussion and Issues interface at the [public code github repository](https://github.com/pfhopkins/gizmo-public). The previous GIZMO Google Group had to be de-activated owing to security and spam concerns.
 
 Basic Rules: 
 
