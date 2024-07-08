@@ -176,6 +176,9 @@
 #ifdef SHEARING_BOX_Q
 #define BOX_SHEARING_Q SHEARING_BOX_Q
 #endif
+#ifdef SHEARING_BOX_QB
+#define BOX_SHEARING_QB SHEARING_BOX_QB
+#endif
 #ifdef ANALYTIC_GRAVITY
 #if CHECK_IF_PREPROCESSOR_HAS_NUMERICAL_VALUE_(ANALYTIC_GRAVITY)
 #define GRAVITY_ANALYTIC ANALYTIC_GRAVITY
@@ -334,18 +337,20 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 #define RT_SPEEDOFLIGHT_REDUCTION (0.1)   /* for many problems on these scales, need much larger RSOL than default starforge values (dynamical velocities are big, without this they will severely lag behind) */
 #endif
 #define ADAPTIVE_TREEFORCE_UPDATE (0.0625) /* rough typical value we use for ensuring stability */
-#ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM
-#define PARTICLE_EXCISION
+#if defined(FIRE_SUPERLAGRANGIAN_JEANS_REFINEMENT) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
 #define OUTPUT_ACCELERATION
 #define OUTPUT_HYDROACCELERATION
-#define OUTPUT_GRADIENT_RHO
-#define OUTPUT_GRADIENT_VEL
 #define OUTPUT_MOLECULAR_FRACTION
 #define OUTPUT_TEMPERATURE
+#define OUTPUT_ADDITIONAL_RUNINFO
+#endif
+#ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM
+#define PARTICLE_EXCISION
+#define OUTPUT_GRADIENT_RHO
+#define OUTPUT_GRADIENT_VEL
 #define OUTPUT_RT_RAD_FLUX
 #define OUTPUT_RT_RAD_OPACITY
 #define RT_RAD_PRESSURE_OUTPUT
-#define OUTPUT_ADDITIONAL_RUNINFO
 #ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES
 #define GRAVITY_ANALYTIC
 #endif
@@ -414,7 +419,7 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 
 #if defined(SINGLE_STAR_FB_JETS) || ((defined(SINGLE_STAR_FB_WINDS) || defined(SINGLE_STAR_FB_SNE)) && defined(FLAG_NOT_IN_PUBLIC_CODE))
 #define BH_WIND_SPAWN (2) // leverage the BHFB model already developed within the FIRE-BHs framework. gives accurate launching of arbitrarily-structured jets.
-#if !defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+#if !defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM) 
 #define MAINTAIN_TREE_IN_REARRANGE // don't rebuild the domains/tree every time a particle is spawned - salvage the existing one by redirecting pointers as needed
 #endif
 #endif
@@ -934,6 +939,10 @@ static MPI_Datatype MPI_TYPE_TIME = MPI_INT;
 #define RT_FREQ_BIN_He2 (RT_FREQ_BIN_He1+1)
 #endif
 
+#ifdef RT_CHEM_PHOTOION
+#define RT_BAND_IS_IONIZING(k) ((k==RT_FREQ_BIN_H0) || (k==RT_FREQ_BIN_He0) || (k==RT_FREQ_BIN_He1) || (k==RT_FREQ_BIN_He2))
+#endif
+
 #ifndef GALSF_FB_FIRE_RT_LONGRANGE
 #define RT_FREQ_BIN_FIRE_UV (RT_FREQ_BIN_He2+0)
 #define RT_FREQ_BIN_FIRE_OPT (RT_FREQ_BIN_FIRE_UV+0)
@@ -1254,6 +1263,7 @@ typedef unsigned long long peano1D;
 #endif
 
 #ifdef RT_INFRARED
+#define MAX_DUST_TEMP 1.0e4 // maximum dust temperature for which we expect to call opacity or dust-to-metals ratio functions
 #define COOL_LOWTEMP_THIN_ONLY // don't want to double-count trapping of radiation if we're doing it self-consistently
 #endif
 
@@ -1463,6 +1473,9 @@ extern MyDouble boxSize_Z, boxHalf_Z;
 #ifdef BOX_SHEARING
 extern MyDouble Shearing_Box_Vel_Offset;
 extern MyDouble Shearing_Box_Pos_Offset;
+#ifdef BOX_SHEARING_QB
+extern Shearing_Box_B_Offset;
+#endif
 #endif
 
 #if defined(BOX_REFLECT_X) || defined(BOX_REFLECT_Y) || defined(BOX_REFLECT_Z) || defined(BOX_OUTFLOW_X) || defined(BOX_OUTFLOW_Y) || defined(BOX_OUTFLOW_Z)
@@ -1593,6 +1606,13 @@ z=((z)>boxHalf_Z)?((z)-boxSize_Z):(((z)<-boxHalf_Z)?((z)+boxSize_Z):(z)))
 #define NGB_SHEARBOX_BOUNDARY_VELCORR_(pos_i,pos_j,dv_ij,dv_sign_flipped) (dv_ij[BOX_SHEARING_PHI_COORDINATE] += dv_sign_flipped*Shearing_Box_Vel_Offset * ((pos_i[0]-pos_j[0]>boxHalf_X)?(1):((pos_i[0]-pos_j[0]<-boxHalf_X)?(-1):(0))))
 #else
 #define NGB_SHEARBOX_BOUNDARY_VELCORR_(pos_i,pos_j,dv_ij,dv_sign_flipped)
+#endif
+
+/* equivalent for shear-periodic magnetic fields */
+#ifdef BOX_SHEARING_QB
+#define NGB_SHEARBOX_BOUNDARY_BCORR_(pos_i,pos_j,db_ij,db_sign_flipped) (db_ij[BOX_SHEARING_PHI_COORDINATE] += db_sign_flipped*Shearing_Box_B_Offset * ((pos_i[0]-pos_j[0]>boxHalf_X)?(1):((pos_i[0]-pos_j[0]<-boxHalf_X)?(-1):(0))))
+#else
+#define NGB_SHEARBOX_BOUNDARY_BCORR_(pos_i,pos_j,db_ij,db_sign_flipped)
 #endif
 
 
@@ -2089,6 +2109,7 @@ extern struct global_data_all_processes
 
 #ifdef RT_ISRF_BACKGROUND
     double InterstellarRadiationFieldStrength;
+    double RadiationBackgroundRedshift;
 #endif
 
 #ifdef RT_LEBRON
@@ -3089,6 +3110,9 @@ extern struct gas_cell_data
     MyFloat Radiation_Temperature; /* IR radiation field temperature (evolved variable ^4 power, for convenience) */
     MyFloat Dt_Rad_E_gamma_T_weighted_IR; /* IR radiation temperature-weighted time derivative of photon energy (evolved variable ^4 power, for convenience) */
     MyFloat Dust_Temperature; /* Dust temperature (evolved variable ^4 power, for convenience) */
+#ifdef COOLING
+    MyFloat Radiation_Temperature_CoolingWeighted; /* Radiation temperature weighted to combine dust+gas emission with existing SED in cooling solver */
+#endif
 #endif
 #ifdef RT_CHEM_PHOTOION
     MyFloat HI;                  /* HI fraction */
@@ -3511,6 +3535,7 @@ enum iofields
   IO_GRADPHI,
   IO_GRADRHO,
   IO_GRADVEL,
+  IO_GRADMAG,
   IO_COOLRATE,
   IO_TIDALTENSORPS,
   IO_GDE_DISTORTIONTENSOR,

@@ -77,6 +77,11 @@ double get_disk_mass(double time);
 void growing_disk_init(void);
 
 double get_turb_pot(double x, double y, double z);
+void calculate_and_assign_nonideal_mhd_coefficients(int i);
+void calculate_and_assign_conduction_and_viscosity_coefficients(int i);
+#ifdef TURB_DIFFUSION
+void calculate_and_assign_turbulent_diffusion_coefficients(int i);
+#endif
 
 void   sub_turb_move_perturbers(double t0, double t1);
 void   sub_turb_add_forces(void);
@@ -135,7 +140,7 @@ static inline double ForceSoftening_KernelRadius(int p)
     if((1 << P[p].Type) & (ADAPTIVE_GRAVSOFT_FORALL)) {return PPP[p].AGS_Hsml;}
 #endif
 #if defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(SELFGRAVITY_OFF) /* softening scale still appears in timestep criterion for problems without self-gravity, so set it adaptively */
-    if(P[p].Type == 0) {if(All.Time == All.TimeBegin) {return All.ForceSoftening[P[p].Type];}}
+    //if(P[p].Type == 0) {if(All.Time == All.TimeBegin) {return All.ForceSoftening[P[p].Type];}} // ???
 #ifdef ADAPTIVE_GRAVSOFT_MAX_SOFT_HARD_LIMIT
     if(P[p].Type == 0) {return DMIN(PPP[p].Hsml, ADAPTIVE_GRAVSOFT_MAX_SOFT_HARD_LIMIT/All.cf_atime);}
 #else
@@ -151,7 +156,13 @@ static inline double ForceSoftening_KernelRadius(int p)
     return All.ForceSoftening[P[p].Type];
 }
 
-
+/* Returns the Frobenius norm of the velocity gradient in physical units */
+static inline double velocity_gradient_norm(int i){
+    double dv2=0; int j,k; for(j=0;j<3;j++) {for(k=0;k<3;k++) {double vt = SphP[i].Gradients.Velocity[j][k]*All.cf_a2inv; /* physical velocity gradient */
+    if(All.ComovingIntegrationOn) {if(j==k) {vt += All.cf_hubble_a;}} /* add hubble-flow correction */
+    dv2 += vt*vt;}} // calculate magnitude of the velocity shear across cell from || grad -otimes- v ||^(1/2)
+    return sqrt(dv2);
+}
 
 #ifdef BOX_SHEARING
 void calc_shearing_box_pos_offset(void);
@@ -183,6 +194,14 @@ double return_user_desired_target_pressure(int i);
 #ifdef EOS_TILLOTSON
 double calculate_eos_tillotson(int i);
 void tillotson_eos_init(void);
+#endif
+
+#ifdef EOS_SUBSTELLAR_ISM
+void hydrogen_molecule_partitionfunc(double temp, double result[3]);
+void hydrogen_molecule_zrot_mixture(double temp, double result[3]);
+void hydrogen_molecule_zvib(double temp, double result[3]);
+double hydrogen_molecule_energy(double temp);
+double hydrogen_molecule_gamma(double temp);
 #endif
 
 void read_fof(int num);
@@ -359,6 +378,7 @@ double Get_Gas_Alfven_speed_i(int i);
 double Get_Gas_Fast_MHD_wavespeed_i(int i);
 double Get_Gas_Mean_Molecular_Weight_mu(double T_guess, double rho, double *xH0, double *ne_guess, double urad_from_uvb_in_G0, int target);
 void update_explicit_molecular_fraction(int i, double dtime_cgs);
+double molecfrac_rootfind_function(double fH2, double x00, double x01, double x_b_0, double x_c, double y_a, double G_LW_dt_unshielded);
 double return_dust_to_metals_ratio_vs_solar(int i, double T_dust_manual_override);
 double yhelium(int target);
 double Get_Gas_Molecular_Mass_Fraction(int i, double temperature, double neutral_fraction, double free_electron_ratio, double urad_from_uvb_in_G0);
@@ -603,6 +623,8 @@ void apply_grain_dragforce(void);
 #ifdef RT_INFRARED
 double get_min_allowed_dustIRrad_temperature(void);
 double get_rt_ir_lambdadust_effective(double T, double rho, double *nH0_guess, double *ne_guess, int target, int update_Tdust);
+double dust_dE_cooling(int i, double Tgas, double Tdust, double *Tdust_fixedpoint_1, double *Tdust_fixedpoint_2);
+double rt_ir_lambdadust(int i, double Tgas);
 #endif
 
 #if defined(GALSF_FB_FIRE_RT_HIIHEATING) || (defined(RT_CHEM_PHOTOION) && defined(GALSF))
@@ -843,6 +865,7 @@ void rt_get_lum_gas(int target, double *je);
 #ifdef RT_ISRF_BACKGROUND
 void rt_apply_boundary_conditions(int i);
 void get_background_isrf_urad(int i, double *urad);
+double background_isrf_cmb_Teff(void);
 #endif
 double slab_averaging_function(double x);
 double blackbody_lum_frac(double E_lower, double E_upper, double T_eff);

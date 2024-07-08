@@ -126,10 +126,13 @@ void begrun(void)
 #endif
 
 #ifdef BOX_SHEARING
+    double L_box_towrap = All.BoxSize;
 #ifdef BOX_LONG_X
-    Shearing_Box_Vel_Offset = BOX_SHEARING_Q * BOX_SHEARING_OMEGA_BOX_CENTER * All.BoxSize * BOX_LONG_X;
-#else
-    Shearing_Box_Vel_Offset = BOX_SHEARING_Q * BOX_SHEARING_OMEGA_BOX_CENTER * All.BoxSize;
+    L_box_towrap *= BOX_LONG_X;
+#endif
+    Shearing_Box_Vel_Offset = BOX_SHEARING_Q * BOX_SHEARING_OMEGA_BOX_CENTER * L_box_towrap;
+#ifdef BOX_SHEARING_QB
+    Shearing_Box_B_Offset = BOX_SHEARING_QB * BOX_SHEARING_OMEGA_BOX_CENTER * L_box_towrap; // ??? need definition of units to normalize this all to
 #endif
     calc_shearing_box_pos_offset();
 #endif
@@ -1790,9 +1793,14 @@ void read_parameter_file(char *fname)
 #endif
 
 #ifdef RT_ISRF_BACKGROUND
-	    strcpy(tag[nt], "InterstellarRadiationFieldStrength");
-	    strcpy(alternate_tag[nt], "ISRF");
+	strcpy(tag[nt], "InterstellarRadiationFieldStrength");
+	strcpy(alternate_tag[nt], "ISRF");
         addr[nt] = &All.InterstellarRadiationFieldStrength;
+        id[nt++] = REAL;
+
+	strcpy(tag[nt], "Redshift_RT_Background");
+	strcpy(alternate_tag[nt], "z_background");
+        addr[nt] = &All.RadiationBackgroundRedshift;
         id[nt++] = REAL;
 #endif
 
@@ -2250,6 +2258,8 @@ void read_parameter_file(char *fname)
 #endif
 #if defined(RT_ISRF_BACKGROUND)
                 if(strcmp("InterstellarRadiationFieldStrength",tag[i])==0) {*((double *)addr[i])=1.0; printf("Tag %s (%s) not set in parameter file: defaulting to assuming Solar neighborhood (Draine) background radiation field (=%g) \n",tag[i],alternate_tag[i],All.InterstellarRadiationFieldStrength); continue;}
+
+                if(strcmp("Redshift_RT_Background",tag[i])==0) {*((double *)addr[i])=0.0; printf("Tag %s (%s) not set in parameter file: defaulting to assuming z=0 background radiation field \n",tag[i],alternate_tag[i]); continue;}
 #endif
 #if defined(TURB_DRIVING)
                 if(strcmp("ST_DtFreq",tag[i])==0) {*((double *)addr[i])=-1; printf("Tag %s (%s) not set in parameter file: defaulting to update turbulent driving fields every 0.01 coherence times (=%g) \n",tag[i],alternate_tag[i],All.TurbDriving_Global_DtTurbUpdates); continue;}

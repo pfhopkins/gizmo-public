@@ -47,7 +47,12 @@ double get_pressure(int i)
 {
     double soundspeed, press=0, gamma_eos_index = GAMMA(i); soundspeed=0; /* get effective adiabatic index */
     press = (gamma_eos_index-1) * SphP[i].InternalEnergyPred * Get_Gas_density_for_energy_i(i); /* ideal gas EOS (will get over-written it more complex EOS assumed) */
-    
+
+#ifdef EOS_SUBSTELLAR_ISM
+    double ne=1, nh0=0, nHe0, nHepp, nhp, nHeII, temperature, mu_meanwt=1, rho=SphP[i].Density*All.cf_a3inv, u0=SphP[i].InternalEnergyPred;
+    temperature = ThermalProperties(u0, rho, i, &mu_meanwt, &ne, &nh0, &nhp, &nHe0, &nHeII, &nHepp); // get thermodynamic properties
+    press = Get_Gas_density_for_energy_i(i) * BOLTZMANN_CGS * temperature / UNIT_ENERGY_IN_CGS / (mu_meanwt * PROTONMASS_CGS / UNIT_MASS_IN_CGS);
+#endif
     
 #ifdef GALSF_EFFECTIVE_EQS /* modify pressure to 'interpolate' between effective EOS and isothermal, with the Springel & Hernquist 2003 'effective' EOS */
     if(SphP[i].Density*All.cf_a3inv >= All.PhysDensThresh) {press = All.FactorForSofterEQS * press + (1 - All.FactorForSofterEQS) * All.cf_afac1 * (gamma_eos_index-1) * SphP[i].Density * All.InitGasU;}
@@ -165,43 +170,19 @@ double get_pressure(int i)
       but for more general functionality, we want this index here to be appropriately variable. */
 double gamma_eos(int i)
 {
-#if defined(COOL_MOLECFRAC_NONEQM) & !defined(EOS_SUBSTELLAR_ISM)
+#if defined(COOL_MOLECFRAC_NONEQM)
     if(i >= 0) {
         if(P[i].Type==0) {
             double fH = HYDROGEN_MASSFRAC, f = SphP[i].MolecularMassFraction, xe = SphP[i].Ne; // use the variables below to update the EOS as needed
             double f_mono = fH*(xe + 1.-f) + (1.-fH)/4., f_di = fH*f/2., gamma_mono=5./3., gamma_di=7./5.; // sum e-, H or p, He, which act monotomic, and molecular, by number
+#ifdef EOS_SUBSTELLAR_ISM
+            //gamma_di = 5./3;
+            double ne=1, nh0=0, nHe0, nHepp, nhp, nHeII, temperature, mu_meanwt=1, rho=SphP[i].Density*All.cf_a3inv, u0=SphP[i].InternalEnergyPred;
+            temperature = ThermalProperties(u0, rho, i, &mu_meanwt, &ne, &nh0, &nhp, &nHe0, &nHeII, &nHepp); // get thermodynamic properties
+            gamma_di = hydrogen_molecule_gamma(temperature);
+#endif
             return 1. + (f_mono + f_di) / (f_mono/(gamma_mono-1.) + f_di/(gamma_di-1.)); // weighted sum by number to compute effective EOS
             //return 1. + (fH*((1.-f)/1. + f/2.) + (1.-fH)/4.) / (fH*((1.-f + xe)/(1.*(5./3.-1.)) + f/(2.*(7./5.-1.))) + (1.-fH)/(4.*(5./3.-1.))); // assume He is atomic, H has a mass fraction f molecular
-        }
-    }
-#endif
-    
-#ifdef EOS_SUBSTELLAR_ISM
-    if(i>=0) {
-        if(P[i].Type==0) {
-            double T_eff_atomic = 1.23 * (5./3.-1.) * U_TO_TEMP_UNITS * SphP[i].InternalEnergyPred, nH_cgs;
-            nH_cgs = SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_NHCGS;
-#ifdef COOL_MOLECFRAC_NONEQM
-            double f_mol = SphP[i].MolecularMassFraction;
-#else
-            double T_transition=DMIN(8000.,nH_cgs), f_mol=1./(1. + T_eff_atomic*T_eff_atomic/(T_transition*T_transition));
-#endif
-            /* double gamma_mol_atom = (29.-8./(2.-f_mol))/15.; // interpolates between 5/3 (fmol=0) and 7/5 (fmol=1) */
-            /* return gamma_mol_atom + (5./3.-gamma_mol_atom) / (1 + T_eff_atomic*T_eff_atomic/(40.*40.)); // interpolates back up to 5/3 when temps fall below ~30K [cant excite upper states] */
-            
-            /* We take a detailed fit from Vaidya et al. A&A 580, A110 (2015) for n_H ~ 10^7, which accounts for collisional dissociation at 2000K and ionization at 10^4K,
-               and take the fmol-weighted average with 5./3 at the end to interpolate between atomic/not self-shielding and molecular/self-shielding. Gamma should technically
-               really come from calculating the species number-weighted specific heats, but fmol is very approximate so this should be OK */
-            double gamma_mol = 5./3, logT = log10(T_eff_atomic);
-            gamma_mol -= 0.381374640 * sigmoid_sqrt(5.946*(logT-1.248)); // going down from 5./3 at 10K to the dip at ~1.2
-            gamma_mol += 0.220724233 * sigmoid_sqrt(6.176*(logT-1.889)); // peak at ~ 80K
-            gamma_mol -= 0.067922267 * sigmoid_sqrt(10.26*(logT-2.235)); // plateau at ~1.4
-            gamma_mol -= 0.418671231 * sigmoid_sqrt(7.714*(logT-3.134)); // collisional dissociation, down to ~1.1
-            gamma_mol += 0.6472439052 * sigmoid_sqrt(98.87*(logT-4.277)); // back to 5/3 once we're fully dissociated
-            // comment out the above line and uncomment the two lines below if you want the exact version from Vaidya+15, which rolls the heat of ionization into the EOS - note that this should NOT be used with the standard cooling module
-//            gamma_mol += 0.659888854 / (1 + (logT-4.277)*(logT-4.277)/0.176); // peak at ~5./3 for atomic H after dissoc but before ionization
-//            gamma_mol += 0.6472439052 * sigmoid_sqrt(98.87*(logT-5077)); // ionization at 10^4K (note this happens at logT ~ 5 because we're just adopting a simple conversion factor from u to T
-            return gamma_mol*f_mol + (1-f_mol)*5./3;
         }
     }
 #endif
@@ -273,7 +254,7 @@ double Get_Gas_Fast_MHD_wavespeed_i(int i)
 }
 
 
-/* calculate and return the actual B Field of a cell */
+/* calculate and return the actual B Field of a cell (in comoving units, so multiply by All.cf_a2inv to get physical) */
 double INLINE_FUNC Get_Gas_BField(int i_particle_id, int k_vector_component)
 {
 #if defined(MAGNETIC)
@@ -342,7 +323,9 @@ double return_dust_to_metals_ratio_vs_solar(int i, double T_dust_manual_override
 #if defined(RT_INFRARED)
     double T_evap = 1500.; // 2e3 * pow(SphP[i].Density * All.cf_a3inv * UNIT_DENSITY_IN_CGS, 0.0195); // latter function from Kuiper 2010 eqs 21-22; sublimation temeprature from Isella & Natta 2005, fit to Pollack 1994. works for protostellar environments, but extrapolates poorly to diffuse ISM and/or stellar/AGN atmosphere environments, so for now use a simpler 1500 K which is a rough median between these, with more sophisticated dust modules required to fit all different parameter regimes.
     double T_dust = T_dust_manual_override; if(T_dust == 0) {T_dust = SphP[i].Dust_Temperature;} // use this iff the dust temp sent is nil
-    return sigmoid_sqrt(-0.006*(T_dust - T_evap)) * exp(-DMIN(40.,pow(T_dust/(3.*T_evap),2))); // crudely don't both accounting for size spectrum, just adopt an exponential cutoff above the sublimation temperature
+    double Tdust_Tsub = T_dust / T_evap; // ratio for below
+    double fdust = sigmoid_sqrt(9.*(1.-Tdust_Tsub)) * exp(-DMIN(40.,Tdust_Tsub*Tdust_Tsub/9.)); // crudely don't bother accounting for size spectrum, just adopt an exponential cutoff above the sublimation temperature
+    return DMAX(fdust,1e-25); // floor at value too small to influence physical dust processes, just so dust temp root-finders have something finite and continuous to work with
 #endif
 #if defined(COOL_LOW_TEMPERATURES) && !defined(SINGLE_STAR_SINK_DYNAMICS) // skip this and assume fdust=1 if SINGLE_STAR_SINK_DYNAMICS on because it uses the fancy dust temp solver whose result depends implicitly on the dust fraction - if sublimation is important then we should be running full RT anyway
     double Tdust = T_dust_manual_override; if(Tdust == 0) {Tdust = get_equilibrium_dust_temperature_estimate(i,0,0);} // call this iff the dust temp sent is nil
@@ -407,7 +390,7 @@ double Get_Gas_Molecular_Mass_Fraction(int i, double temperature, double neutral
     /* take eqm of dot[nH2] = a_H2*rho_dust*nHI [dust formation] + a_GP*nHI*ne [gas-phase formation] + b_3B*nHI*nHI*(nHI+nH2/8) [3-body collisional form] - b_H2HI*nHI*nH2 [collisional dissociation]
         - b_H2H2*nH2*nH2 [collisional mol-mol dissociation] - Gamma_H2^LW * nH2 [photodissociation] - Gamma_H2^+ [photoionization] - xi_H2*nH2 [CR ionization/dissociation] */
     double fH2=0, sqrt_T=sqrt(T), nH0=xH0*nH_cgs, n_e=x_e*nH_cgs, EXPmax=40.; // define some variables for below, including neutral H number density, free electron number, etc.
-    double a_Z  = (9.e-19 * T / (1. + 0.04*sqrt_T + 0.002*T + 8.e-6*T*T)) * (0.5*Z_Zsol*return_dust_to_metals_ratio_vs_solar(i,0)) * nH_cgs * nH0; // dust formation
+    double a_Z  = (9.e-19 * T / (1. + 0.04*sqrt_T + 0.002*T + 8.e-6*T*T)) * (0.5*Z_Zsol*return_dust_to_metals_ratio_vs_solar(i,0)) * nH_cgs * nH0; // dust formation ?????
     //double a_GP = (1.833e-21 * pow(T,0.88)) * nH0 * n_e; // gas-phase formation [old form, from Nickerson et al., appears to be a significant typo in their expression compared to the sources from which they extracted it]
     double a_GP = (1.833e-18 * pow(T,0.88)) * nH0 * n_e / (1. + x_e*1846.*(1.+T/20000.)/sqrt(T)); // gas-phase formation [Glover & Abel 2008, using fitting functions slightly more convenient and assuming H-->H2 much more rapid than other reactions, from Krumholz & McKee 2010; denominator factor accounts for p+H- -> H + H, instead of H2]
     double b_3B = (6.0e-32/sqrt(sqrt_T) + 2.0e-31/sqrt_T) * nH0 * nH0 * nH0; // 3-body collisional formation
@@ -433,10 +416,8 @@ double Get_Gas_Molecular_Mass_Fraction(int i, double temperature, double neutral
         double surface_density_H2_0 = 5.e14 * PROTONMASS_CGS, x_exp_fac=0.00085, w0=0.2; // characteristic cgs column for -molecular line- self-shielding
         double surface_density_local = xH0 * SphP[i].Density * All.cf_a3inv * dx_cell * UNIT_SURFDEN_IN_CGS; // this is -just- the [neutral] depth through the local cell/slab. that's closer to what we want here, since G0 is -already- attenuated in the pre-processing step!
         double v_thermal_rms = 0.111*sqrt(T); // sqrt(3*kB*T/2*mp), since want rms thermal speed of -molecular H2- in kms
-        double dv2=0; int j,k; for(j=0;j<3;j++) {for(k=0;k<3;k++) {double vt = SphP[i].Gradients.Velocity[j][k]*All.cf_a2inv; /* physical velocity gradient */
-            if(All.ComovingIntegrationOn) {if(j==k) {vt += All.cf_hubble_a;}} /* add hubble-flow correction */
-            dv2 += vt*vt;}} // calculate magnitude of the velocity shear across cell from || grad -otimes- v ||^(1/2)
-        double dv_turb=sqrt(dv2)*dx_cell*UNIT_VEL_IN_KMS; // delta-velocity across cell
+        double gradv=velocity_gradient_norm(i);
+        double dv_turb=gradv*dx_cell*UNIT_VEL_IN_KMS; // delta-velocity across cell
         double x00 = surface_density_local / surface_density_H2_0, x01 = x00 / (sqrt(1. + 3.*dv_turb*dv_turb/(v_thermal_rms*v_thermal_rms)) * sqrt(2.)*v_thermal_rms), y_ss, x_ss_1, x_ss_sqrt, fH2_tmp, fH2_max, Qmax, Qmin; // variable needed below. note the x01 term corrects following Gnedin+Draine 2014 for the velocity gradient at the sonic scale, assuming a Burgers-type spectrum [their Eq. 3]
 
         fH2_tmp = 1.; // now consider the maximally shielded case, if you had fmol = 1 in the shielding terms
@@ -572,3 +553,252 @@ double Get_Gas_Mean_Molecular_Weight_mu(double T_guess, double rho, double *xH0,
 }
 
 
+
+/* subroutine to calculate the conductivities and assign the various non-ideal MHD coefficients (Ohmic, Hall, Ambipolar). can modify or expand chemistry or assumptions about grains herein. */
+void calculate_and_assign_nonideal_mhd_coefficients(int i)
+{
+#ifdef MHD_NON_IDEAL
+#ifdef COOLING // only try to get self-consistent resistivities after the first timestep, when we have calculated the self-consistent ionization state - on the first timestep default to 0 (=ideal MHD)
+    if(All.Time <= All.TimeBegin) {SphP[i].Eta_MHD_OhmicResistivity_Coeff = SphP[i].Eta_MHD_HallEffect_Coeff = SphP[i].Eta_MHD_AmbiPolarDiffusion_Coeff = 0; return;} // =0 on the first timestep, since we don't know the ionization yet
+#endif
+    /* calculations below follow Wardle 2007 and Keith & Wardle 2014, for the equation sets */
+    double mean_molecular_weight = 2.38; // molecular H2, +He with solar mass fractions and metals
+    double a_grain_micron = 0.1, f_dustgas = 0.01; // effective size of grains that matter at these densities
+    double m_ion = 24.3; // Mg dominates ions in dense gas [where this is relevant]; this is ion mass in units of proton mass
+    double zeta_cr = Get_CosmicRayIonizationRate_cgs(i); // cosmic ray ionization rate (fixed as constant for non-CR runs)
+#ifdef COOLING
+    double T_eff_atomic = 1.23 * (5./3.-1.) * U_TO_TEMP_UNITS * SphP[i].InternalEnergyPred; /* we'll use this to make a quick approximation to the actual mean molecular weight here */
+    double nH_cgs = SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_NHCGS, T_transition=DMIN(8000.,nH_cgs), f_mol=1./(1. + T_eff_atomic*T_eff_atomic/(T_transition*T_transition));
+    mean_molecular_weight = 4. / (1. + (3. + 4.*SphP[i].Ne - 2.*f_mol) * HYDROGEN_MASSFRAC);
+#endif
+#ifdef METALS
+    f_dustgas = 0.5 * P[i].Metallicity[0] * return_dust_to_metals_ratio_vs_solar(i,0); // appropriate dust-to-metals ratio
+#endif
+    double temperature = mean_molecular_weight * (GAMMA(i)-1.) * U_TO_TEMP_UNITS * SphP[i].InternalEnergyPred; // will use appropriate EOS to estimate temperature
+    // now everything should be fully-determined (given the inputs above and the known properties of the gas) //
+    double m_neutral = mean_molecular_weight; // in units of the proton mass
+    double ag01 = a_grain_micron/0.1, m_grain = 7.51e9 * ag01*ag01*ag01; // grain mass [internal density =3 g/cm^3]
+    double rho = SphP[i].Density*All.cf_a3inv * UNIT_DENSITY_IN_CGS, n_eff = rho / PROTONMASS_CGS; // density in cgs
+    // calculate ionization fraction in dense gas; use rate coefficients k to estimate grain charge
+    double k0 = 1.95e-4 * ag01*ag01 * sqrt(temperature); // prefactor for rate coefficient for electron-grain collisions
+    double ngr_ngas = (m_neutral/m_grain) * f_dustgas; // number of grains per neutral
+    double psi_prefac = 167.1 / (ag01 * temperature); // e*e/(a_grain*k_boltzmann*T): Z_grain = psi/psi_prefac where psi is constant determines charge
+    double alpha = zeta_cr * psi_prefac / (ngr_ngas*ngr_ngas * k0 * (n_eff/m_neutral)); // coefficient for equation that determines Z_grain
+    // psi solves the equation: psi = alpha * (exp[psi] - y/(1+psi)) where y=sqrt(m_ion/m_electron); note the solution for small alpha is independent of m_ion, only large alpha
+    //   (where the non-ideal effects are weak, generally) produces a difference: at very high-T, appropriate m_ion should be hydrogen+helium, but in this limit our cooling
+    //    routines will already correctly determine the ionization states. so we can safely adopt Mg as our ion of consideration
+    double y=sqrt(m_ion*PROTONMASS_CGS/ELECTRONMASS_CGS), psi_0 = 0.5188025-0.804386*log(y), psi=psi_0; // solution for large alpha [>~10]
+    if(alpha<0.002) {psi=alpha*(1.-y)/(1.+alpha*(1.+y));} else if(alpha<10.) {psi=psi_0/(1.+0.027/alpha);} // accurate approximation for intermediate values we can use here
+    double k_e = k0 * exp(psi); // e-grain collision rate coefficient
+    double k_i = k0 * sqrt(ELECTRONMASS_CGS / (m_ion*PROTONMASS_CGS)) * (1 - psi); // i-grain collision rate coefficient
+    double n_elec = zeta_cr / (ngr_ngas * k_e); // electron number density
+    double n_ion = zeta_cr / (ngr_ngas * k_i); // ion number density
+    double Z_grain = psi / psi_prefac; // mean grain charge (note this is signed, will be negative)
+#ifdef COOLING
+    double mu_eff=2.38, x_elec=DMAX(1.e-18, SphP[i].Ne*HYDROGEN_MASSFRAC*mu_eff), R=x_elec*psi_prefac/ngr_ngas; psi_0=-3.787124454911839; n_elec=x_elec*n_eff/mu_eff; // R is essentially the ratio of negative charge in e- to dust: determines which regime we're in to set quantities below
+    if(R > 100.) {psi=psi_0;} else if(R < 0.002) {psi=R*(1.-y)/(1.+2.*y*R);} else {psi=psi_0/(1.+pow(R/0.18967,-0.5646));} // simple set of functions to solve for psi, given R above, using the same equations used to determine low-temp ion fractions
+    n_ion = n_elec * y * exp(psi)/(1.-psi); Z_grain = psi / psi_prefac; // we can immediately now calculate these from the above
+#endif
+    // now define more variables we will need below //
+    double gizmo2gauss = UNIT_B_IN_GAUSS; // convert to B-field to gauss (units)
+    double B_Gauss = 0; int k; for(k=0;k<3;k++) {B_Gauss += Get_Gas_BField(i,k)*Get_Gas_BField(i,k);} // get magnitude of B //
+    if(B_Gauss<=0) {B_Gauss=0;} else {B_Gauss = sqrt(B_Gauss) * All.cf_a2inv * gizmo2gauss;} // B-field magnitude in Gauss
+    double xe = n_elec / n_eff;
+    double xi = n_ion / n_eff;
+    double xg = ngr_ngas;
+    // get collision rates/cross sections for different species //
+    double nu_g = 7.90e-6 * ag01*ag01 * sqrt(temperature/m_neutral) / (m_neutral+m_grain); // Pinto & Galli 2008
+    double nu_ei = 51.*xe*pow(temperature,-1.5); // Pandey & Wardle 2008 (e-ion)
+    double nu_e = nu_ei + 6.21e-9*pow(temperature/100.,0.65)/m_neutral; // Pinto & Galli 2008 for latter (e-neutral)
+    double nu_ie = ((ELECTRONMASS_CGS*xe)/(m_ion*PROTONMASS_CGS*xi))*nu_ei; // Pandey & Wardle 2008 for former (e-ion)
+    double nu_i = nu_ie + 1.57e-9/(m_neutral+m_ion); // Pandey & Wardle 2008 for former (e-ion), Pinto & Galli 2008 for latter (i-neutral)
+    // use the cross sections to determine the hall parameters and conductivities //
+    double beta_prefac = ELECTRONCHARGE_CGS * B_Gauss / (PROTONMASS_CGS * C_LIGHT_CGS * n_eff);
+    double beta_i = beta_prefac / (m_ion * nu_i); // standard beta factors (Hall parameters)
+    double beta_e = beta_prefac / (ELECTRONMASS_CGS/PROTONMASS_CGS * nu_e);
+    double beta_g = beta_prefac / (m_grain * nu_g) * fabs(Z_grain);
+    double be_inv = 1/(1 + beta_e*beta_e), bi_inv = 1/(1 + beta_i*beta_i), bg_inv = 1/(1 + beta_g*beta_g);
+    double sigma_O = xe*beta_e + xi*beta_i + xg*fabs(Z_grain)*beta_g; // ohmic conductivity
+    double sigma_H = -xe*be_inv + xi*bi_inv + xg*Z_grain*bg_inv; // hall conductivity
+    double sigma_P = xe*beta_e*be_inv + xi*beta_i*bi_inv + xg*fabs(Z_grain)*beta_g*bg_inv; // pedersen conductivity
+    double sign_Zgrain = Z_grain/fabs(Z_grain); if(Z_grain==0) {sign_Zgrain=0;}
+    double sigma_A2 = (xe*beta_e*be_inv)*(xi*beta_i*bi_inv)*pow(beta_i+beta_e,2) +
+    (xe*beta_e*be_inv)*(xg*fabs(Z_grain)*beta_g*bg_inv)*pow(sign_Zgrain*beta_g+beta_e,2) +
+    (xi*beta_i*bi_inv)*(xg*fabs(Z_grain)*beta_g*bg_inv)*pow(sign_Zgrain*beta_g-beta_i,2); // alternative formulation which is automatically positive-definite
+    // now we can finally calculate the diffusivities //
+    double eta_prefac = B_Gauss * C_LIGHT_CGS / (4 * M_PI * ELECTRONCHARGE_CGS * n_eff );
+    double eta_O = eta_prefac / sigma_O;
+    double sigma_perp2 = sigma_H*sigma_H + sigma_P*sigma_P;
+    double eta_H = eta_prefac * sigma_H / sigma_perp2;
+    double eta_A = eta_prefac * (sigma_A2)/(sigma_O*sigma_perp2);
+    eta_O = fabs(eta_O); eta_A = fabs(eta_A); // these depend on the absolute values and should be written as such, so eta is always positive [not true for eta_h]
+    // convert units to code units
+    double x_neutral = DMAX(0., 1-m_ion*xi); // neutral fraction of mass
+    double units_cgs_to_code = UNIT_TIME_IN_CGS / (UNIT_LENGTH_IN_CGS * UNIT_LENGTH_IN_CGS); // convert coefficients (L^2/t) to code units [physical]
+    double eta_ohmic = eta_O*units_cgs_to_code, eta_hall = eta_H*units_cgs_to_code, eta_ad = x_neutral * eta_A*units_cgs_to_code;
+//#define MHD_NON_IDEAL_CORRECTIONTERMS 1
+#ifdef MHD_NON_IDEAL_CORRECTIONTERMS /* account for unphysical or not internally self-consistent drift/slip speeds (PFH+Squire 24) */
+    double gradbmag2=0,gradbmag=0,btmp=0,L_B=MAX_REAL_NUMBER;
+    int j; for(k=0;k<3;k++) {for(j=0;j<3;j++) {btmp=SphP[i].Gradients.B[k][j]; gradbmag2+=btmp*btmp;}} // need to get magnitude of B gradient for below
+    if(gradbmag2>0) {gradbmag=sqrt(gradbmag2)*(All.cf_a2inv/All.cf_atime)*gizmo2gauss; L_B=(B_Gauss/gradbmag)*UNIT_LENGTH_IN_CGS;} // L_B is gradient length in cgs
+    double xi_AbsZi_eff = (xe*beta_e + (xi+1.e-25)*beta_i + xg*fabs(Z_grain)*beta_g) / (beta_e + beta_i + beta_g); // weighted mean xi_qi to use
+    double psi_n = (xe/(1.+beta_e) + xi/(1.+beta_i) + xg*fabs(Z_grain)/(1.+beta_g)) / (xe+xi+xg*fabs(Z_grain) + 1.e-20); // coupling parameter for weight of neutrals in effective speed
+    if(xe+xi+xg < 1.e-20) {psi_n = 1.;}
+    double m_carrier_weighted = PROTONMASS_CGS * (xe*ELECTRONMASS_CGS/PROTONMASS_CGS + xi*m_ion + xg*fabs(Z_grain)*m_grain + psi_n*m_neutral); // effective weight of the dragged carriers for speeds below
+    double vT_crit = sqrt( BOLTZMANN_CGS*temperature * (xe + xi + xg*fabs(Z_grain) + psi_n) / m_carrier_weighted ); // salient thermal speed for superthermal drift
+    double vA_crit = B_Gauss / sqrt(4.*M_PI*m_carrier_weighted*n_eff); // effective Alfven speed to compare as well
+    double vT_an = DMIN(vT_crit, vA_crit); // speed for anomalous term to kick on
+    double vdrift_mag = ((B_Gauss / L_B) * C_LIGHT_CGS) / (4.*M_PI*ELECTRONCHARGE_CGS * n_eff * xi_AbsZi_eff), vslip_mag = eta_A/L_B, epstein_corr = sqrt(1. + (vdrift_mag*vdrift_mag + vslip_mag*vslip_mag)/(vT_crit*vT_crit));
+    double eta_an = (eta_prefac * units_cgs_to_code / xi_AbsZi_eff) * sqrt(1. + 4.*M_PI*C_LIGHT_CGS*C_LIGHT_CGS*ELECTRONMASS_CGS*n_eff*xe/(B_Gauss*B_Gauss)); // anomalous resistivity, set to max of either gyro frequency or electron plasma frequency (dust plasma frequency should be lower unless in dusty plasma regime, where behavior is much more complicated
+    eta_ohmic*=epstein_corr; eta_ad/=sqrt(epstein_corr); // epstein-type correction for superthermal drift or slip
+    if(vdrift_mag > vT_an/40.) {eta_ohmic += eta_an * exp(-vT_an/vdrift_mag) * sqrt(1. + (vdrift_mag*vdrift_mag)/(vT_an*vT_an));} // factor to represent boosted ohmic to diffuse when exceed critical limit
+    double eta_max = 1.e24;
+    if(eta_ohmic > eta_max) {eta_ohmic = eta_max;}
+#endif
+    SphP[i].Eta_MHD_OhmicResistivity_Coeff = eta_ohmic;     /*!< Ohmic resistivity coefficient [physical units of L^2/t] */
+    SphP[i].Eta_MHD_HallEffect_Coeff = eta_hall;            /*!< Hall effect coefficient [physical units of L^2/t] */
+    SphP[i].Eta_MHD_AmbiPolarDiffusion_Coeff = eta_ad;      /*!< Hall effect coefficient [physical units of L^2/t] */
+#endif
+}
+
+
+/* subroutine to calculate and assign the Spitzer-Braginskii conduction and viscosity coefficients, with appropriate limiters for high-beta plasmas, saturated behaviors, and optional practical numerical limiters when in extreme regimes */
+void calculate_and_assign_conduction_and_viscosity_coefficients(int i)
+{
+#if defined(CONDUCTION) || defined(VISCOSITY)
+    
+#if (defined(CONDUCTION_SPITZER) || defined(VISCOSITY_BRAGINSKII))
+    double ion_frac, beta_i; int k; k=0; ion_frac=1; beta_i=1.e20; double rho=SphP[i].Density*All.cf_a3inv, u_int=SphP[i].InternalEnergyPred;
+#if defined(COOLING) /* get the ionized fraction. NOTE we CANNOT call 'ThermalProperties' or functions like 'Get_Ionized_Fraction' here in gradients.c, as we have not done self-shielding steps yet and most modules will yield unphysical answers! */
+    ion_frac = SphP[i].Ne / (1. + 2.*yhelium(i)); /* quick estimator. this is actually what we need for conduction since its the free electrons conducting, and we want number relative to fully-ionized gas */
+#endif
+    double vf_lim,cs,cs_therm; cs=Get_Gas_effective_soundspeed_i(i); cs_therm=Get_Gas_thermal_soundspeed_i(i); vf_lim = cs*All.cf_afac3;
+#ifdef MAGNETIC
+    double bhat[3]={0},bmag=0,double_dot_dv=0; for(k=0;k<3;k++) {bhat[k]=Get_Gas_BField(i,k); bmag+=bhat[k]*bhat[k];}
+    if(bmag>0) {bmag = sqrt(bmag); for(k=0;k<3;k++) {bhat[k]/=bmag;}}
+    beta_i = bmag*bmag * All.cf_afac1 * All.cf_a3inv / (All.cf_atime * rho * cs_therm * cs_therm);
+    vf_lim *= DMIN(1.e4 , sqrt(1.+beta_i));
+#endif
+#endif
+    
+#ifdef CONDUCTION
+    SphP[i].Kappa_Conduction = All.ConductionCoeff;
+#ifdef CONDUCTION_SPITZER
+    /* calculate the thermal conductivities: use the Spitzer formula */
+    SphP[i].Kappa_Conduction *= ion_frac * pow(u_int, 2.5);
+    /* account for saturation (when the mean free path of electrons is large): estimate whether we're in that limit with the gradients */
+    double electron_free_path = All.ElectronFreePathFactor * u_int * u_int / rho;
+    double du_conduction=0; for(k=0;k<3;k++) {du_conduction += SphP[i].Gradients.InternalEnergy[k] * SphP[i].Gradients.InternalEnergy[k];}
+    double temp_scale_length = u_int / sqrt(du_conduction) * All.cf_atime;
+    /* also the Whistler instability limits the heat flux at high-beta; Komarov et al., arXiv:1711.11462 (2017) */
+    SphP[i].Kappa_Conduction /= (1 + (4.2 + 1./(3.*beta_i)) * electron_free_path / temp_scale_length); /* should be in physical units */
+#ifdef DIFFUSION_OPTIMIZERS
+    SphP[i].Kappa_Conduction = DMIN(SphP[i].Kappa_Conduction , 42.85 * rho * vf_lim * DMIN(20.*Get_Particle_Size(i)*All.cf_atime , temp_scale_length));
+#endif
+#endif
+#endif
+    
+#ifdef VISCOSITY
+    SphP[i].Eta_ShearViscosity = All.ShearViscosityCoeff; SphP[i].Zeta_BulkViscosity = All.BulkViscosityCoeff;
+#ifdef VISCOSITY_BRAGINSKII
+    /* calculate the viscosity coefficients: use the Braginskii shear tensor formulation expanded to first order */
+    SphP[i].Eta_ShearViscosity *= ion_frac * pow(u_int, 2.5); SphP[i].Zeta_BulkViscosity = 0;
+    /* again need to account for possible saturation (when the mean free path of ions is large): estimate whether we're in that limit with the gradients */
+    double ion_free_path = All.ElectronFreePathFactor * u_int * u_int / rho; double dv_magnitude=0, v_magnitude=0;
+    /* need an estimate of the internal energy gradient scale length, which we get by d(P/rho) = P/rho * (dP/P - drho/rho) */
+    for(k=0;k<3;k++) {int k1;
+        for(k1=0;k1<3;k1++) {
+            dv_magnitude += SphP[i].Gradients.Velocity[k][k1]*SphP[i].Gradients.Velocity[k][k1];
+#ifdef MAGNETIC
+            double_dot_dv += SphP[i].Gradients.Velocity[k][k1] * bhat[k]*bhat[k1] * All.cf_a2inv; // physical units
+#endif
+        }
+        v_magnitude += SphP[i].VelPred[k]*SphP[i].VelPred[k];
+    }
+    double vel_scale_length = sqrt( v_magnitude / dv_magnitude ) * All.cf_atime;
+    /* also limit to saturation magnitude ~ signal_speed / lambda_MFP^2 */
+    SphP[i].Eta_ShearViscosity /= (1 + 4.2 * ion_free_path / vel_scale_length); /* should be in physical units */
+#ifdef MAGNETIC
+    // following Jono Squire's notes, the mirror and firehose instabilities limit pressure anisotropies [which scale as the viscous term inside the gradient: nu_braginskii*(bhat.bhat:grad.v)] to >-2*P_magnetic and <1*P_magnetic
+    double P_effective_visc = SphP[i].Eta_ShearViscosity * double_dot_dv;
+    double P_magnetic = 0.5 * (bmag*All.cf_a2inv) * (bmag*All.cf_a2inv);
+    if(P_effective_visc < -2.*P_magnetic) {SphP[i].Eta_ShearViscosity = 2.*P_magnetic / fabs(double_dot_dv);}
+    if(P_effective_visc > P_magnetic) {SphP[i].Eta_ShearViscosity = P_magnetic / fabs(double_dot_dv);}
+#endif
+#ifdef DIFFUSION_OPTIMIZERS
+    double eta_sat = rho * vf_lim / (ion_free_path * (1 + 4.2 * ion_free_path / vel_scale_length));
+    if(eta_sat <= 0) {SphP[i].Eta_ShearViscosity=0;}
+    if(SphP[i].Eta_ShearViscosity>0) {SphP[i].Eta_ShearViscosity = 1. / (1./SphP[i].Eta_ShearViscosity + 1./eta_sat);} // again, all physical units //
+#endif
+#endif
+#endif
+    
+#endif
+}
+
+
+#ifdef TURB_DIFFUSION
+void calculate_and_assign_turbulent_diffusion_coefficients(int i)
+{
+    /* estimate local turbulent diffusion coefficient from velocity gradients using Smagorinsky mixing model:
+     we do this after slope-limiting to prevent the estimated velocity gradients from being unphysically large */
+    double h_turb = Get_Particle_Size(i) * All.cf_atime; // physical
+    if(h_turb > 0)
+    {
+        // overall normalization //
+        double C_Smagorinsky_Lilly = 0.15; // this is the standard Smagorinsky-Lilly constant, calculated from Kolmogorov theory: should be 0.1-0.2 //
+        double turb_prefactor = 0.25 * All.TurbDiffusion_Coefficient * C_Smagorinsky_Lilly*C_Smagorinsky_Lilly * sqrt(2.0);
+        // then scale with inter-particle spacing //
+        turb_prefactor *= h_turb*h_turb;
+        // calculate frobenius norm of symmetric shear velocity gradient tensor //
+        double shear_factor = sqrt((1./2.)*((SphP[i].Gradients.Velocity[1][0]+SphP[i].Gradients.Velocity[0][1]) *
+                                            (SphP[i].Gradients.Velocity[1][0]+SphP[i].Gradients.Velocity[0][1]) +
+                                            (SphP[i].Gradients.Velocity[2][0]+SphP[i].Gradients.Velocity[0][2]) *
+                                            (SphP[i].Gradients.Velocity[2][0]+SphP[i].Gradients.Velocity[0][2]) +
+                                            (SphP[i].Gradients.Velocity[2][1]+SphP[i].Gradients.Velocity[1][2]) *
+                                            (SphP[i].Gradients.Velocity[2][1]+SphP[i].Gradients.Velocity[1][2])) +
+                                   (2./3.)*((SphP[i].Gradients.Velocity[0][0]*SphP[i].Gradients.Velocity[0][0] +
+                                             SphP[i].Gradients.Velocity[1][1]*SphP[i].Gradients.Velocity[1][1] +
+                                             SphP[i].Gradients.Velocity[2][2]*SphP[i].Gradients.Velocity[2][2]) -
+                                            (SphP[i].Gradients.Velocity[1][1]*SphP[i].Gradients.Velocity[2][2] +
+                                             SphP[i].Gradients.Velocity[0][0]*SphP[i].Gradients.Velocity[1][1] +
+                                             SphP[i].Gradients.Velocity[0][0]*SphP[i].Gradients.Velocity[2][2])));
+        // slope-limit and convert to physical units //
+        double shearfac_max = 0.5 * sqrt(SphP[i].VelPred[0]*SphP[i].VelPred[0]+SphP[i].VelPred[1]*SphP[i].VelPred[1]+SphP[i].VelPred[2]*SphP[i].VelPred[2]) / h_turb;
+        shear_factor = DMIN(shear_factor , shearfac_max * All.cf_atime) * All.cf_a2inv; // physical
+#ifdef TURB_DIFF_DYNAMIC
+        int u, v; double trace = 0;
+        shearfac_max = 0.5 * sqrt(SphP[i].Velocity_bar[0] * SphP[i].Velocity_bar[0] + SphP[i].Velocity_bar[1] * SphP[i].Velocity_bar[1]+SphP[i].Velocity_bar[2] * SphP[i].Velocity_bar[2]) * All.cf_atime / h_turb;
+        for (u = 0; u < 3; u++) {
+            for (v = 0; v < 3; v++) {
+                if (SphP[i].VelShear_bar[u][v] < 0) {SphP[i].VelShear_bar[u][v] = DMAX(SphP[i].VelShear_bar[u][v], -shearfac_max);}
+                else {SphP[i].VelShear_bar[u][v] = DMIN(SphP[i].VelShear_bar[u][v], shearfac_max);}
+                if (u == v) {trace += SphP[i].VelShear_bar[u][u];}}}
+        /* If it was already trace-free, don't zero out the diagonal components */
+        if (trace != 0 && NUMDIMS > 1) {for (u = 0; u < NUMDIMS; u++) {SphP[i].VelShear_bar[u][u] -= 1.0 / NUMDIMS * trace;}}
+        for (u = 0; u < 3; u++) { /* Don't want to recalculate these a bunch later on, so save them */
+            SphP[i].Velocity_hat[u] *= All.TurbDynamicDiffSmoothing;
+            for (v = 0; v < 3; v++) {SphP[i].MagShear_bar += SphP[i].VelShear_bar[u][v] * SphP[i].VelShear_bar[u][v];}}
+        SphP[i].MagShear = sqrt(2.0) * shear_factor / All.cf_a2inv; // Don't want this physical
+        SphP[i].MagShear_bar = DMIN(sqrt(2.0 * SphP[i].MagShear_bar), shearfac_max); turb_prefactor /= 0.25;
+#endif
+        // ok, combine to get the diffusion coefficient //
+        SphP[i].TD_DiffCoeff = turb_prefactor * shear_factor; // physical
+    } else {
+        SphP[i].TD_DiffCoeff = 0;
+    }
+#ifdef TURB_DIFF_ENERGY
+#if !defined(CONDUCTION_SPITZER)
+    SphP[i].Kappa_Conduction = 0;
+#endif
+    SphP[i].Kappa_Conduction += All.ConductionCoeff * SphP[i].TD_DiffCoeff * SphP[i].Density * All.cf_a3inv; // physical
+#endif
+#ifdef TURB_DIFF_VELOCITY
+#if !defined(VISCOSITY_BRAGINSKII)
+    SphP[i].Eta_ShearViscosity = 0; SphP[i].Zeta_BulkViscosity = 0;
+#endif
+    SphP[i].Eta_ShearViscosity += All.ShearViscosityCoeff * SphP[i].TD_DiffCoeff * SphP[i].Density * All.cf_a3inv; // physical
+    SphP[i].Zeta_BulkViscosity += All.BulkViscosityCoeff * SphP[i].TD_DiffCoeff * SphP[i].Density * All.cf_a3inv; // physical
+#endif
+}
+#endif

@@ -33,7 +33,7 @@ static int N_gas_swallowed, N_star_swallowed, N_dm_swallowed, N_BH_swallowed;
 /* this structure defines the variables that need to be sent -from- the 'searching' element */
 struct INPUT_STRUCT_NAME
 {
-    int NodeList[NODELISTLENGTH]; MyDouble Pos[3]; MyFloat Vel[3], Hsml, Mass, BH_Mass, Dt, Mdot; MyIDType ID;
+    int NodeList[NODELISTLENGTH]; MyDouble Pos[3]; MyFloat Vel[3], Hsml, Mass, BH_Mass, Dt, Mdot; MyIDType ID, ID_child_number, ID_generation;
 #if defined(BH_CALC_LOCAL_ANGLEWEIGHTS) || defined(BH_WIND_KICK)
     MyFloat Jgas_in_Kernel[3];
 #endif
@@ -61,7 +61,7 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
 {
     int k, j_tempinfo; j_tempinfo = P[i].IndexMapToTempStruc; /* link to the location in the shared structure where this is stored */
     for(k=0;k<3;k++) {in->Pos[k]=P[i].Pos[k]; in->Vel[k]=P[i].Vel[k];} /* good example - always needed */
-    in->Hsml = PPP[i].Hsml; in->Mass = P[i].Mass; in->BH_Mass = BPP(i).BH_Mass; in->ID = P[i].ID; in->Mdot = BPP(i).BH_Mdot;
+    in->Hsml = PPP[i].Hsml; in->Mass = P[i].Mass; in->BH_Mass = BPP(i).BH_Mass; in->ID = P[i].ID; in->ID_child_number=P[i].ID_child_number; in->ID_generation=P[i].ID_generation; in->Mdot = BPP(i).BH_Mdot;
 #if defined(BH_CALC_LOCAL_ANGLEWEIGHTS) || defined(BH_WIND_KICK)
 #if defined(BH_FOLLOW_ACCRETED_ANGMOM)
     for(k=0;k<3;k++) {in->Jgas_in_Kernel[k] = P[i].BH_Specific_AngMom[k];}
@@ -429,7 +429,7 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 #ifdef MAGNETIC
                         for(k=0;k<3;k++) {tempB[k]=Get_Gas_BField(j,k);} //use particle magnetic field
 #endif
-                        fprintf(FdBhSwallowDetails,"%.16g %llu %g %2.16g %2.16g %2.16g %llu %g %2.16g %2.16g %2.16g %2.16g %2.16g %2.16g %2.16g %2.16g %2.16g %2.16g %2.16g\n", All.Time, (unsigned long long)local.ID,local.Mass,local.Pos[0],local.Pos[1],local.Pos[2],  (unsigned long long)P[j].ID, Mass_initial, (P[j].Pos[0]-local.Pos[0]),(P[j].Pos[1]-local.Pos[1]),(P[j].Pos[2]-local.Pos[2]), (Vel_j[0]-local.Vel[0]),(Vel_j[1]-local.Vel[1]),(Vel_j[2]-local.Vel[2]), SphP[j].InternalEnergy, tempB[0], tempB[1], tempB[2], SphP[j].Density); fflush(FdBhSwallowDetails);
+                        fprintf(FdBhSwallowDetails,"%.16g %llu %llu %llu %g %2.16g %2.16g %2.16g %llu %llu %llu %g %2.16g %2.16g %2.16g %2.16g %2.16g %2.16g %2.16g %2.16g %2.16g %2.16g %2.16g\n", All.Time, (unsigned long long)local.ID,(unsigned long long)local.ID_child_number,(unsigned long long)local.ID_generation,local.Mass,local.Pos[0],local.Pos[1],local.Pos[2],  (unsigned long long)P[j].ID, (unsigned long long)P[j].ID_child_number, (unsigned long long)P[j].ID_generation, Mass_initial, (P[j].Pos[0]-local.Pos[0]),(P[j].Pos[1]-local.Pos[1]),(P[j].Pos[2]-local.Pos[2]), (Vel_j[0]-local.Vel[0]),(Vel_j[1]-local.Vel[1]),(Vel_j[2]-local.Vel[2]), SphP[j].InternalEnergy, tempB[0], tempB[1], tempB[2], SphP[j].Density); fflush(FdBhSwallowDetails);
 #endif
                     }  // if(P[j].Type == 0)
                     //P[j].SwallowID = 0; /* DAA: make sure it is not accreted (or ejected) by the same BH again if inactive in the next timestep [PFH: no longer necessary with the new way we re-initialize the SwallowIDs] */
@@ -683,6 +683,7 @@ void get_wind_spawn_direction(int i, int num_spawned_this_call, int mode, double
         veldir[0]=sin_theta*cos_phi; veldir[1]=sin_theta*sin_phi; veldir[2]=cos_theta;dpdir[0]=veldir[0];dpdir[1]=veldir[1];dpdir[2]=veldir[2];
     } else if (mode==1){ // collimated according to a conical velocity field
         double theta0=0.01, thetamax=30.*(M_PI/180.); // "flattening parameter" and max opening angle of jet velocity distribution from Matzner & McKee 1999, sets the collimation of the jets
+        theta0=1.e-4; thetamax=10.*(M_PI/180.); // narrower opening angle distribution for agn jets
         double theta=atan(theta0*tan(get_random_number(num_spawned_this_call+7+5*ThisTask)*atan(sqrt(1+theta0*theta0)*tan(thetamax)/theta0))/sqrt(1+theta0*theta0)); // biased sampling to get collimation
         phi=2.*M_PI*get_random_number(num_spawned_this_call+1+ThisTask);
         cos_theta = cos(theta), sin_theta=sin(theta), sin_phi=sin(phi), cos_phi=cos(phi);
@@ -704,11 +705,16 @@ void get_wind_spawn_direction(int i, int num_spawned_this_call, int mode, double
 double get_spawned_cell_launch_speed(int i)
 {
     double v_magnitude = All.BAL_v_outflow; // velocity of the jet: default mode is to set this manually to a specific value in physical units
-#ifdef BH_WIND_SUBEDDINGTON_MODEL
+#ifdef BH_RIAF_SUBEDDINGTON_MODEL
     double MBH_4 = BPP(i).BH_Mass * UNIT_MASS_IN_SOLAR / 1.e4; // BH mass in 1e4 Msun to scale
     double lambda_edd_eff = DMAX( BPP(i).BH_Mdot / bh_eddington_mdot(BPP(i).BH_Mass) , 1.e-10 ); // eddington ratio, with floor just to prevent unphysical behaviors
-    double v_eff_esc_BLR = 270. * sqrt(sqrt(MBH_4 / lambda_edd_eff)) / UNIT_VEL_IN_KMS; // escape velocity from BLR in km/s, using canonical RBLR ~ 20 light-days * (L_bol/1e45)^(1/2)-ish scaling
-    v_magnitude = DMIN(v_magnitude , v_eff_esc_BLR); // the input BAL_v_outflow parameter now sets the maximum efficiency/velocity this is allowed to reach, but it can be arbitrarily lower
+    if(lambda_edd_eff > (BH_RIAF_SUBEDDINGTON_MODEL))
+    {
+        double v_eff_esc_BLR = 270. * sqrt(sqrt(MBH_4 / lambda_edd_eff)) / UNIT_VEL_IN_KMS; // escape velocity from BLR in km/s, using canonical RBLR ~ 20 light-days * (L_bol/1e45)^(1/2)-ish scaling
+        v_magnitude = DMIN(v_magnitude , v_eff_esc_BLR); // the input BAL_v_outflow parameter now sets the maximum efficiency/velocity this is allowed to reach, but it can be arbitrarily lower
+    } else {
+        v_magnitude = DMAX(v_magnitude , 1.e5 / UNIT_VEL_IN_KMS); // fast jet speed
+    }
 #endif
 #ifdef SINGLE_STAR_FB_JETS
     v_magnitude = single_star_jet_velocity(i); // get velocity from our more detailed function
@@ -753,7 +759,7 @@ void get_wind_spawn_magnetic_field(int j, int mode, double *ny, double *nz, doub
     Bmag = DMAX(Bmag , 0.1 * Bmag_IC);
 #endif
 #if defined(SINGLE_STAR_FB_SNE)
-    if(P[j].ProtoStellarStage == 6) {Bmag=0;} // No need to have flux in SN ejecta - note that this assumes we inherited this attribute from the spawning sink before calling this routine
+    if(P[j].ProtoStellarStage == 6) {Bmag *= 1.e-3;} // No need to have flux in SN ejecta - note that this assumes we inherited this attribute from the spawning sink before calling this routine
 #endif
     Bmag = DMAX(Bmag, MIN_REAL_NUMBER); // floor to prevent underflow errors
     /* add magnetic flux here to 'Bmag' if desired */
@@ -784,7 +790,7 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
 
     /* here is where the details of the split are coded, the rest is bookkeeping */
     //double mass_of_new_particle = total_mass_in_winds / n_particles_split; /* don't do this, as can produce particles with extremely large masses; instead wait to spawn */
-    double mass_of_new_particle = target_mass_for_wind_spawning(i);
+    double mass_of_new_particle = target_mass_for_wind_spawning(i); double mass_of_new_particle_default,mass_of_new_particle_prev; mass_of_new_particle_default=mass_of_new_particle; mass_of_new_particle_prev=mass_of_new_particle;
     printf("Task %d wants to create %g mass in wind with %d new particles each of mass %g \n .. splitting BH %d using hydro element %d\n", ThisTask,total_mass_in_winds, n_particles_split, mass_of_new_particle, i, dummy_cell_i_to_clone);
 
     if(NumPart + num_already_spawned + n_particles_split >= All.MaxPart)
@@ -819,6 +825,9 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
 #if defined(BH_DEBUG_SPAWN_JET_TEST)
     mode = 4;
 #endif
+#ifdef BH_RIAF_SUBEDDINGTON_MODEL
+    if(BPP(i).BH_Mdot / bh_eddington_mdot(BPP(i).BH_Mass) < (BH_RIAF_SUBEDDINGTON_MODEL)) {mode=0;}
+#endif
 
     // based on the mode we're in, let's pick a fixed orthonormal basis that all spawned elements are aware of
     double jz[3]={0,0,1},jy[3]={0,1,0},jx[3]={1,0,0};  /* set up a coordinate system [xyz if we don't have any other information */
@@ -852,10 +861,25 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
 
     /* create the  new particles to be added to the end of the particle list :
         i is the BH particle tag, j is the new "spawed" particle's location, dummy_cell_i_to_clone is a dummy gas cell's tag to be used to init the wind particle */
-    double v_magnitude_physical_prev = 0; int mode_default = mode, mode_prev = mode;
+    int mode_default = mode, mode_prev = mode;
+    double v_magnitude_physical_default = get_spawned_cell_launch_speed(i), v_magnitude_physical=v_magnitude_physical_default, v_magnitude_physical_prev=v_magnitude_physical; /* call subroutine for this velocity */
+    
     for(j = NumPart + num_already_spawned; j < NumPart + num_already_spawned + n_particles_split; j++)
     {   /* first, clone the 'dummy' particle so various fields are set appropriately */
         P[j] = P[dummy_cell_i_to_clone]; SphP[j] = SphP[dummy_cell_i_to_clone]; /* set the pointers equal to one another -- all quantities get copied, we only have to modify what needs changing */
+
+#if defined(BH_TEST_WIND_MIXED_FASTSLOW)
+        double masscorrfac_fast = 100.; mode = mode_default; mass_of_new_particle=mass_of_new_particle_default; v_magnitude_physical=v_magnitude_physical_default;
+        if((j - (NumPart + num_already_spawned)) % 2) {mode=mode_prev; v_magnitude_physical=v_magnitude_physical_prev; mass_of_new_particle=mass_of_new_particle_prev;  /* for every-other particle, need to match previous for conservation */
+        } else {
+            if(get_random_number(j)<0.5) {
+                mode=1; mass_of_new_particle=mass_of_new_particle_default/masscorrfac_fast; v_magnitude_physical=(BH_TEST_WIND_MIXED_FASTSLOW)/UNIT_VEL_IN_KMS; /* collimated jet */
+            } else {
+                mode=0; mass_of_new_particle=mass_of_new_particle_default; v_magnitude_physical=v_magnitude_physical_default; /* isotropic slow wind */
+            }
+        }
+#endif
+        v_magnitude_physical_prev = v_magnitude_physical; mode_prev = mode; mass_of_new_particle_prev=mass_of_new_particle;
 
         /* now we need to make sure everything is correctly placed in timebins for the tree */
         P[j].TimeBin = bin; // get the timebin, and put this particle into the appropriate timebin
@@ -949,9 +973,7 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
 #if defined(SINGLE_STAR_SINK_DYNAMICS)
         if(mass_of_new_particle >= 0.5*BPP(i).Sink_Formation_Mass) {P[j].ID = All.AGNWindID + 1;} // this just has the nominal mass resolution, so no special treatment - this avoids the P[i].ID == All.AGNWindID checks throughout the code
 #endif
-
         P[j].ID_child_number = P[i].ID_child_number + P[i].ID_generation; P[i].ID_generation++; P[j].ID_generation = P[i].ID; // this allows us to track spawned particles by giving them unique sub-IDs. Remember we MUST NEVER alter an existing particle ID OR ID_child_number!
-        
         P[j].Mass = mass_of_new_particle; /* assign masses to both particles (so they sum correctly) */
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
         SphP[j].MassTrue = P[j].Mass;
@@ -960,13 +982,6 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
         P[i].Mass -= P[j].Mass; /* make sure the operation is mass conserving! */
 #endif
         BPP(i).unspawned_wind_mass -= P[j].Mass; /* remove the mass successfully spawned, to update the remaining unspawned mass */
-
-        double v_magnitude_physical = get_spawned_cell_launch_speed(i); /* call subroutine for this velocity */
-#if defined(BH_TEST_WIND_MIXED_FASTSLOW)
-        mode = mode_default; if((j - (NumPart + num_already_spawned)) % 2) {mode = mode_prev; v_magnitude_physical = v_magnitude_physical_prev; /* for every-other particle, need to match previous for conservation */
-        } else {if(get_random_number(j)<0.001) {mode=1; v_magnitude_physical=3.e4/UNIT_VEL_IN_KMS;}} /* collimated jet */
-#endif
-        v_magnitude_physical_prev = v_magnitude_physical; mode_prev = mode;
 
 #if defined(METALS) && (defined(SINGLE_STAR_FB_JETS) || defined(SINGLE_STAR_FB_WINDS) || defined(SINGLE_STAR_FB_SNE))
         double yields[NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION]={0}; get_jet_yields(yields,i); // default to jet-type
@@ -1014,6 +1029,9 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
 #if defined(COSMIC_RAY_FLUID) && defined(BH_COSMIC_RAYS) /* inject cosmic rays alongside wind injection */
         double dEcr = evaluate_blackhole_cosmicray_efficiency(BPP(i).BH_Mdot,BPP(i).BH_Mass,i) * P[j].Mass * (All.BAL_f_accretion/(1.-All.BAL_f_accretion)) * C_LIGHT_CODE*C_LIGHT_CODE;
 #if defined(BH_CR_INJECTION_AT_TERMINATION)
+#ifdef BH_TEST_WIND_MIXED_FASTSLOW
+        if(mass_of_new_particle < 2.*mass_of_new_particle_default/masscorrfac_fast) {dEcr*=masscorrfac_fast;} else {dEcr=0;}
+#endif
         SphP[j].BH_CR_Energy_Available_For_Injection = dEcr;     /* store energy for later injection */
 #else
         inject_cosmic_rays(dEcr, v_magnitude_physical, 5, j, veldir); /* inject directly */

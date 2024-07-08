@@ -325,6 +325,10 @@ void do_box_wrapping(void)
 #if defined(HYDRO_MESHLESS_FINITE_VOLUME) // if have moving cells need to wrap them, too (if cells aren't moving, should never reach this wrap) //
                         SphP[i].ParticleVel[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;
 #endif
+#ifdef BOX_SHEARING_QB
+                        SphP[i].B[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_B_Offset * P[i].Mass / SphP[i].Density;
+                        SphP[i].BPred[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_B_Offset * P[i].Mass / SphP[i].Density;
+#endif
                     }
 #if (BOX_SHEARING > 1)
                     /* if we're not assuming axisymmetry, we need to shift the coordinates for the shear flow at the boundary */
@@ -346,6 +350,10 @@ void do_box_wrapping(void)
                         SphP[i].VelPred[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;
 #if defined(HYDRO_MESHLESS_FINITE_VOLUME) // if have moving cells need to wrap them, too (if cells aren't moving, should never reach this wrap) //
                         SphP[i].ParticleVel[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;
+#endif
+#ifdef BOX_SHEARING_QB
+                        SphP[i].B[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_B_Offset * P[i].Mass / SphP[i].Density;
+                        SphP[i].BPred[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_B_Offset * P[i].Mass / SphP[i].Density;
 #endif
                     }
 #if (BOX_SHEARING > 1)

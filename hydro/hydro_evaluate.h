@@ -213,6 +213,7 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
 #ifdef MAGNETIC
                 double BPred_j[3];
                 for(k=0;k<3;k++) {BPred_j[k]=Get_Gas_BField(j,k);} /* defined j b-field in appropriate units for everything */
+                NGB_SHEARBOX_BOUNDARY_BCORR_(local.Pos,P[j].Pos,BPred_j,-1); /* in a shearing box, wrap magnetic fields for shearing boxes if needed [literally does nothing if not shearing box here] */
 #ifdef DIVBCLEANING_DEDNER
                 double PhiPred_j = Get_Gas_PhiField(j); /* define j phi-field in appropriate units */
 #endif

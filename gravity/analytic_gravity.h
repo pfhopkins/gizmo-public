@@ -143,6 +143,10 @@ void GravAccel_ShearingSheet()
 #if (BOX_SHEARING==4) /* add vertical gravity to the force law */
         P[i].GravAccel[2] -= BOX_SHEARING_OMEGA_BOX_CENTER * BOX_SHEARING_OMEGA_BOX_CENTER * (P[i].Pos[2]-boxHalf_Z);
 #endif
+#ifdef BOX_SHEARING_QB
+        double Bp=Get_Gas_BField(i,BOX_SHEARING_PHI_COORDINATE), BR=Get_Gas_BField(i,0); R=???; /* need to define 'R' for normalization of these -- want to work in vK=1, R=1 units */
+        P[i].GravAccel[0] += -Bp*Bp/R; P[i].GravAccel[BOX_SHEARING_PHI_COORDINATE] += Bp*BR/R;
+#endif
     }
 #endif
 }

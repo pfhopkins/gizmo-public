@@ -728,9 +728,13 @@ double CosmicRay_Update_DriftKick(int i, double dt_entr, int mode)
         /* need to determine whether or not sufficient deceleration has occurred in order to inject CRs from our 'reservoir */
         double vmag=0; int k; for(k=0;k<3;k++) {double v0=P[i].Vel[k]/All.cf_atime; vmag+=v0*v0;} /* we will base this on a simple estimate of the velocity and how much things have decelerated */
         if(vmag>0) {vmag=sqrt(vmag);}
-        if((P[i].ID != All.AGNWindID) || (vmag < ((double)(BH_CR_INJECTION_AT_TERMINATION))*All.BAL_v_outflow)) {
+        double v_outflow_fast_forinjection = All.BAL_v_outflow;
+#ifdef BH_TEST_WIND_MIXED_FASTSLOW
+        v_outflow_fast_forinjection = (BH_TEST_WIND_MIXED_FASTSLOW)/UNIT_VEL_IN_KMS;
+#endif
+        if((P[i].ID != All.AGNWindID) || (vmag < ((double)(BH_CR_INJECTION_AT_TERMINATION))*v_outflow_fast_forinjection)) {
             double dir[3]; for(k=0;k<3;k++) {dir[k] = -SphP[i].Gradients.Pressure[k];} /* initial flux direction down pressure gradient */
-            inject_cosmic_rays(SphP[i].BH_CR_Energy_Available_For_Injection, All.BAL_v_outflow, 5, i, dir); /* inject the energy */
+            inject_cosmic_rays(SphP[i].BH_CR_Energy_Available_For_Injection, v_outflow_fast_forinjection, 5, i, dir); /* inject the energy */
             SphP[i].BH_CR_Energy_Available_For_Injection = 0;  // reset its value to nil, now that it has been injected
         }
     }
@@ -962,17 +966,25 @@ double INLINE_FUNC Get_CosmicRayEnergyDensity_cgs(int i)
 /* return total CR ionization rate zeta_cr in s^-1 associated with a cell */
 double Get_CosmicRayIonizationRate_cgs(int i)
 {
+    double zeta_cr = 0;
 #if defined(COSMIC_RAY_FLUID) && (N_CR_PARTICLE_BINS > 2)
-    double ecr_units=(SphP[i].Density*All.cf_a3inv/P[i].Mass)*UNIT_PRESSURE_IN_CGS, zeta_cr=0; int k;
+    double ecr_units=(SphP[i].Density*All.cf_a3inv/P[i].Mass)*UNIT_PRESSURE_IN_CGS; int k;
     for(k=0;k<N_CR_PARTICLE_BINS;k++)
     {
         double T_GeV=return_CRbin_kinetic_energy_in_GeV(-1,k), beta=return_CRbin_beta_factor(-1,k), Z=return_CRbin_CR_charge_in_e(-1,k), gamma=return_CRbin_gamma_factor(-1,k);
         zeta_cr += 3.43e-18 * (Z*Z/T_GeV) * ((1.-0.069*beta*beta+0.14*log(beta*gamma))/beta) * (SphP[i].CosmicRayEnergyPred[k]*ecr_units); // cross sections from standard Bethe-Blocke formulation, valid at all CR energies we consider explicitly
     }
-    return zeta_cr;
 #else
-    return 1.e-5 * Get_CosmicRayEnergyDensity_cgs(i); // scales following Cummings et al. 2016 to 1.6e-17 per eV/cm^3
+    zeta_cr = 1.e-5 * Get_CosmicRayEnergyDensity_cgs(i); // scales following Cummings et al. 2016 to 1.6e-17 per eV/cm^3
+#if !defined(COSMIC_RAY_FLUID) && !defined(COSMIC_RAY_SUBGRID_LEBRON) && !defined(RT_ISRF_BACKGROUND)
+    double prefac_CR=1.; if(All.ComovingIntegrationOn) {double rhofac = (SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_CGS) / (1000.*COSMIC_BARYON_DENSITY_CGS); if(rhofac < 0.2) {prefac_CR=0;} else {if(rhofac > 200.) {prefac_CR=1;} else {prefac_CR=exp(-1./(rhofac*rhofac));}}}
+    zeta_cr *= prefac_CR; // in cosmological runs where we're not following CRs in any sense, turn off CR ionization for any gas with density unless it's >1000 times the cosmic mean density
 #endif
+#endif
+#ifdef METALS
+    zeta_cr += 1.e-21 * P[i].Metallicity[0]/All.SolarAbundances[0]; // include radioactive decay of K-40 and other species, which scales with metallicity
+#endif
+    return zeta_cr;
 }
 
 

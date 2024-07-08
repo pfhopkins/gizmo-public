@@ -127,9 +127,6 @@ int rt_get_source_luminosity(int i, int mode, double *lum)
 }
 
 
-
-
-
 /***********************************************************************************************************/
 /* calculate the opacity for use in radiation transport operations [in physical code units = Length^2/Mass]. this should
     be a total extinction opacity, i.e. kappa = kappa_scattering + kappa_absorption */
@@ -212,14 +209,13 @@ double rt_kappa(int i, int k_freq)
     double T_min = get_min_allowed_dustIRrad_temperature();
     if(k_freq==RT_FREQ_BIN_INFRARED)
     {
-        if(isnan(SphP[i].Dust_Temperature)) {PRINT_WARNING("\n NaN dust temperature for cell-ID=%llu  \n", (unsigned long long) P[i].ID);}
+        if(isnan(SphP[i].Dust_Temperature)) {PRINT_WARNING("\n NaN dust temperature for cell-ID=%llu  \n", (unsigned long long) P[i].ID); SphP[i].Dust_Temperature = 1.e4;}
         if(isnan(SphP[i].Radiation_Temperature)) {PRINT_WARNING("\n NaN gas temperature for cell-ID=%llu  \n", (unsigned long long) P[i].ID);}
         if(SphP[i].Dust_Temperature<=T_min) {SphP[i].Dust_Temperature=T_min;} // reset baseline
         if(SphP[i].Radiation_Temperature<=T_min) {SphP[i].Radiation_Temperature=T_min;} // reset baseline
         double T_dust_em = SphP[i].Dust_Temperature; // dust temperature in K //
         double Trad = SphP[i].Radiation_Temperature; // radiation temperature in K //
         if((Trad <= 0) || (T_dust_em<=0)) {PRINT_WARNING("\n Cell-ID=%llu  has T_rad=%g and T_dust=%g\n", (unsigned long long) P[i].ID, Trad, T_dust_em);}
-        if(Trad <= 0) {Trad = 5600.;}
         return rt_kappa_adaptive_IR_band(i,T_dust_em,Trad,0,0); // < 1500 K, dust is present; here first flag 0 uses the radiation temperature because we want to know the Planck-mean *absorption* opacity. Second flag 0 says to include both dust and gas opacities. In the subroutine, divide by fac because the function outputs in code units but we're working in CGS here
     }
 #endif
@@ -687,7 +683,7 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
     double de_emission_minus_absorption_saved[N_RT_FREQ_BINS][N_RT_INTENSITY_BINS]; // save this for use below
 #endif
 #ifdef RT_INFRARED
-    double E_abs_tot = 0;/* energy absorbed in other bands is transfered to IR, by default: track it here */
+    double E_abs_tot_toIR = 0;/* energy absorbed in other bands is transfered to IR, by default: track it here */
     double Rad_E_gamma_tot = 0; // dust temperature defined by total radiation energy density //
     {int j; for(j=0;j<N_RT_FREQ_BINS;j++) {Rad_E_gamma_tot += SphP[i].Rad_E_gamma[j];}}
     double a_rad_inverse=C_LIGHT_CGS/(4.*5.67e-5), vol_inv_phys=(SphP[i].Density*All.cf_a3inv/P[i].Mass), u_gamma = Rad_E_gamma_tot * vol_inv_phys * UNIT_PRESSURE_IN_CGS; // photon energy density in CGS //
@@ -744,26 +740,32 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
                     SphP[i].Radiation_Temperature = DMIN(SphP[i].Radiation_Temperature, T_max);
                     a0_abs = -rt_absorption_rate(i,kf); // update absorption rate using the new radiation temperature //
                 }
-                double total_absorption_rate = E_abs_tot + fabs(a0_abs)*e0; // add the summed absorption and equate to dust emission //
+                double total_absorption_rate = E_abs_tot_toIR + fabs(a0_abs)*e0; // add the summed absorption and equate to dust emission //
 #ifdef COOLING  // we account for gas-dust coupling as an additional heat source to be radiated away
 		        double u_in=SphP[i].InternalEnergy, rho_in=SphP[i].Density*All.cf_a3inv, mu=1, ne=1, nHI=0, nHII=0, nHeI=1, nHeII=0, nHeIII=0;
 		        double temp = ThermalProperties(u_in, rho_in, i, &mu, &ne, &nHI, &nHII, &nHeI, &nHeII, &nHeIII);
 		        double nHcgs = HYDROGEN_MASSFRAC * UNIT_DENSITY_IN_CGS * SphP[i].Density * All.cf_a3inv / PROTONMASS_CGS;
-		        SphP[i].Dust_Temperature = rt_eqm_dust_temp(i, temp, total_absorption_rate * vol_inv_phys / RT_SPEEDOFLIGHT_REDUCTION);                                
+
+                /* 
+                Here we are splitting the re-emission by dust (performed here) and the gas-dust-radiation energy transfer handled in the cooling solver;
+                need to know the dust temperature to get the re-radiated radiation temperature. OK as long as the opacity doesn't
+                change dramatically in a single timestep, otherwise have to couple all matter-radiation source terms implicitly. */    
+		        SphP[i].Dust_Temperature = rt_eqm_dust_temp(i, temp, total_absorption_rate * vol_inv_phys / RT_SPEEDOFLIGHT_REDUCTION);
 #else
                 SphP[i].Dust_Temperature = rt_eqm_dust_temp(i, 0, total_absorption_rate * vol_inv_phys / RT_SPEEDOFLIGHT_REDUCTION); // Calling with T=0 will account for dust absorption only
 #endif
-		if(SphP[i].Dust_Temperature < T_min){SphP[i].Dust_Temperature = T_min;}
+                if(SphP[i].Dust_Temperature < T_min){SphP[i].Dust_Temperature = T_min;}
                 double Tdust_eff = SphP[i].Dust_Temperature, Trad_eff = SphP[i].Radiation_Temperature;
-                IRBand_opacity_fraction_from_gas_absorption = rt_kappa_adaptive_IR_band(i,Tdust_eff,Trad_eff,-1,-1) / rt_kappa_adaptive_IR_band(i,Tdust_eff,Trad_eff,0,0); /* gas absorption opacity only, relative to total opacity (all sources+scattering) */
+                double kappa_gas = rt_kappa_adaptive_IR_band(i,Tdust_eff,Trad_eff,-1,-1), kappa_total = rt_kappa_adaptive_IR_band(i,Tdust_eff,Trad_eff,0,0);
+                IRBand_opacity_fraction_from_gas_absorption = kappa_gas / (kappa_total + MIN_REAL_NUMBER); /* gas absorption opacity only, relative to total opacity (all sources+scattering) */
                 double total_emission_rate = total_absorption_rate * (1.-IRBand_opacity_fraction_from_gas_absorption) + SphP[i].Rad_Je[kf]; /* we will re-radiate this much because the component due to gas-dust coupling is accounted for in the cooling loop */
-                total_de_dt = E_abs_tot + SphP[i].Rad_Je[kf] + dt_e_gamma_band;
-                if(mode==0) // only update temperatures on kick operations //
+                total_de_dt = E_abs_tot_toIR + SphP[i].Rad_Je[kf] + dt_e_gamma_band;
+                if((mode==0) && (Tdust_eff < MAX_DUST_TEMP)) // only update temperatures on kick operations and Tdust is meaningful //
                 {
                     /* dust absorption and re-emission brings T_rad towards T_dust: */
-                    double dE_abs = -e0 * (1. - exp(a0_abs*dt_entr)); /* change in energy from absorption */
+                    double dE_abs_IR = -e0 * (1. - exp(a0_abs*dt_entr)); /* change in energy from absorption */
                     double T_max = DMAX(SphP[i].Radiation_Temperature , Tdust_eff); /* should not exceed either initial temperature */
-                    SphP[i].Radiation_Temperature = (e0 + dE_abs + total_emission_rate*dt_entr) / (MIN_REAL_NUMBER + (e0 + dE_abs) / SphP[i].Radiation_Temperature + total_emission_rate*dt_entr / Tdust_eff);
+                    SphP[i].Radiation_Temperature = (e0 + dE_abs_IR + total_emission_rate*dt_entr) / (MIN_REAL_NUMBER + (e0 + dE_abs_IR) / SphP[i].Radiation_Temperature + total_emission_rate*dt_entr / Tdust_eff);
                     SphP[i].Radiation_Temperature = DMIN(SphP[i].Radiation_Temperature, T_max);
                 }
                 if(SphP[i].Radiation_Temperature < T_min) {SphP[i].Radiation_Temperature = T_min;} // radiation temperature shouldn't be below CMB
@@ -834,7 +836,7 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
             
             int donation_target_bin = rt_get_donation_target_bin(kf); // frequency into which the photons will be deposited, if any //
 #ifdef RT_INFRARED
-            if((donation_target_bin == RT_FREQ_BIN_INFRARED) && (kf != RT_FREQ_BIN_INFRARED)) {E_abs_tot += de_abs/(MIN_REAL_NUMBER + dt_entr);} /* donor bin is yourself in the IR - some self-absorption is re-emitted, but this is handled explicitly below, so don't need to include it in sum here */
+            if((donation_target_bin == RT_FREQ_BIN_INFRARED) && (kf != RT_FREQ_BIN_INFRARED)) {E_abs_tot_toIR += de_abs/(MIN_REAL_NUMBER + dt_entr);} /* donor bin is yourself in the IR - some self-absorption is re-emitted, but this is handled explicitly below, so don't need to include it in sum here */
             if(kf==RT_FREQ_BIN_INFRARED) {
 #ifdef COOLING
                 ef += de_abs*(1.-IRBand_opacity_fraction_from_gas_absorption); /* update: assume a fraction de_abs * IRBand_opacity_fraction_from_gas_absorption is absorbed by the gas, which will not be instantly re-emitted here, but later in the cooling subroutines */
@@ -864,7 +866,7 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
             eddington_tensor_dot_vector(SphP[i].ET[kf], vel_i, vdot_h); // calculate volume integral of scattering coefficient t_inv * (gas_vel . [e_rad*I + P_rad_tensor]), which gives an additional time-derivative term. this is the P term //
             for(k_dir=0;k_dir<3;k_dir++) {vdot_h[k_dir] = E_rad_forflux * (vel_i[k_dir] + vdot_h[k_dir]);} // and this is the eI term, multiply both by radiation energy to use in this step //
 #ifdef RT_COMPGRAD_EDDINGTON_TENSOR // definitely favor this for greater accuracy and reduced noise //
-            for(k_dir=0;k_dir<3;k_dir++) {DeltaFluxEff[k_dir] -= (P[i].Mass/rho) * (C_LIGHT_CODE_REDUCED*C_LIGHT_CODE_REDUCED/teqm_inv) * SphP[i].Gradients.Rad_E_gamma_ET[kf][k_dir];} // here we compute the nabla.pressure_gradient_tensor term from gradients directly, and use this in the next step after multiplying the flux equation by (tilde[c]^2/dt_eqm_inv) and working in dimensionless time units
+            for(k_dir=0;k_dir<3;k_dir++) {DeltaFluxEff[k_dir] -= (P[i].Mass/rho) * (C_LIGHT_CODE_REDUCED*C_LIGHT_CODE_REDUCED/teqm_inv) * SphP[i].Gradients.Rad_E_gamma_ET[kf][k_dir]*All.cf_a3inv/All.cf_atime;} // here we compute the nabla.pressure_gradient_tensor term from gradients directly, and use this in the next step after multiplying the flux equation by (tilde[c]^2/dt_eqm_inv) and working in dimensionless time units
 #else
             for(k_dir=0;k_dir<3;k_dir++) {DeltaFluxEff[k_dir] += (SphP[i].Dt_Rad_Flux[kf][k_dir]/teqm_inv);} // the nabla.pressure_gradient_tensor is computed in the finite-volume solver, here
 #endif
@@ -986,7 +988,10 @@ void rt_apply_boundary_conditions(int i)
             for(k_dir = 0; k_dir < 3; k_dir++){SphP[i].Rad_Flux[k][k_dir] = 0;}
 #endif
 #ifdef RT_INFRARED
-            if(k==RT_FREQ_BIN_INFRARED) {SphP[i].Radiation_Temperature = SphP[i].Dust_Temperature = DMIN(All.InitGasTemp,100.);}
+            if(k==RT_FREQ_BIN_INFRARED) {
+                SphP[i].Radiation_Temperature = background_isrf_cmb_Teff();
+                SphP[i].Dust_Temperature = DMIN(All.InitGasTemp,100.);
+            }
 #endif
         }
     } else {
@@ -1001,7 +1006,9 @@ void get_background_isrf_urad(int i, double *urad){
     {
         urad[k] = MIN_REAL_NUMBER;
 #ifdef RT_INFRARED
-        if(k==RT_FREQ_BIN_INFRARED){urad[k] = (All.InterstellarRadiationFieldStrength * 0.39 + 0.26) * ELECTRONVOLT_IN_ERGS / UNIT_PRESSURE_IN_CGS;} // 0.33 eV/cm^3 is dust emission peak, 0.26 is CMB - note how this bin actually lumps the two together
+	double fac_uCMB = 1.;
+	fac_uCMB = pow(1+All.RadiationBackgroundRedshift, 4);
+        if(k==RT_FREQ_BIN_INFRARED){urad[k] = (All.InterstellarRadiationFieldStrength * 0.39 + fac_uCMB * 0.26) * ELECTRONVOLT_IN_ERGS / UNIT_PRESSURE_IN_CGS;} // 0.33 eV/cm^3 is dust emission peak, 0.26 is CMB - note how this bin actually lumps the two together
 #endif
 #ifdef RT_OPTICAL_NIR
         if(k==RT_FREQ_BIN_OPTICAL_NIR){urad[k] = All.InterstellarRadiationFieldStrength * 0.54 * ELECTRONVOLT_IN_ERGS / UNIT_PRESSURE_IN_CGS;} // stellar emission
@@ -1014,6 +1021,16 @@ void get_background_isrf_urad(int i, double *urad){
 #endif
     }
 }
+
+double background_isrf_cmb_Teff(){
+    // Returns the energy-weighted effective temperature of the background ISRF that has equivalent average photon energy to the sum of the ISRF and CMB
+    // Necessary because current IR band treatment lumps both radiation fields together
+    double urad_ISRF_CGS_eV = All.InterstellarRadiationFieldStrength * 0.39, Trad_ISRF = DMIN(All.InitGasTemp,100.);
+    double fac_TCMB= 1.+All.RadiationBackgroundRedshift, fac_uCMB = pow(fac_TCMB,4);
+    double urad_CMB_CGS_eV = fac_uCMB * 0.262, Trad_CMB = 2.73 * fac_TCMB;
+    return (urad_ISRF_CGS_eV * Trad_ISRF + urad_CMB_CGS_eV * Trad_CMB) / (urad_ISRF_CGS_eV + urad_CMB_CGS_eV); // weighting by SED energy
+}
+
 #endif
 
 
@@ -1037,21 +1054,30 @@ void rt_set_simple_inits(int RestartFlag)
         {
             int k;
 #ifdef RT_INFRARED
-            SphP[i].Dust_Temperature = DMIN(All.InitGasTemp,100.); //get_min_allowed_dustIRrad_temperature(); // in K, floor = CMB temperature or 10K
-            SphP[i].Radiation_Temperature = DMIN(All.InitGasTemp,100.); //SphP[i].Dust_Temperature;
+            if(flag_to_reset_values_on_startup) {SphP[i].Radiation_Temperature = SphP[i].Dust_Temperature = DMIN(All.InitGasTemp,100.);} //get_min_allowed_dustIRrad_temperature(); // in K, floor = CMB temperature or 10K
+#ifdef RT_ISRF_BACKGROUND
+            if(flag_to_reset_values_on_startup) {SphP[i].Radiation_Temperature = background_isrf_cmb_Teff();} //SphP[i].Dust_Temperature;
+#endif
             SphP[i].Dt_Rad_E_gamma_T_weighted_IR = 0;
 #endif
 #ifdef RT_CHEM_PHOTOION
-            SphP[i].HII = MIN_REAL_NUMBER;
-            SphP[i].HI = 1.0 - SphP[i].HII;
-            SphP[i].Ne = SphP[i].HII;
+            if(flag_to_reset_values_on_startup)
+            {
+                SphP[i].HII = MIN_REAL_NUMBER;
+                SphP[i].HI = 1.0 - SphP[i].HII;
+                SphP[i].Ne = SphP[i].HII;
 #ifdef RT_CHEM_PHOTOION_HE
-            double fac = (1-HYDROGEN_MASSFRAC) / (4.0 * HYDROGEN_MASSFRAC);
-            SphP[i].HeIII = MIN_REAL_NUMBER * fac;
-            SphP[i].HeII = MIN_REAL_NUMBER * fac;
-            SphP[i].HeI = (1.0 - SphP[i].HeII - SphP[i].HeIII) * fac;
-            SphP[i].Ne += SphP[i].HeII + 2.0 * SphP[i].HeIII;
+                double fac = (1-HYDROGEN_MASSFRAC) / (4.0 * HYDROGEN_MASSFRAC);
+                SphP[i].HeIII = MIN_REAL_NUMBER * fac;
+                SphP[i].HeII = MIN_REAL_NUMBER * fac;
+                SphP[i].HeI = (1.0 - SphP[i].HeII - SphP[i].HeIII) * fac;
+                SphP[i].Ne += SphP[i].HeII + 2.0 * SphP[i].HeIII;
 #endif
+            } else {
+#ifdef RT_CHEM_PHOTOION_HE
+                SphP[i].HeIII = DMIN(1.0, DMAX(MIN_REAL_NUMBER, 1.0 - SphP[i].HeII - SphP[i].HeI * (4.0 * HYDROGEN_MASSFRAC)/(1-HYDROGEN_MASSFRAC))); // not read in since for this subroutine follows from others
+#endif
+            }
 #endif
 #ifdef RT_ISRF_BACKGROUND
             double urad[N_RT_FREQ_BINS];
@@ -1060,14 +1086,18 @@ void rt_set_simple_inits(int RestartFlag)
             for(k = 0; k < N_RT_FREQ_BINS; k++)
             {
                 if(flag_to_reset_values_on_startup) {SphP[i].Rad_E_gamma[k] = MIN_REAL_NUMBER;}
-                SphP[i].ET[k][0]=SphP[i].ET[k][1]=SphP[i].ET[k][2]=1./3.; SphP[i].ET[k][3]=SphP[i].ET[k][4]=SphP[i].ET[k][5]=0;
-                SphP[i].Rad_Je[k] = 0; SphP[i].Rad_Kappa[k] = rt_kappa(i,k);
+                int flag_to_reset_values_on_startup_et = flag_to_reset_values_on_startup;
+#if !defined(OUTPUT_EDDINGTON_TENSOR)
+                flag_to_reset_values_on_startup_et = 1;
+#endif
+                if(flag_to_reset_values_on_startup_et) {SphP[i].ET[k][0]=SphP[i].ET[k][1]=SphP[i].ET[k][2]=1./3.; SphP[i].ET[k][3]=SphP[i].ET[k][4]=SphP[i].ET[k][5]=0;}
+                SphP[i].Rad_Je[k] = 0;
 #ifdef RT_FLUXLIMITER
                 SphP[i].Rad_Flux_Limiter[k] = 1;
 #endif
 
 #ifdef RT_INFRARED
-                if(flag_to_reset_values_on_startup && k==RT_FREQ_BIN_INFRARED){ // only initialize the IR energy if starting a new run, otherwise use what's in the snapshot
+                if(flag_to_reset_values_on_startup && k==RT_FREQ_BIN_INFRARED) { // only initialize the IR energy if starting a new run, otherwise use what's in the snapshot
                     SphP[i].Rad_E_gamma[RT_FREQ_BIN_INFRARED] = (4.*5.67e-5 / C_LIGHT_CGS) * pow(DMIN(All.InitGasTemp,100.),4.) / UNIT_PRESSURE_IN_CGS * P[i].Mass / (SphP[i].Density*All.cf_a3inv);
                 }
 #endif
@@ -1075,10 +1105,21 @@ void rt_set_simple_inits(int RestartFlag)
                 if(flag_to_reset_values_on_startup) {SphP[i].Rad_E_gamma[k] = urad[k] * P[i].Mass / (SphP[i].Density*All.cf_a3inv);}
 #endif
 #ifdef RT_EVOLVE_ENERGY
-                SphP[i].Rad_E_gamma_Pred[k] = SphP[i].Rad_E_gamma[k]; SphP[i].Dt_Rad_E_gamma[k] = 0;
+                SphP[i].Rad_E_gamma_Pred[k] = SphP[i].Rad_E_gamma[k]; 
+                SphP[i].Dt_Rad_E_gamma[k] = 0;
 #endif
 #ifdef RT_EVOLVE_FLUX
-                int k_dir; for(k_dir=0;k_dir<3;k_dir++) {SphP[i].Rad_Flux_Pred[k][k_dir] = SphP[i].Rad_Flux[k][k_dir] = SphP[i].Dt_Rad_Flux[k][k_dir] = 0;}
+                int k_dir, flag_to_reset_values_on_startup_flux = flag_to_reset_values_on_startup;
+#if !defined(OUTPUT_RT_RAD_FLUX)
+                flag_to_reset_values_on_startup_flux = 1;
+#endif
+                if(flag_to_reset_values_on_startup_flux) {
+                    for(k_dir=0;k_dir<3;k_dir++) {SphP[i].Rad_Flux_Pred[k][k_dir] = 0;}
+                } else {
+                    for(k_dir=0;k_dir<3;k_dir++) {SphP[i].Rad_Flux_Pred[k][k_dir] *= P[i].Mass/(SphP[i].Density*All.cf_a3inv);} // need to correct the units here before using
+                }
+                for(k_dir=0;k_dir<3;k_dir++) {SphP[i].Rad_Flux_Pred[k][k_dir] = SphP[i].Rad_Flux[k][k_dir];}
+                for(k_dir=0;k_dir<3;k_dir++) {SphP[i].Dt_Rad_Flux[k][k_dir] = 0;}
 #endif
 #ifdef RT_EVOLVE_INTENSITIES
                 int k_dir; for(k_dir=0;k_dir<N_RT_INTENSITY_BINS;k_dir++) {SphP[i].Rad_Intensity_Pred[k][k_dir] = SphP[i].Rad_Intensity[k][k_dir] = MIN_REAL_NUMBER; SphP[i].Dt_Rad_Intensity[k][k_dir] = 0;}
@@ -1098,7 +1139,7 @@ void rt_set_simple_inits(int RestartFlag)
                 SphP[i].Rad_Flux[k][0]=SphP[i].Rad_Flux[k][1]=SphP[i].Rad_Flux_Pred[k][0]=SphP[i].Rad_Flux_Pred[k][1]=0;
 #endif
 #endif
-                
+                SphP[i].Rad_Kappa[k] = rt_kappa(i,k); // let everything else get reset first before calling this //
             }
         }
     }
@@ -1243,6 +1284,10 @@ int check_if_absorbed_photons_can_be_reemitted_into_same_band(int kfreq)
 
 
 
+/*****************************************************************************
+Routines specifically for handling thermal and radiative coupling between gas,
+dust, and the IR radiation field component (RT_INFRARED)
+*****************************************************************************/
 
 #ifdef RT_INFRARED
 
@@ -1255,49 +1300,137 @@ double get_min_allowed_dustIRrad_temperature(void)
     return MIN_REAL_NUMBER;
 }
 
-/* return Lambda_Dust, the dust cooling/heating rate (<0 is heating, >0 is cooling) */
-double get_rt_ir_lambdadust_effective(double T, double rho, double *nH0_guess, double *ne_guess, int target, int update_Tdust)
-{
-#ifdef COOLING
-    double nHcgs = HYDROGEN_MASSFRAC * rho / PROTONMASS_CGS; // effective hydrogen number dens in cgs units (just for normalization convention)
-    double volume = (P[target].Mass / (SphP[target].Density*All.cf_a3inv)); // particle volume in code units
-    double ratefact = (nHcgs*nHcgs) * volume / (UNIT_PRESSURE_IN_CGS / UNIT_TIME_IN_CGS); // conversion b/t Lambda and du used by code
-    double Erad_to_T4_fac = (C_LIGHT_CODE_REDUCED/C_LIGHT_CODE) * (C_LIGHT_CGS/(4. * 5.67e-5)) * UNIT_PRESSURE_IN_CGS / volume; // conversion from absolute rad energy to T^4 units, used multiple places below, coefficient = cL_reduced/(4*sigma_B); note RSOL power above cancels here b/c of the cancellation in absorption+emission coefficients
+/* dust_dE_cooling
+Returns the derivative of the dust energy, to be root-solved to 0 to obtain
+the equilibrium dust temperature assuming 0 dust heat capacity. Accounts for
+dust emission/absorption to obtain a solution consistent with a backward-Euler
+implicit cooling solution.
 
-    double Tdust_0 = SphP[target].Dust_Temperature; // dust temperature estimate from previous loop over radiation operators
-    double Tdust = Tdust_0;
-    double egy_therm = SphP[target].InternalEnergyPred*P[target].Mass; // true internal energy (before this cooling loop)
-    double egy_rad = (C_LIGHT_CODE/C_LIGHT_CODE_REDUCED) * SphP[target].Rad_E_gamma_Pred[RT_FREQ_BIN_INFRARED]; // effective radiation field energy (before this cooling loop), accounting for the effects of an RSOL on the difference between the gas and radiation field energy equations
-    egy_rad = DMAX(egy_rad , pow(Tdust_0,4) / Erad_to_T4_fac); // take the actual dust temp for this, which accounts for the absorption from other bands and difference in absorption efficiency -properly-, but floor it at the IR/dust-band radiation energy density
-    double egy_tot = egy_rad + egy_therm; // true total energy [in code units]
-    double Teff = Get_Gas_Mean_Molecular_Weight_mu(T, rho, nH0_guess, ne_guess, 0, target) * (GAMMA(target)-1.) * U_TO_TEMP_UNITS * (egy_tot / P[target].Mass); // convert from internal energy to temperature units for factor below
+Parameters
+----------
+i - index of particle in particle list
+Tgas - Assumed final gas temperature at the end of the timestep
+Tdust - Dust temperature (generally the unknown quantity we need to solve for)
+Tdust_fixedpoint_1 - Stores one possible fixed-point iterate for approximating the root (can use as a guess)
+Tdust_fixedpoint_2 - Stores another possible fixed-point iterate for approximating the root 
 
-    double xf, a = Teff*Teff*Teff*Teff / (Erad_to_T4_fac*egy_tot); // dimensionless factors needed to solve for the equilibrium Tdust-Tgas relation; this assumes total 'effective' energy between gas and radiation is conserved, and Td=Tgas, and solves for what the equilibrium temperature would be in terms of xf = Teqm / Teff
-    if(a<0.2138) {xf=(1+19*a+132*a*a+418*a*a*a+580*a*a*a*a+243*a*a*a*a*a)/(1+20*a+148*a*a+508*a*a*a+796*a*a*a*a+432*a*a*a*a*a);} // eqm solution (power series approx)
-     else {double a0=pow(a,0.25); xf=(-704-1045*a0+128*a0*a0*a0*(39+32*a0*(4+7*a0+64*a0*a0*a0*(-1+8*a0*(-1+4*a0)))))/(8388608.*a*a*a0*a0);} // eqm solution (power series approx)
+Returns
+-------
+dE - net dust heating (=0 for dust in equilibrium)
+*/
+double dust_dE_cooling(int i, double Tgas, double Tdust, double* Tdust_fixedpoint_1, double* Tdust_fixedpoint_2){
+    double dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i);
+    double nHcgs = HYDROGEN_MASSFRAC * UNIT_DENSITY_IN_CGS * SphP[i].Density * All.cf_a3inv / PROTONMASS_CGS;
+    double lambda_to_dErad = (C_LIGHT_CODE_REDUCED/C_LIGHT_CODE) * nHcgs * nHcgs * (dt*UNIT_TIME_IN_CGS) / (SphP[i].Density * All.cf_a3inv * UNIT_DENSITY_IN_CGS) / (UNIT_SPECEGY_IN_CGS) * P[i].Mass; /* need to account for RSOL factors in emission/absorption rates */
+    
+    double dust_absorption_nonIR = 0;
+    for(int k=0; k < N_RT_FREQ_BINS; k++){
+        if(RT_BAND_IS_IONIZING(k)){continue;} /* gas-phase absorption */
+        if(k==RT_FREQ_BIN_INFRARED){continue;} /* this is only counting up non-IR contributions, e.g. nebular NUV */
+        double e_final = SphP[i].Rad_E_gamma[k] + SphP[i].Lambda_RadiativeCooling_toRHDBins[k] * lambda_to_dErad;
+        e_final = DMAX(0,e_final); // check against overshoot into negative values
+        double absrate_k = rt_absorption_rate(i, k) * dt; // this needs to be positive to sensible behavior here
+        if(absrate_k > 0) {dust_absorption_nonIR += e_final * fabs(expm1(-absrate_k));}
+    }
+    double alpha_gd = gas_dust_heating_coeff(i,Tgas,Tdust);
+    double LambdaDust = alpha_gd * (Tgas-Tdust);
+    double de_IR_dust = LambdaDust * lambda_to_dErad; // equates to *net* emission of radiation by dust (emission - absorption)
+    double LambdaIR_gas = SphP[i].Lambda_RadiativeCooling_toRHDBins[RT_FREQ_BIN_INFRARED];
+    double de_IR_gas = LambdaIR_gas * lambda_to_dErad; // net emission by gas
+    
+    double kappa_dust_emission = rt_kappa_adaptive_IR_band(i, Tdust, Tdust, 1,1);
+    double fac_emission = 4.*5.67e-5/(UNIT_PRESSURE_IN_CGS*UNIT_VEL_IN_CGS)*P[i].Mass*RT_SPEEDOFLIGHT_REDUCTION*dt;
+    double dust_emission = fac_emission*kappa_dust_emission*pow(Tdust,4); // *total* dust emission
+    
+    double T_IR_0 = SphP[i].Radiation_Temperature;
+    double Tmax = DMAX(DMAX(Tgas, Tdust),T_IR_0), Tmin = DMIN(DMIN(Tgas,Tdust), T_IR_0);
+    double e_IR_0 = SphP[i].Rad_E_gamma[RT_FREQ_BIN_INFRARED];
+    double e_IR_final = DMAX(e_IR_0 + de_IR_dust + de_IR_gas, 0);
+    /* below we have some approximate scalings for the temperature modification, since the different photon-gas interchange operations can behave differently in terms of photon number changes (N_emitted - N_absorbed); we interpolate between regimes to prevent unphysical behavior in the strong-coupling limit */
+    //double T_IR_final = (e_IR_final/e_IR_0) * T_IR_0; /* begin by guessing the value we would have if these operations conserved photon number */
+    //if(T_IR_final > Tmax || T_IR_final < Tmin) { /* this gives an unphysical evolution in radiation temperature */
+    //if(de_IR_gas + de_IR_dust < 0) {T_IR_final = T_IR_0;} else {  /* only absorption occurs, radiation temperature unmodified */
+    double T_IR_final = e_IR_final / (DMAX(e_IR_0/T_IR_0,0) + DMAX(de_IR_gas / Tgas,0) + DMAX(de_IR_dust / Tdust,0) + MIN_REAL_NUMBER); // assume gas-phase IR component emitted at Tgas. /* if new emission occurs, radiation temperature updated assuming all energy gained comes from emission with radiation temperature = gas temperature; if absorption occurs, radiation temperature unmodified  */
+    T_IR_final = DMAX(Tmin, DMIN(T_IR_final, Tmax)); // limiters for edge-cases above //
+    //}}
+    SphP[i].Radiation_Temperature_CoolingWeighted = T_IR_final; // PFH: this had been protected by a Tdust < max, but that will give the wrong radiation temperature when radiation-gas (non dust) interactions like Compton or Kramers are important, needs to be set regardless of whether the dust itself is present
 
-    double dt = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(target); // timestep being taken [code units]
-    double Lambda_Dust_initial_guess, lambda_eff, L0_abs, Edot0, efinal_minus_einitial, t_cooling_eff, sign_term, tau, xfac, lambda_fac=gas_dust_heating_coeff(target,T,Tdust); int iter=0;
-    efinal_minus_einitial = egy_tot*xf - egy_therm; // change in gas thermal energy if we went all the way to equilibrium
-    sign_term=1.; if(efinal_minus_einitial < 0.) {sign_term=-1.;} // sign of the cooling/heating (to keep for below)
-//    do // Lambda_Dust implicitly depends nonlinearly on Tdust the way we have this set up here, so we do fixed-point iteration to convergence - typically only a few iters needed - 
-//    {
-      Lambda_Dust_initial_guess = lambda_fac * (Tdust-T); // guess value based on the -current- values of T, Tdust //
-      L0_abs = fabs(Lambda_Dust_initial_guess); // absolute value of the initially-computed guess for the cooling/heating rate of the gas
-      Edot0 = L0_abs * ratefact; // now this is an absolute Edot in code units, for the gas loss/gain from dust
-      t_cooling_eff = fabs(efinal_minus_einitial) / Edot0; // effective cooling time at the initially-estimated rate here: we'll use this to stably interpolate
-      tau = dt / t_cooling_eff;
-      xfac=(1.-exp(-tau))/tau; if(tau<0.05) {xfac=1.-0.5*tau+tau*tau/6.;} else {if(tau>20.) {xfac=1./tau;}} // correct rate to asymptote to equilibrium
-      lambda_eff = sign_term * L0_abs * xfac; // final effective gas cooling/heating rate
-      Tdust_0 = Tdust;
-      Tdust = DMAX(pow(Erad_to_T4_fac*DMAX( 0., egy_rad - lambda_eff*ratefact*dt ), 0.25), get_min_allowed_dustIRrad_temperature());
-//      iter += 1;
-//    } while ((fabs(Tdust - Tdust_0) > 1e-14 * Tdust) && (iter<MAXITER));
+    double dE_dust = 0; // now count up the energy changes in the dust for us to solve for 0
+    double dust_absorption = dust_absorption_nonIR;
+    dust_absorption += e_IR_final * C_LIGHT_CODE_REDUCED * rt_kappa_adaptive_IR_band(i, Tdust, T_IR_final,-1,1) * SphP[i].Density*All.cf_a3inv * dt;
+    double result = LambdaDust * lambda_to_dErad + dust_absorption - dust_emission;
 
-    if(update_Tdust) {SphP[target].Dust_Temperature = Tdust;} //DMAX(pow(Erad_to_T4_fac*DMAX( 0., egy_rad - lambda_eff*ratefact*dt ), 0.25), get_min_allowed_dustIRrad_temperature());} // update dust temperature guess  -- in new code, don't need to do this here, will be done in radiation update instead //
-    return -lambda_eff; /* note sign convention defined above, so minus sign here makes this behave appropriately */
-#endif
-    return 0;
+    double Tdust_fixed1_tmp = Tgas + (dust_absorption - dust_emission)/(alpha_gd*lambda_to_dErad + MIN_REAL_NUMBER); // make sure to include term in denominator to protect vs nans
+    double Tdust_fixed2_tmp = sqrt(sqrt(DMAX(0,LambdaDust * lambda_to_dErad + dust_absorption)/(fac_emission * kappa_dust_emission + MIN_REAL_NUMBER))); // make sure to include term in denominator and MAX in numerator to protect vs nans
+    // PFH: better behavior for 2 above is to bracket with solution for fixed dust absorption, which gives T2 = (T0 == above with Tdust = 0 in LambdaDust, positive-definite) x , where x solves x^4+b*x=1, b=((alpha_gd * lambda_to_dErad)/(fac_emission * kappa_dust_emission * T0^3)), should be dimensionless, for b << 1, x=1, for b >> 1, x->1/b; the above essentially jumps to b->infinity in the latter regime
+    
+    *Tdust_fixedpoint_1 = DMAX(Tdust_fixed1_tmp, 0); // check against overshoot into negative values
+    *Tdust_fixedpoint_2 = DMAX(Tdust_fixed2_tmp, 0); // check against overshoot into negative values
+    return result;
+}
+
+/* Returns the dust cooling rate LambdaDust in erg s^-1 cm^3, accounting for 
+dust emission
+*/
+double rt_ir_lambdadust(int i, double T){
+    double Tdust, T_lower, T_upper, dE, dE1, dE2, dE_lower, dE_upper, dE_guess, dTdust_tol=1e-6;
+    double Tdust_fixedpoint_1, Tdust_fixedpoint_2, dummy;
+    // define ROOTFIND_FUNCTION_INNER because this gets called nested inside the cooling solver, and needs to be def'd distinctly from the overlying ROOTFIND_FUNCTION
+    #define ROOTFIND_FUNCTION_INNER(dTdust) dust_dE_cooling(i, T, T+dTdust, &Tdust_fixedpoint_1, &Tdust_fixedpoint_2)
+    if((All.Time==0 )|| (!isfinite(SphP[i].Dust_Temperature))){Tdust=T;} else {Tdust = SphP[i].Dust_Temperature;}
+
+    dE = dE_guess = ROOTFIND_FUNCTION_INNER(Tdust-T);
+   
+    if(Tdust_fixedpoint_1 > 0 && Tdust_fixedpoint_1 < MAX_DUST_TEMP) {dE1 =  dust_dE_cooling(i, T, Tdust_fixedpoint_1, &dummy, &dummy);} else {dE1 = MAX_REAL_NUMBER;}
+    if(Tdust_fixedpoint_2 > 0 && Tdust_fixedpoint_2 < MAX_DUST_TEMP) {dE2 =  dust_dE_cooling(i, T, Tdust_fixedpoint_2, &dummy, &dummy);} else {dE2 = MAX_REAL_NUMBER;}
+
+    // error estimate of the fixed-point guesses, used for bracketing below
+    double fixedpoint_error = DMIN(fabs(Tdust-Tdust_fixedpoint_2), fabs(Tdust-Tdust_fixedpoint_1))/Tdust; 
+    if(fabs(dE1) < fabs(dE)){Tdust = Tdust_fixedpoint_1; dE=dE_guess=dE1;}
+    if(fabs(dE2) < fabs(dE)){Tdust = Tdust_fixedpoint_2; dE=dE_guess=dE2;}
+    
+    /* bracketing the dust temperature */
+    int n_iter = 0;
+    if(dE < 0)
+    {
+        double scalefac = DMAX(0.9, 1-fixedpoint_error);
+        T_upper = Tdust;
+        dE_upper = dE_guess; 
+        while(dE < 0) {
+            Tdust *= scalefac; 
+            dE = ROOTFIND_FUNCTION_INNER(Tdust-T);
+            if(dE==0){break;}
+            scalefac *= 0.9; 
+            n_iter++;
+        }
+        T_lower = Tdust, dE_lower = dE;
+    } else {
+        T_lower = Tdust, dE_lower = dE_guess;
+        double scalefac = DMIN(1.1, 1+fixedpoint_error);
+        while(dE > 0 && Tdust < MAX_DUST_TEMP) {
+            Tdust *= scalefac; Tdust = DMIN(Tdust,MAX_DUST_TEMP);
+            dE = ROOTFIND_FUNCTION_INNER(Tdust-T); 
+            if(dE==0){break;}
+            scalefac *= 1.1; 
+            n_iter++;
+        }
+        T_upper = Tdust, dE_upper = dE;
+    }     
+    if(T_upper>=MAX_DUST_TEMP && dE_upper > 0){SphP[i].Dust_Temperature = MAX_DUST_TEMP; return 0;}
+
+    if(dE_lower * dE_upper > 0){ PRINT_WARNING("Failed to bracket Tdust solution for ID=%d T=%g T_lower=%g T_upper=%g dE_lower=%g dE_upper=%g\n", P[i].ID, T, T_lower,T_upper, dE_lower, dE_upper);}
+
+    if(dE!=0){  // root-solve for Tdust
+        double ROOTFIND_X_a = T_lower-T, ROOTFIND_X_b = T_upper-T;
+        double ROOTFUNC_a = dE_lower; double ROOTFUNC_b = dE_upper;
+        double ROOTFIND_REL_X_tol = dTdust_tol, ROOTFIND_ABS_X_tol=0.;
+        #include "../system/bracketed_rootfind.h"
+        Tdust = ROOTFIND_X_new+T;
+    }
+    double LambdaDust = gas_dust_heating_coeff(i,T,Tdust) * (T-Tdust);
+    SphP[i].Lambda_RadiativeCooling_toRHDBins[RT_FREQ_BIN_INFRARED] += LambdaDust;
+    SphP[i].Dust_Temperature = Tdust;
+    return LambdaDust;
 }
 
 #endif
@@ -1317,7 +1450,7 @@ double dust_dEdt(int i, double T, double Tdust, double dust_absorption_rate)
 #ifdef COOLING
     if(T>0) {LambdaDust_fac = gas_dust_heating_coeff(i,T,Tdust) * nHcgs * nHcgs /(UNIT_PRESSURE_IN_CGS/UNIT_TIME_IN_CGS);}
 #endif    
-    double kappa_emission = rt_kappa_adaptive_IR_band(i, Tdust, Tdust, 1, 0);
+    double kappa_emission = rt_kappa_adaptive_IR_band(i, Tdust, Tdust, 1, 1);
     double dust_emission = fac_emission * kappa_emission * pow(Tdust,4);
 #if defined(COOLING) && !defined(RT_INFRARED) // if we aren't doing RT self-consistently, approximate outward radiative transport rate in optically-thick regime
     double column = evaluate_NH_from_GradRho(SphP[i].Gradients.Density,PPP[i].Hsml,SphP[i].Density,PPP[i].NumNgb,1,i);
@@ -1335,8 +1468,9 @@ and we only solve for equilibrium between emission and absorption.
 ************************************************************************************************************/
 double rt_eqm_dust_temp(int i, double T, double dust_absorption_rate)
 {
-    double T_old, T_lower=0, T_upper=MAX_REAL_NUMBER, T_secant, Tdust_guess, Tdust, dEdt, dEdt_old, dT_dustgas, fac, dEdt_guess, scalefac;
-
+    double T_old, T_lower=0, T_upper=MAX_REAL_NUMBER, T_secant, Tdust_guess, Tdust, dEdt, dEdt_upper, dEdt_lower, fac, dEdt_guess, scalefac;
+    double Tmax=1e10; // upper-bound dust temperature above which we definitely don't believe our detailed (tiny) dust abundance
+    Tmax = MAX_DUST_TEMP; // this is now a global variable
     /* First we come up with a reasonable guess for the dust temp based on available info */
 #ifdef RT_INFRARED
     Tdust_guess = DMAX(SphP[i].Dust_Temperature,1.); // previous dust temperature should be a good guess
@@ -1362,55 +1496,74 @@ double rt_eqm_dust_temp(int i, double T, double dust_absorption_rate)
     int n_iter=0;    
     dEdt_guess = dEdt = dust_dEdt(i,T,Tdust_guess,dust_absorption_rate);
     
+    if(dEdt==0){return Tdust_guess;}
     /* bracketing the dust temperature */
-    if(dEdt < 0) 
+    if(dEdt < 0)
     {
-	    scalefac = 0.9;
-	    T_upper = Tdust; 
-	    while(dEdt<0) {
-	        Tdust *= scalefac; 
-	        dEdt = dust_dEdt(i,T,Tdust,dust_absorption_rate); 
-	        scalefac *= scalefac; 
-	        n_iter++;
-	    }
-	    T_lower = Tdust;
+	scalefac = 0.9;
+	T_upper = Tdust, dEdt_upper = dEdt_guess; 
+	while(dEdt<0) {
+	    Tdust *= scalefac; 
+	    dEdt = dust_dEdt(i,T,Tdust,dust_absorption_rate); 
+        if(dEdt==0){return Tdust;}
+	    scalefac *= 0.9; 
+	    n_iter++;
+	}
+	T_lower = Tdust, dEdt_lower = dEdt;
     } else {
-	    T_lower = Tdust;
-	    scalefac = 1.1;
-	    while(dEdt>0) {
-	        Tdust *= scalefac; 
-	        dEdt = dust_dEdt(i,T,Tdust,dust_absorption_rate); 
-	        scalefac *= scalefac; 
-	        n_iter++;
+	T_lower = Tdust, dEdt_lower = dEdt_guess;
+	scalefac = 1.1;
+	while(dEdt>0 && Tdust < Tmax) {
+	    Tdust *= scalefac; Tdust = DMIN(Tdust,Tmax);
+	    dEdt = dust_dEdt(i,T,Tdust,dust_absorption_rate); 
+        if(dEdt==0){return Tdust;}
+	    scalefac *= 1.1; 
+	    n_iter++;
 	    }
-	    T_upper = Tdust;
-    }
-    T_old = Tdust; dEdt_old = dEdt; Tdust = Tdust_guess; dEdt = dEdt_guess; // For our second guess we take the backeting value opposite of the initial guess.
+	    T_upper = Tdust, dEdt_upper = dEdt;
+    }     
+    if(T_upper==Tmax && dEdt_upper > 0) {return Tmax;}
+    if(T_lower>=Tmax) {return Tmax;}
+
+#if 0  // PFH: still testing which option is better, but the new rootfind struggles here, in hyper-zoom-in runs when given dust close to max temperature (raising max temp resolves the failure to converge or Nan's but then jumps to very high solutions somewhat randomly, where it shouldnt. The old secant routine below appears stable and more robust in this particular instance for now.
+
+    #define ROOTFIND_FUNCTION(dTdust) dust_dEdt(i,T,T+dTdust,dust_absorption_rate); // here we want to converge on a relative tolerance for Tdust-Tgas
+    double ROOTFIND_X_a = T_upper-T, ROOTFIND_X_b = T_lower-T, ROOTFUNC_a = dEdt_upper, ROOTFUNC_b = dEdt_lower, ROOTFIND_REL_X_tol = 1e-6, ROOTFIND_ABS_X_tol=0.;
+    #include "../system/bracketed_rootfind.h"
+    Tdust = ROOTFIND_X_new + T;
+    if(ROOTFIND_ITER > MAXITER || isnan(Tdust)){PRINT_WARNING("WARNING: Particle %lld did not converge to desired Tdust tolerance (iter=%d, Tdust=%g, Tgas=%g)\n",(long long)P[i].ID,ROOTFIND_ITER,Tdust,T);}
+    
+#else
+
+    T_old = Tdust; double dEdt_old = dEdt; Tdust = Tdust_guess; dEdt = dEdt_guess; // For our second guess we take the backeting value opposite of the initial guess.
+    double dT_dustgas = T-Tdust;
     do  // secant method iterations with bisection as a backup; usually converges to machine epsilon in 4-5 iterations
     {
         dT_dustgas = T - Tdust;
         T_secant = Tdust - dEdt * (Tdust - T_old) / (dEdt - dEdt_old);
-	    T_secant = DMAX(DMIN(T_secant,T_upper),T_lower);
-	    dEdt_old = dEdt;
-	    dEdt = dust_dEdt(i,T,T_secant,dust_absorption_rate);
-	    fac = fabs(T_secant - Tdust)/(MIN_REAL_NUMBER+fabs(Tdust-T_old)); //fabs(dEdt)/(MIN_REAL_NUMBER+fabs(dEdt_old));
-	    if(fac < 0.5) { // accept the secant iteration if it is converging more rapidly
-	        T_old=Tdust; 
-	        Tdust=T_secant;  	        
-	    } else { // if secant isn't working do bisection iteration instead; guaranteed to reduce the error	    
-	        T_old = Tdust;
-	        Tdust = sqrt(T_lower*T_upper);
-	        dEdt = dust_dEdt(i,T,Tdust,dust_absorption_rate);
-	        fac = 0.5;
-	    }
-	    if(dEdt>0) {T_lower=Tdust;} else {T_upper=Tdust;} // either way, update upper and lower bounds
+        T_secant = DMAX(DMIN(T_secant,T_upper),T_lower);
+        dEdt_old = dEdt;
+        dEdt = dust_dEdt(i,T,T_secant,dust_absorption_rate);
+        fac = fabs(T_secant - Tdust)/(MIN_REAL_NUMBER+fabs(Tdust-T_old)); //fabs(dEdt)/(MIN_REAL_NUMBER+fabs(dEdt_old));
+        if(fac < 0.5) { // accept the secant iteration if it is converging more rapidly
+            T_old=Tdust;
+            Tdust=T_secant;
+        } else { // if secant isn't working do bisection iteration instead; guaranteed to reduce the error
+            T_old = Tdust;
+            Tdust = sqrt(T_lower*T_upper);
+            dEdt = dust_dEdt(i,T,Tdust,dust_absorption_rate);
+            fac = 0.5;
+        }
+        if(dEdt>0) {T_lower=Tdust;} else {T_upper=Tdust;} // either way, update upper and lower bounds
+        n_iter++;
+        if(n_iter > MAXITER-10) {
+            PRINT_WARNING("Warning: Dust temperature iteration converging slowly: ID=%lld iter=%d T=%g Tdust=%g Tdust_guess=%g T_upper=%g T_lower=%g dEdt=%g fac=%g.\n",(long long)P[i].ID,n_iter,T,Tdust,Tdust_guess, T_upper, T_lower,dEdt, fac);
+            if(n_iter > MAXITER){break;}
+        }
+    } while(fabs(dT_dustgas - (T-Tdust)) > 1.e-3 * fabs(T-Tdust)); // sufficient to converge dust cooling to 10^-3 tolerance, at this point uncertainties in dust properties will dominate the error budget
 
-    	n_iter++;
-	    if(n_iter > MAXITER-10) {
-	        PRINT_WARNING("Warning: Dust temperature iteration converging slowly: ID=%lld iter=%d T=%g Tdust=%g Tdust_guess=%g T_upper=%g T_lower=%g dEdt=%g fac=%g.\n",(long long)P[i].ID,n_iter,T,Tdust,Tdust_guess, T_upper, T_lower,dEdt, fac);
-	        if(n_iter > MAXITER){break;}
-	    }
-    } while(fabs(dT_dustgas - (T-Tdust)) > 1.e-3 * fabs(T-Tdust)); // sufficient to converge dust cooling to 10^-3 tolerance, at this point uncertainties in dust properties will dominate the error budget    
+#endif
+    
     return Tdust;
 }
 
@@ -1528,12 +1681,9 @@ int rt_get_source_luminosity_chimes(int i, int mode, double *lum, double *chimes
 double rt_kappa_adaptive_IR_band(int i, double T_dust, double Trad, int do_emission_absorption_scattering_opacity, int dust_or_gas_opacity_only_flag)
 {
     if(do_emission_absorption_scattering_opacity==1) {Trad = T_dust;} // if we want the emissivity then we assume radiation emitted at T_dust
-    double fac=UNIT_SURFDEN_IN_CGS, x = 4.*log10(Trad) - 8., kappa=0; // needed for fitting functions to opacities (may come up with cheaper function later)
+    double fac=UNIT_SURFDEN_IN_CGS, x = 4.*log10(Trad) - 8., kappa=0, T_dust_opacitytable = T_dust; // needed for fitting functions to opacities (may come up with cheaper function later)
     double dx_excess=0; if(x > 7.) {dx_excess=x-7.; x=7.;} // cap for maximum temperatures at which fit-functions should be used //
     //if(x < -4.) {x=-4.;} // cap for minimum temperatures at which fit functions below should be used //
-#if defined(RT_INFRARED) || defined(COOL_LOW_TEMPERATURES)
-    T_dust = DMIN(T_dust , 1499.9); // limit to <1500 so always use opacities for 'capped' value at 1500 below, but don't ignore, because we're assuming the dust destruction above 1500K is accounted for in the self-consistent calculation of the dust-to-metals ratio, NOT in the opacities here //
-#endif
     double Zfac = 1.0, dust_to_metals_vs_standard = return_dust_to_metals_ratio_vs_solar(i,T_dust); // avoid call to return_dust_to_metals_ratio_vs_solar to avert circular dependency
 #ifdef METALS
     if(i>=0) {Zfac = P[i].Metallicity[0]/All.SolarAbundances[0];}
@@ -1554,20 +1704,25 @@ double rt_kappa_adaptive_IR_band(int i, double T_dust, double Trad, int do_emiss
          to different grain composition choices (porous/non, composite/non, 5-layer/aggregated/etc)
          in Semenov et al's paper */
         
-        if(T_dust < 160.) // Tdust < 160 K (all dust constituents present)
+#if defined(RT_INFRARED) || defined(COOL_LOW_TEMPERATURES)
+        T_dust_opacitytable = DMIN(T_dust , 1499.9); // limit to <1500 so always use opacities for 'capped' value at 1500 below, but don't ignore, because we're assuming the dust destruction above 1500K is accounted for in the self-consistent calculation of the dust-to-metals ratio, NOT in the opacities here //
+#endif
+        if(T_dust_opacitytable < 160.) // Tdust < 160 K (all dust constituents present)
         {
             kappa = exp(0.72819004 + 0.75142468*x - 0.07225763*x*x - 0.01159257*x*x*x + 0.00249064*x*x*x*x);
-        } else if(T_dust < 275.) { // 160 < Tdust < 275 (no ice present)
+        } else if(T_dust_opacitytable < 275.) { // 160 < Tdust < 275 (no ice present)
             kappa = exp(0.16658241 + 0.70072926*x - 0.04230367*x*x - 0.01133852*x*x*x + 0.0021335*x*x*x*x);
-        } else if(T_dust < 425.) { // 275 < Tdust < 425 (no ice or volatile organics present)
+        } else if(T_dust_opacitytable < 425.) { // 275 < Tdust < 425 (no ice or volatile organics present)
             kappa = exp(0.03583845 + 0.68374146*x - 0.03791989*x*x - 0.01135789*x*x*x + 0.00212918*x*x*x*x);
-        } else if(T_dust < 680.) { // 425 < Tdust < 680 (silicates, iron, & troilite present)
+        } else if(T_dust_opacitytable < 680.) { // 425 < Tdust < 680 (silicates, iron, & troilite present)
             kappa = exp(-0.76576135 + 0.57053532*x - 0.0122809*x*x - 0.01037311*x*x*x + 0.00197672*x*x*x*x);
-        } else { // 680 < Tdust < 1500 (silicates & iron present)
+        } else if(T_dust < MAX_DUST_TEMP) { // 680 < Tdust < 1500 (silicates & iron present)
             kappa = exp(-2.23863222 + 0.81223269*x + 0.08010633*x*x + 0.00862152*x*x*x - 0.00271909*x*x*x*x);
+        } else {
+            kappa = MIN_REAL_NUMBER; // dust completely absent above MAX_DUST_TEMP
         }
         if(dx_excess > 0) {kappa *= exp(0.57*dx_excess);} // assumes kappa scales linearly with temperature (1/lambda) above maximum in fit; pretty good approximation //
-        kappa = DMIN(1.e-3 * Trad * Trad, kappa); // ensure that we extrapolate to low temperatures with a beta=2 law, like in the S03 paper fiducial model
+    	kappa = DMIN(1.e-3 * Trad * Trad, kappa); // ensure that we extrapolate to low temperatures with a beta=2 law, like in the S03 paper fiducial model
 #else
         kappa = DMIN(1.e-3 * Trad * Trad, 5.); // beta=2 law capped at 5 cm^2/g, rough approximation of Semenov model neglecting jumps in composition
 #endif
@@ -1592,7 +1747,7 @@ double rt_kappa_adaptive_IR_band(int i, double T_dust, double Trad, int do_emiss
         double f_neutral_approx = DMAX(0., 1.-x_elec); /* approximate neutral fraction (good enough for us for what we need below) */
         double f_free_metals_approx = zmetals * DMAX(0, 1.-0.5*dust_to_metals_vs_standard); /* metal mass fraction times the free (not locked in dust abundance), assuming the default solar scaling is 1/2 */
         double Tgas=1. + 0.59*(GAMMA(i)-1.)*U_TO_TEMP_UNITS*SphP[i].InternalEnergyPred, rho_cgs = SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_CGS; /* crude estimate of gas temperature to use with scalings below, and gas density in cgs */
-        double k_electron = 0.2 * (1. + HYDROGEN_MASSFRAC) * x_elec; /* Thompson scattering (non-relativistic), scaling with free electron fraction */
+        double k_electron = 0.4 * HYDROGEN_MASSFRAC * x_elec; /* Thompson scattering (non-relativistic), scaling with free electron fraction [remembering that in our units, x_elec is n_e/n_H_nuclei, not scaled to total nuclear number] */
         double k_molecular = 0.1 * (f_free_metals_approx + 3.e-9) * f_neutral_approx; /* molecular line opacities, which should only dominate at low-temperatures in the fits below, but are not really assumed to extrapolate to the very low densities we apply this to here; this works ok comparing e.g. Lenzuni, Chernoff & Salpeter 1991 ApJS 76 759L [opacities for metal free gases], using the 3e-9 to represent the H2 molecular opacity (really low, only here for completeness) */
 #if defined(COOL_MOLECFRAC_NONEQM)
         k_molecular *= SphP[i].MolecularMassFraction;

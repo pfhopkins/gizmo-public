@@ -489,7 +489,7 @@ integertime get_timestep(int p,		/*!< particle index */
 
             double dt_prefac_diffusion;
             dt_prefac_diffusion = 0.5;
-#if defined(GALSF) || defined(DIFFUSION_OPTIMIZERS)
+#if (defined(GALSF) || defined(DIFFUSION_OPTIMIZERS)) && !defined(MHD_NON_IDEAL)
             dt_prefac_diffusion = 1.8;
 #endif
 #ifdef SUPER_TIMESTEP_DIFFUSION

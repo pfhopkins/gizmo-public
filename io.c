@@ -1047,6 +1047,20 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             break;
 
             
+        case IO_GRADMAG:        /* magnetic field gradients */
+#if defined(OUTPUT_GRADIENT_MAG)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    int k1,k2;
+                    for(k1=0;k1<3;k1++) {for(k2=0;k2<3;k2++) {fp[k1*3 + k2] = (MyOutputFloat) (SphP[pindex].Gradients.B[k1][k2] * UNIT_B_IN_GAUSS * All.cf_a2inv/All.cf_atime);}} // output in physical units
+                    fp += 9;
+                    n++;
+                }
+#endif
+            break;
+
+            
         case IO_COOLRATE:		/* current cooling rate of particle  */
 #ifdef OUTPUT_COOLRATE
             for(n = 0; n < pc; pindex++)
@@ -2056,6 +2070,7 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_CBE_MOMENTS:
 
         case IO_GRADVEL:
+        case IO_GRADMAG:
         case IO_EOS_STRESS_TENSOR:
         case IO_TIDALTENSORPS:
         case IO_SHEET_ORIENTATION:
@@ -2335,6 +2350,7 @@ int get_values_per_blockelement(enum iofields blocknr)
             break;
 
         case IO_GRADVEL:
+        case IO_GRADMAG:
         case IO_TIDALTENSORPS:
         case IO_SHEET_ORIENTATION:
         case IO_EOS_STRESS_TENSOR:
@@ -2460,6 +2476,7 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_GRADPHI:
         case IO_GRADRHO:
         case IO_GRADVEL:
+        case IO_GRADMAG:
         case IO_COOLRATE:
         case IO_EOSTEMP:
         case IO_EOSABAR:
@@ -2942,6 +2959,12 @@ int blockpresent(enum iofields blocknr)
 #endif
             break;
 
+        case IO_GRADMAG:
+#if defined(OUTPUT_GRADIENT_MAG)
+            return 1;
+#endif
+            break;
+
         case IO_COOLRATE:
 #ifdef OUTPUT_COOLRATE
             return 1;
@@ -3405,6 +3428,9 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
         case IO_GRADVEL:
             strncpy(label, "GVEL", 4);
             break;
+        case IO_GRADMAG:
+            strncpy(label, "GRDB", 4);
+            break;
         case IO_COOLRATE:
             strncpy(label, "COOR", 4);
             break;
@@ -3832,6 +3858,9 @@ void get_dataset_name(enum iofields blocknr, char *buf)
             break;
         case IO_GRADVEL:
             strcpy(buf, "VelocityGradient");
+            break;
+        case IO_GRADMAG:
+            strcpy(buf, "MagneticFieldGradient");
             break;
         case IO_COOLRATE:
             strcpy(buf, "CoolingRate");

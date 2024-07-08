@@ -88,6 +88,9 @@ MyDouble boxSize_Z, boxHalf_Z;
 #ifdef BOX_SHEARING
 MyDouble Shearing_Box_Vel_Offset;
 MyDouble Shearing_Box_Pos_Offset;
+#ifdef BOX_SHEARING_QB
+MyDouble Shearing_Box_B_Offset;
+#endif
 #endif
 
 #if defined(BOX_REFLECT_X) || defined(BOX_REFLECT_Y) || defined(BOX_REFLECT_Z) || defined(BOX_OUTFLOW_X) || defined(BOX_OUTFLOW_Y) || defined(BOX_OUTFLOW_Z)

@@ -543,12 +543,39 @@ OPT     += -DDISABLE_ALIGNED_ALLOC -DCHIMES_USE_DOUBLE_PRECISION #
 ##
 endif
 
-#----------------------------
-ifeq ($(SYSTYPE),"PopOS")
+ifeq ($(SYSTYPE),"MacBookCellar")
 CC       =  mpicc
 CXX      =  mpiccxx
 FC       =  $(CC) #mpifort  ## change this to "mpifort" for packages requiring linking secondary fortran code, currently -only- the helmholtz eos modules do this, so I leave it un-linked for now to save people the compiler headaches
 OPTIMIZE = -O1 -funroll-loops
+OPTIMIZE += -g -Wall # compiler warnings
+ifeq (CHIMES,$(findstring CHIMES,$(CONFIGVARS)))
+CXX     = mpic++
+CHIMESINCL = -I/usr/local/include/sundials
+CHIMESLIBS = -L/usr/local/lib -lsundials_cvode -lsundials_nvecserial
+endif
+GMP_INCL = #
+GMP_LIBS = #
+MKL_INCL = #
+MKL_LIBS = #
+GSL_INCL = -I/opt/homebrew/Cellar/gsl/2.8/include #-I$(PORTINCLUDE)
+GSL_LIBS = -L/opt/homebrew/Cellar/gsl/2.8/lib #-L$(PORTLIB)
+FFTW_INCL= -I/usr/local/include
+FFTW_LIBS= -L/usr/local/lib
+HDF5INCL = -I/opt/homebrew/Cellar/hdf5/1.14.3_1/include -DH5_USE_16_API  #-I$(PORTINCLUDE) -DH5_USE_16_API
+HDF5LIB  = -L/opt/homebrew/Cellar/hdf5/1.14.3_1/lib -lhdf5 -lz  #-L$(PORTLIB)
+MPICHLIB = #
+OPT     += -DDISABLE_ALIGNED_ALLOC -DCHIMES_USE_DOUBLE_PRECISION #
+
+endif
+
+#----------------------------
+ifeq ($(SYSTYPE),"PopOS")
+CC       =  mpicc
+CXX      =  mpiccxx
+FC       =  $(CC)
+OPTIMIZE = -g -fcommon -O1 -ffast-math -funroll-loops -finline-functions -funswitch-loops -fpredictive-commoning -fgcse-after-reload -fipa-cp-clone  ## optimizations for gcc compilers (1/2)
+OPTIMIZE += -ftree-loop-distribute-patterns -fvect-cost-model -ftree-partial-pre   ## optimizations for gcc compilers (2/2)
 OPTIMIZE += -g -Wall # compiler warnings
 ifeq (CHIMES,$(findstring CHIMES,$(CONFIGVARS)))
 CXX     = mpic++
@@ -572,6 +599,7 @@ HDF5LIB  = -L/usr/lib/x86_64-linux-gnu/hdf5/openmpi/ -lhdf5 -lz
 MPICHLIB =
 OPT     += -DDISABLE_ALIGNED_ALLOC -DCHIMES_USE_DOUBLE_PRECISION
 endif
+# to get required packages: sudo apt install libhdf5-openmpi-dev libgsl-dev libopenmpi-dev
 
 
 #----------------------------------------------------------------------------------------------
@@ -1282,6 +1310,7 @@ HYDRO_OBJS = 	hydro/hydro_toplevel.o \
 EOSCOOL_OBJS =  cooling/cooling.o \
 				cooling/grackle.o \
 				eos/eos.o \
+				eos/hydrogen_molecule.o \
 				eos/cosmic_ray_fluid/cosmic_ray_alfven.o \
 				eos/cosmic_ray_fluid/cosmic_ray_utilities.o \
 				solids/elastic_physics.o \

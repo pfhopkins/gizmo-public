@@ -447,6 +447,44 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
 #endif
             break;
 
+        case IO_RAD_OPACITY:
+#if defined(RADTRANSFER) && defined(OUTPUT_RT_RAD_OPACITY)
+            for(n = 0; n < pc; n++) {for(k = 0; k < N_RT_FREQ_BINS; k++) {SphP[offset + n].Rad_Kappa[k] = *fp++;}}
+#endif
+            break;
+
+        case IO_RAD_TEMP:
+#if defined(RADTRANSFER) && defined(RT_INFRARED)
+            for(n = 0; n < pc; n++) {SphP[offset + n].Radiation_Temperature = *fp++;}
+#endif
+            break;
+
+        case IO_DUST_TEMP:
+#if defined(RADTRANSFER) && defined(RT_INFRARED)
+            for(n = 0; n < pc; n++) {SphP[offset + n].Dust_Temperature = *fp++;}
+#endif
+            break;
+
+        case IO_RAD_FLUX:
+#if defined(RADTRANSFER) && defined(OUTPUT_RT_RAD_FLUX) && defined(RT_EVOLVE_FLUX)
+            for(n = 0; n < pc; n++) {
+                for(k=0;k<3;k++) {int kf; for(kf=0;kf<N_RT_FREQ_BINS;kf++) {SphP[offset + n].Rad_Flux_Pred[kf][k] = fp[N_RT_FREQ_BINS*k + kf];}} // will be corrected back into proper 'conserved variable' code units in rt_set_simple_inits subroutine later
+                fp += 3*N_RT_FREQ_BINS;
+            }
+#endif
+            break;
+            
+        case IO_EDDINGTON_TENSOR:
+#if defined(RADTRANSFER) && defined(OUTPUT_EDDINGTON_TENSOR)
+            for(n = 0; n < pc; n++) {
+                for(k=0;k<6;k++) {int kf; for(kf=0;kf<N_RT_FREQ_BINS;kf++) {SphP[offset + n].ET[kf][k] = fp[N_RT_FREQ_BINS*k + kf];}}
+                fp += 6*N_RT_FREQ_BINS;
+            }
+#endif
+            break;
+
+            
+            
             /* adaptive softening parameters */
         case IO_AGS_HKERN:
 #if defined(AGS_HSML_CALCULATION_IS_ACTIVE)
@@ -550,6 +588,30 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
 #endif
             break;
 
+        case IO_NH:        /* neutral hydrogen fraction */
+#if defined(RT_CHEM_PHOTOION)
+            for(n = 0; n < pc; n++) {SphP[offset + n].HI = *fp++;}
+#endif
+            break;
+            
+        case IO_HII:        /* ionized hydrogen abundance */
+#if defined(RT_CHEM_PHOTOION)
+            for(n = 0; n < pc; n++) {SphP[offset + n].HII = *fp++;}
+#endif
+            break;
+            
+        case IO_HeI:        /* neutral Helium */
+#if defined(RT_CHEM_PHOTOION_HE)
+            for(n = 0; n < pc; n++) {SphP[offset + n].HeI = *fp++;}
+#endif
+            break;
+            
+        case IO_HeII:        /* ionized Helium */
+#if defined(RT_CHEM_PHOTOION_HE)
+            for(n = 0; n < pc; n++) {SphP[offset + n].HeII = *fp++;}
+#endif
+            break;
+
 
         /* the other input fields (if present) are not needed to define the
              initial conditions of the code */
@@ -568,19 +630,12 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
         case IO_HYDROACCEL:
         case IO_DTENTR:
         case IO_RAD_ACCEL:
-        case IO_RAD_TEMP:
-        case IO_RAD_OPACITY:
-        case IO_DUST_TEMP:
         case IO_GDE_DISTORTIONTENSOR:
         case IO_CRATE:
         case IO_HRATE:
         case IO_NHRATE:
         case IO_HHRATE:
         case IO_MCRATE:
-        case IO_HeII:
-        case IO_HeI:
-        case IO_HII:
-        case IO_NH:
         case IO_TSTP:
         case IO_IMF:
         case IO_DIVB:
@@ -591,17 +646,16 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
         case IO_GRADPHI:
         case IO_GRADRHO:
         case IO_GRADVEL:
+        case IO_GRADMAG:
         case IO_TIDALTENSORPS:
         case IO_FLOW_DETERMINANT:
         case IO_STREAM_DENSITY:
         case IO_PHASE_SPACE_DETERMINANT:
         case IO_ANNIHILATION_RADIATION:
         case IO_PRESSURE:
-        case IO_EDDINGTON_TENSOR:
         case IO_LAST_CAUSTIC:
         case IO_HSMS:
         case IO_ACRB:
-        case IO_RAD_FLUX:
         case IO_VSTURB_DISS:
         case IO_VSTURB_DRIVE:
         case IO_grHI:
@@ -929,6 +983,21 @@ void read_file(char *fname, int readTask, int lastTask)
 #if !defined(RADTRANSFER)
             if(RestartFlag == 2 && blocknr == IO_RADGAMMA) {continue;}
 #endif
+#if !(defined(OUTPUT_RT_RAD_OPACITY) && defined(RADTRANSFER))
+            if(RestartFlag == 2 && blocknr == IO_RAD_OPACITY) {continue;}
+#endif
+#if !(defined(RT_INFRARED) && defined(RADTRANSFER))
+            if(RestartFlag == 2 && blocknr == IO_RAD_TEMP) {continue;}
+#endif
+#if !(defined(RT_INFRARED) && defined(RADTRANSFER))
+            if(RestartFlag == 2 && blocknr == IO_DUST_TEMP) {continue;}
+#endif
+#if !(defined(OUTPUT_RT_RAD_FLUX) && defined(RT_EVOLVE_FLUX) && defined(RADTRANSFER))
+            if(RestartFlag == 2 && blocknr == IO_RAD_FLUX) {continue;}
+#endif
+#if !(defined(OUTPUT_EDDINGTON_TENSOR) && defined(RADTRANSFER))
+            if(RestartFlag == 2 && blocknr == IO_EDDINGTON_TENSOR) {continue;}
+#endif
 
 #if !defined(EOS_CARRIES_TEMPERATURE)
             if(RestartFlag == 2 && blocknr == IO_EOSTEMP) {continue;}
@@ -936,6 +1005,10 @@ void read_file(char *fname, int readTask, int lastTask)
             
 #if defined(SINGLE_STAR_AND_SSP_HYBRID_MODEL) && defined(SINGLE_STAR_RESTART_FROM_FIRESIM)
             if(RestartFlag == 2 && blocknr == IO_RADGAMMA) {continue;}
+            if(RestartFlag == 2 && blocknr == IO_RAD_OPACITY) {continue;}
+            if(RestartFlag == 2 && blocknr == IO_RAD_TEMP) {continue;}
+            if(RestartFlag == 2 && blocknr == IO_DUST_TEMP) {continue;}
+            if(RestartFlag == 2 && blocknr == IO_RAD_FLUX) {continue;}
             if(RestartFlag == 2 && blocknr == IO_EDDINGTON_TENSOR) {continue;}
             if(RestartFlag == 2 && blocknr == IO_OSTAR) {continue;}
             if(RestartFlag == 2 && blocknr == IO_DTOSTAR) {continue;}
@@ -1088,7 +1161,7 @@ void read_file(char *fname, int readTask, int lastTask)
                                                 break;
 
                                             case 3:
-#if defined(INPUT_POSITIONS_IN_DOUBLE)
+#if defined(INPUT_POSITIONS_IN_DOUBLE) || defined(INPUT_IN_DOUBLEPRECISION)
                                                 hdf5_datatype = H5Tcopy(H5T_NATIVE_DOUBLE);
 #else
                                                 hdf5_datatype = H5Tcopy(H5T_NATIVE_FLOAT);

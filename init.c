@@ -765,7 +765,7 @@ void init(void)
     density();
     for(i = 0; i < N_gas; i++)	/* initialize gas/fluid cell properties */
     {
-        int k; k=0;
+        int k=0;
         SphP[i].InternalEnergyPred = SphP[i].InternalEnergy;
         SphP[i].recent_refinement_flag = 0; // always initialize to zero, no recent refinements
 
@@ -839,7 +839,7 @@ void init(void)
         SphP[i].SubGrid_CosmicRayEnergyDensity = 0;
 #endif
         
-#if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES==2)
+#if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES>=2)
         if(RestartFlag != 1) {if(P[i].ID == All.AGNWindID) {P[i].ID += 1;}} // reset any of these so can obey desired merge-split rules
 #endif
 

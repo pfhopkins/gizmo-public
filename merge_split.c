@@ -46,7 +46,7 @@ int does_particle_need_to_be_merged(int i)
 #ifdef GALSF_MERGER_STARCLUSTER_PARTICLES
     if(P[i].Type==4) {return evaluate_starstar_merger_for_starcluster_eligibility(i);}
 #endif
-#if defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+#if defined(FIRE_SUPERLAGRANGIAN_JEANS_REFINEMENT) || defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
     if(P[i].Type>0) {return 0;} // don't allow merging of collisionless particles [only splitting, in these runs]
     if(P[i].Type==3) {return 0;}
 #endif
@@ -136,7 +136,12 @@ double target_mass_renormalization_factor_for_mergesplit(int i, int split_key)
         double slope=0; slope = target_slope * (1. - exp(-(All.Time - All.TimeBegin) / dt_to_ramp_refinement)); // gradually ramp up refinement from snapshot
 
         double t_00 = All.TimeBegin;
+#if(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES>=1)
         t_00 = 0.1843705; // testing [for specific time chosen, hard-coded but change as needed]
+#endif
+#if(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES>=3)
+        t_00 = -0.2; // want this to be negative so skip the ramp step for these runs
+#endif
         double dtau = (All.Time - t_00) / dt_to_ramp_refinement, dtdelay=0.1, tfinal=1.;
         if(dtau < dtdelay) {slope=0;} else {slope=target_slope * (1. - exp(- ((dtau-dtdelay) / (tfinal - dtdelay)) ));} // alt model
 
@@ -149,10 +154,22 @@ double target_mass_renormalization_factor_for_mergesplit(int i, int split_key)
         if(dtau < 6.*dtdelay) {slope*=0;} else if(dtau < 7.*dtdelay) {slope*=(dtau-6.*dtdelay)/dtdelay;}
         r0=1.; if(r_pc<r0) {f0 *= pow(r_pc/r0,slope);}
         
-#if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES==2) /* simpler refinement for even smaller-scale simulations */
+#if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES>=2) /* simpler refinement for even smaller-scale simulations */
         mcrit_0 = m_ref_mJ = 0.003; minimum_refinement_mass_in_solar = 4.e-8; f0 = 1; // 'baseline' resolution & maximum resolution target
         r0 = 0.01; if(r_pc < r0) {f0 *= pow(r_pc/r0 , 2);} // simple additional refinement criterion vs radius interior to inner radius
-        f0 = DMAX(pow(r_pc / r0, 4) , 1.e-4); // optional alt - using for now, can revert to above. 
+        f0 = DMAX(pow(r_pc / r0, 4) , 1.e-4); // optional alt - using for now, can revert to above.
+#if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES>=3)
+        f0 = 1;
+        r0 = 0.1; if(r_pc < r0) {f0 *= pow(r_pc/r0 , 1);}
+        r0 = 0.01; if(r_pc < r0) {f0 *= pow(r_pc/r0 , 2);}
+        r0 = 0.0033; if(r_pc < r0) {f0 *= pow(r_pc/r0 , 2);}
+        f0 = DMAX(f0, 1.e-4);
+        double f0minfac = 30.;
+        r0 = 0.001; if(r_pc < r0) {f0minfac *= pow(r_pc/r0 , 2);}
+        f0minfac = DMAX(f0minfac , 0.005); // may need to be further lowered later
+        minimum_refinement_mass_in_solar = 1.e-9;
+        f0 = DMIN(1., f0minfac*f0);
+#endif
 #endif
 
         double M_target = f0 * DMAX( mcrit_0, m_ref_mJ ) / UNIT_MASS_IN_SOLAR;
@@ -1286,6 +1303,9 @@ int evaluate_starstar_merger_for_starcluster_eligibility(int i)
 int check_if_sufficient_mergesplit_time_has_passed(int i)
 {
     double N_timesteps_fac = 300.; // require > N timesteps before next merge/split, default was 100, but can be more aggressive - something between 10-100 works well in practice [definitely shorter than 10 can cause problems]
+#if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES >= 2)
+    N_timesteps_fac = 30.;
+#endif
     if(P[i].Time_Of_Last_MergeSplit <= All.TimeBegin) {N_timesteps_fac *= 10. * get_random_number(832LL*i + 890345645LL + 83457LL*ThisTask + 12313403LL*P[i].ID);} // spread initial timing out over a broader range so it doesn't all happen at once after the startup
     double dtime_code = All.Time - P[i].Time_Of_Last_MergeSplit; // time [in code units] since last merge/split
     double dt_incodescale = (GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i) * All.cf_hubble_a) * All.cf_atime; // timestep converted appropriately to code units [physical if non-comoving, else scale factor]

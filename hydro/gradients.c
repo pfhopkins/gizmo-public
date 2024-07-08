@@ -1057,9 +1057,7 @@ void hydro_gradient_calc(void)
             construct_gradient(SphP[i].Gradients.Pressure,i);
             for(k=0;k<3;k++) {construct_gradient(SphP[i].Gradients.Velocity[k],i);}
 #ifdef TURB_DIFF_DYNAMIC
-            for (k = 0; k < 3; k++) {
-                construct_gradient(GasGradDataPasser[i].GradVelocity_bar[k], i);
-            }
+            for(k=0;k<3;k++) {construct_gradient(GasGradDataPasser[i].GradVelocity_bar[k], i);}
 #endif
 #ifdef DOGRAD_INTERNAL_ENERGY
             construct_gradient(SphP[i].Gradients.InternalEnergy,i);
@@ -1100,72 +1098,45 @@ void hydro_gradient_calc(void)
 
 #ifdef SPH_TP12_ARTIFICIAL_RESISTIVITY
             /* use the magnitude of the B-field gradients relative to kernel length to calculate artificial resistivity */
-            double GradBMag=0.0;
-            double BMag=0.0;
-            for(k=0;k<3;k++)
-            {
-                for(j=0;j<3;j++)
-                {
-                    GradBMag += SphP[i].Gradients.B[k][j]*SphP[i].Gradients.B[k][j];
-                }
-                BMag += Get_Gas_BField(i,k)*Get_Gas_BField(i,k);
-            }
-            SphP[i].Balpha = PPP[i].Hsml * sqrt(GradBMag/(BMag+1.0e-33));
-            SphP[i].Balpha = DMIN(SphP[i].Balpha, 0.1 * All.ArtMagDispConst);
-            SphP[i].Balpha = DMAX(SphP[i].Balpha, 0.005);
+            double GradBMag=0,BMag=0; for(k=0;k<3;k++) {for(j=0;j<3;j++) {GradBMag += SphP[i].Gradients.B[k][j]*SphP[i].Gradients.B[k][j];} BMag += Get_Gas_BField(i,k)*Get_Gas_BField(i,k);}
+            SphP[i].Balpha = DMAX(DMIN(PPP[i].Hsml * sqrt(GradBMag/(BMag+1.0e-33)), 0.1 * All.ArtMagDispConst), 0.005);
 #endif
-
             
 #if defined(ADAPTIVE_GRAVSOFT_FORGAS) || (ADAPTIVE_GRAVSOFT_FORALL & 1)
             /* note non-gas particles are handled separately, in the ags_hsml routine. here the zeta terms ONLY control errors if we maintain the 'correct' neighbor number: for boundary particles, it can actually be worse. so we need to check whether we should use it or not */
             double ngb_eff = pow(PPP[i].NumNgb, NUMDIMS); // calculate the actual neighbor number, needed here
-            if((fabs(ngb_eff-All.DesNumNgb)/All.DesNumNgb < 0.05) && (PPP[i].Hsml > 1.001*All.MinHsml) && (PPP[i].Hsml < 0.999*All.MaxHsml))
-            {
-                double ndenNGB = ngb_eff / ( NORM_COEFF * pow(PPP[i].Hsml,NUMDIMS) );
-                PPPZ[i].AGS_zeta *= P[i].Mass * PPP[i].Hsml / (NUMDIMS * ndenNGB) * PPP[i].DhsmlNgbFactor;
+            if((fabs(ngb_eff-All.DesNumNgb)/All.DesNumNgb < 0.05) && (PPP[i].Hsml > 1.001*All.MinHsml) && (PPP[i].Hsml < 0.999*All.MaxHsml)) {
+                double ndenNGB = ngb_eff / ( NORM_COEFF * pow(PPP[i].Hsml,NUMDIMS) ); PPPZ[i].AGS_zeta *= P[i].Mass * PPP[i].Hsml / (NUMDIMS * ndenNGB) * PPP[i].DhsmlNgbFactor;
             } else {PPPZ[i].AGS_zeta=0;}
 #endif
 
 
 #ifdef HYDRO_SPH
-
 #ifdef MAGNETIC
             if(SphP[i].Density > 0)
             {
-                for(k=0;k<3;k++) SphP[i].DtB[k] *= PPP[i].DhsmlNgbFactor * P[i].Mass / (SphP[i].Density * SphP[i].Density) / All.cf_atime; // induction equation (convert from Bcode*vcode/rcode to Bphy/tphys) //
+                for(k=0;k<3;k++) {SphP[i].DtB[k] *= PPP[i].DhsmlNgbFactor * P[i].Mass / (SphP[i].Density * SphP[i].Density) / All.cf_atime;} // induction equation (convert from Bcode*vcode/rcode to Bphy/tphys) //
 #ifdef DIVBCLEANING_DEDNER
-                /* full correct form of D(phi)/Dt = -ch*ch*div.dot.B - phi/tau - (1/2)*phi*div.dot.v */
-                /* PFH: here's the div.dot.B term: make sure div.dot.B def'n matches appropriate grad_phi conjugate pair: recommend direct diff div.dot.B */
+                /* full correct form of D(phi)/Dt = -ch*ch*div.dot.B - phi/tau - (1/2)*phi*div.dot.v */ /* PFH: here's the div.dot.B term: make sure div.dot.B def'n matches appropriate grad_phi conjugate pair: recommend direct diff div.dot.B */
                 SphP[i].divB *= PPP[i].DhsmlNgbFactor * P[i].Mass / (SphP[i].Density * SphP[i].Density);
-                if((!isnan(SphP[i].divB))&&(PPP[i].Hsml>0)&&(SphP[i].divB!=0)&&(SphP[i].Density>0))
-                {
-                    double tmp_ded = 0.5 * SphP[i].MaxSignalVel * All.cf_afac3; // has units of v_physical now
-                    /* do a check to make sure divB isn't something wildly divergent (owing to particles being too close) */
-                    double b2_max = 0.0;
-                    for(k=0;k<3;k++) {b2_max += Get_Gas_BField(i,k)*Get_Gas_BField(i,k);}
+                if((!isnan(SphP[i].divB))&&(PPP[i].Hsml>0)&&(SphP[i].divB!=0)&&(SphP[i].Density>0)) {
+                    double tmp_ded = 0.5 * SphP[i].MaxSignalVel * All.cf_afac3; /* has units of v_physical now *//* do a check to make sure divB isn't something wildly divergent (owing to particles being too close) */
+                    double b2_max = 0.0; for(k=0;k<3;k++) {b2_max += Get_Gas_BField(i,k)*Get_Gas_BField(i,k);}
                     b2_max = 100.0 * fabs( sqrt(b2_max) * All.cf_a2inv * P[i].Mass / (SphP[i].Density*All.cf_a3inv) * 1.0 / (PPP[i].Hsml*All.cf_atime) );
-                    if(fabs(SphP[i].divB) > b2_max) {SphP[i].divB *= b2_max / fabs(SphP[i].divB);}
-                    /* ok now can apply this to get the growth rate of phi */
-                    // SphP[i].DtPhi = -tmp_ded * tmp_ded * All.DivBcleanHyperbolicSigma * SphP[i].divB;
+                    if(fabs(SphP[i].divB) > b2_max) {SphP[i].divB *= b2_max / fabs(SphP[i].divB);} /* ok now can apply this to get the growth rate of phi */
                     SphP[i].DtPhi = -tmp_ded * tmp_ded * All.DivBcleanHyperbolicSigma * SphP[i].divB * SphP[i].Density*All.cf_a3inv; // mass-based phi-flux
-                    // phiphi above now has units of [Bcode]*[vcode]^2/[rcode]=(Bcode*vcode)*vcode/rcode; needs to have units of [Phicode]*[vcode]/[rcode]
-                    // [PhiGrad]=[Phicode]/[rcode] = [DtB] = [Bcode]*[vcode]/[rcode] IFF [Phicode]=[Bcode]*[vcode]; this also makes the above self-consistent //
-                    // (implicitly, this gives the correct evolution in comoving, adiabatic coordinates where the sound speed is the relevant speed at which
-                    //   the 'damping wave' propagates. another choice (provided everything else is self-consistent) is fine, it just makes different assumptions
-                    //   about the relevant 'desired' timescale for damping wave propagation in the expanding box) //
-                } else {
-                    SphP[i].DtPhi=0; SphP[i].divB=0; for(k=0;k<3;k++) {SphP[i].DtB[k] = 0;}
-                }
-                SphP[i].divB = 0.0; // now we re-zero it, since a -different- divB definition must be used in hydro to subtract the tensile terms */
+                    // phiphi above now has units of [Bcode]*[vcode]^2/[rcode]=(Bcode*vcode)*vcode/rcode; needs to have units of [Phicode]*[vcode]/[rcode] so [PhiGrad]=[Phicode]/[rcode] = [DtB] = [Bcode]*[vcode]/[rcode] IFF [Phicode]=[Bcode]*[vcode]; this also makes the above self-consistent //
+                    // (implicitly, this gives the correct evolution in comoving, adiabatic coordinates where the sound speed is the relevant speed at which the 'damping wave' propagates. another choice (provided everything else is self-consistent) is fine, it just makes different assumptions about the relevant 'desired' timescale for damping wave propagation in the expanding box) //
+                } else {SphP[i].DtPhi=0; SphP[i].divB=0; for(k=0;k<3;k++) {SphP[i].DtB[k] = 0;}}
+                SphP[i].divB = 0.0; /* now we re-zero it, since a -different- divB definition must be used in hydro to subtract the tensile terms */
 #endif
             } else {
-                for(k=0;k<3;k++) SphP[i].DtB[k] = 0;
+                for(k=0;k<3;k++) {SphP[i].DtB[k] = 0;}
 #ifdef DIVBCLEANING_DEDNER
                 SphP[i].divB = 0; SphP[i].DtPhi = 0;
 #endif
             }
 #endif
-
 
 #ifdef SPHAV_CD10_VISCOSITY_SWITCH
             SphP[i].alpha_limiter /= SphP[i].Density;
@@ -1174,21 +1145,16 @@ void hydro_gradient_calc(void)
             NV_limiter = NV_dummy*NV_dummy / (NV_dummy*NV_dummy + SphP[i].NV_trSSt);
             NV_A = DMAX(-SphP[i].NV_dt_DivVel, 0.0);
             divVel_physical = SphP[i].NV_DivVel;
-
             // add a simple limiter here: alpha_loc is 'prepped' but only switches on when the divergence goes negative: want to add hubble flow here //
             if(All.ComovingIntegrationOn) {divVel_physical += 3*All.cf_hubble_a;} // hubble-flow correction added
             if(divVel_physical>=0.0) {NV_A = 0.0;}
-
             h_eff = Get_Particle_Size(i) * All.cf_atime / 0.5; // 'default' parameter choices are scaled for a cubic spline, but code will attempt to scale appropriately to other kernel choices //
             cs_nv = Get_Gas_effective_soundspeed_i(i) * All.cf_afac3; // converts to physical velocity units //
             alphaloc = All.ViscosityAMax * h_eff*h_eff*NV_A / (0.36*cs_nv*cs_nv*(0.05/SPHAV_CD10_VISCOSITY_SWITCH) + h_eff*h_eff*NV_A);
-            // 0.25 in front of vsig is the 'noise parameter' that determines the relative amplitude which will trigger the switch:
-            //    that choice was quite large (requires approach velocity rate-of-change is super-sonic); better to use c_s (above), and 0.05-0.25 //
+            // 0.25 in front of vsig is the 'noise parameter' that determines the relative amplitude which will trigger the switch: that choice was quite large (requires approach velocity rate-of-change is super-sonic); better to use c_s (above), and 0.05-0.25 //
             // NV_A is physical 1/(time*time), but Hsml and vsig can be comoving, so need appropriate correction terms above //
-
             if(SphP[i].alpha < alphaloc) {SphP[i].alpha = alphaloc;}
                 else if (SphP[i].alpha > alphaloc) {SphP[i].alpha = alphaloc + (SphP[i].alpha - alphaloc) * exp(-NV_dt * (0.5*fabs(SphP[i].MaxSignalVel)*All.cf_afac3)/(0.5*h_eff) * SPHAV_CD10_VISCOSITY_SWITCH);}
-
             if(SphP[i].alpha < All.ViscosityAMin) {SphP[i].alpha = All.ViscosityAMin;}
             SphP[i].alpha_limiter = DMAX(NV_limiter,All.ViscosityAMin/SphP[i].alpha);
 #else
@@ -1205,209 +1171,9 @@ void hydro_gradient_calc(void)
 #endif
 #endif
 
-
-
-#if (defined(CONDUCTION_SPITZER) || defined(VISCOSITY_BRAGINSKII) || defined(MHD_NON_IDEAL))
-            double ion_frac; ion_frac=1;
-#if defined(COOLING) /* get the ionized fraction. NOTE we CANNOT call 'ThermalProperties' or functions like 'Get_Ionized_Fraction' here in gradients.c, as we have not done self-shielding steps yet and most modules will yield unphysical answers! */
-            ion_frac = SphP[i].Ne / (1. + 2.*yhelium(i)); /* quick estimator. this is actually what we need for conduction since its the free electrons conducting, and we want number relative to fully-ionized gas */
-#endif
-#endif
-
-
-#ifdef CONDUCTION
-            {
-                SphP[i].Kappa_Conduction = All.ConductionCoeff;
-#ifdef CONDUCTION_SPITZER
-                /* calculate the thermal conductivities: use the Spitzer formula */
-                SphP[i].Kappa_Conduction *= ion_frac * pow(SphP[i].InternalEnergyPred, 2.5);
-
-                /* account for saturation (when the mean free path of electrons is large): estimate whether we're in that limit with the gradients */
-                double electron_free_path = All.ElectronFreePathFactor * SphP[i].InternalEnergyPred * SphP[i].InternalEnergyPred / (SphP[i].Density * All.cf_a3inv);
-                double du_conduction=0;
-                for(k=0;k<3;k++) {du_conduction += SphP[i].Gradients.InternalEnergy[k] * SphP[i].Gradients.InternalEnergy[k];}
-                double temp_scale_length = SphP[i].InternalEnergyPred / sqrt(du_conduction) * All.cf_atime;
-#ifdef MAGNETIC
-                // following Jono Squire's notes, the 'Whistler instability' limits the heat flux at high-beta; Komarov et al., arXiv:1711.11462 (2017) //
-                double beta_i=0; for(k=0;k<3;k++) {beta_i += Get_Gas_BField(i,k)*Get_Gas_BField(i,k);}
-                beta_i *= All.cf_afac1 / (All.cf_atime * SphP[i].Density * Get_Gas_thermal_soundspeed_i(i)*Get_Gas_thermal_soundspeed_i(i));
-                SphP[i].Kappa_Conduction /= (1 + (4.2 + 1./(3.*beta_i)) * electron_free_path / temp_scale_length); // should be in physical units //
-#else
-                SphP[i].Kappa_Conduction /= (1 + 4.2 * electron_free_path / temp_scale_length); // should be in physical units //
-#endif
-
-#ifdef DIFFUSION_OPTIMIZERS
-                double cs = Get_Gas_effective_soundspeed_i(i);
-#ifdef MAGNETIC
-                double vA_2 = 0.0; for(k=0;k<3;k++) {vA_2 += Get_Gas_BField(i,k)*Get_Gas_BField(i,k);}
-                vA_2 *= All.cf_afac1 / (All.cf_atime * SphP[i].Density);
-                cs = DMIN(1.e4*cs , sqrt(cs*cs+vA_2));
-#endif
-                cs *= All.cf_afac3;
-                SphP[i].Kappa_Conduction = DMIN(SphP[i].Kappa_Conduction , 42.85 * SphP[i].Density*All.cf_a3inv * cs * DMIN(20.*Get_Particle_Size(i)*All.cf_atime , temp_scale_length));
-#endif
-#endif
-            }
-#endif
-
-
-
-#ifdef VISCOSITY
-            {
-                SphP[i].Eta_ShearViscosity = All.ShearViscosityCoeff;
-                SphP[i].Zeta_BulkViscosity = All.BulkViscosityCoeff;
-#ifdef VISCOSITY_BRAGINSKII
-                /* calculate the viscosity coefficients: use the Braginskii shear tensor formulation expanded to first order */
-                SphP[i].Eta_ShearViscosity *= ion_frac * pow(SphP[i].InternalEnergyPred, 2.5);
-                SphP[i].Zeta_BulkViscosity = 0;
-
-                /* again need to account for possible saturation (when the mean free path of ions is large): estimate whether we're in that limit with the gradients */
-                double ion_free_path = All.ElectronFreePathFactor * SphP[i].InternalEnergyPred * SphP[i].InternalEnergyPred / (SphP[i].Density * All.cf_a3inv);
-                /* need an estimate of the internal energy gradient scale length, which we get by d(P/rho) = P/rho * (dP/P - drho/rho) */
-                double dv_magnitude=0, v_magnitude=0;
-#ifdef MAGNETIC
-                double bhat[3]={0},beta_i=0,bmag=0; for(k=0;k<3;k++) {bhat[k]=Get_Gas_BField(i,k); bmag+=bhat[k]*bhat[k];}
-                double double_dot_dv=0; if(bmag>0) {bmag = sqrt(bmag); for(k=0;k<3;k++) {bhat[k]/=bmag;}}
-                beta_i = bmag*bmag * All.cf_afac1 / (All.cf_atime * SphP[i].Density * Get_Gas_thermal_soundspeed_i(i)*Get_Gas_thermal_soundspeed_i(i));
-#endif
-                for(k=0;k<3;k++)
-                {
-                    for(k1=0;k1<3;k1++)
-                    {
-                        dv_magnitude += SphP[i].Gradients.Velocity[k][k1]*SphP[i].Gradients.Velocity[k][k1];
-#ifdef MAGNETIC
-                        double_dot_dv += SphP[i].Gradients.Velocity[k][k1] * bhat[k]*bhat[k1] * All.cf_a2inv; // physical units
-#endif
-                    }
-                    v_magnitude += SphP[i].VelPred[k]*SphP[i].VelPred[k];
-                }
-                double vel_scale_length = sqrt( v_magnitude / dv_magnitude ) * All.cf_atime;
-                SphP[i].Eta_ShearViscosity /= (1 + 4.2 * ion_free_path / vel_scale_length); // should be in physical units //
-                /* also limit to saturation magnitude ~ signal_speed / lambda_MFP^2 */
-                double cs = Get_Gas_effective_soundspeed_i(i);
-#ifdef MAGNETIC
-                // following Jono Squire's notes, the mirror and firehose instabilities limit pressure anisotropies [which scale as the viscous term inside the gradient: nu_braginskii*(bhat.bhat:grad.v)] to >-2*P_magnetic and <1*P_magnetic
-                double P_effective_visc = SphP[i].Eta_ShearViscosity * double_dot_dv;
-                double P_magnetic = 0.5 * (bmag*All.cf_a2inv) * (bmag*All.cf_a2inv);
-                if(P_effective_visc < -2.*P_magnetic) {SphP[i].Eta_ShearViscosity = 2.*P_magnetic / fabs(double_dot_dv);}
-                if(P_effective_visc > P_magnetic) {SphP[i].Eta_ShearViscosity = P_magnetic / fabs(double_dot_dv);}
-                double vA_2 = 0.0; for(k=0;k<3;k++) {vA_2 += Get_Gas_BField(i,k)*Get_Gas_BField(i,k);}
-                vA_2 *= All.cf_afac1 / (All.cf_atime * SphP[i].Density);
-                cs = DMIN(1.e4*cs , sqrt(cs*cs+vA_2));
-#endif
-                cs *= All.cf_afac3;
-#ifdef DIFFUSION_OPTIMIZERS
-                double eta_sat = (SphP[i].Density*All.cf_a3inv) * cs / (ion_free_path * (1 + 4.2 * ion_free_path / vel_scale_length));
-                if(eta_sat <= 0) SphP[i].Eta_ShearViscosity=0;
-                if(SphP[i].Eta_ShearViscosity>0) {SphP[i].Eta_ShearViscosity = 1. / (1./SphP[i].Eta_ShearViscosity + 1./eta_sat);} // again, all physical units //
-                //SphP[i].Eta_ShearViscosity = DMIN(SphP[i].Eta_ShearViscosity , SphP[i].Density*All.cf_a3inv * cs * DMAX(Get_Particle_Size(i)*All.cf_atime , vel_scale_length));
-#endif
-#endif
-            }
-#endif
-
-
-
-#ifdef MHD_NON_IDEAL
-#ifdef COOLING	    
-	    if(All.Time > All.TimeBegin) // only try to get self-consistent resistivities after the first timestep, when we have calculated the self-consistent ionization state - on the first timestep default to 0 (=ideal MHD)
-#endif	      
-            {
-                /* calculations below follow Wardle 2007 and Keith & Wardle 2014, for the equation sets */
-                double mean_molecular_weight = 2.38; // molecular H2, +He with solar mass fractions and metals
-#ifdef COOLING
-                double T_eff_atomic = 1.23 * (5./3.-1.) * U_TO_TEMP_UNITS * SphP[i].InternalEnergyPred; /* we'll use this to make a quick approximation to the actual mean molecular weight here */
-                double nH_cgs = SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_NHCGS, T_transition=DMIN(8000.,nH_cgs), f_mol=1./(1. + T_eff_atomic*T_eff_atomic/(T_transition*T_transition));
-                mean_molecular_weight = 4. / (1. + (3. + 4.*SphP[i].Ne - 2.*f_mol) * HYDROGEN_MASSFRAC);
-#endif
-                double temperature = mean_molecular_weight * (GAMMA(i)-1.) * U_TO_TEMP_UNITS * SphP[i].InternalEnergyPred; // will use appropriate EOS to estimate temperature
-                double zeta_cr = 1.0e-17; // cosmic ray ionization rate (fixed as constant for non-CR runs)
-#ifdef RT_ISRF_BACKGROUND
-                zeta_cr = Get_CosmicRayIonizationRate_cgs(i);
-#endif		
-#ifdef COSMIC_RAY_FLUID
-                double u_cr=0; for(k=0;k<N_CR_PARTICLE_BINS;k++) {u_cr += SphP[i].CosmicRayEnergyPred[k];}
-                zeta_cr = u_cr * 2.2e-6 * ((1. / P[i].Mass * SphP[i].Density * All.cf_a3inv) * (UNIT_PRESSURE_IN_CGS)); // convert to ionization rate
-#endif
-                double a_grain_micron = 0.1, f_dustgas = 0.01; // effective size of grains that matter at these densities
-                double m_ion = 24.3; // Mg dominates ions in dense gas [where this is relevant]; this is ion mass in units of proton mass
-#ifdef METALS
-                f_dustgas = 0.5 * P[i].Metallicity[0] * return_dust_to_metals_ratio_vs_solar(i,0); // appropriate dust-to-metals ratio
-#endif
-                // now everything should be fully-determined (given the inputs above and the known properties of the gas) //
-                double m_neutral = mean_molecular_weight; // in units of the proton mass
-                double ag01 = a_grain_micron/0.1, m_grain = 7.51e9 * ag01*ag01*ag01; // grain mass [internal density =3 g/cm^3]
-                double rho = SphP[i].Density*All.cf_a3inv * UNIT_DENSITY_IN_CGS, n_eff = rho / PROTONMASS_CGS; // density in cgs
-                // calculate ionization fraction in dense gas; use rate coefficients k to estimate grain charge
-                double k0 = 1.95e-4 * ag01*ag01 * sqrt(temperature); // prefactor for rate coefficient for electron-grain collisions
-                double ngr_ngas = (m_neutral/m_grain) * f_dustgas; // number of grains per neutral
-                double psi_prefac = 167.1 / (ag01 * temperature); // e*e/(a_grain*k_boltzmann*T): Z_grain = psi/psi_prefac where psi is constant determines charge
-                double alpha = zeta_cr * psi_prefac / (ngr_ngas*ngr_ngas * k0 * (n_eff/m_neutral)); // coefficient for equation that determines Z_grain
-                // psi solves the equation: psi = alpha * (exp[psi] - y/(1+psi)) where y=sqrt(m_ion/m_electron); note the solution for small alpha is independent of m_ion, only large alpha
-                //   (where the non-ideal effects are weak, generally) produces a difference: at very high-T, appropriate m_ion should be hydrogen+helium, but in this limit our cooling
-                //    routines will already correctly determine the ionization states. so we can safely adopt Mg as our ion of consideration
-                double y=sqrt(m_ion*PROTONMASS_CGS/ELECTRONMASS_CGS), psi_0 = 0.5188025-0.804386*log(y), psi=psi_0; // solution for large alpha [>~10]
-                if(alpha<0.002) {psi=alpha*(1.-y)/(1.+alpha*(1.+y));} else if(alpha<10.) {psi=psi_0/(1.+0.027/alpha);} // accurate approximation for intermediate values we can use here
-                double k_e = k0 * exp(psi); // e-grain collision rate coefficient
-                double k_i = k0 * sqrt(ELECTRONMASS_CGS / (m_ion*PROTONMASS_CGS)) * (1 - psi); // i-grain collision rate coefficient
-                double n_elec = zeta_cr / (ngr_ngas * k_e); // electron number density
-                double n_ion = zeta_cr / (ngr_ngas * k_i); // ion number density
-                double Z_grain = psi / psi_prefac; // mean grain charge (note this is signed, will be negative)
-#ifdef COOLING
-                double mu_eff=2.38, x_elec=DMAX(1.e-18, SphP[i].Ne*HYDROGEN_MASSFRAC*mu_eff), R=x_elec*psi_prefac/ngr_ngas; psi_0=-3.787124454911839; n_elec=x_elec*n_eff/mu_eff; // R is essentially the ratio of negative charge in e- to dust: determines which regime we're in to set quantities below
-                if(R > 100.) {psi=psi_0;} else if(R < 0.002) {psi=R*(1.-y)/(1.+2.*y*R);} else {psi=psi_0/(1.+pow(R/0.18967,-0.5646));} // simple set of functions to solve for psi, given R above, using the same equations used to determine low-temp ion fractions
-                n_ion = n_elec * y * exp(psi)/(1.-psi); Z_grain = psi / psi_prefac; // we can immediately now calculate these from the above
-#endif
-                // now define more variables we will need below //
-                double gizmo2gauss = UNIT_B_IN_GAUSS; // convert to B-field to gauss (units)
-                double B_Gauss = 0; for(k=0;k<3;k++) {B_Gauss += Get_Gas_BField(i,k)*Get_Gas_BField(i,k);} // get magnitude of B //
-                if(B_Gauss<=0) {B_Gauss=0;} else {B_Gauss = sqrt(B_Gauss) * All.cf_a2inv * gizmo2gauss;} // B-field magnitude in Gauss
-                double xe = n_elec / n_eff;
-                double xi = n_ion / n_eff;
-                double xg = ngr_ngas;
-                // get collision rates/cross sections for different species //
-                double nu_g = 7.90e-6 * ag01*ag01 * sqrt(temperature/m_neutral) / (m_neutral+m_grain); // Pinto & Galli 2008
-                double nu_ei = 51.*xe*pow(temperature,-1.5); // Pandey & Wardle 2008 (e-ion)
-                double nu_e = nu_ei + 6.21e-9*pow(temperature/100.,0.65)/m_neutral; // Pinto & Galli 2008 for latter (e-neutral)
-                double nu_ie = ((ELECTRONMASS_CGS*xe)/(m_ion*PROTONMASS_CGS*xi))*nu_ei; // Pandey & Wardle 2008 for former (e-ion)
-                double nu_i = nu_ie + 1.57e-9/(m_neutral+m_ion); // Pandey & Wardle 2008 for former (e-ion), Pinto & Galli 2008 for latter (i-neutral)
-                // use the cross sections to determine the hall parameters and conductivities //
-                double beta_prefac = ELECTRONCHARGE_CGS * B_Gauss / (PROTONMASS_CGS * C_LIGHT_CGS * n_eff);
-                double beta_i = beta_prefac / (m_ion * nu_i); // standard beta factors (Hall parameters)
-                double beta_e = beta_prefac / (ELECTRONMASS_CGS/PROTONMASS_CGS * nu_e);
-                double beta_g = beta_prefac / (m_grain * nu_g) * fabs(Z_grain);
-                double be_inv = 1/(1 + beta_e*beta_e), bi_inv = 1/(1 + beta_i*beta_i), bg_inv = 1/(1 + beta_g*beta_g);
-                double sigma_O = xe*beta_e + xi*beta_i + xg*fabs(Z_grain)*beta_g; // ohmic conductivity
-                double sigma_H = -xe*be_inv + xi*bi_inv + xg*Z_grain*bg_inv; // hall conductivity
-                double sigma_P = xe*beta_e*be_inv + xi*beta_i*bi_inv + xg*fabs(Z_grain)*beta_g*bg_inv; // pedersen conductivity
-                double sign_Zgrain = Z_grain/fabs(Z_grain); if(Z_grain==0) {sign_Zgrain=0;}
-                double sigma_A2 = (xe*beta_e*be_inv)*(xi*beta_i*bi_inv)*pow(-beta_e+beta_i,2) +
-                                  (xe*beta_e*be_inv)*(xg*fabs(Z_grain)*beta_g*bg_inv)*pow(-beta_e+sign_Zgrain*beta_g,2) +
-                                  (xi*beta_i*bi_inv)*(xg*fabs(Z_grain)*beta_g*bg_inv)*pow(-beta_i+sign_Zgrain*beta_g,2); // alternative formulation which is automatically positive-definite
-
-                // now we can finally calculate the diffusivities //
-                double eta_prefac = B_Gauss * C_LIGHT_CGS / (4 * M_PI * ELECTRONCHARGE_CGS * n_eff );
-                double eta_O = eta_prefac / sigma_O;
-                double sigma_perp2 = sigma_H*sigma_H + sigma_P*sigma_P;
-                double eta_H = eta_prefac * sigma_H / sigma_perp2;
-                //double eta_A = eta_prefac * (sigma_P/sigma_perp2 - 1/sigma_O); // replace with positive-definite rewriting below
-                double eta_A = eta_prefac * (sigma_A2)/(sigma_O*sigma_perp2);
-                eta_O = fabs(eta_O); eta_A = fabs(eta_A); // these depend on the absolute values and should be written as such, so eta is always positive [not true for eta_h]
-                //eta_O = DMAX(0,eta_O); eta_H = DMAX(0,eta_H); eta_A = DMAX(0,eta_A); // check against unphysical negative diffusivities
-                // convert units to code units
-                double units_cgs_to_code = UNIT_TIME_IN_CGS / (UNIT_LENGTH_IN_CGS * UNIT_LENGTH_IN_CGS); // convert coefficients (L^2/t) to code units [physical]
-                double eta_ohmic = eta_O*units_cgs_to_code, eta_hall = eta_H*units_cgs_to_code, eta_ad = eta_A*units_cgs_to_code;
-
-                SphP[i].Eta_MHD_OhmicResistivity_Coeff = eta_ohmic;     /*!< Ohmic resistivity coefficient [physical units of L^2/t] */
-                SphP[i].Eta_MHD_HallEffect_Coeff = eta_hall;            /*!< Hall effect coefficient [physical units of L^2/t] */
-                SphP[i].Eta_MHD_AmbiPolarDiffusion_Coeff = eta_ad;      /*!< Hall effect coefficient [physical units of L^2/t] */
-            }
-#ifdef COOLING
-            else {SphP[i].Eta_MHD_OhmicResistivity_Coeff = SphP[i].Eta_MHD_HallEffect_Coeff = SphP[i].Eta_MHD_AmbiPolarDiffusion_Coeff = 0;} // =0 on the first timestep, since we don't know the ionization yet
-#endif	    
-#endif
-
-
+            calculate_and_assign_conduction_and_viscosity_coefficients(i);
+            calculate_and_assign_nonideal_mhd_coefficients(i);
+            
 #ifdef RADTRANSFER
             {
                 int k_freq; for(k_freq = 0; k_freq < N_RT_FREQ_BINS; k_freq++)
@@ -1446,10 +1212,12 @@ void hydro_gradient_calc(void)
             }
 #endif // ifdef radtransfer
 
+            
 #if defined(EOS_ELASTIC) // update time-derivative of stress tensor (needs to be done before slope-limiting to use full velocity gradient information) //
             elastic_body_update_driftkick(i,1.,2);
 #endif
 
+            
             /* finally, we need to apply a sensible slope limiter to the gradients, to prevent overshooting */
             double stol = 0.0, stol_tmp, stol_diffusion; stol_diffusion = 0.1; stol_tmp = stol;
             double h_lim = PPP[i].Hsml, d_max = DMAX(PPP[i].Hsml,GasGradDataPasser[i].MaxDistance); h_lim = d_max;
@@ -1536,69 +1304,12 @@ void hydro_gradient_calc(void)
 #endif
 
 
-
-
 #ifdef TURB_DIFFUSION
-            {
-                /* estimate local turbulent diffusion coefficient from velocity gradients using Smagorinsky mixing model:
-                    we do this after slope-limiting to prevent the estimated velocity gradients from being unphysically large */
-                double h_turb = Get_Particle_Size(i) * All.cf_atime; // physical
-                if(h_turb > 0)
-                {
-                    // overall normalization //
-                    double C_Smagorinsky_Lilly = 0.15; // this is the standard Smagorinsky-Lilly constant, calculated from Kolmogorov theory: should be 0.1-0.2 //
-                    double turb_prefactor = 0.25 * All.TurbDiffusion_Coefficient * C_Smagorinsky_Lilly*C_Smagorinsky_Lilly * sqrt(2.0);
-                    // then scale with inter-particle spacing //
-                    turb_prefactor *= h_turb*h_turb;
-                    // calculate frobenius norm of symmetric shear velocity gradient tensor //
-                    double shear_factor = sqrt((1./2.)*((SphP[i].Gradients.Velocity[1][0]+SphP[i].Gradients.Velocity[0][1]) *
-                                                        (SphP[i].Gradients.Velocity[1][0]+SphP[i].Gradients.Velocity[0][1]) +
-                                                        (SphP[i].Gradients.Velocity[2][0]+SphP[i].Gradients.Velocity[0][2]) *
-                                                        (SphP[i].Gradients.Velocity[2][0]+SphP[i].Gradients.Velocity[0][2]) +
-                                                        (SphP[i].Gradients.Velocity[2][1]+SphP[i].Gradients.Velocity[1][2]) *
-                                                        (SphP[i].Gradients.Velocity[2][1]+SphP[i].Gradients.Velocity[1][2])) +
-                                               (2./3.)*((SphP[i].Gradients.Velocity[0][0]*SphP[i].Gradients.Velocity[0][0] +
-                                                         SphP[i].Gradients.Velocity[1][1]*SphP[i].Gradients.Velocity[1][1] +
-                                                         SphP[i].Gradients.Velocity[2][2]*SphP[i].Gradients.Velocity[2][2]) -
-                                                        (SphP[i].Gradients.Velocity[1][1]*SphP[i].Gradients.Velocity[2][2] +
-                                                         SphP[i].Gradients.Velocity[0][0]*SphP[i].Gradients.Velocity[1][1] +
-                                                         SphP[i].Gradients.Velocity[0][0]*SphP[i].Gradients.Velocity[2][2])));
-                    // slope-limit and convert to physical units //
-                    double shearfac_max = 0.5 * sqrt(SphP[i].VelPred[0]*SphP[i].VelPred[0]+SphP[i].VelPred[1]*SphP[i].VelPred[1]+SphP[i].VelPred[2]*SphP[i].VelPred[2]) / h_turb;
-                    shear_factor = DMIN(shear_factor , shearfac_max * All.cf_atime) * All.cf_a2inv; // physical
 #ifdef TURB_DIFF_DYNAMIC
-                    int u, v; double trace = 0;
-                    shearfac_max = 0.5 * sqrt(SphP[i].Velocity_bar[0] * SphP[i].Velocity_bar[0] + SphP[i].Velocity_bar[1] * SphP[i].Velocity_bar[1]+SphP[i].Velocity_bar[2] * SphP[i].Velocity_bar[2]) * All.cf_atime / h_turb;
-                    for (u = 0; u < 3; u++) {
-                        for (v = 0; v < 3; v++) {
-                            SphP[i].VelShear_bar[u][v] = 0.5 * (GasGradDataPasser[i].GradVelocity_bar[u][v] + GasGradDataPasser[i].GradVelocity_bar[v][u]);
-                            if (SphP[i].VelShear_bar[u][v] < 0) {SphP[i].VelShear_bar[u][v] = DMAX(SphP[i].VelShear_bar[u][v], -shearfac_max);}
-                            else {SphP[i].VelShear_bar[u][v] = DMIN(SphP[i].VelShear_bar[u][v], shearfac_max);}
-                            if (u == v) {trace += SphP[i].VelShear_bar[u][u];}}}
-                    /* If it was already trace-free, don't zero out the diagonal components */
-                    if (trace != 0 && NUMDIMS > 1) {for (u = 0; u < NUMDIMS; u++) {SphP[i].VelShear_bar[u][u] -= 1.0 / NUMDIMS * trace;}}
-                    for (u = 0; u < 3; u++) { /* Don't want to recalculate these a bunch later on, so save them */
-                        SphP[i].Velocity_hat[u] *= All.TurbDynamicDiffSmoothing;
-                        for (v = 0; v < 3; v++) {SphP[i].MagShear_bar += SphP[i].VelShear_bar[u][v] * SphP[i].VelShear_bar[u][v];}}
-                    SphP[i].MagShear = sqrt(2.0) * shear_factor / All.cf_a2inv; // Don't want this physical
-                    SphP[i].MagShear_bar = DMIN(sqrt(2.0 * SphP[i].MagShear_bar), shearfac_max); turb_prefactor /= 0.25;
+            {int k1,k2; for(k1=0;k1<3;k1++) {for(k2=0;k2<3;k2++) {SphP[i].VelShear_bar[k1][k2] = 0.5 * (GasGradDataPasser[i].GradVelocity_bar[k1][k2] + GasGradDataPasser[i].GradVelocity_bar[k2][k1]);}}} // need to initialize this before sending to routine below
 #endif
-
-                    // ok, combine to get the diffusion coefficient //
-                    SphP[i].TD_DiffCoeff = turb_prefactor * shear_factor; // physical
-                } else {
-                    SphP[i].TD_DiffCoeff = 0;
-                }
-#ifdef TURB_DIFF_ENERGY
-                SphP[i].Kappa_Conduction = All.ConductionCoeff * SphP[i].TD_DiffCoeff * SphP[i].Density * All.cf_a3inv; // physical
+            calculate_and_assign_turbulent_diffusion_coefficients(i);
 #endif
-#ifdef TURB_DIFF_VELOCITY
-                SphP[i].Eta_ShearViscosity = All.ShearViscosityCoeff * SphP[i].TD_DiffCoeff * SphP[i].Density * All.cf_a3inv; // physical
-                SphP[i].Zeta_BulkViscosity = All.BulkViscosityCoeff * SphP[i].TD_DiffCoeff * SphP[i].Density * All.cf_a3inv; // physical
-#endif
-            }
-#endif
-
 
 
 #if defined(COSMIC_RAY_FLUID) && !defined(CRFLUID_EVOLVE_SCATTERINGWAVES) /* note that because of the way this depends on the gradient scale-length, we should calculate it -after- the slope-limiters are applied */
@@ -1940,7 +1651,8 @@ int GasGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount
                     }
 
                     /* now use the gradients to construct the B_L,R states */
-                    double Bjk = Get_Gas_BField(j,k);
+                    double Bjk = Get_Gas_BField(j,k); //
+                    NGB_SHEARBOX_BOUNDARY_BCORR_(local.Pos,P[j].Pos,Bjk,-1); /* in a shearing box, wrap magnetic fields for shearing boxes if needed [literally does nothing if not shearing box here] */
                     double db_c=0, db_cR=0;
                     for(k2=0;k2<3;k2++)
                     {
@@ -2159,6 +1871,7 @@ int GasGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount
                     for(k=0;k<3;k++)
                     {
                         Bj[k] = Get_Gas_BField(j,k);
+                        NGB_SHEARBOX_BOUNDARY_BCORR_(local.Pos,P[j].Pos,Bj,-1); /* in a shearing box, wrap magnetic fields for shearing boxes if needed [literally does nothing if not shearing box here] */
                         dB[k] = Bj[k] - local.GQuant.B[k];
                         MINMAX_CHECK(dB[k],out.Minima.B[k],out.Maxima.B[k]);
                         if(swap_to_j) {MINMAX_CHECK(-dB[k],GasGradDataPasser[j].Minima.B[k],GasGradDataPasser[j].Maxima.B[k]);}

@@ -149,7 +149,8 @@
             /* calculate the eigenvalues for the HLLE flux-weighting */
             for(k=0;k<3;k++)
             {
-                flux_i[k] = local.Rad_Flux[k_freq][k]/V_i_phys - rsol_corr*v_frame[k]*scalar_i;; flux_j[k] = SphP[j].Rad_Flux_Pred[k_freq][k]/V_j_phys - rsol_corr*v_frame[k]*scalar_j; // units (E_phys/[t_phys*L_phys^2]) [physical]. include advective flux terms here
+                flux_i[k] = local.Rad_Flux[k_freq][k]/V_i_phys - rsol_corr*v_frame[k]*scalar_i;
+                flux_j[k] = SphP[j].Rad_Flux_Pred[k_freq][k]/V_j_phys - rsol_corr*v_frame[k]*scalar_j; // units (E_phys/[t_phys*L_phys^2]) [physical]. include advective flux terms here
                 double grad = 0.5*(flux_i[k] + flux_j[k]);
                 grad_norm += grad*grad;
                 face_dot_flux += Face_Area_Vec[k] * grad; /* remember, our 'flux' variable is a volume-integral */
@@ -213,7 +214,7 @@
             renormerFAC = DMIN(1.,fabs(cos_theta_face_flux*cos_theta_face_flux * q * hll_corr));
 
             double scalar_jr=scalar_j, scalar_ir=scalar_i, d_scalar_hll=d_scalar, d_scalar_ij=0;
-            for(k=0;k<3;k++) {scalar_jr+=0.5*kernel.dp[k]*local.Gradients.Rad_E_gamma_ET[k_freq][k]; scalar_ir-=0.5*kernel.dp[k]*SphP[j].Gradients.Rad_E_gamma_ET[k_freq][k];}
+            for(k=0;k<3;k++) {scalar_jr+=0.5*kernel.dp[k]*local.Gradients.Rad_E_gamma_ET[k_freq][k]*All.cf_a3inv; scalar_ir-=0.5*kernel.dp[k]*SphP[j].Gradients.Rad_E_gamma_ET[k_freq][k]*All.cf_a3inv;}
             d_scalar_ij=scalar_ir-scalar_jr; if((d_scalar_ij*d_scalar>0)&&(fabs(d_scalar_ij)<fabs(d_scalar))) {d_scalar_hll=d_scalar_ij;}
             d_scalar = d_scalar_hll;
 #endif
