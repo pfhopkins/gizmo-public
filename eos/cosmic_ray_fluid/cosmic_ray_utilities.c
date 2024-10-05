@@ -411,7 +411,7 @@ void CalculateAndAssign_CosmicRay_DiffusionAndStreamingCoefficients(int i)
 void inject_cosmic_rays(double CR_energy_to_inject, double injection_velocity, int source_type, int target, double *dir)
 {
     if(CR_energy_to_inject <= 0) {return;}
-    double f_injected[N_CR_PARTICLE_BINS]; f_injected[0]=1; int k_CRegy;;
+    double f_injected[N_CR_PARTICLE_BINS]; f_injected[0]=1; int k_CRegy;
 #if (N_CR_PARTICLE_BINS > 1) /* add a couple steps to make sure injected energy is always normalized properly! */
     double sum_in=0.0; for(k_CRegy=0;k_CRegy<N_CR_PARTICLE_BINS;k_CRegy++) {f_injected[k_CRegy]=CR_energy_spectrum_injection_fraction(k_CRegy,source_type,injection_velocity,0,target); sum_in+=f_injected[k_CRegy];}
     if(sum_in>0.0) {for(k_CRegy=0;k_CRegy<N_CR_PARTICLE_BINS;k_CRegy++) {f_injected[k_CRegy]/=sum_in;}} else {for(k_CRegy=0;k_CRegy<N_CR_PARTICLE_BINS;k_CRegy++) {f_injected[k_CRegy]=1./N_CR_PARTICLE_BINS;}}

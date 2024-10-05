@@ -234,7 +234,7 @@ void drift_particle(int i, integertime time1)
 #endif
             drift_extra_physics(i, time0, time1, dt_entr);
 
-            SphP[i].Pressure = get_pressure(i);
+            set_eos_pressure(i);
         }
     
     /* check for reflecting or outflow or otherwise special boundaries: if so, do the reflection/boundary! */

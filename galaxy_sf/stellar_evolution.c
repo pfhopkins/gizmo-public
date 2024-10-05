@@ -243,11 +243,12 @@ void update_stellarnumber_and_timedistribofstarformation(void)
                 double dt_remaining = P[i].TimeDistribOfStarFormation - dt_since_form_code; // time remaining to spawn
                 double dt_timestep = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i); // timestep being taken [code units]
                 double d_tau = DMAX(DMIN( dt_timestep , dt_remaining) , 0) / P[i].TimeDistribOfStarFormation; // effective step size in dimensionless units
+                double f_highz=0.0115, f_m; f_m = f_highz; // 1/mass in solar per O-star number
 #ifdef FIRE_SNE_ENERGY_METAL_DEPENDENCE_EXPERIMENT // SIMPLE_POPTHREE_MODEL
-                double f_highz=0.0115, f_lowz=2., zmin=-7, zmax=-5, z0=log10(P[i].Metallicity[0]/0.01 + 1.e-15);
-                double f_m=f_highz; if(z0<=zmin) {f_m=f_lowz;} else if(z0<zmax) {f_m=f_lowz + (f_highz-f_lowz)*(z0-zmin)/(zmax-zmin);}
+                double f_lowz=2., zmin=-7, zmax=-5, z0=log10(P[i].Metallicity[0]/0.01 + 1.e-15);
+                if(z0<=zmin) {f_m=f_lowz;} else if(z0<zmax) {f_m=f_lowz + (f_highz-f_lowz)*(z0-zmin)/(zmax-zmin);}
 #endif
-                double n_expected_total = 0.0115 * P[i].Mass * UNIT_MASS_IN_SOLAR; // 1 O-star per 100 Msun [more exactly calculated here as number of stars per solar mass with mass > 8 Msun, from our adopted Kroupa IMF from 0.01-100 Msun]
+                double n_expected_total = f_m * P[i].Mass * UNIT_MASS_IN_SOLAR; // default f_m above is 1 O-star per 100 Msun [more exactly calculated here as number of stars per solar mass with mass > 8 Msun, from our adopted Kroupa IMF from 0.01-100 Msun]
                 double dn_expected_in_dt = n_expected_total * d_tau; // expected number to spawn in this particular interval
                 gsl_rng *random_generator_for_massivestars; // allocate rng
                 random_generator_for_massivestars = gsl_rng_alloc(gsl_rng_ranlxd1); // setup generator
@@ -268,6 +269,9 @@ void update_stellarnumber_and_timedistribofstarformation(void)
 #ifdef METALS
 void get_jet_yields(double *yields, int i) {
     int k; for(k=0;k<NUM_METAL_SPECIES;k++) {yields[k]=P[i].Metallicity[k];} /* return surface abundances, to leading order */
+#ifdef SNE_NONSINK_SPAWN
+    if(P[i].Type==4) {double Msne; get_SNe_yields(yields,i,stellar_lifetime_in_Gyr(i),0,&Msne);}
+#endif
 #ifdef STARFORGE_FEEDBACK_TRACERS
     for(k=0;k<NUM_STARFORGE_FEEDBACK_TRACERS;k++) {yields[NUM_METAL_SPECIES-NUM_STARFORGE_FEEDBACK_TRACERS+k]=0;} yields[NUM_METAL_SPECIES-NUM_STARFORGE_FEEDBACK_TRACERS+0]=1; // this is 'fully' jet material, so mark as such here, so it is noted for all wind routines [whichever form of the wind subroutine we actually use, otherwise it would only appear in the jet version]
 #endif

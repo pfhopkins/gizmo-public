@@ -215,7 +215,7 @@ void find_timesteps(void)
         All.Mass_Accreted_By_SpecialSMBHParticle = 0; // reset this variable on all processors because we have added it now to the special particle, to conserve mass properly
     }
     MPI_Allreduce(&special_particle_mass_local, &special_particle_mass_global, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD); // broadcast the mass of the SMBH particle
-    All.Mass_of_SpecialSMBHParticle = special_particle_mass_global; // update the mass of the SMBH particle for everyone to use
+    if(special_particle_mass_global > 0) {All.Mass_of_SpecialSMBHParticle = special_particle_mass_global;} // update the mass of the SMBH particle for everyone to use
 #endif
 
 
@@ -466,7 +466,7 @@ integertime get_timestep(int p,		/*!< particle index */
 #ifdef PIC_MHD_NEW_RSOL_METHOD
             lorentz_units *= PIC_SPEEDOFLIGHT_REDUCTION; // the rsol enters by slowing down the forces here, acts as a unit shift for time
 #endif
-            double beta2=0,B2=0; for(k=0;k<3;k++) {double b=P[p].Gas_B[k]*All.cf_a2inv, v=P[p].Vel[k]/(All.cf_atime*reduced_C); B2+=b*b; beta2+=v*v;;} /* get magnitude and unit vector for B, and vector beta [-true- beta here] */
+            double beta2=0,B2=0; for(k=0;k<3;k++) {double b=P[p].Gas_B[k]*All.cf_a2inv, v=P[p].Vel[k]/(All.cf_atime*reduced_C); B2+=b*b; beta2+=v*v;} /* get magnitude and unit vector for B, and vector beta [-true- beta here] */
             double gamma_lorentz = 1./sqrt(DMAX(1.-DMAX(DMIN(beta2,1.),0.),MIN_REAL_NUMBER)); // calculate lorentz factor (with safety factors included to prevent accidental nan here //
             double dt_courant_pic = 0.5 / ((charge_to_mass_ratio_dimensionless/gamma_lorentz) * sqrt(B2) * lorentz_units); /* dt = 0.5/omega_gyro*/
             if(dt_courant_pic < dt_courant) dt_courant = dt_courant_pic;

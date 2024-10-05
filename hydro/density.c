@@ -989,7 +989,7 @@ void density(void)
 #ifdef HYDRO_VOLUME_CORRECTIONS
                 SphP[i].Volume_1 = SphP[i].Volume_0 = Volume_0; // initialize this value for use in the correction loop, and in case this is not set in the subsequent loop because of inactivity, set this first to the zeroth-order estimator
 #endif
-                SphP[i].Pressure = get_pressure(i);		// should account for density independent pressure
+                set_eos_pressure(i);		// should account for density independent pressure
 
             } // P[i].Type == 0
 
@@ -1105,7 +1105,7 @@ void cellcorrections_final_operations_and_cleanup(void)
         CONDITIONFUNCTION_FOR_EVALUATION /* ensures only the ones which met our criteria above are actually treated here */
         {
             if(SphP[i].Volume_1 > 0) {SphP[i].Density = P[i].Mass / SphP[i].Volume_1;} else {SphP[i].Volume_1 = SphP[i].Volume_0;} // set the updated density. other variables that need volumes will all scale off this, so we can rely on it to inform everything else [if bad value here, revert to the 0th-order volume quadrature]
-            SphP[i].Pressure = get_pressure(i);
+            set_eos_pressure(i);
         }}
 }
 

@@ -27,7 +27,7 @@
     /* ... EQUATION OF MOTION (HYDRO) ... */
     /* --------------------------------------------------------------------------------- */
     /* --------------------------------------------------------------------------------- */
-    double vi_dot_r,hfc,hfc_visc,hfc_i,hfc_j,hfc_dwk_i,hfc_dwk_j,hfc_egy=0,wt_corr_i=1,wt_corr_j=1;;
+    double vi_dot_r,hfc,hfc_visc,hfc_i,hfc_j,hfc_dwk_i,hfc_dwk_j,hfc_egy=0,wt_corr_i=1,wt_corr_j=1;
     /* 'Standard' (Lagrangian) Density Formulation: the acceleration term is identical whether we use 'entropy' or 'energy' sph */
 
 #if defined(EOS_TILLOTSON) || defined(EOS_ELASTIC) /* need to include an effective stress for large negative pressures when elements are too close, to prevent tensile instability */

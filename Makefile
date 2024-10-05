@@ -429,7 +429,7 @@ ifeq ($(SYSTYPE),"Pleiades")
 CC       =  icc -lmpi
 CXX      =  icc -lmpi -lmpi++
 FC       =  ifort -nofor_main -lmpi
-OPTIMIZE = -O3 -axCORE-AVX512,CORE-AVX2 -xAVX -ip -funroll-loops -no-prec-div -fp-model fast=2 -diag-disable 3180  # all core types
+OPTIMIZE = -O1 -axCORE-AVX512,CORE-AVX2 -xAVX #-O3 -axCORE-AVX512,CORE-AVX2 -xAVX -ip -funroll-loops -no-prec-div -fp-model fast=2 -diag-disable 3180  # all core types
 OPTIMIZE += -Wall  # compiler warnings
 ifeq (OPENMP,$(findstring OPENMP,$(CONFIGVARS)))
 OPTIMIZE += -parallel -qopenmp

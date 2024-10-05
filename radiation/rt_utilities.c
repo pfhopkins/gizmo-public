@@ -253,9 +253,9 @@ double rt_absorb_frac_albedo(int i, int k_freq)
 #ifdef RT_INFRARED /* opacity comes from Thompson + dust -- assume 0.5/(1 + (Trad/725K)^(-2)) scattering from dust [Rayleigh, since we're in the long-wavelength limit by definition here], 1 from Thompson */
     if(k_freq==RT_FREQ_BIN_INFRARED)
     {
-        double fA_tmp = (1.-0.5/(1.+((725.*725.)/(1.+SphP[i].Radiation_Temperature*SphP[i].Radiation_Temperature)))); // rough interpolation depending on the radiation temperature: high Trad, this is 1/2, low Trad, gets closer to unity */
+        double fA_tmp = (1.-0.5/(1.+((725.*725.)/(1.+SphP[i].Radiation_Temperature*SphP[i].Radiation_Temperature)))); // rough interpolation depending on the radiation temperature: high Trad, this is 1/2, low Trad, gets closer to unity; need to revise for sublimated cases here ??? */
 #ifdef COOLING
-		if(rt_kappa(i,k_freq)>0) {fA_tmp *= (1.-DMIN(1.,0.35*SphP[i].Ne*fac/rt_kappa(i,k_freq)));} else {return 1.0;} // the value should not matter if rt_kappa=0
+		if(rt_kappa(i,k_freq)>0) {fA_tmp *= (1.-DMIN(1.,0.35*SphP[i].Ne*fac/rt_kappa(i,k_freq)));} else {return 1.0;} // the value should not matter if rt_kappa=0 // ??? correct this for Klein-Nishina as well?
 #endif
         return fA_tmp;
     }
@@ -742,8 +742,7 @@ void rt_update_driftkick(int i, double dt_entr, int mode)
                 }
                 double total_absorption_rate = E_abs_tot_toIR + fabs(a0_abs)*e0; // add the summed absorption and equate to dust emission //
 #ifdef COOLING  // we account for gas-dust coupling as an additional heat source to be radiated away
-		        double u_in=SphP[i].InternalEnergy, rho_in=SphP[i].Density*All.cf_a3inv, mu=1, ne=1, nHI=0, nHII=0, nHeI=1, nHeII=0, nHeIII=0;
-		        double temp = ThermalProperties(u_in, rho_in, i, &mu, &ne, &nHI, &nHII, &nHeI, &nHeII, &nHeIII);
+		        double temp = get_temperature(i);
 		        double nHcgs = HYDROGEN_MASSFRAC * UNIT_DENSITY_IN_CGS * SphP[i].Density * All.cf_a3inv / PROTONMASS_CGS;
 
                 /* 
@@ -1118,7 +1117,7 @@ void rt_set_simple_inits(int RestartFlag)
                 } else {
                     for(k_dir=0;k_dir<3;k_dir++) {SphP[i].Rad_Flux_Pred[k][k_dir] *= P[i].Mass/(SphP[i].Density*All.cf_a3inv);} // need to correct the units here before using
                 }
-                for(k_dir=0;k_dir<3;k_dir++) {SphP[i].Rad_Flux_Pred[k][k_dir] = SphP[i].Rad_Flux[k][k_dir];}
+                for(k_dir=0;k_dir<3;k_dir++) {SphP[i].Rad_Flux[k][k_dir] = SphP[i].Rad_Flux_Pred[k][k_dir];}
                 for(k_dir=0;k_dir<3;k_dir++) {SphP[i].Dt_Rad_Flux[k][k_dir] = 0;}
 #endif
 #ifdef RT_EVOLVE_INTENSITIES
@@ -1377,7 +1376,7 @@ double rt_ir_lambdadust(int i, double T){
     double Tdust_fixedpoint_1, Tdust_fixedpoint_2, dummy;
     // define ROOTFIND_FUNCTION_INNER because this gets called nested inside the cooling solver, and needs to be def'd distinctly from the overlying ROOTFIND_FUNCTION
     #define ROOTFIND_FUNCTION_INNER(dTdust) dust_dE_cooling(i, T, T+dTdust, &Tdust_fixedpoint_1, &Tdust_fixedpoint_2)
-    if((All.Time==0 )|| (!isfinite(SphP[i].Dust_Temperature))){Tdust=T;} else {Tdust = SphP[i].Dust_Temperature;}
+    if((All.Time==0 )|| (!isfinite(SphP[i].Dust_Temperature))){Tdust=T;} else {Tdust = DMIN(1e3,SphP[i].Dust_Temperature);}
 
     dE = dE_guess = ROOTFIND_FUNCTION_INNER(Tdust-T);
    
@@ -1418,7 +1417,7 @@ double rt_ir_lambdadust(int i, double T){
     }     
     if(T_upper>=MAX_DUST_TEMP && dE_upper > 0){SphP[i].Dust_Temperature = MAX_DUST_TEMP; return 0;}
 
-    if(dE_lower * dE_upper > 0){ PRINT_WARNING("Failed to bracket Tdust solution for ID=%d T=%g T_lower=%g T_upper=%g dE_lower=%g dE_upper=%g\n", P[i].ID, T, T_lower,T_upper, dE_lower, dE_upper);}
+    if(dE_lower * dE_upper > 0){ PRINT_WARNING("Failed to bracket Tdust solution for ID=%lld T=%g T_lower=%g T_upper=%g dE_lower=%g dE_upper=%g\n", P[i].ID, T, T_lower,T_upper, dE_lower, dE_upper);}
 
     if(dE!=0){  // root-solve for Tdust
         double ROOTFIND_X_a = T_lower-T, ROOTFIND_X_b = T_upper-T;
@@ -1473,7 +1472,7 @@ double rt_eqm_dust_temp(int i, double T, double dust_absorption_rate)
     Tmax = MAX_DUST_TEMP; // this is now a global variable
     /* First we come up with a reasonable guess for the dust temp based on available info */
 #ifdef RT_INFRARED
-    Tdust_guess = DMAX(SphP[i].Dust_Temperature,1.); // previous dust temperature should be a good guess
+    Tdust_guess = DMIN(DMAX(SphP[i].Dust_Temperature,1.),1e3); // previous dust temperature should be a good guess
 #else // case where we don't have a pre-computed dust temp, use asymptotic limits to get a good guess
     double Zfac = 1.0;
 #ifdef METALS
@@ -1501,7 +1500,7 @@ double rt_eqm_dust_temp(int i, double T, double dust_absorption_rate)
     if(dEdt < 0)
     {
 	scalefac = 0.9;
-	T_upper = Tdust, dEdt_upper = dEdt_guess; 
+	T_upper = DMIN(Tmax,Tdust), dEdt_upper = dEdt_guess; 
 	while(dEdt<0) {
 	    Tdust *= scalefac; 
 	    dEdt = dust_dEdt(i,T,Tdust,dust_absorption_rate); 
@@ -1525,8 +1524,7 @@ double rt_eqm_dust_temp(int i, double T, double dust_absorption_rate)
     if(T_upper==Tmax && dEdt_upper > 0) {return Tmax;}
     if(T_lower>=Tmax) {return Tmax;}
 
-#if 0  // PFH: still testing which option is better, but the new rootfind struggles here, in hyper-zoom-in runs when given dust close to max temperature (raising max temp resolves the failure to converge or Nan's but then jumps to very high solutions somewhat randomly, where it shouldnt. The old secant routine below appears stable and more robust in this particular instance for now.
-
+#if 1  // PFH: still testing which option is better, but the new rootfind struggles here, in hyper-zoom-in runs when given dust close to max temperature (raising max temp resolves the failure to converge or Nan's but then jumps to very high solutions somewhat randomly, where it shouldnt. The old secant routine below appears stable and more robust in this particular instance for now.
     #define ROOTFIND_FUNCTION(dTdust) dust_dEdt(i,T,T+dTdust,dust_absorption_rate); // here we want to converge on a relative tolerance for Tdust-Tgas
     double ROOTFIND_X_a = T_upper-T, ROOTFIND_X_b = T_lower-T, ROOTFUNC_a = dEdt_upper, ROOTFUNC_b = dEdt_lower, ROOTFIND_REL_X_tol = 1e-6, ROOTFIND_ABS_X_tol=0.;
     #include "../system/bracketed_rootfind.h"
@@ -1747,7 +1745,7 @@ double rt_kappa_adaptive_IR_band(int i, double T_dust, double Trad, int do_emiss
         double f_neutral_approx = DMAX(0., 1.-x_elec); /* approximate neutral fraction (good enough for us for what we need below) */
         double f_free_metals_approx = zmetals * DMAX(0, 1.-0.5*dust_to_metals_vs_standard); /* metal mass fraction times the free (not locked in dust abundance), assuming the default solar scaling is 1/2 */
         double Tgas=1. + 0.59*(GAMMA(i)-1.)*U_TO_TEMP_UNITS*SphP[i].InternalEnergyPred, rho_cgs = SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_CGS; /* crude estimate of gas temperature to use with scalings below, and gas density in cgs */
-        double k_electron = 0.4 * HYDROGEN_MASSFRAC * x_elec; /* Thompson scattering (non-relativistic), scaling with free electron fraction [remembering that in our units, x_elec is n_e/n_H_nuclei, not scaled to total nuclear number] */
+        double k_electron = 0.4 * HYDROGEN_MASSFRAC * x_elec / ((1. + 2.7e11*rho_cgs/(Tgas*Tgas)) * (1. + pow(Trad/4.5e8, 0.86))); /* Thompson scattering (non-relativistic), scaling with free electron fraction [remembering that in our units, x_elec is n_e/n_H_nuclei, not scaled to total nuclear number]; includes corrections for partial degeneracy at low gas temperatures from Buchler et al. 1976, and Klein-Nishina terms at high radiation temperatures >1e9 */
         double k_molecular = 0.1 * (f_free_metals_approx + 3.e-9) * f_neutral_approx; /* molecular line opacities, which should only dominate at low-temperatures in the fits below, but are not really assumed to extrapolate to the very low densities we apply this to here; this works ok comparing e.g. Lenzuni, Chernoff & Salpeter 1991 ApJS 76 759L [opacities for metal free gases], using the 3e-9 to represent the H2 molecular opacity (really low, only here for completeness) */
 #if defined(COOL_MOLECFRAC_NONEQM)
         k_molecular *= SphP[i].MolecularMassFraction;

@@ -140,7 +140,7 @@ static inline double ForceSoftening_KernelRadius(int p)
     if((1 << P[p].Type) & (ADAPTIVE_GRAVSOFT_FORALL)) {return PPP[p].AGS_Hsml;}
 #endif
 #if defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(SELFGRAVITY_OFF) /* softening scale still appears in timestep criterion for problems without self-gravity, so set it adaptively */
-    //if(P[p].Type == 0) {if(All.Time == All.TimeBegin) {return All.ForceSoftening[P[p].Type];}} // ???
+    //if(P[p].Type == 0) {if(All.Time == All.TimeBegin) {return All.ForceSoftening[P[p].Type];}}
 #ifdef ADAPTIVE_GRAVSOFT_MAX_SOFT_HARD_LIMIT
     if(P[p].Type == 0) {return DMIN(PPP[p].Hsml, ADAPTIVE_GRAVSOFT_MAX_SOFT_HARD_LIMIT/All.cf_atime);}
 #else
@@ -187,8 +187,10 @@ void do_fewbody_kick(int i, double fewbody_kick_dv[3], double dt);
 #endif
 
 void check_particle_for_temperature_minimum(int i);
-
+void set_eos_pressure(int i);
 double get_pressure(int i);
+double get_temperature(int i);
+double compute_temperature(int i);
 double return_user_desired_target_density(int i);
 double return_user_desired_target_pressure(int i);
 #ifdef EOS_TILLOTSON

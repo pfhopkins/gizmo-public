@@ -70,7 +70,13 @@ int does_particle_need_to_be_merged(int i)
 #endif
 #if defined(FIRE_SUPERLAGRANGIAN_JEANS_REFINEMENT)
     if(P[i].Type>0) {return 0;} // don't allow merging of collisionless particles [only splitting, in these runs]
-    if(P[i].Type==0) {if(Get_Particle_Size(i)*All.cf_atime*UNIT_LENGTH_IN_PC < 700.) {return 0;}} // if too high-res spatially, this equiv to size for m=7000 msun for nH=1e-3, dont let de-refine
+    if(P[i].Type==0) {
+        double rmin_pc = 700.;
+#if defined(SINGLE_STAR_AND_SSP_HYBRID_MODEL)
+        rmin_pc = 10.;
+#endif
+        if(P[i].Type==0) {if(Get_Particle_Size(i)*All.cf_atime*UNIT_LENGTH_IN_PC < rmin_pc) {return 0;}} // if too high-res spatially, this equiv to size for m=7000 msun for nH=1e-3, dont let de-refine
+    }
 #endif
     if((P[i].Type>0) && (P[i].Mass > 0.5*All.MinMassForParticleMerger*target_mass_renormalization_factor_for_mergesplit(i,0))) {return 0;}
     if(P[i].Mass <= (All.MinMassForParticleMerger*target_mass_renormalization_factor_for_mergesplit(i,0))) {return 1;}
@@ -114,9 +120,12 @@ double target_mass_renormalization_factor_for_mergesplit(int i, int split_key)
 {
     double ref_factor=1.0;
 #if defined(SINGLE_STAR_AND_SSP_HYBRID_MODEL)
+    ref_factor = 1; // need to determine appropriate desired refinement criterion, if resolution is not strictly pre-defined //
+#endif
+    
+#ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM
     if(P[i].Type==0)
     {
-#ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM
         double dt_to_ramp_refinement = 0.00001;
         dt_to_ramp_refinement = 1.e-6; // testing [for specific time chosen, hard-coded but change as needed]
         double minimum_refinement_mass_in_solar = 0.003; // aims at 0.01 effective
@@ -177,23 +186,33 @@ double target_mass_renormalization_factor_for_mergesplit(int i, int split_key)
         double normal_median_mass = All.MaxMassForParticleSplit / 3.;
         ref_factor = DMAX(M_min_absolute / normal_median_mass, DMIN( M_target / normal_median_mass , 1));
         return ref_factor;
-#endif
-        return 1; // need to determine appropriate desired refinement criterion, if resolution is not strictly pre-defined //
     }
 #endif
+    
 #if defined(FIRE_SUPERLAGRANGIAN_JEANS_REFINEMENT)
     if(P[i].Type==0)
     {
         double mcrit_0=1.*(FIRE_SUPERLAGRANGIAN_JEANS_REFINEMENT), T_eff = 1.23 * (5./3.-1.) * U_TO_TEMP_UNITS * SphP[i].InternalEnergyPred, nH_cgs = SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_NHCGS;
-        double MJ = 9.e6 * pow( 1 + T_eff/1.e4, 1.5) / sqrt(1.e-12 + nH_cgs); // Jeans mass, but modified with lower limit for temperature so we refine all cool gas equally, lower limit for numerical convenience for density
+        double T_min_jeans = 1.e4; // dont use values below this for thermal jeans mass in refinement criterion
+#if defined(SINGLE_STAR_AND_SSP_HYBRID_MODEL)
+        T_min_jeans = 0.; // allow as cold as needed
+#endif
+        double MJ = 9.e6 * pow( (T_eff + T_min_jeans)/1.e4, 1.5) / sqrt(1.e-12 + nH_cgs); // Jeans mass (in solar), but modified with lower limit for temperature so we refine all cool gas equally, lower limit for numerical convenience for density
         if(All.ComovingIntegrationOn) {MJ *= pow(1. + (100.*COSMIC_BARYON_DENSITY_CGS) / (SphP[i].Density*All.cf_a3inv*UNIT_DENSITY_IN_CGS), 3);} // ensure that only cells much denser than cosmic mean are eligible for refinement. use 100x so even cells outside Rvir are potentially eligible
         // to check against hot gas in high-density ISM getting worse than a certain resolution level, we want to check that we don't down-grade the spatial resolution too much
         double m_ref_mJ = 0.001 * MJ;
+#if defined(SINGLE_STAR_AND_SSP_HYBRID_MODEL)
+        m_ref_mJ = 0.01 * MJ; // since using real thermal jeans, fully-cold, don't need to be as aggressive here
+#endif
 #if defined(BH_CALC_DISTANCES)
         double rbh = P[i].min_dist_to_bh * All.cf_atime; // distance to nearest BH
         if(rbh > 1.e-10 && isfinite(rbh) && rbh < 1.e10)
         {
-            double mc=1.e10, m_r1=DMIN(mcrit_0, 7.e3), m_r2=10.*m_r1, m_r3=10.*m_r2, r1=1., r2=10., r3=20.;
+            double r1=1., r2=10., r3=20.; // boundaries for different distance-based refinement thresholds, in physical kpc
+#if defined(SINGLE_STAR_AND_SSP_HYBRID_MODEL)
+            r1=0.1; r2=1.; r3=10.; // need to be customized for the problem, here refining more so smaller zone size
+#endif
+            double mc=1.e10, m_r1=DMIN(mcrit_0, 7.e3), m_r2=10.*m_r1, m_r3=10.*m_r2; r1/=UNIT_LENGTH_IN_KPC; r2/=UNIT_LENGTH_IN_KPC; r3/=UNIT_LENGTH_IN_KPC;
             if(rbh<r1) {mc=m_r1;} else {if(rbh<r2) {mc=m_r1*exp(log(m_r2/m_r1)*log(rbh/r1)/log(r2/r1));} else
                 {if(rbh<r3) {mc=m_r2*exp(log(m_r3/m_r2)*log(rbh/r2)/log(r3/r2));} else {mc=m_r3*pow(rbh/r3,3);}}}
             
@@ -206,6 +225,7 @@ double target_mass_renormalization_factor_for_mergesplit(int i, int split_key)
         return ref_factor; // return it
     }
 #endif
+    
 /*!
  #if defined(BH_CALC_DISTANCES) && !defined(GRAVITY_ANALYTIC_ANCHOR_TO_PARTICLE) && !defined(SINGLE_STAR_SINK_DYNAMICS)
     ref_factor = DMIN(1.,sqrt(P[i].min_dist_to_bh + 0.0001)); // this is an example of the kind of routine you could use to scale resolution with BH distance //
@@ -984,7 +1004,7 @@ int merge_particles_ij(int i, int j)
         P[j].dp[k] += P[j].Mass*P[j].Vel[k] - p_old_j[k];
     }
     /* call the pressure routine to re-calculate pressure (and sound speeds) as needed */
-    SphP[j].Pressure = get_pressure(j);
+    set_eos_pressure(j);
 #if defined(MHD_CONSERVE_B_ON_REFINEMENT)
     /* flag cells as having just undergone refinement/derefinement for other subroutines to be aware */
     SphP[j].recent_refinement_flag = SphP[i].recent_refinement_flag = 1;
@@ -1303,7 +1323,7 @@ int evaluate_starstar_merger_for_starcluster_eligibility(int i)
 int check_if_sufficient_mergesplit_time_has_passed(int i)
 {
     double N_timesteps_fac = 300.; // require > N timesteps before next merge/split, default was 100, but can be more aggressive - something between 10-100 works well in practice [definitely shorter than 10 can cause problems]
-#if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES >= 2)
+#if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES >= 2) || defined(FIRE_SUPERLAGRANGIAN_JEANS_REFINEMENT)
     N_timesteps_fac = 30.;
 #endif
     if(P[i].Time_Of_Last_MergeSplit <= All.TimeBegin) {N_timesteps_fac *= 10. * get_random_number(832LL*i + 890345645LL + 83457LL*ThisTask + 12313403LL*P[i].ID);} // spread initial timing out over a broader range so it doesn't all happen at once after the startup

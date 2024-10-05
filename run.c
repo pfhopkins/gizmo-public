@@ -366,7 +366,7 @@ void find_next_sync_point_and_drift(void)
 	  if(n > 0)
 	    {
 	      highest_occupied_bin = n;
-	      dt_bin = GET_INTEGERTIME_FROM_TIMEBIN(n);;
+	      dt_bin = GET_INTEGERTIME_FROM_TIMEBIN(n);
 	      ti_next_for_bin = (All.Ti_Current / dt_bin) * dt_bin + dt_bin;	/* next kick time for this timebin */
 	    }
 	  else
@@ -496,7 +496,7 @@ void make_list_of_active_particles(void)
  */
 integertime find_next_outputtime(integertime ti_curr)
 {
-  int i, iter = 0;
+  long long i, iter = 0;
   integertime ti, ti_next;
   double next, time;
 
@@ -567,7 +567,7 @@ integertime find_next_outputtime(integertime ti_curr)
 
 	  if(iter > 10000000000)
 	    {
-	      printf("Can't determine next output time.\n");
+          printf("Can't determine next output time. iter=%lld time=%g All.TimeBegin=%g All.TimeBetSnapshot=%g All.TimeOfFirstSnapshot=%g \n",iter,time,All.TimeBegin,All.TimeBetSnapshot,All.TimeOfFirstSnapshot);
 	      endrun(110);
 	    }
 	}
@@ -591,7 +591,7 @@ integertime find_next_outputtime(integertime ti_curr)
 
 	  if(iter > 10000000000)
 	    {
-	      printf("Can't determine next output time.\n");
+          printf("Can't determine next output time. iter=%lld time=%g All.TimeBegin=%g All.TimeMax=%g All.TimeBetSnapshot=%g All.TimeOfFirstSnapshot=%g All.Timebase_interval=%g \n",iter,time,All.TimeBegin,All.TimeMax,All.TimeBetSnapshot,All.TimeOfFirstSnapshot,All.Timebase_interval);
 	      endrun(111);
 	    }
 	}

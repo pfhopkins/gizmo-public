@@ -132,7 +132,7 @@ void begrun(void)
 #endif
     Shearing_Box_Vel_Offset = BOX_SHEARING_Q * BOX_SHEARING_OMEGA_BOX_CENTER * L_box_towrap;
 #ifdef BOX_SHEARING_QB
-    Shearing_Box_B_Offset = BOX_SHEARING_QB * BOX_SHEARING_OMEGA_BOX_CENTER * L_box_towrap; // ??? need definition of units to normalize this all to
+    Shearing_Box_B_Offset = BOX_SHEARING_QB * BOX_SHEARING_OMEGA_BOX_CENTER * L_box_towrap; // need definition of units to normalize this all to
 #endif
     calc_shearing_box_pos_offset();
 #endif
@@ -255,6 +255,7 @@ void begrun(void)
       All.ResubmitOn = all.ResubmitOn;
       All.SnapFormat = all.SnapFormat;
       All.TimeBetSnapshot = all.TimeBetSnapshot;
+      All.TimeOfFirstSnapshot = all.TimeOfFirstSnapshot;
       All.TimeBetStatistics = all.TimeBetStatistics;
       All.CpuTimeBetRestartFile = all.CpuTimeBetRestartFile;
       All.ErrTolIntAccuracy = all.ErrTolIntAccuracy;
@@ -399,6 +400,8 @@ void begrun(void)
         If it was initially set to a very strict value, convergence in ngb-iteration may at some point fail */
       All.AGS_MaxNumNgbDeviation = all.AGS_MaxNumNgbDeviation;
 #endif
+
+      if(All.ComovingIntegrationOn==0) {set_softenings();}
 
       strcpy(All.ResubmitCommand, all.ResubmitCommand);
       strcpy(All.OutputListFilename, all.OutputListFilename);

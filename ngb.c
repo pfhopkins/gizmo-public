@@ -323,7 +323,7 @@ int ngb_treefind_fof_primary(MyDouble searchcenter[3], MyFloat hsml, int target,
             
             no = current->u.d.sibling;	/* in case the node can be discarded */
             
-            dist = hsml + 0.5 * current->len;;
+            dist = hsml + 0.5 * current->len;
             dx = NGB_PERIODIC_BOX_LONG_X(current->center[0]-searchcenter[0],current->center[1]-searchcenter[1],current->center[2]-searchcenter[2],-1);
             if(dx > dist) continue;
             dy = NGB_PERIODIC_BOX_LONG_Y(current->center[0]-searchcenter[0],current->center[1]-searchcenter[1],current->center[2]-searchcenter[2],-1);

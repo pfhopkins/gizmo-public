@@ -235,7 +235,7 @@ double CosmicRay_Update_DriftKick(int i, double dt_entr, int mode)
             double a_m1 = -x_up_prev/dtaux, a_0 = g00 + 1./dtaux , a_1 = gamma_nll, c2dt = ceff2_va2*dtaux;
             if(f_eqm<0) {psi00=psifac-x_dum*x_e; a_1=-gamma_nll; a_0=-(g00 + 1./dtaux); a_m1=x_um_prev/dtaux;}
             double d0 = -a_m1*q0, c0 = x_f_prev - a_0*q0 - c2dt*(a_m1 + psi00), b0 = -a_1*q0 - c2dt*(a_0-x_e), a0 = -a_1*c2dt; 
-            if(f_eqm<0) {b0 = -a_1*q0 - c2dt*(a_0+x_e);;}
+            if(f_eqm<0) {b0 = -a_1*q0 - c2dt*(a_0+x_e);}
             if(fabs(a0) < EPSILON_SMALL)
             {
                 if(fabs(b0) < EPSILON_SMALL)

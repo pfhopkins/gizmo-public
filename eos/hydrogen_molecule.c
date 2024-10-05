@@ -114,7 +114,7 @@ void hydrogen_molecule_partitionfunc(double temp, double result[3]) {
         and the adiabatic index
     */
 
-    double zrot[4], zvib[4];
+    double zrot[3], zvib[3];
     hydrogen_molecule_zrot_mixture(temp, zrot);
     hydrogen_molecule_zvib(temp, zvib);
     double etot = 1.5 * BOLTZMANN_CGS * temp; // translation

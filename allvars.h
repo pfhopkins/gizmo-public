@@ -821,6 +821,11 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 #if defined(EOS_SUBSTELLAR_ISM) || defined(COOL_MOLECFRAC_NONEQM)
 #define EOS_GAMMA_VARIABLE
 #endif
+#ifdef EOS_PRECOMPUTE  // cache EOS quantities - default to storing temperature and adiabatic index
+#define EOS_CARRIES_TEMPERATURE
+#define EOS_CARRIES_GAMMA
+#endif
+
 
 #if defined(EOS_GAMMA_VARIABLE)
 #define GAMMA(i) (gamma_eos(i)) /*! use an actual function! */
@@ -1263,10 +1268,12 @@ typedef unsigned long long peano1D;
 #endif
 
 #ifdef RT_INFRARED
-#define MAX_DUST_TEMP 1.0e4 // maximum dust temperature for which we expect to call opacity or dust-to-metals ratio functions
 #define COOL_LOWTEMP_THIN_ONLY // don't want to double-count trapping of radiation if we're doing it self-consistently
 #endif
 
+#ifdef COOLING
+#define MAX_DUST_TEMP 1.0e4 // maximum dust temperature for which we expect to call opacity or dust-to-metals ratio functions
+#endif
 
 /* some flags for the field "flag_ic_info" in the file header */
 #define FLAG_ZELDOVICH_ICS     1
@@ -3148,6 +3155,9 @@ extern struct gas_cell_data
     MyFloat SoundSpeed;                   /* Sound speed */
 #ifdef EOS_CARRIES_TEMPERATURE
     MyFloat Temperature;                  /* Temperature */
+#endif
+#ifdef EOS_CARRIES_GAMMA
+    MyFloat Gamma;                        /* First adiabatic index */
 #endif
 #ifdef EOS_CARRIES_YE
     MyFloat Ye;                           /* Electron fraction */

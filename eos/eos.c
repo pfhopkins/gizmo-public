@@ -37,27 +37,49 @@ double return_user_desired_target_pressure(int i)
      */
 }
 
+/*!
+Simple getter for the Pressure attribute - will calculate it on-the-fly if EOS quantities are not being cached
+ */
+double get_pressure(int i) {
+#ifndef EOS_PRECOMPUTE
+    set_eos_pressure(i);
+#endif
+    return SphP[i].Pressure;
+}
 
+/*!
+    Updates the thermodynamic quantities determined by the current internal
+    energy, density, and chemistry: pressure, and potentially adiabatic index
+    and temperature if those are getting cached.
 
-
-/*! return the pressure of particle i: this subroutine needs to  set the value of the 'press' variable (pressure), which you can see from the
+    this subroutine needs to set the value of the 'press' variable (pressure), which you can see from the
     templates below can follow an arbitrary equation-of-state. for more general equations-of-state you want to specifically set the soundspeed
     variable as well. */
-double get_pressure(int i)
+void set_eos_pressure(int i)
 {
     double soundspeed, press=0, gamma_eos_index = GAMMA(i); soundspeed=0; /* get effective adiabatic index */
     press = (gamma_eos_index-1) * SphP[i].InternalEnergyPred * Get_Gas_density_for_energy_i(i); /* ideal gas EOS (will get over-written it more complex EOS assumed) */
 
+#if (defined(EOS_PRECOMPUTE) && defined(EOS_CARRIES_TEMPERATURE)) || defined(EOS_SUBSTELLAR_ISM) // will do temperature here
+    double ne=1, nh0=0, nHe0, nHepp, nhp, nHeII, temp, mu_meanwt=1, rho=SphP[i].Density*All.cf_a3inv, u0=SphP[i].InternalEnergyPred;
+    temp = ThermalProperties(u0, rho, i, &mu_meanwt, &ne, &nh0, &nhp, &nHe0, &nHeII, &nHepp); // get thermodynamic properties
+#endif
+#ifdef EOS_PRECOMPUTE
+#ifdef EOS_CARRIES_TEMPERATURE
+    SphP[i].Temperature = temp; // cache the tempature
+#endif
+#ifdef EOS_CARRIES_GAMMA
+    SphP[i].Gamma = gamma_eos(i); // cache the adiabatic index; this will reuse the pre-computed SphP[i].Temperature assigned above
+#endif
+#endif
+
 #ifdef EOS_SUBSTELLAR_ISM
-    double ne=1, nh0=0, nHe0, nHepp, nhp, nHeII, temperature, mu_meanwt=1, rho=SphP[i].Density*All.cf_a3inv, u0=SphP[i].InternalEnergyPred;
-    temperature = ThermalProperties(u0, rho, i, &mu_meanwt, &ne, &nh0, &nhp, &nHe0, &nHeII, &nHepp); // get thermodynamic properties
-    press = Get_Gas_density_for_energy_i(i) * BOLTZMANN_CGS * temperature / UNIT_ENERGY_IN_CGS / (mu_meanwt * PROTONMASS_CGS / UNIT_MASS_IN_CGS);
+    press = Get_Gas_density_for_energy_i(i) * BOLTZMANN_CGS * temp / UNIT_ENERGY_IN_CGS / (mu_meanwt * PROTONMASS_CGS / UNIT_MASS_IN_CGS);
 #endif
     
 #ifdef GALSF_EFFECTIVE_EQS /* modify pressure to 'interpolate' between effective EOS and isothermal, with the Springel & Hernquist 2003 'effective' EOS */
     if(SphP[i].Density*All.cf_a3inv >= All.PhysDensThresh) {press = All.FactorForSofterEQS * press + (1 - All.FactorForSofterEQS) * All.cf_afac1 * (gamma_eos_index-1) * SphP[i].Density * All.InitGasU;}
 #endif    
-    
     
 #ifdef EOS_HELMHOLTZ /* pass the necessary quantities to wrappers for the Timms EOS */
     struct eos_input eos_in;
@@ -73,12 +95,10 @@ double get_pressure(int i)
     soundspeed = eos_out.csound;
     SphP[i].Temperature = eos_out.temp;
 #endif
-
     
 #ifdef EOS_TILLOTSON
     press = calculate_eos_tillotson(i); soundspeed = SphP[i].SoundSpeed; /* done in subroutine, save for below */
 #endif
-    
     
 #ifdef EOS_ENFORCE_ADIABAT
     press = EOS_ENFORCE_ADIABAT * pow(SphP[i].Density, gamma_eos_index);
@@ -87,7 +107,6 @@ double get_pressure(int i)
 #endif
     SphP[i].InternalEnergy = SphP[i].InternalEnergyPred = press / (SphP[i].Density * (gamma_eos_index-1.)); /* reset internal energy: particles live -exactly- along this relation */
 #endif
-
     
 #ifdef EOS_GMC_BAROTROPIC // barytropic EOS calibrated to Masunaga & Inutsuka 2000, eq. 4 in Federrath 2014 Apj 790. Reasonable over the range of densitites relevant to some small-scale star formation problems
     gamma_eos_index=7./5.; double rho=Get_Gas_density_for_energy_i(i), nH_cgs=rho*All.cf_a3inv*UNIT_DENSITY_IN_NHCGS;
@@ -108,7 +127,6 @@ double get_pressure(int i)
     SphP[i].InternalEnergy = SphP[i].InternalEnergyPred = press / (rho * (gamma_eos_index-1.));
 #endif
     
-    
 #ifdef COSMIC_RAY_FLUID /* compute the CR contribution to the total pressure and effective soundspeed here */
     double soundspeed2 = gamma_eos_index*(gamma_eos_index-1) * SphP[i].InternalEnergyPred;
     int k_CRegy; for(k_CRegy=0;k_CRegy<N_CR_PARTICLE_BINS;k_CRegy++)
@@ -128,7 +146,6 @@ double get_pressure(int i)
     press += (1./3.) * SphP[i].SubGrid_CosmicRayEnergyDensity;
 #endif
     
-    
 #ifdef RT_RADPRESSURE_IN_HYDRO /* add radiation pressure in the Riemann problem directly */
     int k_freq; double gamma_rad=4./3., fluxlim=1; double soundspeed2 = gamma_eos_index*(gamma_eos_index-1) * SphP[i].InternalEnergyPred;
     if(P[i].Mass>0 && SphP[i].Density>0) {for(k_freq=0;k_freq<N_RT_FREQ_BINS;k_freq++)
@@ -138,7 +155,6 @@ double get_pressure(int i)
     }}
     soundspeed = sqrt(soundspeed2);
 #endif
-    
     
 #if defined(EOS_TRUELOVE_PRESSURE) || defined(TRUELOVE_CRITERION_PRESSURE)
     /* add an artificial pressure term to suppress fragmentation at/below the explicit resolution scale */
@@ -150,20 +166,18 @@ double get_pressure(int i)
     if(xJeans>press) press=xJeans;
 #endif
     
-    
 #if defined(HYDRO_GENERATE_TARGET_MESH)
     press = return_user_desired_target_pressure(i) * (SphP[i].Density / return_user_desired_target_density(i)); // define pressure by reference to 'desired' fluid quantities //
     SphP[i].InternalEnergy = SphP[i].InternalEnergyPred = return_user_desired_target_pressure(i) / ((gamma_eos_index-1) * SphP[i].Density);
 #endif
     
-    
 #ifdef EOS_GENERAL /* need to be sure soundspeed variable is set: if not defined above, set it to the default which is given by the effective gamma */
     if(soundspeed == 0) {SphP[i].SoundSpeed = sqrt(gamma_eos_index * press / Get_Gas_density_for_energy_i(i));} else {SphP[i].SoundSpeed = soundspeed;}
 #endif
-    return press;
+
+    /* Finally, set the pressure as advertised */
+    SphP[i].Pressure = press;
 }
-
-
 
 
 /*! this function allows the user to specify an arbitrarily complex adiabatic index. note that for pure adiabatic evolution, one can simply set the pressure to obey some barytropic equation-of-state and use EOS_GENERAL to tell the code to deal with it appropriately.
@@ -176,20 +190,30 @@ double gamma_eos(int i)
             double fH = HYDROGEN_MASSFRAC, f = SphP[i].MolecularMassFraction, xe = SphP[i].Ne; // use the variables below to update the EOS as needed
             double f_mono = fH*(xe + 1.-f) + (1.-fH)/4., f_di = fH*f/2., gamma_mono=5./3., gamma_di=7./5.; // sum e-, H or p, He, which act monotomic, and molecular, by number
 #ifdef EOS_SUBSTELLAR_ISM
-            //gamma_di = 5./3;
-            double ne=1, nh0=0, nHe0, nHepp, nhp, nHeII, temperature, mu_meanwt=1, rho=SphP[i].Density*All.cf_a3inv, u0=SphP[i].InternalEnergyPred;
-            temperature = ThermalProperties(u0, rho, i, &mu_meanwt, &ne, &nh0, &nhp, &nHe0, &nHeII, &nHepp); // get thermodynamic properties
-            gamma_di = hydrogen_molecule_gamma(temperature);
+            gamma_di = hydrogen_molecule_gamma(get_temperature(i));
 #endif
             return 1. + (f_mono + f_di) / (f_mono/(gamma_mono-1.) + f_di/(gamma_di-1.)); // weighted sum by number to compute effective EOS
-            //return 1. + (fH*((1.-f)/1. + f/2.) + (1.-fH)/4.) / (fH*((1.-f + xe)/(1.*(5./3.-1.)) + f/(2.*(7./5.-1.))) + (1.-fH)/(4.*(5./3.-1.))); // assume He is atomic, H has a mass fraction f molecular
         }
     }
 #endif
     return GAMMA_DEFAULT; /* default to universal constant here */
 }
 
+/* Returns the temperature, either pre-computed or calling the routine to re-compute it*/
+double get_temperature(int i){
+#if defined(EOS_PRECOMPUTE) && defined(EOS_CARRIES_TEMPERATURE)
+    return SphP[i].Temperature;
+#else
+    return compute_temperature(i);
+#endif
+}
 
+/* Simple wrapper for calling ThermalProperties for temperature only - should only be called by get_temperature() above */
+double compute_temperature(int i){
+    double ne=1, nh0=0, nHe0, nHepp, nhp, nHeII, temperature, mu_meanwt=1, rho=SphP[i].Density*All.cf_a3inv, u0=SphP[i].InternalEnergyPred;
+    temperature = ThermalProperties(u0, rho, i, &mu_meanwt, &ne, &nh0, &nhp, &nHe0, &nHeII, &nHepp);
+    return temperature;
+}
 
 
 /* trivial function to check if particle falls below the minimum allowed temperature */
@@ -389,8 +413,13 @@ double Get_Gas_Molecular_Mass_Fraction(int i, double temperature, double neutral
         density, ionization states, FUV incident radiation field, and column densities in the simulations. */
     /* take eqm of dot[nH2] = a_H2*rho_dust*nHI [dust formation] + a_GP*nHI*ne [gas-phase formation] + b_3B*nHI*nHI*(nHI+nH2/8) [3-body collisional form] - b_H2HI*nHI*nH2 [collisional dissociation]
         - b_H2H2*nH2*nH2 [collisional mol-mol dissociation] - Gamma_H2^LW * nH2 [photodissociation] - Gamma_H2^+ [photoionization] - xi_H2*nH2 [CR ionization/dissociation] */
-    double fH2=0, sqrt_T=sqrt(T), nH0=xH0*nH_cgs, n_e=x_e*nH_cgs, EXPmax=40.; // define some variables for below, including neutral H number density, free electron number, etc.
-    double a_Z  = (9.e-19 * T / (1. + 0.04*sqrt_T + 0.002*T + 8.e-6*T*T)) * (0.5*Z_Zsol*return_dust_to_metals_ratio_vs_solar(i,0)) * nH_cgs * nH0; // dust formation ?????
+    double fH2=0, sqrt_T=sqrt(T), nH0=xH0*nH_cgs, n_e=x_e*nH_cgs, EXPmax=40., clumping_factor=1; // define some variables for below, including neutral H number density, free electron number, etc.
+    double f_dustgas_solar = 0.5*Z_Zsol*return_dust_to_metals_ratio_vs_solar(i,0); // dust-to-gas ratio locally
+    double a_Z = 3.e-18*sqrt_T / ((1. +4.e-2*sqrt(T+Tdust) +2.e-3*T +8.e-6*T*T )*(1. +1.e4/exp(DMIN(EXPmax,600./Tdust)))) * f_dustgas_solar * nH_cgs * nH0 * clumping_factor; // dust surface formation (assuming dust-to-metals ratio is 0.5*(Z/solar)*dust-to-gas-relative-to-solar in all regions where this is significant), from Glover & Jappsen 2007
+    double Tdust = 30.; // need to assume something about dust temperature for reaction rates below for dust-phase formation
+#if (defined(FLAG_NOT_IN_PUBLIC_CODE) && (FLAG_NOT_IN_PUBLIC_CODE > 2)) || defined(SINGLE_STAR_SINK_DYNAMICS)
+    Tdust = get_equilibrium_dust_temperature_estimate(i, 1, T);
+#endif
     //double a_GP = (1.833e-21 * pow(T,0.88)) * nH0 * n_e; // gas-phase formation [old form, from Nickerson et al., appears to be a significant typo in their expression compared to the sources from which they extracted it]
     double a_GP = (1.833e-18 * pow(T,0.88)) * nH0 * n_e / (1. + x_e*1846.*(1.+T/20000.)/sqrt(T)); // gas-phase formation [Glover & Abel 2008, using fitting functions slightly more convenient and assuming H-->H2 much more rapid than other reactions, from Krumholz & McKee 2010; denominator factor accounts for p+H- -> H + H, instead of H2]
     double b_3B = (6.0e-32/sqrt(sqrt_T) + 2.0e-31/sqrt_T) * nH0 * nH0 * nH0; // 3-body collisional formation

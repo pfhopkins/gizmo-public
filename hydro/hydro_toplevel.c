@@ -796,6 +796,9 @@ void hydro_final_operations_and_cleanup(void)
                 for(k=0;k<3;k++) { /* now record the total work term and photon momentum imparted to gas */
                     radacc[k]+=radacc_thisband[k]; work_band += radacc_thisband[k] * vel_i[k] * P[i].Mass; // PdV work done by photons [absorbed ones are fully-destroyed, so their loss of energy and momentum is already accounted for by their deletion in this limit -- note that we have to be careful about the RSOL factors here! //
                 }
+#ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES
+                f_kappa_abs = 0;
+#endif
                 SphP[i].Dt_Rad_E_gamma[kfreq] += (2.*f_kappa_abs-1.)*work_band; // loss/gain term for the radiation field itself
                 SphP[i].DtInternalEnergy -= (C_LIGHT_CODE/C_LIGHT_CODE_REDUCED) * 2.*f_kappa_abs*work_band / P[i].Mass; // correct for rsol factor above which reduced vel_i by rsol; -only- add back this term for gas
             }

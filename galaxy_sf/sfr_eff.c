@@ -210,6 +210,9 @@ double get_starformation_rate(int i, int mode)
     
 #if defined(SINGLE_STAR_SINK_DYNAMICS) && defined(SINGLE_STAR_SINK_FORMATION)
     int cell_can_be_singlestar = is_particle_single_star_eligible(i); // call function to determine if we're actually eligible to be a true single-star element
+#if defined(SINGLE_STAR_AND_SSP_HYBRID_MODEL) && defined(FIRE_SUPERLAGRANGIAN_JEANS_REFINEMENT)
+    //if(cell_can_be_singlestar<=0) {return 0;} // in this case, we want to temporarily de-activate the FIRE SF modules [but not in general, only for our tests]
+#endif
 #endif
 
 #ifdef GALSF_EFFECTIVE_EQS /* do the SFR calc for the Springel-Hernquist EOS, before any 'fancy' sf criteria, when above-threshold, or else risk incorrect entropies */
@@ -394,7 +397,7 @@ void update_internalenergy_for_galsf_effective_eos(int i, double tcool, double t
     /* now update the thermal variables */
     SphP[i].InternalEnergy = (egyeff + (egycurrent - egyeff) * exp(-dtime / trelax));
     SphP[i].InternalEnergyPred = SphP[i].InternalEnergy;
-    SphP[i].Pressure = get_pressure(i);
+    set_eos_pressure(i);
     //SphP[i].dInternalEnergy = 0;
     SphP[i].DtInternalEnergy = 0; /* HERE, it's ok, b/c effective EOS is designed to model new pressure even under compressions,
                                  (since we're zero'ing the second-half-step from the hydro step) */
@@ -544,6 +547,12 @@ void star_formation_parent_routine(void)
 #endif
 #if defined(GALSF_FB_FIRE_PROTOSTELLARJETS)
                             P[i].NewStar_Momentum_For_JetFeedback = P[i].Mass * 40./UNIT_VEL_IN_KMS;
+#endif
+#if defined(BH_FOLLOW_ACCRETED_ANGMOM)
+                            double bh_mu=2.0*get_random_number(P[i].ID+3)-1.0, bh_phi=2*M_PI*get_random_number(P[i].ID+4), bh_sin=sqrt(1-bh_mu*bh_mu); P[i].BH_Specific_AngMom[0]=bh_sin*cos(bh_phi); P[i].BH_Specific_AngMom[1]=bh_sin*sin(bh_phi); P[i].BH_Specific_AngMom[2]=bh_mu;
+#endif
+#ifdef BH_WIND_SPAWN
+                            P[i].unspawned_wind_mass = 0;
 #endif
 
 #ifdef SINGLE_STAR_SINK_DYNAMICS
