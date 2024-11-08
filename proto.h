@@ -990,6 +990,9 @@ double prob_of_grain_interaction(double cx_per_unitmass, double mass, double r, 
 #endif
 #endif
 
+#if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES >= 4)
+void special_rt_feedback_injection(void);
+#endif
 
 
 #if defined(AGS_FACE_CALCULATION_IS_ACTIVE)

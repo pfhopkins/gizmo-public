@@ -90,6 +90,10 @@ void compute_hydro_densities_and_forces(void)
 #endif
         PRINT_STATUS(" ..gradient computation done.");
 
+#if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES >= 4)
+        special_rt_feedback_injection(); /* do before proper hydro loop */
+#endif
+
 #ifdef TURB_DIFF_DYNAMIC
         dynamic_diff_calc(); /* This MUST be called immediately following gradient calculations */
 #endif

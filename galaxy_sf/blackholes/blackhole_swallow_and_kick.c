@@ -590,16 +590,19 @@ void spawn_bh_wind_feedback(void)
     /* don't loop or go forward if there are no gas particles in the domain, or the code will crash */
     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
     {
-        long nmax = (int)(0.99*All.MaxPart); if(All.MaxPart-20 < nmax) nmax=All.MaxPart-20; ptype_can_spawn = 0; if(P[i].Type == 5) {ptype_can_spawn == 1;}
+        long nmax = (int)(0.99*All.MaxPart); if(All.MaxPart-20 < nmax) nmax=All.MaxPart-20; int ptype_can_spawn = 0; if(P[i].Type == 5) {ptype_can_spawn == 1;}
 #ifdef SNE_NONSINK_SPAWN
         if(P[i].Type == 4) {ptype_can_spawn == 1;}
+#endif
+#if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES >= 4)
+        if(P[i].Type == 3) {ptype_can_spawn == 1;}
 #endif
         if((NumPart+n_particles_split+(int)(2.*(BH_WIND_SPAWN+0.1)) < nmax) && (ptype_can_spawn==1)) // basic condition: particle is a 'spawner' (sink), and code can handle the event safely without crashing.
         {
             int sink_eligible_to_spawn = 0; // flag to check eligibility for spawning
             if(BPP(i).unspawned_wind_mass >= (BH_WIND_SPAWN)*target_mass_for_wind_spawning(i)) {sink_eligible_to_spawn=1;} // have 'enough' mass to spawn
 #if defined(SINGLE_STAR_SINK_DYNAMICS)
-            if((P[i].Mass <= 3.5*BPP(i).Sink_Formation_Mass) || (P[i].BH_Mass*UNIT_MASS_IN_SOLAR < 0.01)) {sink_eligible_to_spawn=0;}  // spawning causes problems in these modules for low-mass sinks, so arbitrarily restrict to this, since it's roughly a criterion on the minimum particle mass. and for <0.01 Msun, in pre-collapse phase, no jets
+            if(P[i].Type==5) {if((P[i].Mass <= 3.5*BPP(i).Sink_Formation_Mass) || (P[i].BH_Mass*UNIT_MASS_IN_SOLAR < 0.01)) {sink_eligible_to_spawn=0;}}  // spawning causes problems in these modules for low-mass sinks, so arbitrarily restrict to this, since it's roughly a criterion on the minimum particle mass. and for <0.01 Msun, in pre-collapse phase, no jets
 #endif
             if(sink_eligible_to_spawn)
             {
@@ -623,7 +626,7 @@ void spawn_bh_wind_feedback(void)
         }
     }
     MPI_Allreduce(&n_particles_split, &MPI_n_particles_split, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-    if(MPI_n_particles_split>0){
+    if(MPI_n_particles_split>0) {
 #ifdef MAINTAIN_TREE_IN_REARRANGE
         All.NumForcesSinceLastDomainDecomp +=  0.0001 * All.TreeDomainUpdateFrequency * All.TotNumPart; // we can insert spawned particles in the tree, but still a good idea to rebuild the tree every now and then, so we make the next domain+treebuild come a bit sooner; additional cost should be small
 #else
@@ -708,6 +711,11 @@ void get_wind_spawn_direction(int i, int num_spawned_this_call, int mode, double
 double get_spawned_cell_launch_speed(int i)
 {
     double v_magnitude = All.BAL_v_outflow; // velocity of the jet: default mode is to set this manually to a specific value in physical units
+
+#if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES >= 4)
+    if(P[i].Type == 3) {return 1.e5/UNIT_VEL_IN_KMS;} // need an initial velocity for launch here //
+#endif
+    
 #ifdef SNE_NONSINK_SPAWN
     if(P[i].Type == 4) {
         double t_gyr = evaluate_stellar_age_Gyr(i); int SNeIaFlag=0; if(t_gyr > 0.03753) {SNeIaFlag=1;}; /* assume SNe before critical time are core-collapse, later are Ia */
@@ -772,7 +780,7 @@ void get_wind_spawn_magnetic_field(int j, int mode, double *ny, double *nz, doub
     Bmag = DMAX(Bmag , 0.1 * Bmag_IC);
 #endif
 #if defined(SINGLE_STAR_FB_SNE)
-    if(P[j].ProtoStellarStage == 6) {Bmag *= 1.e-3;} // No need to have flux in SN ejecta - note that this assumes we inherited this attribute from the spawning sink before calling this routine
+    if(P[j].Type==5) {if(P[j].ProtoStellarStage == 6) {Bmag *= 1.e-3;}} // No need to have flux in SN ejecta - note that this assumes we inherited this attribute from the spawning sink before calling this routine
 #endif
     Bmag = DMAX(Bmag, MIN_REAL_NUMBER); // floor to prevent underflow errors
     /* add magnetic flux here to 'Bmag' if desired */
@@ -978,7 +986,6 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
 #if defined(GALSF)
         P[j].StellarAge = All.Time; // use this attibute to save the gas cell's formation time for possible subsequent checks for special behavior on its first timestep
 #endif
-        
 
         /* now set the real hydro variables. */
         /* set the particle ID */ // unsigned int bits; int SPLIT_GENERATIONS = 4; for(bits = 0; SPLIT_GENERATIONS > (1 << bits); bits++); /* the particle needs an ID: we give it a bit-flip from the original particle to signify the split */
@@ -996,7 +1003,7 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
 #endif
         BPP(i).unspawned_wind_mass -= P[j].Mass; /* remove the mass successfully spawned, to update the remaining unspawned mass */
 
-#if defined(METALS) && (defined(SINGLE_STAR_FB_JETS) || defined(SINGLE_STAR_FB_WINDS) || defined(SINGLE_STAR_FB_SNE) || defined(SNE_NONSINK_SPAWN))
+#if defined(METALS) && (defined(SINGLE_STAR_FB_JETS) || defined(SINGLE_STAR_FB_WINDS) || defined(SINGLE_STAR_FB_SNE) || defined(SNE_NONSINK_SPAWN) || (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES >= 4))
         double yields[NUM_METAL_SPECIES+NUM_ADDITIONAL_PASSIVESCALAR_SPECIES_FOR_YIELDS_AND_DIFFUSION]={0}; get_jet_yields(yields,i); // default to jet-type
         for(k=0;k<NUM_METAL_SPECIES;k++) {P[j].Metallicity[k]=yields[k];}  // update metallicity of spawned cell modules
 #endif
@@ -1008,14 +1015,14 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
         /* condition number, smoothing length, and density */
         SphP[j].ConditionNumber *= 100.0; /* boost the condition number to be conservative, so we don't trigger madness in the kernel */
         SphP[j].recent_refinement_flag = 1; /* tag the newly-created cell as recently-refined for all purposes */
-#if defined(SINGLE_STAR_SINK_DYNAMICS) 
+#if defined(SINGLE_STAR_SINK_DYNAMICS)
         SphP[j].MaxSignalVel = 2.*DMAX(v_magnitude_physical, SphP[j].MaxSignalVel); // need this to satisfy the Courant condition in the first timestep after spawn; note here MaxSignalVel is now defined in physical code units
 #endif
         /* note, if you want to use this routine to inject magnetic flux or cosmic rays, do this below */
 #ifdef BH_DEBUG_SPAWN_JET_TEST
         PPP[j].Hsml=5.*d_r; SphP[j].Density=mass_of_new_particle/pow(KERNEL_CORE_SIZE*PPP[j].Hsml,NUMDIMS); /* PFH: need to write this in a way that does not make assumptions about units/problem structure */
 #endif
-#if defined(BH_WIND_SPAWN_SET_BFIELD_POLTOR) 
+#if defined(BH_WIND_SPAWN_SET_BFIELD_POLTOR)
         SphP[j].IniDen = -1. * SphP[j].Density; /* this is essentially acting like a bitflag, to signal to the code that the density needs to be recalculated because a spawn event just occurred */
 #endif
 #ifdef MAGNETIC
@@ -1033,7 +1040,7 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
 #endif
 #ifdef CRFLUID_EVOLVE_SCATTERINGWAVES
             for(k=0;k<3;k++) {SphP[j].CosmicRayAlfvenEnergy[k_CRegy][k]=SphP[j].CosmicRayAlfvenEnergyPred[k_CRegy][k]=SphP[j].DtCosmicRayAlfvenEnergy[k_CRegy][k]=0;}
-#endif        
+#endif
         } /* complete CR initialization to null */
 #endif
         SphP[j].InternalEnergy = All.BAL_internal_temperature / (  0.59 * (5./3.-1.) * U_TO_TEMP_UNITS ); /* internal energy, determined by desired wind temperature (assume fully ionized primordial gas with gamma=5/3) */
@@ -1060,14 +1067,54 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
 
 
 
+#if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES >= 4)
+/* routine for injection from sink boundary around 'special' particle types */
+void special_rt_feedback_injection(void)
+{
+    double L0_cgs = 7.e45, MdotJetMsunYr=1.; int iBH0=-1;
+    if(All.Mass_of_SpecialSMBHParticle <= 0) {return;}
+    double delta_wt_sum = 0, delta_wt_sumsum, r_min = All.ForceSoftening[3] * All.cf_atime, r_max = 5. * r_min, dt = All.TimeStep, subgrid_lum = L0_cgs / (UNIT_ENERGY_IN_CGS/UNIT_TIME_IN_CGS), de_00 = subgrid_lum * dt; if(dt <= 0) {return;}
+    int n_wt = 0, i,k; for(i=0;i<NumPart;i++) {
+        if(P[i].Type == 3) {iBH0=i;}
+        if(P[i].Type != 0) {continue;}
+        double dp[3], r2=0, wt, wt_new=0, r; for(k=0;k<3;k++) {dp[k]=All.cf_atime*(P[i].Pos[k]); r2+=dp[k]*dp[k];}
+        r = sqrt(r2); if(r < r_min || r >= r_max) {continue;}
+        double vol = P[i].Mass / (SphP[i].Density*All.cf_a3inv), cos_t = dp[0] / r;
+        wt = 1.e-5 * pow(fabs(cos_t),8) * vol * (r_max*r_max/(r*r)-1.); delta_wt_sum += wt;
+    }
+    MPI_Allreduce(&delta_wt_sum, &delta_wt_sumsum, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD); // broadcast the new position of the SMBH particle
+    if(All.Time <= All.TimeBegin) {return;}
+    if(delta_wt_sumsum <= 0) {return;}
+    for(i=0;i<NumPart;i++) {
+        if(P[i].Type != 0) {continue;}
+        double dp[3], r2=0, wt, wt_new=0, r, de; for(k=0;k<3;k++) {dp[k]=All.cf_atime*(P[i].Pos[k]); r2+=dp[k]*dp[k];}
+        r = sqrt(r2); if(r < r_min || r >= r_max) {continue;}
+        double vol = P[i].Mass / (SphP[i].Density*All.cf_a3inv), cos_t = dp[0] / r;
+        wt = 1.e-5 * pow(fabs(cos_t),8) * vol * (r_max*r_max/(r*r)-1.); de = de_00 * wt / delta_wt_sumsum;
+        if(de <= 0 || !isfinite(de)) {continue;}
+        k=RT_FREQ_BIN_INFRARED; double T00 = 1.e5, f0 = de * C_LIGHT_CODE / r;
+        if(SphP[i].Radiation_Temperature > 0 && SphP[i].Rad_E_gamma[k] > 0) {SphP[i].Radiation_Temperature = (SphP[i].Rad_E_gamma[k] + de)/(SphP[i].Rad_E_gamma[k]/SphP[i].Radiation_Temperature + de/T00);} else {SphP[i].Radiation_Temperature = T00;}
+        SphP[i].Rad_E_gamma[k] += de; SphP[i].Rad_E_gamma_Pred[k] += de;
+        int j; for(j=0;j<3;j++) {SphP[i].Rad_Flux[k][j] += f0 * dp[j]; SphP[i].Rad_Flux_Pred[k][j] += f0 * dp[j];}
+    }
+    if(iBH0 >= 0) {P[iBH0].unspawned_wind_mass += MdotJetMsunYr * dt * (6.304e25 * UNIT_TIME_IN_CGS/UNIT_MASS_IN_CGS);} // will sent to jets subroutine, for spawning, alongside radiation injection //
+    return;
+}
+#endif
+
+
 /* simple routine that evaluates the target cell mass for the spawning subroutine */
 double target_mass_for_wind_spawning(int i)
 {
-#ifdef BH_WIND_SPAWN
+#if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES >= 4) // replace later as needed //
+    if(P[i].Type==3) {return 1.e-8/UNIT_MASS_IN_SOLAR;} //
+#endif
     
+#ifdef BH_WIND_SPAWN
+
 
 #if defined(SNE_NONSINK_SPAWN)
-    if(P[i].Type==4) {return 0.5/UNIT_MASS_IN_MSUN;} // replace later as needed //
+    if(P[i].Type==4) {return 0.5/UNIT_MASS_IN_SOLAR;} // replace later as needed //
 #endif
     
 #if defined(BH_SCALE_SPAWNINGMASS_WITH_INITIALMASS)

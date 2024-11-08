@@ -75,6 +75,9 @@ int does_particle_need_to_be_merged(int i)
 #if defined(SINGLE_STAR_AND_SSP_HYBRID_MODEL)
         rmin_pc = 10.;
 #endif
+#if defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES)
+        rmin_pc = 0;
+#endif
         if(P[i].Type==0) {if(Get_Particle_Size(i)*All.cf_atime*UNIT_LENGTH_IN_PC < rmin_pc) {return 0;}} // if too high-res spatially, this equiv to size for m=7000 msun for nH=1e-3, dont let de-refine
     }
 #endif
@@ -168,6 +171,9 @@ double target_mass_renormalization_factor_for_mergesplit(int i, int split_key)
         r0 = 0.01; if(r_pc < r0) {f0 *= pow(r_pc/r0 , 2);} // simple additional refinement criterion vs radius interior to inner radius
         f0 = DMAX(pow(r_pc / r0, 4) , 1.e-4); // optional alt - using for now, can revert to above.
 #if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES>=3)
+#if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES>=4)
+        mcrit_0 = m_ref_mJ = 0.009; f0 = 1; r0 = 0.3; if(r_pc > r0) {f0 *= pow(r_pc/r0 , 1.5);}
+#endif
         f0 = 1;
         r0 = 0.1; if(r_pc < r0) {f0 *= pow(r_pc/r0 , 1);}
         r0 = 0.01; if(r_pc < r0) {f0 *= pow(r_pc/r0 , 2);}
@@ -175,16 +181,24 @@ double target_mass_renormalization_factor_for_mergesplit(int i, int split_key)
         f0 = DMAX(f0, 1.e-4);
         double f0minfac = 30.;
         r0 = 0.001; if(r_pc < r0) {f0minfac *= pow(r_pc/r0 , 2);}
+#if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES < 4)
         f0minfac = DMAX(f0minfac , 0.005); // may need to be further lowered later
         minimum_refinement_mass_in_solar = 1.e-9;
         f0 = DMIN(1., f0minfac*f0);
+#endif
+        f0minfac = DMAX(f0minfac , 0.015); // may need to be further lowered later
+        f0 = DMIN(DMAX(1.,1./m_ref_mJ), f0minfac*f0);
 #endif
 #endif
 
         double M_target = f0 * DMAX( mcrit_0, m_ref_mJ ) / UNIT_MASS_IN_SOLAR;
         double M_min_absolute = minimum_refinement_mass_in_solar / UNIT_MASS_IN_SOLAR; // arbitrarily set minimum mass for refinement at any level
         double normal_median_mass = All.MaxMassForParticleSplit / 3.;
+#if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES >= 4)
+        ref_factor = DMAX(M_min_absolute / normal_median_mass, DMIN( M_target / normal_median_mass , 0.1/(normal_median_mass*UNIT_MASS_IN_SOLAR)));
+#else
         ref_factor = DMAX(M_min_absolute / normal_median_mass, DMIN( M_target / normal_median_mass , 1));
+#endif
         return ref_factor;
     }
 #endif

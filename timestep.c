@@ -411,7 +411,7 @@ integertime get_timestep(int p,		/*!< particle index */
 #endif
     }
 #if defined(SINGLE_STAR_FB_TIMESTEPLIMIT) && !defined(SELFGRAVITY_OFF)
-    if(P[p].Type == 0) {dt = DMIN(dt, All.CourantFac * DMIN(P[p].min_bh_fb_time, P[p].min_bh_approach_time));}
+    if(P[p].Type == 0) {dt = DMIN(dt, 0.5 * All.CourantFac * DMIN(P[p].min_bh_fb_time, P[p].min_bh_approach_time));}
 #endif    
 #endif // SINGLE_STAR_TIMESTEPPING
 
@@ -485,6 +485,9 @@ integertime get_timestep(int p,		/*!< particle index */
             csnd = 0.5 * SphP[p].MaxSignalVel * All.cf_afac3;
             double L_particle = Get_Particle_Size(p);
             dt_courant = All.CourantFac * (L_particle*All.cf_atime) / csnd;
+#ifdef BH_WIND_SPAWN
+	    if(P[p].ID == All.AGNWindID){dt_courant *= 0.5;} // be more careful if this is a spawned-in gas cell
+#endif			    
             if(dt_courant < dt) dt = dt_courant;
 
             double dt_prefac_diffusion;

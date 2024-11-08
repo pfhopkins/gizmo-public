@@ -202,10 +202,9 @@ double gamma_eos(int i)
 /* Returns the temperature, either pre-computed or calling the routine to re-compute it*/
 double get_temperature(int i){
 #if defined(EOS_PRECOMPUTE) && defined(EOS_CARRIES_TEMPERATURE)
-    return SphP[i].Temperature;
-#else
-    return compute_temperature(i);
+    if(All.Time > 0 || SphP[i].Temperature > 0) {return SphP[i].Temperature;}
 #endif
+    return compute_temperature(i);
 }
 
 /* Simple wrapper for calling ThermalProperties for temperature only - should only be called by get_temperature() above */

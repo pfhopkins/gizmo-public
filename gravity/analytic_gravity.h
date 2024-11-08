@@ -241,6 +241,9 @@ void GravAccel_SpecialCustomNuclearZoomBoundaryConditions()
         }
 #else
         r_cut = 0.1 / UNIT_LENGTH_IN_PC;
+#if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES >= 4)
+        r_cut = 20. / UNIT_LENGTH_IN_PC;
+#endif
         if(r > r_cut) {P[i].Mass = 0;} // clip it
         if(P[i].Type != 3 && P[i].Mass > 0 && r > 0) // add additional Paczynski-Wiita potential corrections, if desired //
         {
