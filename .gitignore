@@ -1,0 +1,10 @@
+# Build files
+*.o
+
+# Temp files
+.DS_Store
+.vscode
+.idea
+*~
+\#*
+.\#*
