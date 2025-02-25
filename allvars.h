@@ -424,13 +424,6 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 #endif
 #endif
 
-#if (defined(SINGLE_STAR_FB_SNE) || defined(SINGLE_STAR_FB_WINDS)) && !defined(SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT)
-#define SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT 2 // determines the maximum number of ejecta particles spawned per timestep, see below
-#endif
-#if defined(SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT)
-#define SINGLE_STAR_FB_SNE_N_EJECTA (4*(SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT)*((SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT)+1)) // maximum number of ejecta cells spawned per timestep - follows from tiling rules for rays from RHD-direct-ray method
-#endif
-
 #if defined(SINGLE_STAR_FB_LOCAL_RP) // use standard angle-weighted local coupling to impart photon momentum from stars
 #if !defined(BH_PHOTONMOMENTUM)
 #define BH_PHOTONMOMENTUM
@@ -491,6 +484,13 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 #if !defined(GRAVTREE_CALCULATE_GAS_MASS_IN_NODE)
 #define GRAVTREE_CALCULATE_GAS_MASS_IN_NODE
 #endif
+#endif
+
+#if (defined(SINGLE_STAR_FB_SNE) || defined(SINGLE_STAR_FB_WINDS)) && !defined(SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT)
+#define SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT 2 // determines the maximum number of ejecta particles spawned per timestep, see below
+#endif
+#if defined(SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT)
+#define SINGLE_STAR_FB_SNE_N_EJECTA (4*(SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT)*((SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT)+1)) // maximum number of ejecta cells spawned per timestep - follows from tiling rules for rays from RHD-direct-ray method
 #endif
 
 #ifdef ADAPTIVE_TREEFORCE_UPDATE // instead of going into the tree every timestep, only update gravity with a frequency set by this fraction of dynamical timescale (default for gas only)
@@ -2108,6 +2108,9 @@ extern struct global_data_all_processes
     double Rad_Intensity_Direction[N_RT_INTENSITY_BINS][3];
 #endif
 
+#if (defined(SINGLE_STAR_FB_SNE) && defined(FLAG_NOT_IN_PUBLIC_CODE)) || defined(SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT)
+    double SN_Ejecta_Direction[SINGLE_STAR_FB_SNE_N_EJECTA][3];
+#endif
 
 #if defined(RT_CHEM_PHOTOION) && !(defined(GALSF_FB_FIRE_RT_HIIHEATING) || defined(GALSF))
     double IonizingLuminosityPerSolarMass_cgs;

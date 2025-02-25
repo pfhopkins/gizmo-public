@@ -261,6 +261,12 @@ void calculate_non_standard_physics(void)
         rearrange_particle_sequence();
         Max_Unspawned_MassUnits_fromSink=Max_Unspawned_MassUnits_fromSink_global=0.;
     }
+#if defined(SNE_NONSINK_SPAWN)
+    {int i; for(i=0;i<NumPart;i++) {if(P[i].Type != 4) {continue;}
+        double n_unspawned = P[i].unspawned_wind_mass / ((BH_WIND_SPAWN)*target_mass_for_wind_spawning(i)); // number of spawned gas cells that can be made from the mass in the reservoir
+        if(n_unspawned> Max_Unspawned_MassUnits_fromSink) {Max_Unspawned_MassUnits_fromSink = n_unspawned;} // track the maximum integer number of elements this sink could spawn
+    }}
+#endif
 #endif
     MPI_Barrier(MPI_COMM_WORLD); CPU_Step[CPU_BLACKHOLES] += measure_time();
 #endif

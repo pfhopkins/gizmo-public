@@ -776,6 +776,27 @@ GMP_LIBs =  #-L$(GMPDIR)/lib
 #module add lib/fftw2/2.1.5-openmpi2
 #module add lib/gsl
 endif
+
+ifeq ($(SYSTYPE),"RUSTY")
+CC       =   mpicc
+ifeq (SOFTDOUBLEDOUBLE,$(findstring SOFTDOUBLEDOUBLE,$(OPT)))
+CC       =   mpicxx
+endif
+FC      = mpifort
+OPTIMIZE =  -O2 -g -Wall -m64 -wd981 -wd2259 -wd1572
+OPTIMIZE = -O2 -g -m64 -Wall
+OPTIMIZE  = -g -O2
+GSL_INCL = -I$(GSL_BASE)/include
+GSL_LIBS = -L$(GSL_BASE)/lib -Xlinker -R -Xlinker $(GSL_BASE) -lgsl -lgslcblas
+FFTW_INCL= -I$(FFTW3_BASE)/include
+FFTW_LIBS= -L$(FFTW3_BASE)/lib -Xlinker -R -Xlinker $(FFTW3_BASE)/lib
+MPICHLIB =
+HDF5INCL = -I$(HDF5_BASE)/include -DH5_USE_16_API
+HDF5LIB  = -L$(HDF5_BASE)/lib -Xlinker -R -Xlinker $(HDF5_BASE)/lib -lhdf5 -lz
+
+endif
+
+
 #----------------------------------------------------------------------------------------------
 
 #----------------------------------------------------------------------------------------------

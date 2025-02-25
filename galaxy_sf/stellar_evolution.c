@@ -270,7 +270,8 @@ void update_stellarnumber_and_timedistribofstarformation(void)
 void get_jet_yields(double *yields, int i) {
     int k; for(k=0;k<NUM_METAL_SPECIES;k++) {yields[k]=P[i].Metallicity[k];} /* return surface abundances, to leading order */
 #ifdef SNE_NONSINK_SPAWN
-    if(P[i].Type==4) {double Msne; get_SNe_yields(yields,i,stellar_lifetime_in_Gyr(i),0,&Msne);}
+    double t_gyr=evaluate_stellar_age_Gyr(i); int SNeIaFlag=0; if(t_gyr>0.03753) {SNeIaFlag=1;}; /* assume SNe before critical time are core-collapse, later are Ia */
+    if(P[i].Type==4) {double Msne; get_SNe_yields(yields,i,t_gyr,SNeIaFlag,&Msne);}
 #endif
 #ifdef STARFORGE_FEEDBACK_TRACERS
     for(k=0;k<NUM_STARFORGE_FEEDBACK_TRACERS;k++) {yields[NUM_METAL_SPECIES-NUM_STARFORGE_FEEDBACK_TRACERS+k]=0;} yields[NUM_METAL_SPECIES-NUM_STARFORGE_FEEDBACK_TRACERS+0]=1; // this is 'fully' jet material, so mark as such here, so it is noted for all wind routines [whichever form of the wind subroutine we actually use, otherwise it would only appear in the jet version]
@@ -291,6 +292,46 @@ double single_star_jet_velocity(int n)
 
 
 
+
+#ifdef SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT
+void single_star_SN_init_directions(void){
+    /* routine to initialize the distribution of spawned wind particles during SNe. This is essentially a copy of the function rt_init_intensity_directions() in rt_utilities.c */
+    int n_polar = SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT;
+    if(n_polar < 1) {printf("Number of SN ejecta particles is invalid (<1). Terminating.\n"); endrun(53463431);}
+    double mu[n_polar]; int i,j,k,l,n=0,n_oct=n_polar*(n_polar+1)/2;
+    double SN_Ejecta_Direction_tmp[n_oct][3];
+    for(j=0;j<n_polar;j++) {mu[j] = sqrt( (j + 1./6.) / (n_polar - 1./2.) );}
+    for(i=0;i<n_polar;i++)
+    {
+        for(j=0;j<n_polar-i;j++)
+        {
+            k=n_polar-1-i-j;
+            SN_Ejecta_Direction_tmp[n][0]=mu[i]; SN_Ejecta_Direction_tmp[n][1]=mu[j]; SN_Ejecta_Direction_tmp[n][2]=mu[k];
+            n++;
+        }
+    }
+    n=0;
+    for(i=0;i<2;i++)
+    {
+        double sign_x = 1 - 2*i;
+        for(j=0;j<2;j++)
+        {
+            double sign_y = 1 - 2*j;
+            for(k=0;k<2;k++)
+            {
+                double sign_z = 1 - 2*k;
+                for(l=0;l<n_oct;l++)
+                {
+                    All.SN_Ejecta_Direction[n][0] = SN_Ejecta_Direction_tmp[l][0] * sign_x;
+                    All.SN_Ejecta_Direction[n][1] = SN_Ejecta_Direction_tmp[l][1] * sign_y;
+                    All.SN_Ejecta_Direction[n][2] = SN_Ejecta_Direction_tmp[l][2] * sign_z;
+                    n++;
+                }
+            }
+        }
+    }
+}
+#endif
 
 
 

@@ -590,12 +590,12 @@ void spawn_bh_wind_feedback(void)
     /* don't loop or go forward if there are no gas particles in the domain, or the code will crash */
     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
     {
-        long nmax = (int)(0.99*All.MaxPart); if(All.MaxPart-20 < nmax) nmax=All.MaxPart-20; int ptype_can_spawn = 0; if(P[i].Type == 5) {ptype_can_spawn == 1;}
+        long nmax = (int)(0.99*All.MaxPart); if(All.MaxPart-20 < nmax) nmax=All.MaxPart-20; int ptype_can_spawn = 0; if(P[i].Type == 5) {ptype_can_spawn = 1;}
 #ifdef SNE_NONSINK_SPAWN
-        if(P[i].Type == 4) {ptype_can_spawn == 1;}
+        if(P[i].Type == 4) {ptype_can_spawn = 1;}
 #endif
 #if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES >= 4)
-        if(P[i].Type == 3) {ptype_can_spawn == 1;}
+        if(P[i].Type == 3) {ptype_can_spawn = 1;}
 #endif
         if((NumPart+n_particles_split+(int)(2.*(BH_WIND_SPAWN+0.1)) < nmax) && (ptype_can_spawn==1)) // basic condition: particle is a 'spawner' (sink), and code can handle the event safely without crashing.
         {
@@ -695,6 +695,15 @@ void get_wind_spawn_direction(int i, int num_spawned_this_call, int mode, double
         cos_theta = cos(theta), sin_theta=sin(theta), sin_phi=sin(phi), cos_phi=cos(phi);
         for(k=0;k<3;k++) {veldir[k] = sin_theta*cos_phi*nx[k] + sin_theta*sin_phi*ny[k] + cos_theta*nz[k]; dpdir[k]=veldir[k];} //converted from angular momentum relative to into standard coordinates
     }
+#if (defined(SINGLE_STAR_FB_SNE) && defined(FLAG_NOT_IN_PUBLIC_CODE)) || defined(SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT)
+    else if (mode==3) { // spawn on a specific angular grid
+        int dir_ind = num_spawned_this_call % SINGLE_STAR_FB_SNE_N_EJECTA;
+        for(k=0;k<3;k++) { //Particle positioned at one of the regular positions on the randomized coordinate system
+            veldir[k] = All.SN_Ejecta_Direction[dir_ind][0] * nx[k] + All.SN_Ejecta_Direction[dir_ind][1] * ny[k] + All.SN_Ejecta_Direction[dir_ind][2] * nz[k]; //use directions pre-computed to isotropically cover a sphere with SINGLE_STAR_FB_SNE_N_EJECTA particles
+            dpdir[k]=veldir[k];
+        }
+    }
+#endif
 #if defined(BH_DEBUG_SPAWN_JET_TEST)
     else if (mode==4) { // old-style of jet being initialized as a cylinder around the BH
         phi=2.*M_PI*get_random_number(num_spawned_this_call+1+ThisTask), cos_theta=2.*(get_random_number(num_spawned_this_call+3+2*ThisTask)-0.5); sin_theta=sqrt(1-cos_theta*cos_theta), sin_phi=sin(phi), cos_phi=cos(phi);
@@ -713,14 +722,14 @@ double get_spawned_cell_launch_speed(int i)
     double v_magnitude = All.BAL_v_outflow; // velocity of the jet: default mode is to set this manually to a specific value in physical units
 
 #if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES >= 4)
-    if(P[i].Type == 3) {return 1.e5/UNIT_VEL_IN_KMS;} // need an initial velocity for launch here //
+    if(P[i].Type == 3) {return 3.e4/UNIT_VEL_IN_KMS;} // need an initial velocity for launch here //
 #endif
     
 #ifdef SNE_NONSINK_SPAWN
     if(P[i].Type == 4) {
         double t_gyr = evaluate_stellar_age_Gyr(i); int SNeIaFlag=0; if(t_gyr > 0.03753) {SNeIaFlag=1;}; /* assume SNe before critical time are core-collapse, later are Ia */
         double Msne=10.5/UNIT_MASS_IN_SOLAR; if(SNeIaFlag) {Msne=1.4/UNIT_MASS_IN_SOLAR;} // average ejecta mass for single event (normalized to give total mass loss correctly)
-        double SNeEgy = (1.0e51/UNIT_ENERGY_IN_CGS)
+        double SNeEgy = (1.0e51/UNIT_ENERGY_IN_CGS);
         return sqrt(2.0*SNeEgy/Msne); // v_ej in code units: assume all SNe = 1e51 erg //
     }
 #endif
@@ -802,10 +811,21 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
     int n_particles_split   = (int) floor( total_mass_in_winds / target_mass_for_wind_spawning(i) ); /* if we set BH_WIND_SPAWN we presumably wanted to do this in an exactly-conservative manner, which means we want to have an even number here. */
     int k=0; long j;
 
+#if (defined(SINGLE_STAR_FB_SNE) && defined(FLAG_NOT_IN_PUBLIC_CODE)) || defined(SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT)
+    if (n_particles_split<SINGLE_STAR_FB_SNE_N_EJECTA) {return 0;} // we have to wait until we get a full shell
+    else {n_particles_split = n_particles_split - (n_particles_split % SINGLE_STAR_FB_SNE_N_EJECTA);} // we only eject full shells, in practice this will be one shell at a time
+#endif
 
     if((((int)BH_WIND_SPAWN) % 2) == 0) {if(( n_particles_split % 2 ) != 0) {n_particles_split -= 1;}} /* n_particles_split was not even. we'll wait to spawn this last particle, to keep an even number, rather than do it right now and break momentum conservation */
     if( (n_particles_split == 0) || (n_particles_split < 1) ) {return 0;}
-    int n0max = DMAX(20 , (int)(3.*(BH_WIND_SPAWN)+0.1)); if((n0max % 2) != 0) {n0max += 1;} // should ensure n0max is always an even number //
+    int n0max = DMAX(20 , (int)(3.*(BH_WIND_SPAWN)+0.1));
+#if defined(SNE_NONSINK_SPAWN)
+    n0max = DMAX(6 , (int)(3.*(BH_WIND_SPAWN)+0.1)); // more conservative to spread over more timesteps to avoid nasty overlaps //
+#if (defined(SINGLE_STAR_FB_SNE) && defined(FLAG_NOT_IN_PUBLIC_CODE)) || defined(SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT)
+    n0max = DMAX(SINGLE_STAR_FB_SNE_N_EJECTA , (int)(3.*(BH_WIND_SPAWN)+0.1)); if((n0max % 2) != 0) {n0max += 1;} // should ensure n0max is always an even number //
+#endif
+#endif
+    if((n0max % 2) != 0) {n0max += 1;} // should ensure n0max is always an even number //
     if(n_particles_split > n0max) {n_particles_split = n0max;}
 
 
@@ -831,6 +851,12 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
 #ifdef BH_GRAVCAPTURE_FIXEDSINKRADIUS
     d_r = DMIN(P[i].SinkRadius, d_r); //launch close to the sink
 #endif
+#if defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM) && defined(PARTICLE_EXCISION)
+    if(P[i].Type == 3) {double rmin=All.ForceSoftening[3], r=sqrt(r2), r0=0.5*(rmin+r)*(1.+0.1*get_random_number(i+j)); d_r=r0;} // make sure to spawn OUTSIDE of the excision radius!
+#endif
+#if defined(SNE_NONSINK_SPAWN)
+    if(P[i].Type == 4) {double rmin=All.ForceSoftening[4], r=sqrt(r2), r0=0.5*(rmin+r)*(0.5+1.5*get_random_number(i+j)); d_r=r0;} // need a generous padding to ensure no overlaps
+#endif
     long bin, bin_0; for(bin = 0; bin < TIMEBINS; bin++) {if(TimeBinCount[bin] > 0) break;} /* gives minimum active timebin of any particle */
     bin_0 = bin; int i0 = i; /* save minimum timebin, also save ID of BH particle for use below */
     bin = P[i0].TimeBin; /* make this particle active on the BH/star timestep */
@@ -848,6 +874,11 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
 #endif
 #ifdef BH_RIAF_SUBEDDINGTON_MODEL
     if(BPP(i).BH_Mdot / bh_eddington_mdot(BPP(i).BH_Mass) > (BH_RIAF_SUBEDDINGTON_MODEL)) {mode=0;} // broad-angle at high mdot, jets at low mdot
+#endif
+    if(P[i].Type==3) {mode = 1;} // special particle spawn is collimated
+    if(P[i].Type==4) {mode = 0;} // star particle spawn is isotropic
+#ifdef SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT
+    if(P[i].Type==4) {mode = 3;} // star particle spawn is isotropic but regularized
 #endif
 
     // based on the mode we're in, let's pick a fixed orthonormal basis that all spawned elements are aware of
@@ -890,13 +921,15 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
         P[j] = P[dummy_cell_i_to_clone]; SphP[j] = SphP[dummy_cell_i_to_clone]; /* set the pointers equal to one another -- all quantities get copied, we only have to modify what needs changing */
 
 #if defined(BH_TEST_WIND_MIXED_FASTSLOW)
-        double masscorrfac_fast = 100.; mode = mode_default; mass_of_new_particle=mass_of_new_particle_default; v_magnitude_physical=v_magnitude_physical_default;
-        if((j - (NumPart + num_already_spawned)) % 2) {mode=mode_prev; v_magnitude_physical=v_magnitude_physical_prev; mass_of_new_particle=mass_of_new_particle_prev;  /* for every-other particle, need to match previous for conservation */
-        } else {
-            if(get_random_number(j)<0.5) {
-                mode=1; mass_of_new_particle=mass_of_new_particle_default/masscorrfac_fast; v_magnitude_physical=(BH_TEST_WIND_MIXED_FASTSLOW)/UNIT_VEL_IN_KMS; /* collimated jet */
+        if(P[i].Type==5) {
+            double masscorrfac_fast = 100.; mode = mode_default; mass_of_new_particle=mass_of_new_particle_default; v_magnitude_physical=v_magnitude_physical_default;
+            if((j - (NumPart + num_already_spawned)) % 2) {mode=mode_prev; v_magnitude_physical=v_magnitude_physical_prev; mass_of_new_particle=mass_of_new_particle_prev;  /* for every-other particle, need to match previous for conservation */
             } else {
-                mode=0; mass_of_new_particle=mass_of_new_particle_default*(1.-1./masscorrfac_fast); v_magnitude_physical=v_magnitude_physical_default; /* isotropic slow wind */
+                if(get_random_number(j)<0.5) {
+                    mode=1; mass_of_new_particle=mass_of_new_particle_default/masscorrfac_fast; v_magnitude_physical=(BH_TEST_WIND_MIXED_FASTSLOW)/UNIT_VEL_IN_KMS; /* collimated jet */
+                } else {
+                    mode=0; mass_of_new_particle=mass_of_new_particle_default*(1.-1./masscorrfac_fast); v_magnitude_physical=v_magnitude_physical_default; /* isotropic slow wind */
+                }
             }
         }
 #endif
@@ -1097,7 +1130,12 @@ void special_rt_feedback_injection(void)
         SphP[i].Rad_E_gamma[k] += de; SphP[i].Rad_E_gamma_Pred[k] += de;
         int j; for(j=0;j<3;j++) {SphP[i].Rad_Flux[k][j] += f0 * dp[j]; SphP[i].Rad_Flux_Pred[k][j] += f0 * dp[j];}
     }
-    if(iBH0 >= 0) {P[iBH0].unspawned_wind_mass += MdotJetMsunYr * dt * (6.304e25 * UNIT_TIME_IN_CGS/UNIT_MASS_IN_CGS);} // will sent to jets subroutine, for spawning, alongside radiation injection //
+    if(iBH0 >= 0) {
+        P[iBH0].unspawned_wind_mass += MdotJetMsunYr * dt * (6.304e25 * UNIT_TIME_IN_CGS/UNIT_MASS_IN_CGS); // will sent to jets subroutine, for spawning, alongside radiation injection //
+        double n_unspawned = P[iBH0].unspawned_wind_mass / ((BH_WIND_SPAWN)*target_mass_for_wind_spawning(iBH0)); // number of spawned gas cells that can be made from the mass in the reservoir
+        if(n_unspawned> Max_Unspawned_MassUnits_fromSink) {Max_Unspawned_MassUnits_fromSink = n_unspawned;} // track the maximum integer number of elements this sink could spawn
+        P[iBH0].BH_Specific_AngMom[0]=1; P[iBH0].BH_Specific_AngMom[1]=0; P[iBH0].BH_Specific_AngMom[2]=0; // HACK FOR NOW!!!! (will fix to desired direction in future)
+    }
     return;
 }
 #endif
@@ -1107,16 +1145,16 @@ void special_rt_feedback_injection(void)
 double target_mass_for_wind_spawning(int i)
 {
 #if (SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES >= 4) // replace later as needed //
-    if(P[i].Type==3) {return 1.e-8/UNIT_MASS_IN_SOLAR;} //
+    if(P[i].Type==3) {return 1.e-6/UNIT_MASS_IN_SOLAR;} //
 #endif
-    
-#ifdef BH_WIND_SPAWN
-
 
 #if defined(SNE_NONSINK_SPAWN)
     if(P[i].Type==4) {return 0.5/UNIT_MASS_IN_SOLAR;} // replace later as needed //
 #endif
     
+#ifdef BH_WIND_SPAWN
+
+
 #if defined(BH_SCALE_SPAWNINGMASS_WITH_INITIALMASS)
     return All.BAL_wind_particle_mass * P[i].Sink_Formation_Mass;
 #else

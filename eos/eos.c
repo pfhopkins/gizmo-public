@@ -199,6 +199,7 @@ double gamma_eos(int i)
     return GAMMA_DEFAULT; /* default to universal constant here */
 }
 
+#ifdef COOLING
 /* Returns the temperature, either pre-computed or calling the routine to re-compute it*/
 double get_temperature(int i){
 #if defined(EOS_PRECOMPUTE) && defined(EOS_CARRIES_TEMPERATURE)
@@ -207,13 +208,14 @@ double get_temperature(int i){
     return compute_temperature(i);
 }
 
+
 /* Simple wrapper for calling ThermalProperties for temperature only - should only be called by get_temperature() above */
 double compute_temperature(int i){
     double ne=1, nh0=0, nHe0, nHepp, nhp, nHeII, temperature, mu_meanwt=1, rho=SphP[i].Density*All.cf_a3inv, u0=SphP[i].InternalEnergyPred;
     temperature = ThermalProperties(u0, rho, i, &mu_meanwt, &ne, &nh0, &nhp, &nHe0, &nHeII, &nHepp);
     return temperature;
 }
-
+#endif
 
 /* trivial function to check if particle falls below the minimum allowed temperature */
 void check_particle_for_temperature_minimum(int i)
@@ -403,9 +405,8 @@ double Get_Gas_Molecular_Mass_Fraction(int i, double temperature, double neutral
     urad_G0 += urad_from_uvb_in_G0; // include whatever is contributed from the meta-galactic background, fed into this routine
     urad_G0 = DMIN(DMAX( urad_G0 , 1.e-10 ) , 1.e10 ); // limit values, because otherwise exponential self-shielding approximation easily artificially gives 0 incident field
 #endif
-        
-    
-#if defined(COOL_MOLECFRAC_LOCALEQM) // ??? -- update to match noneqm fancier cooling functions --
+            
+#ifdef COOL_MOLECFRAC_LOCALEQM // ??? -- update to match noneqm fancier cooling functions --
     /* estimate local equilibrium molecular fraction actually using the real formation and destruction rates. expressions for the different rate terms
         as used here are collected in Nickerson, Teyssier, & Rosdahl et al. 2018. Expression for the line self-shielding here
         including turbulent and cell line blanketing terms comes from Gnedin & Draine 2014. below solves this all exactly, using the temperature, metallicity,
@@ -414,11 +415,11 @@ double Get_Gas_Molecular_Mass_Fraction(int i, double temperature, double neutral
         - b_H2H2*nH2*nH2 [collisional mol-mol dissociation] - Gamma_H2^LW * nH2 [photodissociation] - Gamma_H2^+ [photoionization] - xi_H2*nH2 [CR ionization/dissociation] */
     double fH2=0, sqrt_T=sqrt(T), nH0=xH0*nH_cgs, n_e=x_e*nH_cgs, EXPmax=40., clumping_factor=1; // define some variables for below, including neutral H number density, free electron number, etc.
     double f_dustgas_solar = 0.5*Z_Zsol*return_dust_to_metals_ratio_vs_solar(i,0); // dust-to-gas ratio locally
-    double a_Z = 3.e-18*sqrt_T / ((1. +4.e-2*sqrt(T+Tdust) +2.e-3*T +8.e-6*T*T )*(1. +1.e4/exp(DMIN(EXPmax,600./Tdust)))) * f_dustgas_solar * nH_cgs * nH0 * clumping_factor; // dust surface formation (assuming dust-to-metals ratio is 0.5*(Z/solar)*dust-to-gas-relative-to-solar in all regions where this is significant), from Glover & Jappsen 2007
     double Tdust = 30.; // need to assume something about dust temperature for reaction rates below for dust-phase formation
 #if (defined(FLAG_NOT_IN_PUBLIC_CODE) && (FLAG_NOT_IN_PUBLIC_CODE > 2)) || defined(SINGLE_STAR_SINK_DYNAMICS)
     Tdust = get_equilibrium_dust_temperature_estimate(i, 1, T);
 #endif
+    double a_Z = 3.e-18*sqrt_T / ((1. +4.e-2*sqrt(T+Tdust) +2.e-3*T +8.e-6*T*T )*(1. +1.e4/exp(DMIN(EXPmax,600./Tdust)))) * f_dustgas_solar * nH_cgs * nH0 * clumping_factor; // dust surface formation (assuming dust-to-metals ratio is 0.5*(Z/solar)*dust-to-gas-relative-to-solar in all regions where this is significant), from Glover & Jappsen 2007
     //double a_GP = (1.833e-21 * pow(T,0.88)) * nH0 * n_e; // gas-phase formation [old form, from Nickerson et al., appears to be a significant typo in their expression compared to the sources from which they extracted it]
     double a_GP = (1.833e-18 * pow(T,0.88)) * nH0 * n_e / (1. + x_e*1846.*(1.+T/20000.)/sqrt(T)); // gas-phase formation [Glover & Abel 2008, using fitting functions slightly more convenient and assuming H-->H2 much more rapid than other reactions, from Krumholz & McKee 2010; denominator factor accounts for p+H- -> H + H, instead of H2]
     double b_3B = (6.0e-32/sqrt(sqrt_T) + 2.0e-31/sqrt_T) * nH0 * nH0 * nH0; // 3-body collisional formation
