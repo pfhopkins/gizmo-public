@@ -1393,6 +1393,13 @@ int GasGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount
     if(local.Mass < 0) {sph_gradients_flag_i=1; local.Mass*=-1;}
     double V_i;
     V_i = local.Mass / local.GQuant.Density;
+#if (NUMDIMS == 3)
+    double Particle_Size_i = cbrt(V_i); /* hoisted out of neighbor loop; cbrt is faster and more accurate than pow(x,1./3.) */
+#elif (NUMDIMS == 2)
+    double Particle_Size_i = sqrt(V_i);
+#else
+    double Particle_Size_i = V_i;
+#endif
 
     int kernel_mode_i = -1; // only need to calculate wk, by default
     if(sph_gradients_flag_i) kernel_mode_i = 0; // for sph, only need dwk
@@ -1431,6 +1438,7 @@ int GasGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount
             for(n = 0; n < numngb; n++)
             {
                 j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */
+                if(n + 2 < numngb) {int j_pf = ngblist[n+2]; __builtin_prefetch(&P[j_pf], 0, 1); __builtin_prefetch(&CellP[j_pf], 0, 1);} /* prefetch neighbor data ahead */
                 if(GasGrad_isactive(j)==0) continue;
                 swap_to_j = 0;
                 
@@ -1497,7 +1505,7 @@ int GasGrad_evaluate(int target, int mode, int *exportflag, int *exportnodecount
                 {
                     kernel.dwk_j = kernel.wk_j = 0;
                 }
-                double Particle_Size_j, Particle_Size_i;  Particle_Size_j=Get_Particle_Size(j); Particle_Size_i=pow(local.Mass/local.GQuant.Density, 1./NUMDIMS);
+                double Particle_Size_j = Get_Particle_Size(j); /* Particle_Size_i is hoisted before the neighbor loop */
 
 #if defined(MHD_CONSTRAINED_GRADIENT)
                 double V_j = P[j].Mass / CellP[j].Density, Face_Area_Norm, cnumcrit2 = ((double)CONDITION_NUMBER_DANGER)*((double)CONDITION_NUMBER_DANGER) - local.ConditionNumber*local.ConditionNumber; Vec3<double> Face_Area_Vec;

@@ -25,7 +25,7 @@
 
 struct kernel_density /*! defines a number of useful variables we will use below */
 {
-  Vec3<double> dp; Vec3<double> dv; double r, wk, dwk, hinv, hinv3, hinv4, mj_wk, mj_dwk_r;
+  Vec3<double> dp; Vec3<double> dv; double r, rinv, wk, dwk, hinv, hinv3, hinv4, mj_wk, mj_dwk_r;
 };
 
 
@@ -257,7 +257,7 @@ void hydrokerneldensity_out2particle(struct OUTPUT_STRUCT_NAME *out, int i, int 
 }
 
 /*! declare this utility function here now that the relevant structures it uses have been defined */
-void density_evaluate_extra_physics_gas(struct INPUT_STRUCT_NAME *local, struct OUTPUT_STRUCT_NAME *out, struct kernel_density *kernel, int j);
+static inline void density_evaluate_extra_physics_gas(struct INPUT_STRUCT_NAME *local, struct OUTPUT_STRUCT_NAME *out, struct kernel_density *kernel, int j);
 
 
 /*! This function represents the core of the initial hydro kernel-identification and volume computation. The target particle may either be local, or reside in the communication buffer. */
@@ -279,6 +279,7 @@ int density_evaluate(int target, int mode, int *exportflag, int *exportnodecount
             for(n = 0; n < numngb_inbox; n++)
             {
                 j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */
+                if(n + 2 < numngb_inbox) {int j_pf = ngblist[n+2]; __builtin_prefetch(&P[j_pf], 0, 1); __builtin_prefetch(&CellP[j_pf], 0, 1);} /* prefetch neighbor data ahead */
 #ifdef GALSF_SUBGRID_WINDS /* check if partner is a wind particle: if I'm not wind, then ignore the wind particle */
                 if(CellP[j].DelayTime > 0) {if(local.DelayTime <= 0) {continue;}}
 #endif
@@ -289,8 +290,9 @@ int density_evaluate(int target, int mode, int *exportflag, int *exportnodecount
                 if(r2 < h2) /* this loop is only considering particles inside local.KernelRadius, i.e. seen-by-main */
                 {
                     kernel.r = sqrt(r2);
+                    kernel.rinv = 1.0 / kernel.r; /* precompute reciprocal for use below; guarded by r2 < h2 (r=0 handled by kernel.r > 0 check below) */
                     u = kernel.r * kernel.hinv;
-                    kernel_main(u, kernel.hinv3, kernel.hinv4, &kernel.wk, &kernel.dwk, 0);
+                    kernel_main_t<0>(u, kernel.hinv3, kernel.hinv4, &kernel.wk, &kernel.dwk);
                     mass_j = P[j].Mass;
                     kernel.mj_wk = (mass_j * kernel.wk);
 
@@ -305,14 +307,15 @@ int density_evaluate(int target, int mode, int *exportflag, int *exportnodecount
 #endif
                     if((1 << local.Type) & (RT_SOURCES)) {out.KernelSum_Around_RT_Source += 1.-u*u;}
 #endif
-                    out.DrkernNgb += -(NUMDIMS * kernel.hinv * kernel.wk + u * kernel.dwk);
+                    double drkern_term = NUMDIMS * kernel.hinv * kernel.wk + u * kernel.dwk; /* common subexpression for kernel derivative */
+                    out.DrkernNgb -= drkern_term;
 #ifdef HYDRO_SPH
                     double mass_eff = mass_j;
 #ifdef HYDRO_PRESSURE_SPH
                     mass_eff *= CellP[j].InternalEnergyPred;
                     out.EgyRho += kernel.wk * mass_eff;
 #endif
-                    out.DrkernHydroSumFactor += -mass_eff * (NUMDIMS * kernel.hinv * kernel.wk + u * kernel.dwk);
+                    out.DrkernHydroSumFactor -= mass_eff * drkern_term;
 #endif
                     /* for everything below, we do NOT include the particle self-contribution! */
                     if(kernel.r > 0)
@@ -331,7 +334,7 @@ int density_evaluate(int target, int mode, int *exportflag, int *exportnodecount
                         // do neighbor contribution to smoothed particle velocity here, after wrap, so can account for shearing boxes correctly //
                         out.ParticleVel += kernel.mj_wk * (local.Vel - kernel.dv);
 #endif
-                        out.Particle_DivVel -= kernel.dwk * dot(kernel.dp, kernel.dv) / kernel.r;
+                        out.Particle_DivVel -= kernel.dwk * dot(kernel.dp, kernel.dv) * kernel.rinv;
                         /* this is the -particle- divv estimator, which determines how KernelRadius will evolve (particle drift) */
 
                         density_evaluate_extra_physics_gas(&local, &out, &kernel, j);
@@ -348,9 +351,9 @@ int density_evaluate(int target, int mode, int *exportflag, int *exportnodecount
 
 
 /*! this is an extra function to simplify additional computations within the kernel that need to be done as part of the evaluation above */
-void density_evaluate_extra_physics_gas(struct INPUT_STRUCT_NAME *local, struct OUTPUT_STRUCT_NAME *out, struct kernel_density *kernel, int j)
+static inline void density_evaluate_extra_physics_gas(struct INPUT_STRUCT_NAME *local, struct OUTPUT_STRUCT_NAME *out, struct kernel_density *kernel, int j)
 {
-    kernel->mj_dwk_r = P[j].Mass * kernel->dwk / kernel->r;
+    kernel->mj_dwk_r = P[j].Mass * kernel->dwk * kernel->rinv;
 
     if(local->Type != 0)
     {

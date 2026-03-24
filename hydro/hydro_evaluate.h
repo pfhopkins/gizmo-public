@@ -78,7 +78,13 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
     kernel_hinv(kernel.h_i, &hinv_i, &hinv3_i, &hinv4_i);
     hinv_j=hinv3_j=hinv4_j=0;
     V_i = local.Mass / local.Density;
-    Particle_Size_i = pow(V_i,1./NUMDIMS) * All.cf_atime; // in physical, used below in some routines //
+#if (NUMDIMS == 3)
+    Particle_Size_i = cbrt(V_i) * All.cf_atime; // in physical, used below in some routines; cbrt is faster+more accurate than pow(x,1./3.)
+#elif (NUMDIMS == 2)
+    Particle_Size_i = sqrt(V_i) * All.cf_atime;
+#else
+    Particle_Size_i = V_i * All.cf_atime;
+#endif
     out.MaxSignalVel = kernel.sound_i;
     kernel_mode = 0; /* need dwk and wk */
     double cnumcrit2; cnumcrit2 = ((double)CONDITION_NUMBER_DANGER)*((double)CONDITION_NUMBER_DANGER) - local.ConditionNumber*local.ConditionNumber;
@@ -141,6 +147,7 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
             for(n = 0; n < numngb; n++)
             {
                 j = ngblist[n]; /* since we use the -threaded- version above of ngb-finding, its super-important this is the lower-case ngblist here! */
+                if(n + 2 < numngb) {int j_pf = ngblist[n+2]; __builtin_prefetch(&P[j_pf], 0, 1); __builtin_prefetch(&CellP[j_pf], 0, 1);} /* prefetch neighbor data ahead */
                 if(P[j].Mass <= 0) {continue;}
                 if(CellP[j].Density <= 0) {continue;}
 #ifdef GALSF_SUBGRID_WINDS

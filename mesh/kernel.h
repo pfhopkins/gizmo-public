@@ -197,47 +197,49 @@ static inline void kernel_hinv(double h, double *hinv, double *hinv3, double *hi
   return;
 } 
 
-/* Attention: Here we assume that kernel is only called 
-   with range 0..1 for u as done in hydra or density !! 
+/* Attention: Here we assume that kernel is only called
+   with range 0..1 for u as done in hydra or density !!
    Call with mode 0 to calculate dwk and wk
    Call with mode -1 to calculate only wk
    Call with mode +1 to calculate only dwk */
 
-static inline void kernel_main(double u, double hinv3, double hinv4, double *wk, double *dwk, int mode)
+/* Templated version: MODE is a compile-time constant, so all mode branches are eliminated by the compiler */
+template<int MODE>
+static inline void kernel_main_t(double u, double hinv3, double hinv4, double *wk, double *dwk)
 {
-    if(u>=1) {*wk=0; *dwk=0; return;} /* currently fully-redundant, but better safety for various subroutines calling this */
-    
+    if(u>=1) {if constexpr (MODE <= 0) {*wk=0;} if constexpr (MODE >= 0) {*dwk=0;} return;}
+
 #if (KERNEL_FUNCTION == 1) /* linear ramp */
-    if(mode >= 0)
+    if constexpr (MODE >= 0)
         *dwk = -1;
-    if(mode <= 0)
+    if constexpr (MODE <= 0)
         *wk = 1-u;
 #endif
 
 #if (KERNEL_FUNCTION == 2) /* quadratic */
     double t1 = 1-u;
-    if(mode >= 0)
+    if constexpr (MODE >= 0)
         *dwk = -2*t1;
-    if(mode <= 0)
+    if constexpr (MODE <= 0)
         *wk = t1*t1;
 #endif
-    
+
 
 #if (KERNEL_FUNCTION == 3) /* cubic spline */
   if(u < 0.5)
     {
-      if(mode >= 0) 
+      if constexpr (MODE >= 0)
           *dwk = u * (18.0 * u - 12.0);
-      if(mode <= 0) 
+      if constexpr (MODE <= 0)
           *wk = (1.0 + 6.0 * (u - 1.0) * u * u);
     }
   else
     {
       double t1 = (1.0 - u);
       double t2 = t1 * t1;
-      if(mode >= 0) 
+      if constexpr (MODE >= 0)
           *dwk = -6.0 * t2;
-      if(mode <= 0) 
+      if constexpr (MODE <= 0)
           *wk = 2.0 * t2 * t1;
     }
 #endif /* cubic spline */
@@ -247,9 +249,9 @@ static inline void kernel_main(double u, double hinv3, double hinv4, double *wk,
   double t2 = t1 * t1;
   double t4 = t2 * t2;
 
-  if(mode >= 0) 
+  if constexpr (MODE >= 0)
       *dwk = -5.0 * t4;
-  if(mode <= 0) 
+  if constexpr (MODE <= 0)
       *wk = t4 * t1;
 
   if (u < 2.0/3.0)
@@ -257,9 +259,9 @@ static inline void kernel_main(double u, double hinv3, double hinv4, double *wk,
       t1 = (2.0/3.0 - u);
       t2 = t1 * t1;
       t4 = t2 * t2;
-      if(mode >= 0) 
+      if constexpr (MODE >= 0)
           *dwk += 30.0 * t4;
-      if(mode <= 0) 
+      if constexpr (MODE <= 0)
           *wk -= 6.0 * t4 * t1;
     }
   if (u < 1.0/3.0)
@@ -267,9 +269,9 @@ static inline void kernel_main(double u, double hinv3, double hinv4, double *wk,
       t1 = (1.0/3.0 - u);
       t2 = t1 * t1;
       t4 = t2 * t2;
-      if(mode >= 0) 
+      if constexpr (MODE >= 0)
           *dwk -= 75.0 * t4;
-      if(mode <= 0) 
+      if constexpr (MODE <= 0)
           *wk += 15.0 * t4 * t1;
     }
 #endif /* quartic spline */
@@ -277,78 +279,78 @@ static inline void kernel_main(double u, double hinv3, double hinv4, double *wk,
 #if (KERNEL_FUNCTION == 5) /* quintic spline */
     double t1 = (1.0 - u);
     double t2 = t1 * t1;
-    
-    if(mode >= 0)
+
+    if constexpr (MODE >= 0)
         *dwk = -4.0 * t2 * t1;
-    if(mode <= 0)
+    if constexpr (MODE <= 0)
         *wk = t2 * t2;
-    
+
     if (u < 0.6)
     {
         t1 = (0.6 - u);
         t2 = t1 * t1;
-        if(mode >= 0)
+        if constexpr (MODE >= 0)
             *dwk += 20.0 * t2 * t1;
-        if(mode <= 0)
+        if constexpr (MODE <= 0)
             *wk -= 5.0 * t2 * t2;
     }
     if (u < 0.2)
     {
         t1 = (0.2 - u);
         t2 = t1 * t1;
-        if(mode >= 0)
+        if constexpr (MODE >= 0)
             *dwk -= 40.0 * t2 * t1;
-        if(mode <= 0)
+        if constexpr (MODE <= 0)
             *wk += 10.0 * t2 * t2;
     }
 #endif /* quintic spline */
-    
+
 
 #if (KERNEL_FUNCTION == 6) /* Wendland C2 */
     double t1 = (1 - u);
     double t3 = t1*t1*t1;
 #if (NUMDIMS == 1)
-    if(mode >= 0)
+    if constexpr (MODE >= 0)
         *dwk = -12.0 * u * t1*t1;
-    if(mode <= 0)
+    if constexpr (MODE <= 0)
         *wk = t3 * (1.0 + 3.0*u);
 #else
-    if(mode >= 0)
+    if constexpr (MODE >= 0)
         *dwk = -20.0 * u * t3;
-    if(mode <= 0)
+    if constexpr (MODE <= 0)
         *wk = t3 * t1 * (1.0 + 4.0*u);
 #endif
 #endif
 
-    
+
 #if (KERNEL_FUNCTION == 7) /* Wendland C4 */
     double t1 = (1 - u);
     double t5 = t1*t1; t5 *= t5*t1;
 #if (NUMDIMS == 1)
-    if(mode >= 0)
+    if constexpr (MODE >= 0)
         *dwk = -14.0 * (t5/t1) * u * (1.0 + 4.0*u);
-    if(mode <= 0)
+    if constexpr (MODE <= 0)
         *wk = t5 * (1.0 + 5.0*u + 8.0*u*u);
 #else
-    if(mode >= 0)
+    if constexpr (MODE >= 0)
         *dwk = -(56.0/3.0) * t5 * u * (1.0 + 5.0*u);
-    if(mode <= 0)
+    if constexpr (MODE <= 0)
         *wk = t5 * t1 * (1.0 + 6.0*u + (35.0/3.0)*u*u);
 #endif
 #endif
 
-    
+
 #if (KERNEL_FUNCTION == 8) /* quadratic '2-part' kernel */
     if(u < KERNEL_U0)
     {
-        if(mode >= 0)
+        if constexpr (MODE >= 0)
             *dwk = -2*u/KERNEL_U0;
-        if(mode <= 0)
+        if constexpr (MODE <= 0)
             *wk = 1-u*u/KERNEL_U0;
     } else {
-        if(mode >= 0)
+        if constexpr (MODE >= 0)
             *dwk = -2*(1-u)/(1-KERNEL_U0);
-        if(mode <= 0)
+        if constexpr (MODE <= 0)
             *wk = (1-u)*(1-u)/(1-KERNEL_U0);
     }
 #endif
@@ -358,23 +360,29 @@ static inline void kernel_main(double u, double hinv3, double hinv4, double *wk,
     double t1 = (1 - u);
     double t7 = t1*t1*t1; t7 *= t7*t1;
 #if (NUMDIMS == 1)
-    if(mode >= 0)
+    if constexpr (MODE >= 0)
         *dwk = -6.0 * (t7/t1) * u * (3.0 + 18.0*u + 35.0*u*u);
-    if(mode <= 0)
+    if constexpr (MODE <= 0)
         *wk = t7 * (1.0 + 7.0*u + 19.0*u*u + 21.0*u*u*u);
 #else
-    if(mode >= 0)
+    if constexpr (MODE >= 0)
         *dwk = -22.0 * t7 * u * (1.0 + 7.0*u + 16.0*u*u);
-    if(mode <= 0)
+    if constexpr (MODE <= 0)
         *wk = t7 * t1 * (1.0 + 8.0*u + 25.0*u*u + 32.0*u*u*u);
 #endif
 #endif
 
-    
-  if(mode >= 0) {*dwk *= KERNEL_NORM * hinv4;}
-  if(mode <= 0) {*wk *= KERNEL_NORM * hinv3;}
-    
-  return;
+
+  if constexpr (MODE >= 0) {*dwk *= KERNEL_NORM * hinv4;}
+  if constexpr (MODE <= 0) {*wk *= KERNEL_NORM * hinv3;}
+}
+
+/* Backward-compatible runtime-dispatch wrapper */
+static inline void kernel_main(double u, double hinv3, double hinv4, double *wk, double *dwk, int mode)
+{
+    if(mode == 0) kernel_main_t<0>(u, hinv3, hinv4, wk, dwk);
+    else if(mode < 0) kernel_main_t<-1>(u, hinv3, hinv4, wk, dwk);
+    else kernel_main_t<1>(u, hinv3, hinv4, wk, dwk);
 }
 
 
