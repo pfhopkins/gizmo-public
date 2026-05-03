@@ -1921,6 +1921,30 @@ case IO_DUSTCHEM_SHAT_MASSRATE:    /* shattering rate for each grain size bin fo
 #endif
         break;
 
+        case IO_KETJU_FINAL_VEL:
+#ifdef KETJU_REGULARIZATION
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    for(k=0;k<3;k++) {fp[k] = (MyOutputFloat) P[pindex].KetjuFinalVel[k];}
+                    fp += 3;
+                    n++;
+                }
+#endif
+            break;
+
+        case IO_KETJU_SPIN:
+#if defined(KETJU_REGULARIZATION) && defined(SINGLE_STAR_SINK_DYNAMICS)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    for(k=0;k<3;k++) {fp[k] = (MyOutputFloat) P[pindex].KetjuSpin[k];}
+                    fp += 3;
+                    n++;
+                }
+#endif
+            break;
+
         case IO_LASTENTRY:
             endrun(213);
             break;
@@ -2253,6 +2277,20 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
                 bytes_per_blockelement = 9 * sizeof(MyOutputFloat);
             break;
 
+        case IO_KETJU_FINAL_VEL:
+#ifdef KETJU_REGULARIZATION
+            if(mode) bytes_per_blockelement = 3 * sizeof(MyInputFloat);
+            else bytes_per_blockelement = 3 * sizeof(MyOutputFloat);
+#endif
+            break;
+
+        case IO_KETJU_SPIN:
+#if defined(KETJU_REGULARIZATION) && defined(SINGLE_STAR_SINK_DYNAMICS)
+            if(mode) bytes_per_blockelement = 3 * sizeof(MyInputFloat);
+            else bytes_per_blockelement = 3 * sizeof(MyOutputFloat);
+#endif
+            break;
+
         case IO_LASTENTRY:
             endrun(214);
             break;
@@ -2536,6 +2574,11 @@ int get_values_per_blockelement(enum iofields blocknr)
             values = 9;
             break;
 
+        case IO_KETJU_FINAL_VEL:
+        case IO_KETJU_SPIN:
+            values = 3;
+            break;
+
         case IO_LASTENTRY:
             endrun(215);
             break;
@@ -2768,6 +2811,12 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_AGE_PROTOSTAR:
         case IO_LUM_SINGLESTAR:
         case IO_SINKPROGS:
+            for(i = 0; i < 6; i++) {if(i != 5) {typelist[i] = 0;}}
+            return header.npart[5];
+            break;
+
+        case IO_KETJU_FINAL_VEL:
+        case IO_KETJU_SPIN:
             for(i = 0; i < 6; i++) {if(i != 5) {typelist[i] = 0;}}
             return header.npart[5];
             break;
@@ -3436,6 +3485,18 @@ int blockpresent(enum iofields blocknr)
 #endif
             break;
 
+        case IO_KETJU_FINAL_VEL:
+#ifdef KETJU_REGULARIZATION
+            return 1;
+#endif
+            break;
+
+        case IO_KETJU_SPIN:
+#if defined(KETJU_REGULARIZATION) && defined(SINGLE_STAR_SINK_DYNAMICS)
+            return 1;
+#endif
+            break;
+
         case IO_LASTENTRY: /* will not occur */
             break;
     }
@@ -3867,6 +3928,12 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
         case IO_DYNERRORDEFAULT:
             strncpy(label, "derd", 4);
             break;
+        case IO_KETJU_FINAL_VEL:
+            strncpy(label, "KVEL", 4);
+            break;
+        case IO_KETJU_SPIN:
+            strncpy(label, "KSPN", 4);
+            break;
 
         case IO_LASTENTRY:
             endrun(217);
@@ -4294,6 +4361,12 @@ void get_dataset_name(enum iofields blocknr, char *buf)
             break;
         case IO_DYNERRORDEFAULT:
             strcpy(buf, "DynamicErrorDefault");
+            break;
+        case IO_KETJU_FINAL_VEL:
+            strcpy(buf, "KetjuFinalVelocity");
+            break;
+        case IO_KETJU_SPIN:
+            strcpy(buf, "KetjuBHSpin");
             break;
         case IO_LASTENTRY:
             endrun(218);

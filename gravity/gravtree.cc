@@ -576,7 +576,11 @@ void gravity_tree(void)
             }
 
 #if (SINGLE_STAR_TIMESTEPPING > 0) /* Subtract component of force from companion if in binary, because we will operator-split this */
+#ifdef KETJU_REGULARIZATION
+        if((P[i].Type == 5) && (P[i].is_in_a_binary == 1) && !P[i].KetjuIntegrated) {subtract_companion_gravity(i);}
+#else
         if((P[i].Type == 5) && (P[i].is_in_a_binary == 1)) {subtract_companion_gravity(i);}
+#endif
 #endif
 
 #ifdef COMPUTE_TIDAL_TENSOR_IN_GRAVTREE /* final operations to compute the tidal tensor and related quantities */

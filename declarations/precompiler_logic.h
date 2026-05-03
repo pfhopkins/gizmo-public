@@ -1267,3 +1267,16 @@
 #endif
 
 
+/* ---- KETJU regularized integrator ---- */
+#if defined(KETJU_REGULARIZATION)
+#if defined(FORCE_EQUAL_TIMESTEPS)
+#error "KETJU_REGULARIZATION is not compatible with FORCE_EQUAL_TIMESTEPS"
+#endif
+#endif
+#if defined(KETJU_MERGE_STARS) && !defined(KETJU_REGULARIZATION)
+#error "KETJU_MERGE_STARS requires KETJU_REGULARIZATION"
+#endif
+#if defined(KETJU_MERGE_BH) && !defined(KETJU_REGULARIZATION)
+#error "KETJU_MERGE_BH requires KETJU_REGULARIZATION"
+#endif
+

@@ -314,6 +314,15 @@ void init(void)
 #if defined(GALSF_FB_MECHANICAL) || defined(GALSF_FB_THERMAL)
             P[i].SNe_ThisTimeStep = 0;
 #endif
+#ifdef KETJU_REGULARIZATION
+            P[i].KetjuIntegrated = 0;
+#ifdef HERMITE_INTEGRATION
+            P[i].HermiteHistoryStale = 0;
+#endif
+#ifdef SINGLE_STAR_SINK_DYNAMICS
+            for(int j = 0; j < 3; j++) P[i].KetjuSpin[j] = 0;
+#endif
+#endif
 #ifdef GALSF_FB_MECHANICAL
             int k; for(k=0;k<AREA_WEIGHTED_SUM_ELEMENTS;k++) {P[i].Area_weighted_sum[k] = 0;}
 #ifdef GALSF_FB_FIRE_STELLAREVOLUTION

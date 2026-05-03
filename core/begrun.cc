@@ -100,6 +100,10 @@ void begrun(void)
   InitCool();
 #endif
 
+#ifdef KETJU_REGULARIZATION
+  ketju_open_output_file();
+#endif
+
 #ifdef BOX_PERIODIC
   ewald_init();
 #endif
@@ -2265,6 +2269,44 @@ void read_parameter_file(char *fname)
 #endif
 #endif  // CHIMES
 
+#ifdef KETJU_REGULARIZATION
+      strcpy(tag[nt], "KetjuRegionRadius");
+      addr[nt] = &All.KetjuRegionRadius;
+      id[nt++] = REAL;
+
+      strcpy(tag[nt], "KetjuMinBHMass");
+      addr[nt] = &All.KetjuMinBHMass;
+      id[nt++] = REAL;
+
+      strcpy(tag[nt], "KetjuMinStarMass");
+      addr[nt] = &All.KetjuMinStarMass;
+      id[nt++] = REAL;
+
+      strcpy(tag[nt], "KetjuIntegrationTolerance");
+      addr[nt] = &All.KetjuIntegrationTolerance;
+      id[nt++] = REAL;
+
+      strcpy(tag[nt], "KetjuPNTerms");
+      addr[nt] = All.KetjuPNTerms;
+      id[nt++] = STRING;
+
+      strcpy(tag[nt], "KetjuEnableBHMergerKicks");
+      addr[nt] = &All.KetjuEnableBHMergerKicks;
+      id[nt++] = INT;
+
+      strcpy(tag[nt], "KetjuUseStarStarSoftening");
+      addr[nt] = &All.KetjuUseStarStarSoftening;
+      id[nt++] = INT;
+
+      strcpy(tag[nt], "KetjuTimestepLimitingFactor");
+      addr[nt] = &All.KetjuTimestepLimitingFactor;
+      id[nt++] = REAL;
+
+      strcpy(tag[nt], "KetjuMaxStepCount");
+      addr[nt] = &All.KetjuMaxStepCount;
+      id[nt++] = INT;
+#endif
+
         if((fd = fopen(fname, "r")))
         {
             snprintf(buf, DEFAULT_PATH_BUFFERSIZE_TOUSE, "%s%s", fname, "-usedvalues");
@@ -2603,6 +2645,16 @@ void read_parameter_file(char *fname)
 #endif
 #ifdef DEVELOPER_MODE
                 if(strcmp("CourantFac",tag[i])==0) {*((double *)addr[i])=0.2; printf("Tag %s (%s) not set in parameter file: defaulting to standard CFL safety factor (=%g) \n",tag[i],alternate_tag[i],All.CourantFac); continue;}
+#endif
+#ifdef KETJU_REGULARIZATION
+                if(strcmp("KetjuMinBHMass",tag[i])==0) {*((double *)addr[i])=0; printf("Tag %s not set: defaulting to 0 (Type 5 stage-7/BH chain centers disabled)\n",tag[i]); continue;}
+                if(strcmp("KetjuMinStarMass",tag[i])==0) {*((double *)addr[i])=0; printf("Tag %s not set: defaulting to 0 (Type 5 stage<7/star chain centers disabled)\n",tag[i]); continue;}
+                if(strcmp("KetjuIntegrationTolerance",tag[i])==0) {*((double *)addr[i])=1e-9; printf("Tag %s not set: defaulting to 1e-9\n",tag[i]); continue;}
+                if(strcmp("KetjuPNTerms",tag[i])==0) {strcpy((char *)addr[i],"none"); printf("Tag %s not set: defaulting to 'none'\n",tag[i]); continue;}
+                if(strcmp("KetjuEnableBHMergerKicks",tag[i])==0) {*((int *)addr[i])=0; printf("Tag %s not set: defaulting to 0\n",tag[i]); continue;}
+                if(strcmp("KetjuUseStarStarSoftening",tag[i])==0) {*((int *)addr[i])=1; printf("Tag %s not set: defaulting to 1\n",tag[i]); continue;}
+                if(strcmp("KetjuTimestepLimitingFactor",tag[i])==0) {*((double *)addr[i])=100.; printf("Tag %s not set: defaulting to 100\n",tag[i]); continue;}
+                if(strcmp("KetjuMaxStepCount",tag[i])==0) {*((int *)addr[i])=100000; printf("Tag %s not set: defaulting to 100000\n",tag[i]); continue;}
 #endif
                 printf("ERROR. I miss a required value for tag '%s' (or alternate name '%s') in parameter file '%s'.\n", tag[i], alternate_tag[i], fname);
                 errorFlag = 1;

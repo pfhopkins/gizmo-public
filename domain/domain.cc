@@ -408,6 +408,9 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
   DomainTask = (int *) (TopNodes + NTopnodes);
   force_treeallocate((int) (All.TreeAllocFactor * All.MaxPart) + NTopnodes, All.MaxPart);
   reconstruct_timebins();
+#ifdef KETJU_REGULARIZATION
+  ketju_mark_regions_stale(); /* exchange + Peano-Hilbert reorder moved particles between slots and tasks */
+#endif
 }
 
 
@@ -632,6 +635,9 @@ void domain_Decomposition_light(int UseAllTimeBins)
 
     force_treeallocate((int) (All.TreeAllocFactor * All.MaxPart) + NTopnodes, All.MaxPart);
     reconstruct_timebins();
+#ifdef KETJU_REGULARIZATION
+    ketju_mark_regions_stale(); /* the exchange moved particles between slots and tasks */
+#endif
 }
 
 

@@ -141,12 +141,21 @@ void run(void)
             break;
         }
         find_timesteps();		/* find-timesteps */
+#ifdef KETJU_REGULARIZATION
+        ketju_limit_timesteps();    /* force chain particles to shared timebin */
+#endif
 #ifdef HERMITE_INTEGRATION
         HermiteOnlyFlag = 1;
         gravity_tree();	/* re-compute gravitational accelerations for synchronous particles */
         HermiteOnlyFlag = 0;
 #endif
         do_first_halfstep_kick();	/* half-step kick at beginning of timestep for synchronous particles */
+
+#ifdef KETJU_REGULARIZATION
+        ketju_find_regions();       /* detect chain regions around massive stars/BHs */
+        ketju_run_integration();    /* subtract tree force, run MSTAR, apply velocity trick */
+        ketju_write_output();       /* write KETJU diagnostics to HDF5 */
+#endif
 
         find_next_sync_point_and_drift();	/* find next synchronization point and drift particles to this time.
                                              * If needed, this function will also write an output file
@@ -271,6 +280,9 @@ void run(void)
         gravity_tree();	/* re-compute gravitational accelerations for synchronous particles */
         HermiteOnlyFlag = 0;
         do_hermite_correction();
+#endif
+#ifdef KETJU_REGULARIZATION
+        ketju_finish_step();        /* clean up KETJU region data (flags persist for next step's guards) */
 #endif
         EB_GRAV_REPORT(); /* after Hermite, so Vel is the corrected end-of-step velocity */
         /* Check whether we need to interrupt the run */
@@ -757,6 +769,10 @@ void find_next_sync_point_and_drift(void)
    * may still need to old list in the dynamic tree update */
   for(n = 0, prev = -1; n < TIMEBINS; n++)
     {if(TimeBinActive[n]) {for(i = FirstInTimeBin[n]; i >= 0; i = NextInTimeBin[i]) {drift_particle(i, All.Ti_Current);}}}
+
+#ifdef KETJU_REGULARIZATION
+  ketju_set_final_velocities(); /* swap in true physical velocities after drift (velocity trick) */
+#endif
 
 }
 

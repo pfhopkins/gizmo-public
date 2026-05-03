@@ -121,7 +121,14 @@ int eligible_for_hermite(int i)
 #endif
 #if (SINGLE_STAR_TIMESTEPPING > 0)
     if(P[i].SuperTimestepFlag >= 2) {return 0;}
-#endif   
+#endif
+#ifdef KETJU_REGULARIZATION
+    if(P[i].KetjuIntegrated) {return 0;} /* KETJU particles use MSTAR, not Hermite */
+    if(ketju_is_particle_in_region(i)) {return 0;} /* current chain members: KETJU only */
+    if(P[i].HermiteHistoryStale) { /* just exited a chain — OldPos/Acc/Jerk are stale; do KDK this step, Hermite picks up next step */
+        P[i].HermiteHistoryStale = 0; return 0;
+    }
+#endif
     return 1;
 }
 
@@ -193,6 +200,9 @@ void apply_long_range_kick(integertime tstart, integertime tend)
     {
         if(P[i].Mass > 0)
         {
+#ifdef KETJU_REGULARIZATION
+            if(P[i].KetjuIntegrated) continue; /* KETJU particles: gravity handled by MSTAR */
+#endif
             Vec3<double> dvel = P[i].GravPM * dt_gravkick; /* do the kick, only collisionless particles */
             P[i].Vel += dvel;
             P[i].dp += dvel * P[i].Mass;
@@ -360,10 +370,17 @@ void do_the_kick(int i, integertime tstart, integertime tend, integertime tcurre
             dp += CellP[i].Rad_Accel * (mass_pred * All.cf_atime * dt_hydrokick);
 #endif
         } else {
+#ifdef KETJU_REGULARIZATION
+            if(!P[i].KetjuIntegrated) /* KETJU particles: tree gravity replaced by MSTAR — skip tree kick */
+#endif
             dp += P[i].GravAccel * (mass_pred * dt_gravkick);
         }
 #if (SINGLE_STAR_TIMESTEPPING > 0)  //if we're super-timestepping, the above accounts for the change in COM velocity. Now we do the internal binary velocity change
+#ifdef KETJU_REGULARIZATION
+        if((P[i].Type == 5) && (P[i].SuperTimestepFlag>=2) && !P[i].KetjuIntegrated) {dp += (P[i].COM_GravAccel - P[i].GravAccel) * (mass_pred * dt_gravkick);}
+#else
         if((P[i].Type == 5) && (P[i].SuperTimestepFlag>=2)) {dp += (P[i].COM_GravAccel - P[i].GravAccel) * (mass_pred * dt_gravkick);}
+#endif
 #endif
 #ifdef HERMITE_INTEGRATION
         // we augment this to a whole-step kick for the initial Hermite prediction step, which is done alongside the first half-step kick.

@@ -1386,6 +1386,9 @@ void rearrange_particle_sequence(void)
 
     MPI_Allreduce(&flag, &flag_sum, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     if(flag_sum) {reconstruct_timebins();}
+#ifdef KETJU_REGULARIZATION
+    if(flag_sum) {ketju_mark_regions_stale();} /* slots moved; flag_sum (not the rank-local flag) keeps the mark rank-uniform, which ketju_find_regions' collective rebuild requires */
+#endif
 #ifndef MAINTAIN_TREE_IN_REARRANGE
     /* Slots moved and nothing above repaired the tree's walk links: the standing tree no longer
        describes the particle list. Condemn it deterministically -- flag_sum is the SUM every rank

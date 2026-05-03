@@ -35,6 +35,9 @@ extern ALIGN(32) struct particle_data
     Vec3<MyFloat> OldPos;
     Vec3<MyFloat> OldVel;
     Vec3<MyFloat> OldJerk;
+#ifdef KETJU_REGULARIZATION
+    short int HermiteHistoryStale;      /*!< 1 when particle just exited a KETJU chain — fall back to KDK for one step until OldX is reseeded */
+#endif
 #endif
 #ifdef COUNT_MASS_IN_GRAVTREE
     MyFloat TreeMass;  /*!< Mass seen by the particle as it sums up the gravitational force from the tree - should be equal to total mass, a useful debug diagnostic  */
@@ -264,7 +267,15 @@ extern ALIGN(32) struct particle_data
     MyFloat Mass_final; //final mass of the star before going SN (Since this is not saved to snapshots, hard restarts in the middle of spawning an SN will do weird things)
 #endif
 #endif
-    
+
+#ifdef KETJU_REGULARIZATION
+    MyDouble KetjuFinalVel[3];  /* true physical velocity from KETJU, swapped in after drift */
+    short int KetjuIntegrated;  /* 1 if this particle was KETJU-integrated this step */
+#ifdef SINGLE_STAR_SINK_DYNAMICS
+    MyDouble KetjuSpin[3];     /* BH spin angular momentum vector S [length*mass*velocity units] */
+#endif
+#endif
+
 #if defined(DM_SIDM)
     double dtime_sidm; /*!< timestep used if self-interaction probabilities greater than 0.2 are found */
     long unsigned int NInteractions; /*!< Total number of interactions */

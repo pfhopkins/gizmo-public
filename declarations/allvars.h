@@ -786,6 +786,21 @@ extern struct global_data_all_processes
     double CosmicRay_SNeFraction;
 #endif
 #endif
+
+#ifdef KETJU_REGULARIZATION
+  double KetjuRegionRadius;              /*!< physical radius of KETJU regions [code units] */
+  double KetjuMinBHMass;                 /*!< minimum Type 5 stage-7 (BH/relic) mass to act as always-center [code units], 0=off */
+  double KetjuMinStarMass;               /*!< minimum Type 5 stage<7 (star) mass to be a chain candidate [code units], 0=off */
+  double KetjuIntegrationTolerance;      /*!< GBS relative tolerance (default 1e-9) */
+  char   KetjuPNTerms[20];              /*!< PN term flags: "all","none","no_spin", or bitstring */
+  int    KetjuEnableBHMergerKicks;       /*!< enable GW recoil kicks for BH mergers */
+  int    KetjuUseStarStarSoftening;      /*!< keep softening between stars inside chain */
+  double KetjuTimestepLimitingFactor;    /*!< radius factor for timestep limiting (default 100) */
+  int    KetjuMaxStepCount;              /*!< max MSTAR integration steps before bail-out (default 100000, 0=off) */
+  double KetjuExpandBinariesFactor;      /*!< expand tight binaries if period < factor*dt (default 0=off, typical 0.1) */
+  double KetjuMinParticlesPerTask;       /*!< minimum particles per compute task for load balancing (default 10) */
+#endif
+
 #ifdef GALSF_FB_FIRE_RT_HIIHEATING
     double HIIRegion_fLum_Coupled;
 #endif
@@ -1441,6 +1456,8 @@ enum iofields
   IO_DELAY_TIME_HII,
   IO_MOLECULARFRACTION,
   IO_SHOCKMACHNUM,
+  IO_KETJU_FINAL_VEL,
+  IO_KETJU_SPIN,
   IO_LASTENTRY			/* This should be kept - it signals the end of the list */
 };
 
