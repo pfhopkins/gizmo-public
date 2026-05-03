@@ -109,6 +109,24 @@ FINCL =
 
 
 #----------------------------------------------------------------------------------------------
+ifeq ($(SYSTYPE),"Orion-OpenMPI")
+CC       =  mpicc
+CXX      =  mpicxx -std=c++11
+FC       =  mpifort
+OPTIMIZE = -g -O3 -march=native -Wall -Wextra -Wno-unused-parameter -Wno-unknown-pragmas
+GSL_INCL = -I$(GSL_HOME)/include
+GSL_LIBS = -L$(GSL_HOME)/lib
+FFTW_INCL= -I$(FFTW_HOME)/include
+FFTW_LIBS= -L$(FFTW_HOME)/lib
+HDF5INCL = -I$(HDF5_HOME)/include -DH5_USE_16_API
+HDF5LIB  = -L$(HDF5_HOME)/lib -lhdf5 -lz
+MPICHLIB = -lstdc++
+OPT     += -DHDF5_DISABLE_VERSION_CHECK
+## modules: module load gcc openmpi gsl hwloc fftw-mpi hdf5-mpi
+endif
+
+
+#----------------------------------------------------------------------------------------------
 ifeq ($(SYSTYPE),"Frontera")
 CC       =  mpicc
 CXX      =  mpicxx -std=c++17
@@ -687,10 +705,19 @@ GRACKLEINCL =
 GRACKLELIBS =
 endif
 
+# KETJU regularized integrator for BH and stellar dynamics
+ifeq (KETJU_REGULARIZATION,$(findstring KETJU_REGULARIZATION,$(CONFIGVARS)))
+OBJS    += galaxy_sf/ketju_coupling.o
+KETJU_INCL = -Iketju-integrator/include
+KETJU_LIBS = -Lketju-integrator/lib -lketju-integrator -lstdc++
+else
+KETJU_INCL =
+KETJU_LIBS =
+endif
 
 # linking libraries (includes machine-dependent options above)
 CFLAGS = $(OPTIONS) $(GSL_INCL) $(FFTW_INCL) $(HDF5INCL) \
-         $(GRACKLEINCL) $(CHIMESINCL) $(HYPRE_INCL) $(MKL_INCL)
+         $(GRACKLEINCL) $(CHIMESINCL) $(HYPRE_INCL) $(MKL_INCL) $(KETJU_INCL)
 
 
 
@@ -716,7 +743,7 @@ endif
 
 
 LIBS = $(HDF5LIB) -g $(MPICHLIB) $(GSL_LIBS) -lgsl -lgslcblas \
-	   $(FFTW_LIBS) $(FFTW_LIBNAMES) -lm $(GRACKLELIBS) $(CHIMESLIBS) $(HYPRE_LIBS) $(MKL_LIBS)
+	   $(FFTW_LIBS) $(FFTW_LIBNAMES) -lm $(GRACKLELIBS) $(CHIMESLIBS) $(HYPRE_LIBS) $(MKL_LIBS) $(KETJU_LIBS)
 
 
 $(EXEC): $(OBJS)
