@@ -1,0 +1,11 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ketju_integrator"
+version = "1.0"
+description = "Bindings to run the Ketju integrator"
+dependencies = ["numpy"]
+license = {text = "GNU General Public License v3"}
+

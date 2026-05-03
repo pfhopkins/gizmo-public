@@ -1,0 +1,5 @@
+add_library(ketju_integrator_python_shim MODULE shim.c)
+target_link_libraries(ketju_integrator_python_shim PUBLIC ketju-integrator)
+target_include_directories(ketju_integrator_python_shim PUBLIC ${MPI_C_INCLUDE_PATH})
+target_link_libraries(ketju_integrator_python_shim PUBLIC ${MPI_C_LINK_FLAGS} ${MPI_C_LIBRARIES})
+set_target_properties(ketju_integrator_python_shim PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${MAINFOLDER}/python_bindings/ketju_integrator)
