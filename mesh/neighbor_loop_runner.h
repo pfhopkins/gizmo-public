@@ -472,6 +472,37 @@ template <typename Spec>
 constexpr bool nlr_spec_has_set_oracle_brute_pass_v =
     nlr_spec_has_set_oracle_brute_pass<Spec>::value;
 
+/* nlr_spec_symmetric_j_radius_scale — optional Spec hook.
+ *
+ * A Spec whose SYMMETRIC search must reach scaled-j neighbors (effective
+ * pair support max(h_i, scale*h_j)) declares:
+ *
+ *   static double symmetric_neighbor_radius_scale();
+ *
+ * Absent ⇒ 1.0 (plain symmetric search — every pre-existing Spec). The runner
+ * threads the returned value into the Mode A NGL build (j_kernel_radius_scale)
+ * AND the Mode B local/brute walks (j_radius_scale), so Mode A and Mode B
+ * agree on neighbor inclusion. Used by the TURB_DIFF_DYNAMIC wide-filter
+ * Specs, which return All.TurbDynamicDiffFac. See
+ * OPEN_3d_difffilter_design.md §3. */
+template <typename Spec, typename = void>
+struct nlr_spec_has_symmetric_radius_scale : std::false_type {};
+
+template <typename Spec>
+struct nlr_spec_has_symmetric_radius_scale<
+    Spec,
+    std::void_t<decltype(Spec::symmetric_neighbor_radius_scale())>>
+    : std::true_type {};
+
+template <typename Spec>
+double nlr_spec_symmetric_j_radius_scale() {
+    if constexpr (nlr_spec_has_symmetric_radius_scale<Spec>::value) {
+        return Spec::symmetric_neighbor_radius_scale();
+    } else {
+        return 1.0;
+    }
+}
+
 /* RAII cleanup guard for the runner's DeviceContext. Construct one right
  * after Spec::populate_device_context returns; destruction at function exit
  * (any path) conditionally invokes Spec::cleanup_device_context if the Spec

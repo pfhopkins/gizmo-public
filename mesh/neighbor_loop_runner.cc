@@ -91,6 +91,9 @@
 #if defined(GALSF_SUBGRID_WINDS) && (GALSF_SUBGRID_WIND_SCALING==2)
 #include "../galaxy_sf/dm_dispersion_loop.h"
 #endif
+#ifdef TURB_DIFF_DYNAMIC
+#include "../turb/difffilter_loop.h"
+#endif
 
 /* ============================================================================
  * Shared NLR utility helpers (used by env-config and threshold blocks below).
@@ -860,13 +863,15 @@ static void collect_candidates_pre_drift(const neighbor_loop_args& args,
                                         neighbor_type_mask,
                                         Spec::search_mode,
                                         Spec::radius_policy,
-                                        cands);
+                                        cands,
+                                        nlr_spec_symmetric_j_radius_scale<Spec>());
         } else if(backend == DispatchPath::Brute_Oracle) {
             mode_b_local_brute_walk(pos_arr, h_q,
                                      neighbor_type_mask,
                                      Spec::search_mode,
                                      Spec::radius_policy,
-                                     cands);
+                                     cands,
+                                     nlr_spec_symmetric_j_radius_scale<Spec>());
         } else {
             fprintf(stderr, "neighbor_loop_runner: collect_candidates_pre_drift "
                     "called with non-Mode-B/Brute backend (%d) for loop '%s'\n",
@@ -915,13 +920,15 @@ static void collect_candidates_for_remote_queries(
                                         neighbor_type_mask,
                                         Spec::search_mode,
                                         Spec::radius_policy,
-                                        cands);
+                                        cands,
+                                        nlr_spec_symmetric_j_radius_scale<Spec>());
         } else if(backend == DispatchPath::Brute_Oracle) {
             mode_b_local_brute_walk(pos_arr, h_q,
                                      neighbor_type_mask,
                                      Spec::search_mode,
                                      Spec::radius_policy,
-                                     cands);
+                                     cands,
+                                     nlr_spec_symmetric_j_radius_scale<Spec>());
         } else {
             fprintf(stderr, "neighbor_loop_runner: collect_candidates_for_remote_queries"
                     " bad backend %d for loop '%s'\n", (int)backend, Spec::loop_name);
@@ -1979,7 +1986,8 @@ static void run_mode_a(const neighbor_loop_args& args, const double *radii,
                            Spec::search_mode,
                            (int)Spec::neighbor_type_mask,
                            &gnl, sidx,
-                           1.0, radii_uvm, NULL, Spec::loop_name);
+                           1.0, radii_uvm, NULL, Spec::loop_name,
+                           nlr_spec_symmetric_j_radius_scale<Spec>());
     }
 
     /* UVM-allocate ActiveData[] and AccumData[] arrays. */
@@ -3279,7 +3287,8 @@ static void nlr_iter_dispatch_subgroup_mode_a(NlrIterDriver<Spec>& drv, int sg)
                            Spec::search_mode,
                            (int)sgr.j_type_bitmask,
                            &drv.mode_a_cached_gnl[sg], sidx,
-                           1.0, radii_oversized_uvm, NULL, Spec::loop_name);
+                           1.0, radii_oversized_uvm, NULL, Spec::loop_name,
+                           nlr_spec_symmetric_j_radius_scale<Spec>());
         Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(radii_oversized_uvm);
 
         /* Allocate csr_offset_lookup + csr_buffered_h sized to subgroup max.
@@ -4796,5 +4805,15 @@ template void run_neighbor_loop_iterative<RadFBRPSpec>(const neighbor_loop_args_
  * mirrors DensitySpec exactly. See galaxy_sf/dm_dispersion_loop.{h,cc}. */
 #if defined(GALSF_SUBGRID_WINDS) && (GALSF_SUBGRID_WIND_SCALING==2)
 template void run_neighbor_loop_iterative<DMDispersionSpec>(const neighbor_loop_args_iterative&);
+#endif
+
+/* Wave 5 / difffilter: DiffFilterSpec + DynDiffSpec — TURB_DIFF_DYNAMIC
+ * velocity-smoothing + dynamic-Smagorinsky loops. Non-iterative,
+ * scaled-symmetric gas-gas (symmetric_neighbor_radius_scale = TurbDynamicDiffFac),
+ * pure i-side reduce. See turb/difffilter_loop.{h,cc} +
+ * OPEN_3d_difffilter_design.md. */
+#ifdef TURB_DIFF_DYNAMIC
+template void run_neighbor_loop<DiffFilterSpec>(const neighbor_loop_args&);
+template void run_neighbor_loop<DynDiffSpec>(const neighbor_loop_args&);
 #endif
 

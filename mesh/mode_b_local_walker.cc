@@ -45,12 +45,17 @@ double mode_b_neighbor_symmetric_radius(int j, mode_b_radius_policy_t policy)
 }
 
 /* Predicate: does P[j] satisfy the query (pos, h_q) under search_mode? */
+/* j_radius_scale: SYMMETRIC-mode multiplier on the j-side kernel radius
+ * (1.0 = legacy). TURB_DIFF_DYNAMIC wide-filter loops pass
+ * All.TurbDynamicDiffFac so the Mode B reach matches the Mode A scaled-
+ * symmetric NGL. See OPEN_3d_difffilter_design.md §3. */
 static inline int particle_passes(int j,
                                   const double pos[3],
                                   double h_q,
                                   unsigned int type_mask,
                                   int search_mode,
-                                  mode_b_radius_policy_t radius_policy)
+                                  mode_b_radius_policy_t radius_policy,
+                                  double j_radius_scale)
 {
     if(!(type_mask & (1u << P[j].Type))) return 0;
     if(P[j].Mass <= 0) return 0;
@@ -66,7 +71,7 @@ static inline int particle_passes(int j,
          * without AGS opt-in, h_j contribution is 0 and the test
          * collapses to ONEWAY r < h_q for that j. (Phil + codex 2026-05-07.)
          */
-        double hj = mode_b_neighbor_symmetric_radius(j, radius_policy);
+        double hj = mode_b_neighbor_symmetric_radius(j, radius_policy) * j_radius_scale;
         if(hj > cutoff) cutoff = hj;
     }
     return r2 < cutoff * cutoff;
@@ -77,11 +82,12 @@ void mode_b_local_brute_walk(const double pos[3],
                              unsigned int type_mask,
                              int search_mode,
                              mode_b_radius_policy_t radius_policy,
-                             std::vector<int>& out)
+                             std::vector<int>& out,
+                             double j_radius_scale)
 {
     const int num_local = ghost_get_num_local();
     for(int j = 0; j < num_local; j++) {
-        if(!particle_passes(j, pos, h_q, type_mask, search_mode, radius_policy)) continue;
+        if(!particle_passes(j, pos, h_q, type_mask, search_mode, radius_policy, j_radius_scale)) continue;
         out.push_back(j);
     }
 }
@@ -120,7 +126,8 @@ static inline int sphere_aabb_overlap(const double pos[3],
  * correctness bug. Same convention as GPU NGL's BVH tile-overlap test. */
 static inline double mode_b_node_symmetric_radius(int no,
                                                   unsigned int type_mask,
-                                                  mode_b_radius_policy_t policy)
+                                                  mode_b_radius_policy_t policy,
+                                                  double j_radius_scale)
 {
     static constexpr double H_SLACK = 0.5;  /* matches SIDX_H_SLACK */
     double rmax = 0.0;
@@ -144,7 +151,7 @@ static inline double mode_b_node_symmetric_radius(int no,
         }
     }
 #endif
-    return rmax * (1.0 + H_SLACK);
+    return rmax * (1.0 + H_SLACK) * j_radius_scale;
 }
 
 void mode_b_local_neighbor_walk(const double pos[3],
@@ -152,7 +159,8 @@ void mode_b_local_neighbor_walk(const double pos[3],
                                 unsigned int type_mask,
                                 int search_mode,
                                 mode_b_radius_policy_t radius_policy,
-                                std::vector<int>& out)
+                                std::vector<int>& out,
+                                double j_radius_scale)
 {
     if(All.MaxPart <= 0 || Nodes == NULL || Nextnode == NULL) return;
     const int num_local = ghost_get_num_local();
@@ -183,7 +191,7 @@ void mode_b_local_neighbor_walk(const double pos[3],
         if(no < max_part) {
             /* Particle leaf. Only return if it's a domain-owned local
              * particle (not a ghost import). */
-            if(no < num_local && particle_passes(no, pos, h_q, type_mask, search_mode, radius_policy)) {
+            if(no < num_local && particle_passes(no, pos, h_q, type_mask, search_mode, radius_policy, j_radius_scale)) {
                 out.push_back(no);
             }
             no = Nextnode[no];
@@ -205,7 +213,7 @@ void mode_b_local_neighbor_walk(const double pos[3],
                 R_eff = h_q;
             } else {
                 /* SYMMETRIC: R_eff = max(h_q, per-type hmax under policy/mask) */
-                double node_h = mode_b_node_symmetric_radius(no, type_mask, radius_policy);
+                double node_h = mode_b_node_symmetric_radius(no, type_mask, radius_policy, j_radius_scale);
                 R_eff = (node_h > h_q) ? node_h : h_q;
             }
             int do_open = sphere_aabb_overlap(pos, nop, R_eff);

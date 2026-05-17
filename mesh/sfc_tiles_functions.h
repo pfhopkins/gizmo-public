@@ -65,8 +65,14 @@ int bbox_overlaps_sphere_gpu(const double box_lo[3], const double box_hi[3],
  * Using compact float array instead of P[j].Pos/KernelRadius reduces BVH
  * traversal memory traffic by ~12× (32 vs 400 bytes/particle), allowing the
  * array to fit in GPU L2 cache and eliminate random-access cache misses. */
+/* j_radius_scale: multiplier applied to the j-side kernel radius in SYMMETRIC
+ * mode (1.0 = legacy behavior). Scaled-symmetric callers (TURB_DIFF_DYNAMIC
+ * wide-filter loops) pass All.TurbDynamicDiffFac so the pair reach becomes
+ * max(h_i, fac*h_j) — see OPEN_3d_difffilter_design.md §3. Applied at query
+ * time; the cached compact_xyzh / SIDX hmax stay keyed on raw radii. */
 KOKKOS_INLINE_FUNCTION
 int check_tile_particles_gpu(const float *compact_xyzh, const double pos_i[3], double h_i, double h2_i,
+                             double j_radius_scale,
                              sfc_tile_t *tile, int *pool, int search_mode,
                              int *store_neighbors, int count, int max_store,
                              const double box_sizes[3], const double box_halves[3],
@@ -109,7 +115,7 @@ int check_tile_particles_gpu(const float *compact_xyzh, const double pos_i[3], d
         if(search_mode == NGB_SEARCH_ONEWAY) {
             pair_search_r2 = h2_i;
         } else {
-            double h_j = (double)compact_xyzh[j*4+3];
+            double h_j = (double)compact_xyzh[j*4+3] * j_radius_scale;
             double h_max = (h_i > h_j) ? h_i : h_j;
             pair_search_r2 = h_max * h_max;
         }
@@ -135,8 +141,12 @@ int check_tile_particles_gpu(const float *compact_xyzh, const double pos_i[3], d
  * there. Decoupled from any specific P[] index so the same routine serves
  * particle-based sources (gpu_ngb_list_build's default mode) and
  * arbitrary-position sources (e.g. TURB_DRIVING_SPECTRUMGRID grid cells). */
+/* j_radius_scale: see check_tile_particles_gpu — scales the j-side radius
+ * (per-particle h_j at the leaf, per-node hmax at the BVH opener) in
+ * SYMMETRIC mode. 1.0 = legacy. */
 KOKKOS_INLINE_FUNCTION
 int search_neighbors_sfc_gpu(const float *compact_xyzh, const double pos_i[3], double h_i,
+                             double j_radius_scale,
                              sfc_tile_t *tiles, int ntiles,
                              int *pool, int search_mode,
                              tile_bvh_node_t *bvh, int bvh_root,
@@ -187,6 +197,9 @@ int search_neighbors_sfc_gpu(const float *compact_xyzh, const double pos_i[3], d
         } else {
             node_hmax_eff = node->hmax;
         }
+        /* Scale the j-side node radius in SYMMETRIC mode (no-op when
+         * j_radius_scale == 1.0; constant-propagated for default callers). */
+        node_hmax_eff *= j_radius_scale;
         double search_r = (search_mode == NGB_SEARCH_ONEWAY) ? h_i : ((h_i > node_hmax_eff) ? h_i : node_hmax_eff);
         double search_r2 = search_r * search_r;
 
@@ -200,7 +213,7 @@ int search_neighbors_sfc_gpu(const float *compact_xyzh, const double pos_i[3], d
             /* Leaf node: process the tile's particles */
             int tile_idx = -(node->left + 1);
             if(cnt_tiles_visited) (*cnt_tiles_visited)++;
-            count = check_tile_particles_gpu(compact_xyzh, pos_i, h_i, h2_i, &tiles[tile_idx], pool, search_mode,
+            count = check_tile_particles_gpu(compact_xyzh, pos_i, h_i, h2_i, j_radius_scale, &tiles[tile_idx], pool, search_mode,
                                              store_neighbors, count, max_store,
                                              box_sizes, box_halves, periodic_flags,
                                              cnt_candidates_tested, cnt_candidates_accepted,

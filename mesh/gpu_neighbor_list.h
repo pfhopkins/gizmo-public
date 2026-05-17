@@ -262,7 +262,15 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
                         double search_radius_factor = 1.0,
                         const double *search_radii_host = NULL,
                         const double *source_positions_host = NULL,
-                        const char *caller_label = "?");
+                        const char *caller_label = "?",
+                        /* j_kernel_radius_scale: multiplier on the j-side kernel
+                         * radius in SYMMETRIC mode (1.0 = legacy). Set to
+                         * All.TurbDynamicDiffFac for the TURB_DIFF_DYNAMIC
+                         * wide-filter loops so the pair reach is the genuinely
+                         * symmetric max(fac*h_i, fac*h_j). Applied at query time;
+                         * cached compact_xyzh / SIDX hmax stay keyed on raw radii.
+                         * See OPEN_3d_difffilter_design.md §3. */
+                        double j_kernel_radius_scale = 1.0);
 
 /* Free CSR arrays + active indices. Does NOT free tiles/BVH/pool if they
    belong to the cached spatial index (use gpu_spatial_index_free for those). */

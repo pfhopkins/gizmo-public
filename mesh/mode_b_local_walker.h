@@ -82,12 +82,17 @@ double mode_b_neighbor_symmetric_radius(int j, mode_b_radius_policy_t policy);
  * fire_m11i — the dominant tiny-N cost post-Stage 2). Geometric growth
  * via push_back handles correctness for any-size match set without
  * imposing full-pool memory traffic on tiny-N. */
+/* j_radius_scale: SYMMETRIC-mode multiplier on the j-side kernel radius
+ * (1.0 = legacy). TURB_DIFF_DYNAMIC wide-filter loops pass
+ * All.TurbDynamicDiffFac so the Mode B reach matches the Mode A scaled-
+ * symmetric NGL. See OPEN_3d_difffilter_design.md §3. */
 void mode_b_local_neighbor_walk(const double pos[3],
                                 double h_q,
                                 unsigned int type_mask,
                                 int search_mode,
                                 mode_b_radius_policy_t radius_policy,
-                                std::vector<int>& out);
+                                std::vector<int>& out,
+                                double j_radius_scale = 1.0);
 
 /* Brute-force path. Iterates 0..num_local. Slow but obviously correct.
  * Used as the runner-owned oracle. Same append-oriented contract as the
@@ -98,7 +103,8 @@ void mode_b_local_brute_walk(const double pos[3],
                              unsigned int type_mask,
                              int search_mode,
                              mode_b_radius_policy_t radius_policy,
-                             std::vector<int>& out);
+                             std::vector<int>& out,
+                             double j_radius_scale = 1.0);
 
 /* Lazy-drift contract for Mode B (mirrors gpu_ngb_list_build:1542-1580).
  *

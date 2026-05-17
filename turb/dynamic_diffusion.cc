@@ -6,10 +6,7 @@
 #include "../declarations/allvars.h"
 #include "../core/proto.h"
 #include "../mesh/kernel.h"
-#include "../mesh/neighbor_list.h"
-extern void dynamicdiff_evaluate_gpu(struct particle_data *, struct gas_cell_data *,
-                                     int, int *, int, int *, int *, int,
-                                     void *, void *, void *, int);
+#include "difffilter_loop_api.h"   /* temporary_data_dyndiff, dynamicdiff_gpu_toplevel */
 
 
 
@@ -32,35 +29,16 @@ extern void dynamicdiff_evaluate_gpu(struct particle_data *, struct gas_cell_dat
 
 #ifdef TURB_DIFF_DYNAMIC
 
-#define SHOULD_I_USE_SPH_GRADIENTS(condition_number) ((condition_number > CONDITION_NUMBER_DANGER) ? (1):(0))
-
-
-struct Quantities_for_Smooth_Gradients {
-    double Velocity_hat[3];
-};
-
 /* Legacy CPU-tree scaffolding (struct kernel_DynamicDiff, DynamicDiffdata_in,
  * DynamicDiffdata_out, DynamicDiffdata_out_iter, particle2in/out2particle
  * forward decls + bodies, and the DynamicDiff_evaluate / _primary / _secondary
  * functions at the bottom of this file) was retired in Step 5 Phase D2.5-ext.
- * Modern path: dynamic_diff_calc() dispatches to dynamicdiff_evaluate_gpu()
- * with anonymous in/out structs gathered/scattered inline; no legacy ngb_treefind
- * tree walk is used. */
+ * Wave 5: dynamic_diff_calc() now dispatches one runner-template pass per
+ * external iteration via dynamicdiff_gpu_toplevel() (DynDiffSpec). The
+ * temporary_data_dyndiff + Quantities_for_Smooth_Gradients struct definitions
+ * moved to turb/difffilter_loop_api.h (SSOT — shared with the GPU TU). */
 
-static struct temporary_data_dyndiff {
-    struct Quantities_for_Smooth_Gradients Maxima;
-    struct Quantities_for_Smooth_Gradients Minima;
-    MyFloat FilterWidth_hat;
-    MyDouble Dynamic_numerator_hat;
-    MyDouble Dynamic_denominator_hat;
-    MyDouble GradVelocity_hat[3][3];
-    MyDouble dynamic_fac[3][3];
-#ifdef OUTPUT_TURB_DIFF_DYNAMIC_ERROR
-    MyDouble dynamic_fac_const[3][3];
-#endif
-    MyDouble ProductVelocity_hat[3][3];
-}
-*DynamicDiffDataPasser;
+static struct temporary_data_dyndiff *DynamicDiffDataPasser;
 
 /**
  *  Iterates over particles and calculates the large filtered quantities. Will do this
@@ -125,95 +103,14 @@ void dynamic_diff_calc(void) {
     for (dynamic_iteration = 0; dynamic_iteration < (All.TurbDynamicDiffIterations + 1); dynamic_iteration++) {
         PRINT_STATUS(" ..first loop over active particles (iter = %d)", dynamic_iteration);
 
-        /* GPU/neighbor-list path: use cached symmetric CSR list with wider search radius.
-           Follows the same pattern as gradient_evaluate_gpu multi-iteration. */
-        {
-            /* Build active index and gather per-particle input */
-            int dd_num_active = 0;
-            for(int ii : ActiveParticleList) { if(P[ii].Type == 0 && P[ii].Mass > 0) dd_num_active++; }
-            int *dd_active = (int *) mymalloc("dd_active", (dd_num_active > 0 ? dd_num_active : 1) * sizeof(int));
-            {int aa = 0; for(int ii : ActiveParticleList) { if(P[ii].Type == 0 && P[ii].Mass > 0) dd_active[aa++] = ii; }}
-
-            /* Gather input struct per active particle */
-            struct { double VelShear_bar[3][3]; double TD_DynDiffCoeff; double MagShear_bar;
-                     double Velocity_bar[3]; double Velocity_hat[3]; double Norm_hat;
-                     double Dynamic_numerator; double Dynamic_denominator; double FilterWidth_bar;
-                     double KernelRadius; int sph_gradients_flag;
-#ifdef GALSF_SUBGRID_WINDS
-                     double DelayTime;
-#endif
-            } *dd_in;
-            dd_in = (decltype(dd_in)) mymalloc("dd_in", (dd_num_active > 0 ? dd_num_active : 1) * sizeof(*dd_in));
-
-            for(int aa = 0; aa < dd_num_active; aa++) {
-                int ii = dd_active[aa];
-                for(int kk=0; kk<3; kk++) for(int vv=0; vv<3; vv++) dd_in[aa].VelShear_bar[kk][vv] = CellP[ii].VelShear_bar[kk][vv];
-                dd_in[aa].TD_DynDiffCoeff = CellP[ii].TD_DynDiffCoeff;
-                dd_in[aa].MagShear_bar = CellP[ii].MagShear_bar;
-                for(int kk=0; kk<3; kk++) { dd_in[aa].Velocity_bar[kk] = CellP[ii].Velocity_bar[kk]; dd_in[aa].Velocity_hat[kk] = CellP[ii].Velocity_hat[kk]; }
-                dd_in[aa].Norm_hat = CellP[ii].Norm_hat;
-                dd_in[aa].Dynamic_numerator = CellP[ii].Dynamic_numerator;
-                dd_in[aa].Dynamic_denominator = CellP[ii].Dynamic_denominator;
-                dd_in[aa].FilterWidth_bar = CellP[ii].FilterWidth_bar;
-                dd_in[aa].KernelRadius = P[ii].KernelRadius;
-                dd_in[aa].sph_gradients_flag = SHOULD_I_USE_SPH_GRADIENTS(CellP[ii].ConditionNumber);
-#ifdef GALSF_SUBGRID_WINDS
-                dd_in[aa].DelayTime = CellP[ii].DelayTime;
-#endif
-            }
-
-            /* Allocate output structs */
-            struct { double GradVelocity_hat[3][3]; double Maxima_Velocity_hat[3]; double Minima_Velocity_hat[3];
-                     double FilterWidth_hat; double Dynamic_numerator_hat; double Dynamic_denominator_hat;
-                     double ProductVelocity_hat[3][3]; } *dd_out0;
-            dd_out0 = (decltype(dd_out0)) mymalloc("dd_out0", (dd_num_active > 0 ? dd_num_active : 1) * sizeof(*dd_out0));
-
-            struct { double dynamic_fac[3][3];
-#ifdef OUTPUT_TURB_DIFF_DYNAMIC_ERROR
-                     double dynamic_fac_const[3][3];
-#endif
-            } *dd_out_iter;
-            dd_out_iter = (decltype(dd_out_iter)) mymalloc("dd_out_iter", (dd_num_active > 0 ? dd_num_active : 1) * sizeof(*dd_out_iter));
-
-            dynamicdiff_evaluate_gpu(P, CellP, NumPart, dd_active, dd_num_active,
-                                     gizmo_sym_neighbor_list.offsets, gizmo_sym_neighbor_list.neighbors,
-                                     gizmo_sym_neighbor_list.total_pairs,
-                                     (void *)dd_in, (void *)dd_out0, (void *)dd_out_iter, dynamic_iteration);
-
-            /* Scatter results */
-            for(int aa = 0; aa < dd_num_active; aa++) {
-                int ii = dd_active[aa];
-                /* out_iter: always scatter (all iterations) */
-                for(int kk=0; kk<3; kk++) for(int vv=0; vv<3; vv++) {
-                    DynamicDiffDataPasser[ii].dynamic_fac[kk][vv] += dd_out_iter[aa].dynamic_fac[kk][vv];
-#ifdef OUTPUT_TURB_DIFF_DYNAMIC_ERROR
-                    DynamicDiffDataPasser[ii].dynamic_fac_const[kk][vv] += dd_out_iter[aa].dynamic_fac_const[kk][vv];
-#endif
-                }
-                /* out0: only on iteration 0 */
-                if(dynamic_iteration == 0) {
-                    if(dd_out0[aa].FilterWidth_hat > DynamicDiffDataPasser[ii].FilterWidth_hat)
-                        DynamicDiffDataPasser[ii].FilterWidth_hat = dd_out0[aa].FilterWidth_hat;
-                    DynamicDiffDataPasser[ii].Dynamic_numerator_hat += dd_out0[aa].Dynamic_numerator_hat;
-                    DynamicDiffDataPasser[ii].Dynamic_denominator_hat += dd_out0[aa].Dynamic_denominator_hat;
-                    for(int kk=0; kk<3; kk++) {
-                        if(dd_out0[aa].Maxima_Velocity_hat[kk] > DynamicDiffDataPasser[ii].Maxima.Velocity_hat[kk])
-                            DynamicDiffDataPasser[ii].Maxima.Velocity_hat[kk] = dd_out0[aa].Maxima_Velocity_hat[kk];
-                        if(dd_out0[aa].Minima_Velocity_hat[kk] < DynamicDiffDataPasser[ii].Minima.Velocity_hat[kk])
-                            DynamicDiffDataPasser[ii].Minima.Velocity_hat[kk] = dd_out0[aa].Minima_Velocity_hat[kk];
-                        for(int vv=0; vv<3; vv++) {
-                            DynamicDiffDataPasser[ii].ProductVelocity_hat[kk][vv] += dd_out0[aa].ProductVelocity_hat[kk][vv];
-                            DynamicDiffDataPasser[ii].GradVelocity_hat[kk][vv] += dd_out0[aa].GradVelocity_hat[kk][vv];
-                        }
-                    }
-                }
-            }
-
-            myfree(dd_out_iter);
-            myfree(dd_out0);
-            myfree(dd_in);
-            myfree(dd_active);
-        }
+        /* Runner-template path (DynDiffSpec): one scaled-symmetric gas-gas
+           pass for this external iteration. The toplevel builds the active
+           gas list, drives run_neighbor_loop, and scatters the per-active
+           result into DynamicDiffDataPasser[] via apply_active_writeback
+           (dynamic_fac every iteration; the hat-quantity block iter-0 only).
+           Replaces the legacy dd_in gather + dynamicdiff_evaluate_gpu() +
+           host scatter. */
+        dynamicdiff_gpu_toplevel(dynamic_iteration, DynamicDiffDataPasser);
         PRINT_STATUS(" ..finished communication, beginning secondary calculations (iter = %d)", dynamic_iteration);
 
         /* The first two iterations were solely to calculate the hat quantities */ 

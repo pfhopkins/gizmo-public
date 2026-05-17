@@ -128,14 +128,14 @@ static double ngl_periodic_pair_r2_host(const float *compact_xyzh,
 static int ngl_pair_accepts_host(const float *compact_xyzh,
                                  const double pos_i[3], double h_i,
                                  int j, int search_mode, double *r2_out,
-                                 double *cut2_out)
+                                 double *cut2_out, double j_radius_scale)
 {
     double h2_i = h_i * h_i;
     double pair_search_r2;
     if(search_mode == NGB_SEARCH_ONEWAY) {
         pair_search_r2 = h2_i;
     } else {
-        double h_j = (double)compact_xyzh[j*4+3];
+        double h_j = (double)compact_xyzh[j*4+3] * j_radius_scale;
         double h_max = (h_i > h_j) ? h_i : h_j;
         pair_search_r2 = h_max * h_max;
     }
@@ -823,7 +823,8 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
                         double search_radius_factor,
                         const double *search_radii_host,
                         const double *source_positions_host,
-                        const char *caller_label)
+                        const char *caller_label,
+                        double j_kernel_radius_scale)
 {
     gnl->num_active = num_active;
     double t_entry = my_second(); /* DIAG: entry */
@@ -1139,6 +1140,7 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
         double bh0 = gnl->box_halves[0], bh1 = gnl->box_halves[1], bh2 = gnl->box_halves[2];
 
         double sr_fac = search_radius_factor;
+        double j_rad_scale = j_kernel_radius_scale;
         const double *radii = d_radii;
         const double *src_pos = d_source_pos;
         const float *compact_xyzh = gnl->d_compact_xyzh;
@@ -1153,7 +1155,7 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
             double pos_i[3];
             if(src_pos) { pos_i[0] = src_pos[aa*3+0]; pos_i[1] = src_pos[aa*3+1]; pos_i[2] = src_pos[aa*3+2]; }
             else        { pos_i[0] = (double)compact_xyzh[i*4+0]; pos_i[1] = (double)compact_xyzh[i*4+1]; pos_i[2] = (double)compact_xyzh[i*4+2]; }
-            int cnt = search_neighbors_sfc_gpu(compact_xyzh, pos_i, h_i,
+            int cnt = search_neighbors_sfc_gpu(compact_xyzh, pos_i, h_i, j_rad_scale,
                                                tiles, ntiles, pool, smode,
                                                bvh, bvh_root,
                                                &scratch[(size_t)aa * NGL_SCRATCH_STRIDE],
@@ -1234,7 +1236,7 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
                     double pos_i[3];
                     if(src_pos) { pos_i[0] = src_pos[aa*3+0]; pos_i[1] = src_pos[aa*3+1]; pos_i[2] = src_pos[aa*3+2]; }
                     else        { pos_i[0] = (double)compact_xyzh[i*4+0]; pos_i[1] = (double)compact_xyzh[i*4+1]; pos_i[2] = (double)compact_xyzh[i*4+2]; }
-                    int cnt = search_neighbors_sfc_gpu(compact_xyzh, pos_i, h_i,
+                    int cnt = search_neighbors_sfc_gpu(compact_xyzh, pos_i, h_i, j_rad_scale,
                                                        tiles, ntiles, pool, smode,
                                                        bvh, bvh_root,
                                                        &scratch[(size_t)aa * NGL_SCRATCH_STRIDE],
@@ -1278,7 +1280,7 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
                 if(src_pos) { pos_i[0] = src_pos[aa*3+0]; pos_i[1] = src_pos[aa*3+1]; pos_i[2] = src_pos[aa*3+2]; }
                 else        { pos_i[0] = (double)compact_xyzh[i*4+0]; pos_i[1] = (double)compact_xyzh[i*4+1]; pos_i[2] = (double)compact_xyzh[i*4+2]; }
                 int n_nodes = 0, n_tiles = 0, n_test = 0, n_acc = 0;
-                (void) search_neighbors_sfc_gpu(compact_xyzh, pos_i, h_i,
+                (void) search_neighbors_sfc_gpu(compact_xyzh, pos_i, h_i, j_rad_scale,
                                                 tiles, ntiles, pool, smode,
                                                 bvh, bvh_root,
                                                 &scratch[(size_t)aa * NGL_SCRATCH_STRIDE],
@@ -1343,20 +1345,35 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
     /* GPU exclusive prefix scan: counts → offsets, returning total.
        Counts are correct even for overflow particles (search_neighbors_sfc_gpu
        returns the true count regardless of bounded write). */
-    int total = 0;
+    long long total_ll = 0;
     HDBG("offsets_scan_start");
     {
         int *counts = d_counts;
         int *offsets = gnl->offsets;
         Kokkos::parallel_scan("ngb_offsets_scan", num_active,
-            KOKKOS_LAMBDA(int aa, int &update, const bool final) {
-                int v = counts[aa];
-                if(final) offsets[aa] = update;
+            KOKKOS_LAMBDA(int aa, long long &update, const bool final) {
+                long long v = (long long)counts[aa];
+                if(final) offsets[aa] = (int)update;
                 update += v;
-            }, total);
+            }, total_ll);
         Kokkos::fence();
     }
     HDBG("offsets_scan_done");
+    /* Hard guard: the CSR index (gnl->total_pairs / gnl->offsets) is 32-bit.
+     * A search that exceeds INT_MAX pairs would silently overflow into
+     * negative offsets -> illegal device addresses in the compact pass.
+     * Abort cleanly with a diagnosis instead. The 64-bit CSR refactor is
+     * tracked as a separate shared-infra change. */
+    if(total_ll > 2147483647LL) {
+        fprintf(stderr,
+            "[NGL FATAL rank=%d] CSR total_pairs overflow: caller=%s num_active=%d "
+            "total_pairs=%lld > INT_MAX  search_radius_factor=%g j_kernel_radius_scale=%g\n",
+            ThisTask, caller_label ? caller_label : "?", num_active, total_ll,
+            search_radius_factor, j_kernel_radius_scale);
+        fflush(stderr);
+        endrun(915100);
+    }
+    int total = (int)total_ll;
     gnl->offsets[num_active] = total;
     gnl->total_pairs = total;
     double t_nl2 = my_second(); /* DIAG: after GPU prefix scan */
@@ -1382,6 +1399,7 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
         double bs0 = gnl->box_sizes[0], bs1 = gnl->box_sizes[1], bs2 = gnl->box_sizes[2];
         double bh0 = gnl->box_halves[0], bh1 = gnl->box_halves[1], bh2 = gnl->box_halves[2];
         double sr_fac = search_radius_factor;
+        double j_rad_scale = j_kernel_radius_scale;
         const double *radii = d_radii;
         const double *src_pos = d_source_pos;
         const float *compact_xyzh = gnl->d_compact_xyzh;
@@ -1403,7 +1421,7 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
                 double pos_i[3];
                 if(src_pos) { pos_i[0] = src_pos[aa*3+0]; pos_i[1] = src_pos[aa*3+1]; pos_i[2] = src_pos[aa*3+2]; }
                 else        { pos_i[0] = (double)compact_xyzh[i*4+0]; pos_i[1] = (double)compact_xyzh[i*4+1]; pos_i[2] = (double)compact_xyzh[i*4+2]; }
-                search_neighbors_sfc_gpu(compact_xyzh, pos_i, h_i,
+                search_neighbors_sfc_gpu(compact_xyzh, pos_i, h_i, j_rad_scale,
                                          tiles, ntiles, pool, smode,
                                          bvh, bvh_root,
                                          &neighbors[dst], 0x7fffffff,
@@ -1482,7 +1500,7 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
                 for(int pp = 0; pp < idx->num_pool; pp++) {
                     int j = idx->h_pool[pp];
                     if(j < 0 || j >= num_total) continue;
-                    if(ngl_pair_accepts_host(compact_host.data(), pos_i, h_i, j, search_mode, NULL, NULL)) {
+                    if(ngl_pair_accepts_host(compact_host.data(), pos_i, h_i, j, search_mode, NULL, NULL, j_kernel_radius_scale)) {
                         brute.push_back(j);
                     }
                 }
@@ -1509,7 +1527,7 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
                     for(int mm = 0; mm < nprint_m; mm++) {
                         int j = missing[mm];
                         double r2 = 0, cut2 = 0;
-                        (void)ngl_pair_accepts_host(compact_host.data(), pos_i, h_i, j, search_mode, &r2, &cut2);
+                        (void)ngl_pair_accepts_host(compact_host.data(), pos_i, h_i, j, search_mode, &r2, &cut2, j_kernel_radius_scale);
                         int tile = ngl_find_tile_for_particle_host(idx, j);
                         fprintf(stderr,
                                 "[NGL_ORACLE rank=%d] missing j=%d tile=%d r=%.9g cutoff=%.9g margin=%.9g compact_j=(%.9g,%.9g,%.9g,%.9g)\n",
@@ -1522,7 +1540,7 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
                     for(int ee = 0; ee < nprint_e; ee++) {
                         int j = extra[ee];
                         double r2 = 0, cut2 = 0;
-                        (void)ngl_pair_accepts_host(compact_host.data(), pos_i, h_i, j, search_mode, &r2, &cut2);
+                        (void)ngl_pair_accepts_host(compact_host.data(), pos_i, h_i, j, search_mode, &r2, &cut2, j_kernel_radius_scale);
                         int tile = ngl_find_tile_for_particle_host(idx, j);
                         fprintf(stderr,
                                 "[NGL_ORACLE rank=%d] extra j=%d tile=%d r=%.9g cutoff=%.9g margin=%.9g compact_j=(%.9g,%.9g,%.9g,%.9g)\n",
@@ -1832,11 +1850,29 @@ void gpu_build_symmetric_neighbor_list(struct particle_data *P_host, int num_tot
     struct particle_data *P_shared = gpu_particles_arena_P();
     double t_sym_arena = my_second();
 
-    /* Build GPU CSR — share gas-only SIDX with density via the step-persistent cache */
+    /* Build GPU CSR — share gas-only SIDX with density via the step-persistent cache.
+     *
+     * search_radius_factor is applied to BOTH the i-side query radius and the
+     * j-side kernel radius — a genuinely symmetric scaled search. This repairs
+     * the j-side under-search in the shared symlist (hydro-gradient Velocity_hat
+     * wide filter under TURB_DIFF_DYNAMIC). See OPEN_3d_difffilter_design.md §3.
+     *
+     * RADIUS SEMANTICS: pass EXPLICIT raw per-active radii (P[i].KernelRadius)
+     * so search_radius_factor multiplies the RAW kernel radius. With NULL
+     * radii the builder would derive h_i from compact_xyzh[i*4+3], which is
+     * already slack-inflated (P.KernelRadius * (1+SIDX_H_SLACK)) — compounding
+     * the slack into the physics widening factor (e.g. fac=2 -> effective ~3h
+     * search, ~27x neighbor volume, CSR-overflow / kernel stall). The runner
+     * Spec path already passes explicit fac*raw radii; this matches it. */
+    std::vector<double> symlist_raw_radii((num_active > 0) ? (size_t)num_active : 1);
+    for(int aa = 0; aa < num_active; aa++) {
+        symlist_raw_radii[aa] = (double) P_shared[active_indices[aa]].KernelRadius;
+    }
     gpu_neighbor_list_t gpu_nl;
     gpu_ngb_list_build(P_shared, num_total, active_indices, num_active,
                        NGB_SEARCH_SYMMETRIC, 1 /* gas only */, &gpu_nl, gpu_step_sidx_ptr(),
-                       search_radius_factor, NULL, NULL, "symlist");
+                       search_radius_factor, symlist_raw_radii.data(), NULL, "symlist",
+                       search_radius_factor /* j_kernel_radius_scale */);
     double t_sym_ngb = my_second();
 
     /* Copy CSR into mymalloc neighbor_list_t */
