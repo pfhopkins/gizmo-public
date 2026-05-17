@@ -129,13 +129,13 @@ void grain_backrx_evaluate_gpu(struct particle_data *P_host,
                        NGB_SEARCH_ONEWAY, 1 /* gas only */,
                        &gnl, NULL, 1.0, src_radii_host);
 
-    PRINT_STATUS("  GPU grain_backrx: %d sources, %d pairs", num_src, gnl.total_pairs);
+    PRINT_STATUS("  GPU grain_backrx: %d sources, %lld pairs", num_src, (long long)gnl.total_pairs);
 
     /* Snapshot ghost fields we will atomically modify. */
     ghost_writeback_zero_grainbackrx();
 
     {
-        int *offsets = gnl.offsets;
+        int64_t *offsets = gnl.offsets;
         int *neighbors = gnl.neighbors;
         struct GrainBackrxLocalIn *local_arr = d_local;
         struct particle_data *kp = P_gpu;
@@ -146,8 +146,8 @@ void grain_backrx_evaluate_gpu(struct particle_data *P_host,
             if(loc.KernelRadius <= 0) return;
             double h2 = (double)loc.KernelRadius * (double)loc.KernelRadius;
 
-            int start = offsets[aa], end = offsets[aa+1];
-            for(int nn = start; nn < end; nn++) {
+            int64_t start = offsets[aa], end = offsets[aa+1];
+            for(int64_t nn = start; nn < end; nn++) {
                 int j = neighbors[nn];
                 if(kp[j].Mass <= 0) continue;
                 Vec3<double> dp = loc.Pos - kp[j].Pos;
@@ -169,9 +169,9 @@ void grain_backrx_evaluate_gpu(struct particle_data *P_host,
      *   P_gpu[j].Grain_AccelTimeMin     — atomic_min
      * Sparse scatter over gnl.neighbors[] (deep-copied to host). */
     if(gnl.total_pairs > 0) {
-        std::vector<int> gnl_neighbors_host(gnl.total_pairs);
+        std::vector<int> gnl_neighbors_host((size_t)gnl.total_pairs);
         gpu_ngb_copy_neighbors_to_host(&gnl, gnl_neighbors_host.data());
-        for(int idx = 0; idx < gnl.total_pairs; idx++) {
+        for(int64_t idx = 0; idx < gnl.total_pairs; idx++) {
             int j = gnl_neighbors_host[idx];
             P_host[j].Vel               = P_gpu[j].Vel;
             P_host[j].dp                = P_gpu[j].dp;
@@ -291,10 +291,10 @@ void interpolate_fluxes_opacities_gasgrains_evaluate_gpu(struct particle_data *P
                            NGB_SEARCH_SYMMETRIC, GRAIN_PTYPES,
                            &gnl, NULL, 1.0, src_radii_gas_host);
 
-        PRINT_STATUS("  GPU gasgrain_rt (gas->grains): %d sources, %d pairs", num_src, gnl.total_pairs);
+        PRINT_STATUS("  GPU gasgrain_rt (gas->grains): %d sources, %lld pairs", num_src, (long long)gnl.total_pairs);
 
         {
-            int *offsets = gnl.offsets;
+            int64_t *offsets = gnl.offsets;
             int *neighbors = gnl.neighbors;
             struct GasGrainRTLocalIn *local_arr = d_local;
             struct GasGrainRTOut *out_arr = d_out;
@@ -307,8 +307,8 @@ void interpolate_fluxes_opacities_gasgrains_evaluate_gpu(struct particle_data *P
                 struct GasGrainRTOut myout;
                 memset(&myout, 0, sizeof(myout));
 
-                int start = offsets[aa], end = offsets[aa+1];
-                for(int nn = start; nn < end; nn++) {
+                int64_t start = offsets[aa], end = offsets[aa+1];
+                for(int64_t nn = start; nn < end; nn++) {
                     int j = neighbors[nn];
                     if(kp[j].Mass <= 0) continue;
                     Vec3<double> dp = loc.Pos - kp[j].Pos;
@@ -371,10 +371,10 @@ void interpolate_fluxes_opacities_gasgrains_evaluate_gpu(struct particle_data *P
                            NGB_SEARCH_ONEWAY, 1 /* gas only */,
                            &gnl, NULL, 1.0, src_radii_grain_host);
 
-        PRINT_STATUS("  GPU gasgrain_rt (grains->gas): %d sources, %d pairs", num_src, gnl.total_pairs);
+        PRINT_STATUS("  GPU gasgrain_rt (grains->gas): %d sources, %lld pairs", num_src, (long long)gnl.total_pairs);
 
         {
-            int *offsets = gnl.offsets;
+            int64_t *offsets = gnl.offsets;
             int *neighbors = gnl.neighbors;
             struct GasGrainRTLocalIn *local_arr = d_local;
             struct GasGrainRTOut *out_arr = d_out;
@@ -388,8 +388,8 @@ void interpolate_fluxes_opacities_gasgrains_evaluate_gpu(struct particle_data *P
                 struct GasGrainRTOut myout;
                 memset(&myout, 0, sizeof(myout));
 
-                int start = offsets[aa], end = offsets[aa+1];
-                for(int nn = start; nn < end; nn++) {
+                int64_t start = offsets[aa], end = offsets[aa+1];
+                for(int64_t nn = start; nn < end; nn++) {
                     int j = neighbors[nn];
                     if(kp[j].Mass <= 0) continue;
                     Vec3<double> dp = loc.Pos - kp[j].Pos;

@@ -2025,14 +2025,14 @@ static void run_mode_a(const neighbor_loop_args& args, const double *radii,
     /* Pair-kernel launch — generic over Spec. */
     {
         StageTimer t(tim ? &tim->dt_walk_self : nullptr);
-        int *offsets   = gnl.offsets;
+        int64_t *offsets = gnl.offsets;
         int *neighbors = gnl.neighbors;
         gizmo_gpu_kernel_launch(Spec::loop_name, N, KOKKOS_LAMBDA(int aa) {
             Spec::zero_accum(d_accums[aa]);
             const ActiveData& a = d_actives[aa];
             ScatterData s{};                     /* NoScatter for ActiveReduceOnly */
-            int start = offsets[aa], end = offsets[aa + 1];
-            for(int nn = start; nn < end; nn++) {
+            int64_t start = offsets[aa], end = offsets[aa + 1];
+            for(int64_t nn = start; nn < end; nn++) {
                 int j = neighbors[nn];
                 IdentitySidecar id{};            /* NoIdentity */
                 NeighborData nb = Spec::load_neighbor(ctx, j, id, a);
@@ -2061,7 +2061,7 @@ static void run_mode_a(const neighbor_loop_args& args, const double *radii,
         if(gizmo_nlr_xval_nb_dump_enabled() && gnl.total_pairs > 0) {
             std::vector<int> nbrs_host((size_t)gnl.total_pairs);
             gpu_ngb_copy_neighbors_to_host(&gnl, nbrs_host.data());
-            int *offsets = gnl.offsets;
+            int64_t *offsets = gnl.offsets;
             int rank = 0;
             MPI_Comm_rank(MPI_COMM_WORLD, &rank);
             for(int aa = 0; aa < N; aa++) {
@@ -2075,7 +2075,8 @@ static void run_mode_a(const neighbor_loop_args& args, const double *radii,
                 v.args          = &args;
                 v.active        = &d_actives[aa];
                 v.candidate_ids = nbrs_host.data() + offsets[aa];
-                v.n_candidates  = offsets[aa + 1] - offsets[aa];
+                /* per-active neighbor count is bounded by num_total < 2^31 */
+                v.n_candidates  = (int)(offsets[aa + 1] - offsets[aa]);
                 Spec::diagnostic_dump_neighbor_list(v);
             }
             std::fflush(stdout);
@@ -3344,9 +3345,9 @@ static void nlr_iter_dispatch_subgroup_mode_a(NlrIterDriver<Spec>& drv, int sg)
             int    *active_set_arr = drv.active_set_uvm[sg];
             int    *csr_lookup     = drv.mode_a_csr_offset_lookup[sg];
             double *radii_arr      = drv.radii_uvm[sg];
-            int    *d_active_arr   = drv.mode_a_cached_gnl[sg].d_active;
-            int    *offsets        = drv.mode_a_cached_gnl[sg].offsets;
-            int    *neighbors      = drv.mode_a_cached_gnl[sg].neighbors;
+            int     *d_active_arr  = drv.mode_a_cached_gnl[sg].d_active;
+            int64_t *offsets       = drv.mode_a_cached_gnl[sg].offsets;
+            int     *neighbors     = drv.mode_a_cached_gnl[sg].neighbors;
 
             gizmo_gpu_kernel_launch("nlr_iter_stage_active", n_compacted, KOKKOS_LAMBDA(int k) {
                 int slot = active_set_arr[k];
@@ -3362,8 +3363,8 @@ static void nlr_iter_dispatch_subgroup_mode_a(NlrIterDriver<Spec>& drv, int sg)
                 Spec::zero_accum(d_accums[k]);
                 const ActiveData& a = d_actives[k];
                 ScatterData s{};
-                int start = offsets[row], end = offsets[row + 1];
-                for (int nn = start; nn < end; nn++) {
+                int64_t start = offsets[row], end = offsets[row + 1];
+                for (int64_t nn = start; nn < end; nn++) {
                     int j = neighbors[nn];
                     IdentitySidecar id{};
                     NeighborData nb = Spec::load_neighbor(dctx_local, j, id, a);

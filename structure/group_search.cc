@@ -473,16 +473,16 @@ void group_search_build_cross_type_nl(std::vector<particle_data> &particles, int
     {
       nl->num_active = nsources;
       nl->total_pairs = 0;
-      nl->offsets = (int *) mymalloc("ngb_offsets", (nsources + 1) * sizeof(int));
+      nl->offsets = (int64_t *) mymalloc("ngb_offsets", (size_t)(nsources + 1) * sizeof(int64_t));
       nl->neighbors = (int *) mymalloc("ngb_neighbors", sizeof(int));
       for(int a = 0; a <= nsources; a++) nl->offsets[a] = 0;
       return;
     }
   gpu_build_cross_type_neighbor_list(particles.data(), particles.size(), sources, nsources, radii,
                                      j_type_mask, NGB_SEARCH_ONEWAY, nl);
-  std::vector<int> offsets(nsources + 1, 0);
+  std::vector<int64_t> offsets(nsources + 1, 0);
   std::vector<int> neighbors;
-  neighbors.reserve(nl->total_pairs);
+  neighbors.reserve((size_t)nl->total_pairs);
   int invalid_entries = 0;
   for(int a = 0; a < nsources; a++)
     {
@@ -495,7 +495,7 @@ void group_search_build_cross_type_nl(std::vector<particle_data> &particles, int
           endrun(990510);
         }
       double h2 = radii[a] * radii[a];
-      for(int n = nl->offsets[a]; n < nl->offsets[a + 1]; n++)
+      for(int64_t n = nl->offsets[a]; n < nl->offsets[a + 1]; n++)
         {
           int j = nl->neighbors[n];
           if(j < 0 || j >= (int)particles.size())
@@ -515,8 +515,8 @@ void group_search_build_cross_type_nl(std::vector<particle_data> &particles, int
     printf("group_search_build_cross_type_nl pruned %d invalid raw neighbor-list entries on task=%d\n", invalid_entries, ThisTask);
   free_neighbor_list(nl);
   nl->num_active = nsources;
-  nl->total_pairs = neighbors.size();
-  nl->offsets = (int *) mymalloc("ngb_offsets", (nsources + 1) * sizeof(int));
+  nl->total_pairs = (int64_t)neighbors.size();
+  nl->offsets = (int64_t *) mymalloc("ngb_offsets", (size_t)(nsources + 1) * sizeof(int64_t));
   nl->neighbors = (int *) mymalloc("ngb_neighbors", (neighbors.size() > 0 ? neighbors.size() : 1) * sizeof(int));
   for(int a = 0; a <= nsources; a++) nl->offsets[a] = offsets[a];
   for(size_t n = 0; n < neighbors.size(); n++) nl->neighbors[n] = neighbors[n];

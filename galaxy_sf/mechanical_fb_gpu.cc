@@ -210,7 +210,7 @@ void mechanical_fb_evaluate_gpu(struct particle_data *P_host,
                        NGB_SEARCH_SYMMETRIC, 1 /* Type 0 only */,
                        &gnl, gpu_step_sidx_ptr(), 1.0, src_radii_host, NULL, "mech_fb");
 
-    PRINT_STATUS("  GPU mech_fb: %d sources, %d pairs", num_src, gnl.total_pairs);
+    PRINT_STATUS("  GPU mech_fb: %d sources, %lld pairs", num_src, (long long)gnl.total_pairs);
 
     /* Codex r6 fix 2026-05-14: build the per-call MechFBCallScalars once
      * host-side via nlr_host_all_ptr(); pass into the lambda capture so the
@@ -248,8 +248,8 @@ void mechanical_fb_evaluate_gpu(struct particle_data *P_host,
 
         /* Launch kernel. */
         {
-            int  *offsets   = gnl.offsets;
-            int  *neighbors = gnl.neighbors;
+            int64_t *offsets   = gnl.offsets;
+            int     *neighbors = gnl.neighbors;
             struct MechFBLocalIn *local_arr = d_local;
             struct MechFBOut     *out_arr   = d_out;
             int                  *active_arr = d_active;
@@ -274,8 +274,8 @@ void mechanical_fb_evaluate_gpu(struct particle_data *P_host,
                 myout.M_coupled = 0;
                 for(int k = 0; k < AREA_WEIGHTED_SUM_ELEMENTS; k++) myout.Area_weighted_sum[k] = 0;
 
-                int start = offsets[aa], end = offsets[aa+1];
-                for(int nn = start; nn < end; nn++) {
+                int64_t start = offsets[aa], end = offsets[aa+1];
+                for(int64_t nn = start; nn < end; nn++) {
                     int j = neighbors[nn];
                     if(kp[j].Type != 0) continue;
                     if(kp[j].Mass <= 0) continue;
@@ -354,9 +354,9 @@ void mechanical_fb_evaluate_gpu(struct particle_data *P_host,
      * gnl.neighbors lives in DEVICE_SPACE (CudaSpace) — not host-readable on
      * GH200. Deep-copy to host once, then iterate the host buffer. */
     if(gnl.total_pairs > 0) {
-        std::vector<int> gnl_neighbors_host(gnl.total_pairs);
+        std::vector<int> gnl_neighbors_host((size_t)gnl.total_pairs);
         gpu_ngb_copy_neighbors_to_host(&gnl, gnl_neighbors_host.data());
-        for(int idx = 0; idx < gnl.total_pairs; idx++) {
+        for(int64_t idx = 0; idx < gnl.total_pairs; idx++) {
             int j = gnl_neighbors_host[idx];
             if(j < n_gas) gas_delta_host[j] = d_gas[j];
         }

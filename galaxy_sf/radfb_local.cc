@@ -191,7 +191,7 @@ void HII_heating_singledomain(void)    /* this version of the HII routine only c
              * loop below indexes it from host code, so deep_copy to a host
              * buffer once. (Host memcpy from CudaSpace segfaults on GH200.) */
             if(gnl.total_pairs > 0) {
-                gnl_neighbors_host.resize(gnl.total_pairs);
+                gnl_neighbors_host.resize((size_t)gnl.total_pairs);
                 gpu_ngb_copy_neighbors_to_host(&gnl, gnl_neighbors_host.data());
             }
         }
@@ -204,7 +204,8 @@ void HII_heating_singledomain(void)    /* this version of the HII routine only c
         if(num_src > 0 && gnl.total_pairs > 0) {
             int max_nl = 0;
             for(int aa = 0; aa < num_src; aa++) {
-                int nl_n = gnl.offsets[aa+1] - gnl.offsets[aa];
+                /* per-source neighbor count is bounded by num_total < 2^31 */
+                int nl_n = (int)(gnl.offsets[aa+1] - gnl.offsets[aa]);
                 if(nl_n > max_nl) max_nl = nl_n;
             }
             ngb_buf.reserve(max_nl > 0 ? max_nl : 1);
@@ -237,8 +238,8 @@ void HII_heating_singledomain(void)    /* this version of the HII routine only c
             prandom = get_random_number(P[i].ID + 7);
             if(prandom < 5.0*mionizable/P[i].Mass) {
                 mionized = 0.0; mion_actual = 0.0; jnearest = -1; rnearest = MAX_REAL_NUMBER; NITER_HIIFB = 0;
-                int nl_start = gnl.offsets[aa], nl_end = gnl.offsets[aa+1];
-                int nl_n = nl_end - nl_start;
+                int64_t nl_start = gnl.offsets[aa], nl_end = gnl.offsets[aa+1];
+                int nl_n = (int)(nl_end - nl_start);
                 /* Use heap buffer instead of alloca — see ALLOCA FIX comment above. */
                 if(nl_n > (int)ngb_buf.capacity()) ngb_buf.reserve(nl_n);
                 ngb_buf.resize(nl_n > 0 ? nl_n : 1);
@@ -253,7 +254,7 @@ void HII_heating_singledomain(void)    /* this version of the HII routine only c
 
                     /* Walk prebuilt NL slice, filter ghosts (singledomain) + radius. */
                     numngb = 0;
-                    for(int nn = nl_start; nn < nl_end; nn++) {
+                    for(int64_t nn = nl_start; nn < nl_end; nn++) {
                         int j_cand = gnl_neighbors[nn];
                         if(j_cand >= local_count) continue; /* skip ghosts */
                         if(P[j_cand].Type != 0 || P[j_cand].Mass <= 0) continue;

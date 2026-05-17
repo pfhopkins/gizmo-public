@@ -160,7 +160,7 @@ void twopoint(void)
                                &gnl, NULL, 1.0, active_radii.data());
             /* gnl.neighbors is DEVICE_SPACE; host loop below indexes it. */
             if(gnl.total_pairs > 0) {
-                gnl_neighbors_host.resize(gnl.total_pairs);
+                gnl_neighbors_host.resize((size_t)gnl.total_pairs);
                 gpu_ngb_copy_neighbors_to_host(&gnl, gnl_neighbors_host.data());
             }
         }
@@ -171,8 +171,8 @@ void twopoint(void)
             double rs_local = active_radii[aa];
             double rs2 = rs_local * rs_local;
             Vec3<double> pos_i = P[isrc].Pos;
-            int n_off = gnl.offsets[aa], n_off_end = gnl.offsets[aa+1];
-            for(int nn = n_off; nn < n_off_end; nn++) {
+            int64_t n_off = gnl.offsets[aa], n_off_end = gnl.offsets[aa+1];
+            for(int64_t nn = n_off; nn < n_off_end; nn++) {
                 int jp = gnl_neighbors[nn];
                 if(jp == isrc) continue; /* skip self */
                 double dx_raw = P[jp].Pos[0] - pos_i[0];

@@ -23,10 +23,12 @@
    offsets: SharedSpace (host writes offsets[num_active]=total after scan).
    neighbors: DeviceSpace (GPU HBM on CUDA; never host-accessed directly). */
 struct gpu_neighbor_list_t {
-    int *offsets;       /* [num_active+1] in SharedSpace */
-    int *neighbors;     /* [total_pairs] in DeviceSpace (GPU HBM — no UVM fault) */
+    int64_t *offsets;   /* [num_active+1] in SharedSpace (CSR row pointers; 64-bit) */
+    int *neighbors;     /* [total_pairs] in DeviceSpace (GPU HBM — no UVM fault).
+                           values are particle indices (< num_total < 2^31); only
+                           the array length is 64-bit. */
     int num_active;
-    int total_pairs;
+    int64_t total_pairs;
 
     /* Device-resident copies of spatial index data */
     sfc_tile_t *d_tiles;

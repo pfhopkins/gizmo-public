@@ -18,7 +18,7 @@
 #include "../hydro/hydro_structs.h"
 #include "../hydro/compute_finitevol_faces_functions.h"
 extern void hydro_evaluate_gpu(struct particle_data *, struct gas_cell_data *,
-                               int, int *, int, int *, int *, int, void *);
+                               int, int *, int, int64_t *, int *, int64_t, void *);
 
 #ifdef TRANSPORT_SUBCYCLE
 

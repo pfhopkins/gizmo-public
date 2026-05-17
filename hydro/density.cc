@@ -120,7 +120,7 @@ void cellcorrections_calc(void)
                                    &gnl, NULL, 1.0, radii.data(), NULL, "dens-vol1");
                 /* gnl.neighbors is DEVICE_SPACE; host loop below indexes it. */
                 if (gnl.total_pairs > 0) {
-                    gnl_neighbors_host.resize(gnl.total_pairs);
+                    gnl_neighbors_host.resize((size_t)gnl.total_pairs);
                     gpu_ngb_copy_neighbors_to_host(&gnl, gnl_neighbors_host.data());
                 }
             }
@@ -130,9 +130,9 @@ void cellcorrections_calc(void)
         for (int aa = 0; aa < num_src; aa++) {
             int i = active_idx[aa];
             Vec3<MyDouble> pos_i = P[i].Pos;
-            int n_off = gnl.offsets[aa], n_off_end = gnl.offsets[aa+1];
+            int64_t n_off = gnl.offsets[aa], n_off_end = gnl.offsets[aa+1];
             double accum_V1 = 0;
-            for (int nn = n_off; nn < n_off_end; nn++) {
+            for (int64_t nn = n_off; nn < n_off_end; nn++) {
                 int j = gnl_neighbors[nn];
                 Vec3<double> dp = pos_i - P[j].Pos;
                 nearest_xyz(dp);

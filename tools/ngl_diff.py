@@ -17,14 +17,17 @@ Exit codes:
 
 import os, sys, struct, glob
 
-MAGIC = b'NGLDMPv1'
+# v3 = basic, v4 = basic+detail (since the 64-bit-CSR migration; offsets are
+# int64). v1/v2 (32-bit offsets) are no longer produced and not supported.
+MAGIC_V3 = b'NGLDMPv3'
+MAGIC_V4 = b'NGLDMPv4'
 
 def parse_dump(path):
     with open(path, 'rb') as f:
         data = f.read()
     pos = 0
-    if data[pos:pos+8] != MAGIC:
-        raise ValueError(f"{path}: bad magic")
+    if data[pos:pos+8] not in (MAGIC_V3, MAGIC_V4):
+        raise ValueError(f"{path}: bad magic {data[pos:pos+8]!r}")
     pos += 8
     rank = struct.unpack_from('<i', data, pos)[0]; pos += 4
     seq = struct.unpack_from('<i', data, pos)[0]; pos += 4
@@ -33,7 +36,7 @@ def parse_dump(path):
     num_total = struct.unpack_from('<i', data, pos)[0]; pos += 4
     total_pairs = struct.unpack_from('<q', data, pos)[0]; pos += 8
     active = struct.unpack_from(f'<{num_active}i', data, pos); pos += 4 * num_active
-    offsets = struct.unpack_from(f'<{num_active+1}i', data, pos); pos += 4 * (num_active + 1)
+    offsets = struct.unpack_from(f'<{num_active+1}q', data, pos); pos += 8 * (num_active + 1)
     if total_pairs > 0:
         neighbors = struct.unpack_from(f'<{total_pairs}i', data, pos); pos += 4 * total_pairs
     else:

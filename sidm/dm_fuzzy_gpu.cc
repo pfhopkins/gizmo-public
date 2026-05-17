@@ -76,11 +76,11 @@ void dmgrad_evaluate_gpu(struct particle_data *P_host, int num_total,
     memcpy(d_in, i_inputs_host, num_active * sizeof(struct dmgrad_gpu_in));
     memcpy(d_radii, i_radii_host, num_active * sizeof(double));
 
-    PRINT_STATUS("  GPU DMGrad iter=%d: %d active, %d DM pairs",
-                 loop_iteration, num_active, gnl.total_pairs);
+    PRINT_STATUS("  GPU DMGrad iter=%d: %d active, %lld DM pairs",
+                 loop_iteration, num_active, (long long)gnl.total_pairs);
 
     {
-        int *offsets = gnl.offsets;
+        int64_t *offsets = gnl.offsets;
         int *neighbors = gnl.neighbors;
         int *active = gnl.d_active;
         struct particle_data *kp = P_gpu;
@@ -121,8 +121,8 @@ void dmgrad_evaluate_gpu(struct particle_data *P_host, int num_total,
             double g2_psi_im[3][3] = {{0,0,0},{0,0,0},{0,0,0}};
 #endif
 
-            int start = offsets[aa], end = offsets[aa + 1];
-            for(int nn = start; nn < end; nn++) {
+            int64_t start = offsets[aa], end = offsets[aa + 1];
+            for(int64_t nn = start; nn < end; nn++) {
                 int j = neighbors[nn];
                 if((kp[j].Mass <= 0) || (kp[j].AGS_Density <= 0)) continue;
                 Vec3<double> dp;

@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
+#include <climits>
 #include <cmath>
 #include <cstdlib>
 #include <vector>
@@ -902,7 +903,7 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
             memset(gnl->box_halves,     0, 3*sizeof(double));
         }
         gnl->d_active  = (int *) Kokkos::kokkos_malloc<GIZMO_KOKKOS_SHARED_SPACE>(sizeof(int));
-        gnl->offsets   = (int *) Kokkos::kokkos_malloc<GIZMO_KOKKOS_SHARED_SPACE>(sizeof(int));
+        gnl->offsets   = (int64_t *) Kokkos::kokkos_malloc<GIZMO_KOKKOS_SHARED_SPACE>(sizeof(int64_t));
         gnl->offsets[0] = 0;
         gnl->neighbors = (int *) Kokkos::kokkos_malloc<GIZMO_KOKKOS_DEVICE_SPACE>(sizeof(int));
         gnl->total_pairs = 0;
@@ -1084,8 +1085,8 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
         memcpy(d_source_pos, source_positions_host, num_active * 3 * sizeof(double));
     }
 
-    /* Allocate CSR offsets */
-    gnl->offsets = (int *) Kokkos::kokkos_malloc<GIZMO_KOKKOS_SHARED_SPACE>((num_active + 1) * sizeof(int));
+    /* Allocate CSR offsets (64-bit row pointers) */
+    gnl->offsets = (int64_t *) Kokkos::kokkos_malloc<GIZMO_KOKKOS_SHARED_SPACE>((size_t)(num_active + 1) * sizeof(int64_t));
 
     /* Per-particle scratchpad for fused single-pass build. Each active particle
      * gets a fixed stride (NGL_SCRATCH_STRIDE) of int slots in d_scratch; the BVH
@@ -1345,41 +1346,41 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
     /* GPU exclusive prefix scan: counts → offsets, returning total.
        Counts are correct even for overflow particles (search_neighbors_sfc_gpu
        returns the true count regardless of bounded write). */
-    long long total_ll = 0;
+    int64_t total_ll = 0;
     HDBG("offsets_scan_start");
     {
         int *counts = d_counts;
-        int *offsets = gnl->offsets;
+        int64_t *offsets = gnl->offsets;
         Kokkos::parallel_scan("ngb_offsets_scan", num_active,
-            KOKKOS_LAMBDA(int aa, long long &update, const bool final) {
-                long long v = (long long)counts[aa];
-                if(final) offsets[aa] = (int)update;
+            KOKKOS_LAMBDA(int aa, int64_t &update, const bool final) {
+                int64_t v = (int64_t)counts[aa];
+                if(final) offsets[aa] = update;
                 update += v;
             }, total_ll);
         Kokkos::fence();
     }
     HDBG("offsets_scan_done");
-    /* Hard guard: the CSR index (gnl->total_pairs / gnl->offsets) is 32-bit.
-     * A search that exceeds INT_MAX pairs would silently overflow into
-     * negative offsets -> illegal device addresses in the compact pass.
-     * Abort cleanly with a diagnosis instead. The 64-bit CSR refactor is
-     * tracked as a separate shared-infra change. */
-    if(total_ll > 2147483647LL) {
+    /* Sanity guard: the CSR index (gnl->total_pairs / gnl->offsets) is 64-bit,
+     * so INT_MAX is no longer a ceiling. Still abort cleanly on a nonsensical
+     * total_pairs (negative => prefix-scan corruption; or a count so large the
+     * neighbors allocation byte size would overflow size_t) rather than letting
+     * a bad value reach kokkos_malloc / the device compact pass. */
+    if(total_ll < 0 || (uint64_t)total_ll > (uint64_t)(SIZE_MAX / sizeof(int))) {
         fprintf(stderr,
-            "[NGL FATAL rank=%d] CSR total_pairs overflow: caller=%s num_active=%d "
-            "total_pairs=%lld > INT_MAX  search_radius_factor=%g j_kernel_radius_scale=%g\n",
-            ThisTask, caller_label ? caller_label : "?", num_active, total_ll,
+            "[NGL FATAL rank=%d] CSR total_pairs implausible: caller=%s num_active=%d "
+            "total_pairs=%lld  search_radius_factor=%g j_kernel_radius_scale=%g\n",
+            ThisTask, caller_label ? caller_label : "?", num_active, (long long)total_ll,
             search_radius_factor, j_kernel_radius_scale);
         fflush(stderr);
         endrun(915100);
     }
-    int total = (int)total_ll;
+    int64_t total = total_ll;
     gnl->offsets[num_active] = total;
     gnl->total_pairs = total;
     double t_nl2 = my_second(); /* DIAG: after GPU prefix scan */
 
-    /* Allocate CSR neighbors array */
-    gnl->neighbors = (int *) Kokkos::kokkos_malloc<GIZMO_KOKKOS_DEVICE_SPACE>(((total > 0) ? total : 1) * sizeof(int));
+    /* Allocate CSR neighbors array (length is 64-bit; element type stays int) */
+    gnl->neighbors = (int *) Kokkos::kokkos_malloc<GIZMO_KOKKOS_DEVICE_SPACE>((size_t)((total > 0) ? total : 1) * sizeof(int));
 
     /* Compact: copy from per-particle scratchpad into dense CSR neighbors[]. */
     double t_compact_launch_in = 0, t_compact_launch_out = 0; /* DIAG */
@@ -1390,7 +1391,7 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
         int *active = gnl->d_active;
         int *scratch = d_scratch;
         int *counts = d_counts;
-        int *offsets = gnl->offsets;
+        int64_t *offsets = gnl->offsets;
         int *neighbors = gnl->neighbors;
         int ntiles = gnl->ntiles;
         int bvh_root = gnl->bvh_root;
@@ -1407,7 +1408,7 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
         t_compact_launch_in = my_second();
         Kokkos::parallel_for("ngb_compact", num_active, KOKKOS_LAMBDA(int aa) {
             int n = counts[aa];
-            int dst = offsets[aa];
+            int64_t dst = offsets[aa];
             if(n <= NGL_SCRATCH_STRIDE) {
                 size_t src = (size_t)aa * NGL_SCRATCH_STRIDE;
                 for(int k = 0; k < n; k++) neighbors[dst + k] = scratch[src + k];
@@ -1461,10 +1462,10 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
         if(oracle_call >= 0 && my_oracle_seq == oracle_call &&
            (oracle_rank < 0 || oracle_rank == ThisTask) && idx && idx->h_pool && idx->num_pool > 0) {
             fprintf(stderr,
-                    "[NGL_ORACLE rank=%d call=%d caller=%s] start na=%d ntotal=%d pool=%d mode=%d tbm=0x%x total_pairs=%d active=%d active_pos=%d cached=%d\n",
+                    "[NGL_ORACLE rank=%d call=%d caller=%s] start na=%d ntotal=%d pool=%d mode=%d tbm=0x%x total_pairs=%lld active=%d active_pos=%d cached=%d\n",
                     ThisTask, my_oracle_seq, caller_label ? caller_label : "?",
                     num_active, num_total, idx->num_pool, search_mode, type_bitmask,
-                    gnl->total_pairs, oracle_active, oracle_active_pos,
+                    (long long)gnl->total_pairs, oracle_active, oracle_active_pos,
                     (cached_idx && cached_idx->valid) ? 1 : 0);
             std::vector<float> compact_host((size_t)num_total * 4);
             {
@@ -1505,7 +1506,7 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
                     }
                 }
                 std::sort(brute.begin(), brute.end());
-                int beg = gnl->offsets[aa], end = gnl->offsets[aa + 1];
+                int64_t beg = gnl->offsets[aa], end = gnl->offsets[aa + 1];
                 std::vector<int> walker;
                 if(end > beg) {
                     walker.assign(walker_host.begin() + beg, walker_host.begin() + end);
@@ -1617,10 +1618,10 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
         else if(cached_idx)                          sidx_id = "other";
         printf("PHASE0_NGL rank=%d call=%lld caller=%s mode=0x%x cache=%d sidx_id=%s "
                "N=%d Ntot=%d dt_ghost_import=-1 dt_sidx_dec=%.6f dt_refresh=%.6f "
-               "dt_gpu=%.6f total_pairs=%d\n",
+               "dt_gpu=%.6f total_pairs=%lld\n",
                ThisTask, this_phase0_call, caller_label ? caller_label : "?",
                type_bitmask, sidx_cached_now, sidx_id, num_active, num_total,
-               dt_sidx_dec, dt_refresh, dt_gpu, total);
+               dt_sidx_dec, dt_refresh, dt_gpu, (long long)total);
         fflush(stdout);
     }
 
@@ -1645,13 +1646,13 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
     HDBG("lazy_drift_start");
     if(gnl->total_pairs > 0 && gnl->neighbors) {
         double t_lazy0 = my_second();
-        std::vector<int> ngb_host(gnl->total_pairs);
+        std::vector<int> ngb_host((size_t)gnl->total_pairs);
         gpu_ngb_copy_neighbors_to_host(gnl, ngb_host.data());
         /* Codex 2026-05-12: out-of-line host accessor; see
          * feedback_all_dev_trap_host_side.md. Lazy-drift target for CSR
          * neighbors — host-side drift_particle calls. */
         integertime time1 = gizmo_host_ti_current();
-        for(int idx_n = 0; idx_n < gnl->total_pairs; idx_n++) {
+        for(int64_t idx_n = 0; idx_n < gnl->total_pairs; idx_n++) {
             int j = ngb_host[idx_n];
             if(j >= 0 && j < num_total) drift_particle(j, time1);
         }
@@ -1661,7 +1662,14 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
          * GPU SIDX tracker and host glt cache via the SSOT helper.
          * Promote-to-all kicks in per cache if any cache's bitset popcount
          * exceeds threshold. */
-        gizmo_mark_kernel_radius_dirty_indices(ngb_host.data(), gnl->total_pairs);
+        if(gnl->total_pairs <= (int64_t)INT_MAX) {
+            gizmo_mark_kernel_radius_dirty_indices(ngb_host.data(), (int)gnl->total_pairs);
+        } else {
+            /* >2^31 neighbor pairs: an index list this large is hugely
+             * redundant (num_total < 2^31), so truncating n would mark a
+             * wrong subset. Escalate to a full-pool mark across both caches. */
+            gizmo_mark_kernel_radius_dirty_range(0, num_total);
+        }
         /* Move detector baseline past the lazy drift's Ti_current/Pos updates
          * — those are predicted-state setup, not kernel writes that need
          * writeback. Subsequent kernel-side writes to ghost particles will
@@ -1696,9 +1704,11 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
                      dump_dir, ThisTask, my_seq);
             FILE *f = fopen(path, "wb");
             if(f) {
-                /* Magic v1=basic, v2=basic+detail. */
-                const char magic[8] = {'N','G','L','D','M','P', dump_detail ? 'v' : 'v',
-                                       dump_detail ? '2' : '1'};
+                /* Magic v3=basic, v4=basic+detail. v3/v4 (was v1/v2) signals the
+                 * 64-bit CSR offsets array (8 bytes/entry); v1/v2 had 32-bit
+                 * offsets. total_pairs was already int64 in v1/v2. */
+                const char magic[8] = {'N','G','L','D','M','P', 'v',
+                                       dump_detail ? '4' : '3'};
                 fwrite(magic, 8, 1, f);
                 int32_t r32 = (int32_t)ThisTask;
                 int32_t s32 = (int32_t)my_seq;
@@ -1715,19 +1725,19 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
                 fwrite(&tp64, sizeof(int64_t), 1, f);
                 /* Active indices (caller-provided particle indices). */
                 fwrite(active_indices_host, sizeof(int), num_active, f);
-                /* Offsets [num_active+1]. */
-                fwrite(gnl->offsets, sizeof(int), num_active + 1, f);
+                /* Offsets [num_active+1] — 64-bit (int64) since dump magic v3. */
+                fwrite(gnl->offsets, sizeof(int64_t), num_active + 1, f);
                 /* Neighbors: copy device→host once, sort each row, write. */
                 std::vector<int> ngb_host;
                 if(gnl->total_pairs > 0) {
-                    ngb_host.resize(gnl->total_pairs);
+                    ngb_host.resize((size_t)gnl->total_pairs);
                     gpu_ngb_copy_neighbors_to_host(gnl, ngb_host.data());
                     for(int a = 0; a < num_active; a++) {
-                        int beg = gnl->offsets[a];
-                        int end = gnl->offsets[a + 1];
+                        int64_t beg = gnl->offsets[a];
+                        int64_t end = gnl->offsets[a + 1];
                         if(end > beg) std::sort(ngb_host.begin() + beg, ngb_host.begin() + end);
                     }
-                    fwrite(ngb_host.data(), sizeof(int), gnl->total_pairs, f);
+                    fwrite(ngb_host.data(), sizeof(int), (size_t)gnl->total_pairs, f);
                 }
                 if(dump_detail) {
                     /* search_mode (int32), search_radius_factor (double),
@@ -1765,7 +1775,7 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
                         Kokkos::View<float*, GIZMO_KOKKOS_DEVICE_SPACE, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
                             dv(idx->d_compact_xyzh, num_total * 4);
                         Kokkos::deep_copy(hv, dv);
-                        for(int p = 0; p < (int)gnl->total_pairs; p++) {
+                        for(int64_t p = 0; p < gnl->total_pairs; p++) {
                             int j = ngb_host[p];
                             double pos[3], hk; float ch;
                             if(j >= 0 && j < num_total) {
@@ -1820,9 +1830,9 @@ void gpu_ngb_copy_neighbors_to_host(const gpu_neighbor_list_t *gnl, int *host_de
 {
     if(!host_dest || !gnl || gnl->total_pairs <= 0 || !gnl->neighbors) {return;}
     Kokkos::View<int*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
-        h(host_dest, gnl->total_pairs);
+        h(host_dest, (size_t)gnl->total_pairs);
     Kokkos::View<const int*, GIZMO_KOKKOS_DEVICE_SPACE, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
-        d(gnl->neighbors, gnl->total_pairs);
+        d(gnl->neighbors, (size_t)gnl->total_pairs);
     Kokkos::deep_copy(h, d);
 }
 
@@ -1878,16 +1888,16 @@ void gpu_build_symmetric_neighbor_list(struct particle_data *P_host, int num_tot
     /* Copy CSR into mymalloc neighbor_list_t */
     out->num_active = num_active;
     out->total_pairs = gpu_nl.total_pairs;
-    out->offsets = (int *) mymalloc("ngb_offsets", (num_active + 1) * sizeof(int));
-    out->neighbors = (int *) mymalloc("ngb_neighbors", (gpu_nl.total_pairs > 0 ? gpu_nl.total_pairs : 1) * sizeof(int));
+    out->offsets = (int64_t *) mymalloc("ngb_offsets", (size_t)(num_active + 1) * sizeof(int64_t));
+    out->neighbors = (int *) mymalloc("ngb_neighbors", (size_t)(gpu_nl.total_pairs > 0 ? gpu_nl.total_pairs : 1) * sizeof(int));
     /* gpu_nl.offsets is SharedSpace (UVM) → host memcpy is fine.
      * gpu_nl.neighbors is DEVICE_SPACE (CudaSpace) → must use deep_copy, not host memcpy. */
-    memcpy(out->offsets, gpu_nl.offsets, (num_active + 1) * sizeof(int));
+    memcpy(out->offsets, gpu_nl.offsets, (size_t)(num_active + 1) * sizeof(int64_t));
     if(gpu_nl.total_pairs > 0) {
         Kokkos::View<int*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
-            h_neighbors(out->neighbors, gpu_nl.total_pairs);
+            h_neighbors(out->neighbors, (size_t)gpu_nl.total_pairs);
         Kokkos::View<const int*, GIZMO_KOKKOS_DEVICE_SPACE, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
-            d_neighbors(gpu_nl.neighbors, gpu_nl.total_pairs);
+            d_neighbors(gpu_nl.neighbors, (size_t)gpu_nl.total_pairs);
         Kokkos::deep_copy(h_neighbors, d_neighbors);
     }
     double t_sym_csr = my_second();
@@ -1931,15 +1941,15 @@ void gpu_build_cross_type_neighbor_list(struct particle_data *P_host, int num_to
     /* Copy CSR into mymalloc neighbor_list_t */
     out->num_active = num_active;
     out->total_pairs = gpu_nl.total_pairs;
-    out->offsets = (int *) mymalloc("ngb_offsets", (num_active + 1) * sizeof(int));
-    out->neighbors = (int *) mymalloc("ngb_neighbors", (gpu_nl.total_pairs > 0 ? gpu_nl.total_pairs : 1) * sizeof(int));
+    out->offsets = (int64_t *) mymalloc("ngb_offsets", (size_t)(num_active + 1) * sizeof(int64_t));
+    out->neighbors = (int *) mymalloc("ngb_neighbors", (size_t)(gpu_nl.total_pairs > 0 ? gpu_nl.total_pairs : 1) * sizeof(int));
     /* See gpu_build_symmetric_neighbor_list for why neighbors needs deep_copy. */
-    memcpy(out->offsets, gpu_nl.offsets, (num_active + 1) * sizeof(int));
+    memcpy(out->offsets, gpu_nl.offsets, (size_t)(num_active + 1) * sizeof(int64_t));
     if(gpu_nl.total_pairs > 0) {
         Kokkos::View<int*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
-            h_neighbors(out->neighbors, gpu_nl.total_pairs);
+            h_neighbors(out->neighbors, (size_t)gpu_nl.total_pairs);
         Kokkos::View<const int*, GIZMO_KOKKOS_DEVICE_SPACE, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
-            d_neighbors(gpu_nl.neighbors, gpu_nl.total_pairs);
+            d_neighbors(gpu_nl.neighbors, (size_t)gpu_nl.total_pairs);
         Kokkos::deep_copy(h_neighbors, d_neighbors);
     }
 

@@ -160,8 +160,8 @@ void build_neighbor_list(struct particle_data *P, struct gas_cell_data *CellP,
 
     if(max_h <= 0 || num_pool == 0) {
         out->total_pairs = 0;
-        out->offsets = (int *) mymalloc("ngb_offsets", (num_active + 1) * sizeof(int));
-        memset(out->offsets, 0, (num_active + 1) * sizeof(int));
+        out->offsets = (int64_t *) mymalloc("ngb_offsets", (size_t)(num_active + 1) * sizeof(int64_t));
+        memset(out->offsets, 0, (size_t)(num_active + 1) * sizeof(int64_t));
         out->neighbors = NULL;
         return;
     }
@@ -256,7 +256,7 @@ void build_neighbor_list(struct particle_data *P, struct gas_cell_data *CellP,
     }
 
     /* Sum counts to get total pairs, then free all temporaries before allocating output */
-    int total_pairs = 0;
+    int64_t total_pairs = 0;
     for(int a = 0; a < num_active; a++) total_pairs += counts[a];
 
     /* Free all temporaries in reverse mymalloc order.
@@ -269,8 +269,8 @@ void build_neighbor_list(struct particle_data *P, struct gas_cell_data *CellP,
 
     /* Allocate output CSR arrays (offsets first, then neighbors — persist after return) */
     out->total_pairs = total_pairs;
-    out->offsets = (int *) mymalloc("ngb_offsets", (num_active + 1) * sizeof(int));
-    out->neighbors = (int *) mymalloc("ngb_neighbors", (total_pairs > 0 ? total_pairs : 1) * sizeof(int));
+    out->offsets = (int64_t *) mymalloc("ngb_offsets", (size_t)(num_active + 1) * sizeof(int64_t));
+    out->neighbors = (int *) mymalloc("ngb_neighbors", (size_t)(total_pairs > 0 ? total_pairs : 1) * sizeof(int));
 
     /* Step 8: Pass 2 — rebuild cell grid and fill neighbor indices.
        We rebuild because the pass-1 temporaries were freed above to satisfy

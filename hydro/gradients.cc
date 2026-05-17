@@ -15,7 +15,7 @@
    conflict with the local struct definitions. The cast to GasGraddata_out*
    is safe because the two structs have identical field layout. */
 extern void gradient_evaluate_gpu(struct particle_data *, struct gas_cell_data *,
-                                  int, int *, int, int *, int *, int, void *, int);
+                                  int, int *, int, int64_t *, int *, int64_t, void *, int);
 #include "../mesh/ghost_symlist_lifecycle.h"
 #include "compute_finitevol_faces_functions.h"
 
@@ -506,8 +506,8 @@ void hydro_gradient_calc(void)
     double t_grad_after_symlist = my_second();
     gizmo_step_phase_record("gradient_prep_symlist", timediff(t_diag_symlist_start, t_grad_after_symlist));
     if(ThisTask == 0 && gizmo_verbose_diag()) {
-        printf("[DIAG_SYMNL step=%d N=%d pairs=%d] symlist_build=%.3f\n",
-               (int)All.NumCurrentTiStep, gizmo_sym_num_active, (gizmo_sym_neighbor_list.total_pairs),
+        printf("[DIAG_SYMNL step=%d N=%d pairs=%lld] symlist_build=%.3f\n",
+               (int)All.NumCurrentTiStep, gizmo_sym_num_active, (long long)(gizmo_sym_neighbor_list.total_pairs),
                timediff(t_diag_symlist_start, my_second()));
         fflush(stdout);
     }

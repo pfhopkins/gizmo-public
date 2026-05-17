@@ -178,12 +178,12 @@ void rt_source_injection_evaluate_gpu(struct particle_data *P_host,
                        NGB_SEARCH_SYMMETRIC, 1 /* gas only */,
                        &gnl, gpu_step_sidx_ptr(), 1.0, src_radii_host, NULL, "rt_inj");
 
-    PRINT_STATUS("  GPU rt_source_injection: %d sources, %d pairs", num_src, gnl.total_pairs);
+    PRINT_STATUS("  GPU rt_source_injection: %d sources, %lld pairs", num_src, (long long)gnl.total_pairs);
 
     /* Launch kernel */
     {
-        int  *offsets   = gnl.offsets;
-        int  *neighbors = gnl.neighbors;
+        int64_t *offsets   = gnl.offsets;
+        int     *neighbors = gnl.neighbors;
         struct RtSrcLocalIn *local_arr = d_local;
         struct particle_data  *kp = P_gpu;
         struct gas_cell_data  *kc = CellP_gpu;
@@ -193,8 +193,8 @@ void rt_source_injection_evaluate_gpu(struct particle_data *P_host,
             if(loc.KernelRadius <= 0 || loc.KernelSum_Around_RT_Source <= 0) return;
             double h2 = loc.KernelRadius * loc.KernelRadius;
 
-            int start = offsets[aa], end = offsets[aa+1];
-            for(int nn=start; nn<end; nn++) {
+            int64_t start = offsets[aa], end = offsets[aa+1];
+            for(int64_t nn=start; nn<end; nn++) {
                 int j = neighbors[nn];
                 if(kp[j].Type != 0) continue;
                 if(kp[j].Mass <= 0) continue;
@@ -227,9 +227,9 @@ void rt_source_injection_evaluate_gpu(struct particle_data *P_host,
      * struct copy is safer than enumerating across all the #ifdef branches.
      * gnl.neighbors lives in DEVICE_SPACE — deep-copy once. */
     if(gnl.total_pairs > 0) {
-        std::vector<int> gnl_neighbors_host(gnl.total_pairs);
+        std::vector<int> gnl_neighbors_host((size_t)gnl.total_pairs);
         gpu_ngb_copy_neighbors_to_host(&gnl, gnl_neighbors_host.data());
-        for(int idx = 0; idx < gnl.total_pairs; idx++) {
+        for(int64_t idx = 0; idx < gnl.total_pairs; idx++) {
             int j = gnl_neighbors_host[idx];
             P_host[j]     = P_gpu[j];
             CellP_host[j] = CellP_gpu[j];

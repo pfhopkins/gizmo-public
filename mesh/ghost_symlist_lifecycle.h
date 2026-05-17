@@ -284,8 +284,8 @@ static inline void gizmo_gradients_prep_symlist(double safety, double search_fac
     /* build the symmetric CSR list (max(h_i,h_j) search radius) */
     double t_sym = my_second();
     gpu_build_symmetric_neighbor_list(P, NumPart, gizmo_sym_active_indices, gizmo_sym_num_active, &gizmo_sym_neighbor_list, search_fac);
-    if(ThisTask == 0) {PRINT_STATUS("Symmetric neighbor list: %d active, %d pairs (%.4f s)",
-                                    gizmo_sym_num_active, gizmo_sym_neighbor_list.total_pairs, timediff(t_sym, my_second()));}
+    if(ThisTask == 0) {PRINT_STATUS("Symmetric neighbor list: %d active, %lld pairs (%.4f s)",
+                                    gizmo_sym_num_active, (long long)gizmo_sym_neighbor_list.total_pairs, timediff(t_sym, my_second()));}
 }
 
 /* Epilogue for hydro_gradient_calc(): refresh ghosts again so hydro_force
@@ -303,8 +303,8 @@ static inline void gizmo_gradients_refresh_symlist(double safety, double search_
         ghost_exchange_cleanup();
         ghost_exchange_hydro(safety);
         gpu_build_symmetric_neighbor_list(P, NumPart, gizmo_sym_active_indices, gizmo_sym_num_active, &gizmo_sym_neighbor_list, search_fac);
-        if(ThisTask == 0) {PRINT_STATUS("Ghost refresh + CSR rebuild after gradients: %d pairs (%.4f s)",
-                                        gizmo_sym_neighbor_list.total_pairs, timediff(t_refresh, my_second()));}
+        if(ThisTask == 0) {PRINT_STATUS("Ghost refresh + CSR rebuild after gradients: %lld pairs (%.4f s)",
+                                        (long long)gizmo_sym_neighbor_list.total_pairs, timediff(t_refresh, my_second()));}
     }
 }
 

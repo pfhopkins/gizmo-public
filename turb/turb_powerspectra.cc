@@ -776,7 +776,7 @@ double powerspec_turb_obtain_fields(void)
                                    g_pos.data() /* arbitrary-source override */);
                 /* gnl.neighbors is DEVICE_SPACE; host loop below indexes it. */
                 if(gnl.total_pairs > 0) {
-                    gnl_neighbors_host.resize(gnl.total_pairs);
+                    gnl_neighbors_host.resize((size_t)gnl.total_pairs);
                     gpu_ngb_copy_neighbors_to_host(&gnl, gnl_neighbors_host.data());
                 }
             }
@@ -787,11 +787,11 @@ double powerspec_turb_obtain_fields(void)
             std::vector<int>    local_idx (total_pending, -1);
             for(int aa = 0; aa < total_pending; aa++) {
                 double sx = g_pos[3*aa+0], sy = g_pos[3*aa+1], sz = g_pos[3*aa+2];
-                int n_off = gnl.offsets[aa], n_off_end = gnl.offsets[aa+1];
+                int64_t n_off = gnl.offsets[aa], n_off_end = gnl.offsets[aa+1];
                 int best_index = -1;
                 double best_r2 = MAX_REAL_NUMBER;
                 MyDouble xtmp = 0;
-                for(int kk = n_off; kk < n_off_end; kk++) {
+                for(int64_t kk = n_off; kk < n_off_end; kk++) {
                     int p_idx = gnl_neighbors[kk];
                     if(p_idx >= num_local) continue; /* skip ghosts: each rank only contributes its HOME gas as candidate, so MIN_LOC tiebreaks cleanly */
                     if(p_idx >= N_gas) continue;

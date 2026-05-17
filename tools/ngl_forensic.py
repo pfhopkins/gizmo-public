@@ -15,8 +15,10 @@ Usage:
 
 import os, sys, struct, glob, math
 
-MAGIC_V1 = b'NGLDMPv1'
-MAGIC_V2 = b'NGLDMPv2'
+# v3 = basic, v4 = basic+detail (since the 64-bit-CSR migration; offsets are
+# int64). v1/v2 (32-bit offsets) are no longer produced and not supported.
+MAGIC_V3 = b'NGLDMPv3'
+MAGIC_V4 = b'NGLDMPv4'
 
 # Search modes (must match neighbor_list.h)
 NGB_SEARCH_ONEWAY = 0
@@ -27,8 +29,8 @@ def parse_dump(path):
         data = f.read()
     pos = 0
     magic = data[pos:pos+8]; pos += 8
-    if magic == MAGIC_V1: detail = False
-    elif magic == MAGIC_V2: detail = True
+    if magic == MAGIC_V3: detail = False
+    elif magic == MAGIC_V4: detail = True
     else: raise ValueError(f"{path}: bad magic {magic}")
     rank = struct.unpack_from('<i', data, pos)[0]; pos += 4
     seq = struct.unpack_from('<i', data, pos)[0]; pos += 4
@@ -37,7 +39,7 @@ def parse_dump(path):
     num_total = struct.unpack_from('<i', data, pos)[0]; pos += 4
     total_pairs = struct.unpack_from('<q', data, pos)[0]; pos += 8
     active = list(struct.unpack_from(f'<{num_active}i', data, pos)); pos += 4 * num_active
-    offsets = list(struct.unpack_from(f'<{num_active+1}i', data, pos)); pos += 4 * (num_active + 1)
+    offsets = list(struct.unpack_from(f'<{num_active+1}q', data, pos)); pos += 8 * (num_active + 1)
     if total_pairs > 0:
         neighbors = list(struct.unpack_from(f'<{total_pairs}i', data, pos))
         pos += 4 * total_pairs
@@ -91,7 +93,7 @@ def parse_header_only(path):
         data = f.read()
     pos = 0
     magic = data[pos:pos+8]; pos += 8
-    if magic not in (MAGIC_V1, MAGIC_V2):
+    if magic not in (MAGIC_V3, MAGIC_V4):
         raise ValueError(f"{path}: bad magic")
     rank = struct.unpack_from('<i', data, pos)[0]; pos += 4
     seq = struct.unpack_from('<i', data, pos)[0]; pos += 4
@@ -108,7 +110,7 @@ def parse_neighbor_section(path):
         data = f.read()
     pos = 0
     magic = data[pos:pos+8]; pos += 8
-    if magic not in (MAGIC_V1, MAGIC_V2):
+    if magic not in (MAGIC_V3, MAGIC_V4):
         raise ValueError(f"{path}: bad magic")
     rank = struct.unpack_from('<i', data, pos)[0]; pos += 4
     seq = struct.unpack_from('<i', data, pos)[0]; pos += 4
@@ -118,7 +120,7 @@ def parse_neighbor_section(path):
     total_pairs = struct.unpack_from('<q', data, pos)[0]; pos += 8
     # Slice rather than unpack — keep raw bytes; tuple-compare on raw is fast.
     active_bytes = data[pos:pos + 4 * num_active]; pos += 4 * num_active
-    offsets_bytes = data[pos:pos + 4 * (num_active + 1)]; pos += 4 * (num_active + 1)
+    offsets_bytes = data[pos:pos + 8 * (num_active + 1)]; pos += 8 * (num_active + 1)
     neighbors_bytes = data[pos:pos + 4 * total_pairs] if total_pairs > 0 else b''
     return (caller, num_active, num_total, total_pairs,
             active_bytes, offsets_bytes, neighbors_bytes)

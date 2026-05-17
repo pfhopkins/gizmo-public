@@ -321,8 +321,8 @@ void build_neighbor_list_sfc(struct particle_data *P, struct gas_cell_data *Cell
     if(num_pool == 0 || ntiles == 0) {
         out->total_pairs = 0;
         myfree(tiles); myfree(pool);
-        out->offsets = (int *) mymalloc("ngb_offsets", (num_active + 1) * sizeof(int));
-        memset(out->offsets, 0, (num_active + 1) * sizeof(int));
+        out->offsets = (int64_t *) mymalloc("ngb_offsets", (size_t)(num_active + 1) * sizeof(int64_t));
+        memset(out->offsets, 0, (size_t)(num_active + 1) * sizeof(int64_t));
         out->neighbors = NULL;
         return;
     }
@@ -342,7 +342,7 @@ void build_neighbor_list_sfc(struct particle_data *P, struct gas_cell_data *Cell
                         tiles, ntiles, pool, search_mode, bvh, bvh_root, NULL);
     }
 
-    int total_pairs = 0;
+    int64_t total_pairs = 0;
     for(a = 0; a < num_active; a++) total_pairs += counts[a];
     double t_sfc_pass1_end = my_second();
 
@@ -355,8 +355,8 @@ void build_neighbor_list_sfc(struct particle_data *P, struct gas_cell_data *Cell
 
     /* Allocate output CSR (these persist after return) */
     out->total_pairs = total_pairs;
-    out->offsets = (int *) mymalloc("ngb_offsets", (num_active + 1) * sizeof(int));
-    out->neighbors = (int *) mymalloc("ngb_neighbors", (total_pairs > 0 ? total_pairs : 1) * sizeof(int));
+    out->offsets = (int64_t *) mymalloc("ngb_offsets", (size_t)(num_active + 1) * sizeof(int64_t));
+    out->neighbors = (int *) mymalloc("ngb_neighbors", (size_t)(total_pairs > 0 ? total_pairs : 1) * sizeof(int));
 
     /* Pass 2: rebuild tiles + BVH and fill neighbor indices */
     ntiles = build_sfc_tiles(P, num_total, type_bitmask, TILE_TARGET_SIZE,

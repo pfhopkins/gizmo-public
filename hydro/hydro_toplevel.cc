@@ -11,7 +11,7 @@
 #include "../mesh/neighbor_list.h"
 #include "../mesh/ghost_writeback.h"
 extern void hydro_evaluate_gpu(struct particle_data *, struct gas_cell_data *,
-                               int, int *, int, int *, int *, int, void *);
+                               int, int *, int, int64_t *, int *, int64_t, void *);
 #include "../mesh/ghost_symlist_lifecycle.h"
 
 /*! \file hydro_toplevel.c

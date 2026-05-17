@@ -204,11 +204,11 @@ void ags_force_evaluate_gpu(struct particle_data *P_host,
     int *d_need_wakeup = (int *) Kokkos::kokkos_malloc<GIZMO_KOKKOS_SHARED_SPACE>(sizeof(int));
     *d_need_wakeup = 0;
 
-    PRINT_STATUS("  GPU AGS-force: %d active, j_bitmask=%d, %d pairs",
-                 num_active, j_type_bitmask, gnl.total_pairs);
+    PRINT_STATUS("  GPU AGS-force: %d active, j_bitmask=%d, %lld pairs",
+                 num_active, j_type_bitmask, (long long)gnl.total_pairs);
 
     {
-        int *offsets = gnl.offsets;
+        int64_t *offsets = gnl.offsets;
         int *neighbors = gnl.neighbors;
         int *active = gnl.d_active;
         struct particle_data *kp = P_gpu;
@@ -284,8 +284,8 @@ void ags_force_evaluate_gpu(struct particle_data *P_host,
             out.Grain_DeltaErosionFrac = 1.0; /* multiplicative -- 1.0 = no FRAG/SHAT loss */
 #endif
 
-            int start = offsets[aa], end = offsets[aa + 1];
-            for(int nn = start; nn < end; nn++) {
+            int64_t start = offsets[aa], end = offsets[aa + 1];
+            for(int64_t nn = start; nn < end; nn++) {
                 int j = neighbors[nn];
                 if((kp[j].Mass <= 0) || (kp[j].AGS_KernelRadius <= 0)) continue;
 
@@ -389,9 +389,9 @@ void ags_force_evaluate_gpu(struct particle_data *P_host,
     memcpy(out_host, d_out, num_active * sizeof(struct ags_force_gpu_out));
 #if defined(DM_SIDM)
     if(gnl.total_pairs > 0) {
-        std::vector<int> gnl_neighbors_host(gnl.total_pairs);
+        std::vector<int> gnl_neighbors_host((size_t)gnl.total_pairs);
         gpu_ngb_copy_neighbors_to_host(&gnl, gnl_neighbors_host.data());
-        for(int idx = 0; idx < gnl.total_pairs; idx++) {
+        for(int64_t idx = 0; idx < gnl.total_pairs; idx++) {
             int j = gnl_neighbors_host[idx];
             P_host[j].wakeup        = P_gpu[j].wakeup;
             P_host[j].Vel           = P_gpu[j].Vel;

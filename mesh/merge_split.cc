@@ -332,7 +332,7 @@ void merge_and_split_particles(void)
                                &gnl, NULL, 1.0, ms_src_radii.data(), NULL, "msplit");
             /* gnl.neighbors is DEVICE_SPACE; host loop below indexes it. */
             if (gnl.total_pairs > 0) {
-                gnl_neighbors_host.resize(gnl.total_pairs);
+                gnl_neighbors_host.resize((size_t)gnl.total_pairs);
                 gpu_ngb_copy_neighbors_to_host(&gnl, gnl_neighbors_host.data());
             }
         }
@@ -340,12 +340,12 @@ void merge_and_split_particles(void)
 
         for (int aa = 0; aa < num_src; aa++) {
             i = ms_src_idx[aa];
-            int nl_start = gnl.offsets[aa], nl_end = gnl.offsets[aa+1];
+            int64_t nl_start = gnl.offsets[aa], nl_end = gnl.offsets[aa+1];
 
             if (does_particle_need_to_be_merged(i)) {
                 target_for_merger = -1;
                 threshold_val = MAX_REAL_NUMBER;
-                for (int nn = nl_start; nn < nl_end; nn++) {
+                for (int64_t nn = nl_start; nn < nl_end; nn++) {
                     j = gnl_neighbors[nn];
                     if (j >= local_count) continue; /* skip ghosts (local-only merge) */
                     if (P[j].Type != P[i].Type) continue;
@@ -391,7 +391,7 @@ void merge_and_split_particles(void)
             else if (does_particle_need_to_be_split(i) && (Ptmp[i].flag == 0)) {
                 target_for_merger = -1;
                 threshold_val = MAX_REAL_NUMBER;
-                for (int nn = nl_start; nn < nl_end; nn++) {
+                for (int64_t nn = nl_start; nn < nl_end; nn++) {
                     j = gnl_neighbors[nn];
                     if (j >= local_count) continue;
                     if (P[j].Type != P[i].Type) continue;

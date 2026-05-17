@@ -22,12 +22,18 @@
 #ifndef NEIGHBOR_LIST_H
 #define NEIGHBOR_LIST_H
 
-/* CSR-format neighbor list */
+#include <stdint.h>
+
+/* CSR-format neighbor list.
+ * offsets / total_pairs are 64-bit: a large symmetric search (e.g. m11i +
+ * TURB_DIFF_DYNAMIC) can exceed 2^31 neighbor pairs. neighbors stays int *:
+ * its *values* are particle indices into P[]/CellP[], bounded by num_total
+ * (< 2^31); only the array *length* is 64-bit. */
 struct neighbor_list_t {
-    int *offsets;       /* [num_active+1] CSR row pointers */
-    int *neighbors;     /* [total_pairs] neighbor particle indices into P[]/CellP[] */
-    int num_active;     /* number of active particles (rows in CSR) */
-    int total_pairs;    /* total number of neighbor pairs stored */
+    int64_t *offsets;       /* [num_active+1] CSR row pointers (cumulative pair counts) */
+    int *neighbors;         /* [total_pairs] neighbor particle indices into P[]/CellP[] */
+    int num_active;         /* number of active particles (rows in CSR) */
+    int64_t total_pairs;    /* total number of neighbor pairs stored */
 };
 
 /* Search modes */

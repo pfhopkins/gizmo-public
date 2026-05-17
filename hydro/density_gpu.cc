@@ -92,7 +92,7 @@
  * gradient_iteration: 0 = standard gradients, >0 = MHD constrained gradient iteration */
 void gradient_evaluate_gpu(struct particle_data *P_host, struct gas_cell_data *CellP_host,
                            int num_total, int *active_indices_host, int num_active,
-                           int *csr_offsets_host, int *csr_neighbors_host, int csr_total_pairs,
+                           int64_t *csr_offsets_host, int *csr_neighbors_host, int64_t csr_total_pairs,
                            void *out_host_void, int gradient_iteration)
 {
     GIZMO_GPU_ENSURE_ALL_FRESH();
@@ -108,23 +108,23 @@ void gradient_evaluate_gpu(struct particle_data *P_host, struct gas_cell_data *C
     struct gas_cell_data *CellP_gpu = gpu_particles_arena_CellP();
     double t_grad_arena = my_second(); /* DIAG: end of arena acquire */
 
-    /* Copy CSR neighbor list to SharedSpace */
-    int *d_offsets = (int *) Kokkos::kokkos_malloc<GIZMO_KOKKOS_SHARED_SPACE>((num_active + 1) * sizeof(int));
-    int *d_neighbors = (int *) Kokkos::kokkos_malloc<GIZMO_KOKKOS_SHARED_SPACE>(((csr_total_pairs > 0) ? csr_total_pairs : 1) * sizeof(int));
+    /* Copy CSR neighbor list to SharedSpace (offsets 64-bit; neighbor values int) */
+    int64_t *d_offsets = (int64_t *) Kokkos::kokkos_malloc<GIZMO_KOKKOS_SHARED_SPACE>((size_t)(num_active + 1) * sizeof(int64_t));
+    int *d_neighbors = (int *) Kokkos::kokkos_malloc<GIZMO_KOKKOS_SHARED_SPACE>((size_t)((csr_total_pairs > 0) ? csr_total_pairs : 1) * sizeof(int));
     int *d_active = (int *) Kokkos::kokkos_malloc<GIZMO_KOKKOS_SHARED_SPACE>(((num_active > 0) ? num_active : 1) * sizeof(int));
-    memcpy(d_offsets, csr_offsets_host, (num_active + 1) * sizeof(int));
-    memcpy(d_neighbors, csr_neighbors_host, csr_total_pairs * sizeof(int));
+    memcpy(d_offsets, csr_offsets_host, (size_t)(num_active + 1) * sizeof(int64_t));
+    memcpy(d_neighbors, csr_neighbors_host, (size_t)csr_total_pairs * sizeof(int));
     memcpy(d_active, active_indices_host, num_active * sizeof(int));
     double t_grad_csr_copy = my_second(); /* DIAG: end of CSR copy to SharedSpace */
 
     /* Allocate output array in SharedSpace */
     struct GasGraddata_out_ *d_out = (struct GasGraddata_out_ *) Kokkos::kokkos_malloc<GIZMO_KOKKOS_SHARED_SPACE>(((num_active > 0) ? num_active : 1) * sizeof(struct GasGraddata_out_));
 
-    PRINT_STATUS("  GPU gradient: %d active, %d pairs", num_active, csr_total_pairs);
+    PRINT_STATUS("  GPU gradient: %d active, %lld pairs", num_active, (long long)csr_total_pairs);
 
     /* GPU gradient accumulation kernel */
     {
-        int *offsets = d_offsets;
+        int64_t *offsets = d_offsets;
         int *neighbors = d_neighbors;
         int *active = d_active;
         struct particle_data *kp = P_gpu;
@@ -229,7 +229,7 @@ void gradient_evaluate_gpu(struct particle_data *P_host, struct gas_cell_data *C
             kernel.h_i = h_i;
 
             /* Accumulate over symmetric neighbors */
-            for(int idx = offsets[aa]; idx < offsets[aa + 1]; idx++)
+            for(int64_t idx = offsets[aa]; idx < offsets[aa + 1]; idx++)
             {
                 int j = neighbors[idx];
                 gradient_accumulate_neighbor(&local, &out, &kernel, j,
@@ -268,9 +268,9 @@ void gradient_evaluate_gpu(struct particle_data *P_host, struct gas_cell_data *C
         gizmo_step_phase_record("gradient_kernel",   t_kernel);
         gizmo_step_phase_record("gradient_out_copy", t_out_copy);
         if(ThisTask == 0 && gizmo_verbose_diag()) {
-            long long pairs_mb = (long long)csr_total_pairs * 2 * sizeof(int) / (1024*1024);
-            printf("[DIAG_GRAD step=%d N=%d pairs=%d(~%lldMB)] arena=%.3f csr_copy=%.3f gpu_kernel=%.3f out_copy=%.3f total=%.3f\n",
-                   (int)All.NumCurrentTiStep, num_active, csr_total_pairs, pairs_mb,
+            long long pairs_mb = (long long)csr_total_pairs * 2 * (long long)sizeof(int) / (1024*1024);
+            printf("[DIAG_GRAD step=%d N=%d pairs=%lld(~%lldMB)] arena=%.3f csr_copy=%.3f gpu_kernel=%.3f out_copy=%.3f total=%.3f\n",
+                   (int)All.NumCurrentTiStep, num_active, (long long)csr_total_pairs, pairs_mb,
                    t_arena, t_csr_copy, t_kernel, t_out_copy,
                    timediff(t_grad_start, t_grad_copyout));
             fflush(stdout);
@@ -301,7 +301,7 @@ void gradient_evaluate_gpu(struct particle_data *P_host, struct gas_cell_data *C
 
 void hydro_evaluate_gpu(struct particle_data *P_host, struct gas_cell_data *CellP_host,
                         int num_total, int *active_indices_host, int num_active,
-                        int *csr_offsets_host, int *csr_neighbors_host, int csr_total_pairs,
+                        int64_t *csr_offsets_host, int *csr_neighbors_host, int64_t csr_total_pairs,
                         void *out_host_void)
 {
     GIZMO_GPU_ENSURE_ALL_FRESH();
@@ -316,12 +316,12 @@ void hydro_evaluate_gpu(struct particle_data *P_host, struct gas_cell_data *Cell
     struct gas_cell_data *CellP_gpu = gpu_particles_arena_CellP();
     double t_hyd_arena = my_second();
 
-    /* Copy CSR neighbor list to SharedSpace */
-    int *d_offsets = (int *) Kokkos::kokkos_malloc<GIZMO_KOKKOS_SHARED_SPACE>((num_active + 1) * sizeof(int));
-    int *d_neighbors = (int *) Kokkos::kokkos_malloc<GIZMO_KOKKOS_SHARED_SPACE>(((csr_total_pairs > 0) ? csr_total_pairs : 1) * sizeof(int));
+    /* Copy CSR neighbor list to SharedSpace (offsets 64-bit; neighbor values int) */
+    int64_t *d_offsets = (int64_t *) Kokkos::kokkos_malloc<GIZMO_KOKKOS_SHARED_SPACE>((size_t)(num_active + 1) * sizeof(int64_t));
+    int *d_neighbors = (int *) Kokkos::kokkos_malloc<GIZMO_KOKKOS_SHARED_SPACE>((size_t)((csr_total_pairs > 0) ? csr_total_pairs : 1) * sizeof(int));
     int *d_active = (int *) Kokkos::kokkos_malloc<GIZMO_KOKKOS_SHARED_SPACE>(((num_active > 0) ? num_active : 1) * sizeof(int));
-    memcpy(d_offsets, csr_offsets_host, (num_active + 1) * sizeof(int));
-    memcpy(d_neighbors, csr_neighbors_host, csr_total_pairs * sizeof(int));
+    memcpy(d_offsets, csr_offsets_host, (size_t)(num_active + 1) * sizeof(int64_t));
+    memcpy(d_neighbors, csr_neighbors_host, (size_t)csr_total_pairs * sizeof(int));
     memcpy(d_active, active_indices_host, num_active * sizeof(int));
     double t_hyd_csr_copy = my_second();
 
@@ -336,7 +336,7 @@ void hydro_evaluate_gpu(struct particle_data *P_host, struct gas_cell_data *Cell
     /* Output array in SharedSpace */
     struct hydro_data_out *d_out = (struct hydro_data_out *) Kokkos::kokkos_malloc<GIZMO_KOKKOS_SHARED_SPACE>(((num_active > 0) ? num_active : 1) * sizeof(struct hydro_data_out));
 
-    PRINT_STATUS("  GPU hydro: %d active, %d pairs", num_active, csr_total_pairs);
+    PRINT_STATUS("  GPU hydro: %d active, %lld pairs", num_active, (long long)csr_total_pairs);
 
     /* Verification harness (β): GIZMO_VERIFY_KERNEL_WRITES=1 snapshots the
      * arena fields the kernel is permitted to write (P[j].wakeup, CellP[j].dMass
@@ -386,7 +386,7 @@ void hydro_evaluate_gpu(struct particle_data *P_host, struct gas_cell_data *Cell
 
     /* GPU hydro force kernel */
     {
-        int *offsets = d_offsets;
+        int64_t *offsets = d_offsets;
         int *neighbors = d_neighbors;
         int *active = d_active;
         struct particle_data *kp = P_gpu;
@@ -573,7 +573,7 @@ void hydro_evaluate_gpu(struct particle_data *P_host, struct gas_cell_data *Cell
 #endif
 
             /* Accumulate over symmetric neighbors */
-            for(int idx = offsets[aa]; idx < offsets[aa + 1]; idx++)
+            for(int64_t idx = offsets[aa]; idx < offsets[aa + 1]; idx++)
             {
                 int j = neighbors[idx];
                 memset(&Fluxes, 0, sizeof(Fluxes));
@@ -604,7 +604,7 @@ void hydro_evaluate_gpu(struct particle_data *P_host, struct gas_cell_data *Cell
      * Walk the host-side CSR directly; idempotent assignment makes duplicate
      * j's across active-i ranges correct without a dedupe pass.
      * Ghost writeback below handles MPI communication of these deltas. */
-    for(int idx = 0; idx < csr_total_pairs; idx++) {
+    for(int64_t idx = 0; idx < csr_total_pairs; idx++) {
         int j = csr_neighbors_host[idx];
         P_host[j].wakeup = P_gpu[j].wakeup;
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
@@ -618,7 +618,7 @@ void hydro_evaluate_gpu(struct particle_data *P_host, struct gas_cell_data *Cell
      * incomplete (a write the audit missed). Off by default. */
     if(verify_snap_wakeup) {
         char *touched = (char *) calloc((size_t)num_total, sizeof(char));
-        for(int idx = 0; idx < csr_total_pairs; idx++) touched[csr_neighbors_host[idx]] = 1;
+        for(int64_t idx = 0; idx < csr_total_pairs; idx++) touched[csr_neighbors_host[idx]] = 1;
         long wakeup_violations = 0;
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
         long dMass_violations = 0;
@@ -631,8 +631,8 @@ void hydro_evaluate_gpu(struct particle_data *P_host, struct gas_cell_data *Cell
 #endif
         }
         if(wakeup_violations) {
-            printf("[VERIFY_KERNEL_WRITES] hydro: %ld untouched j's had P_gpu.wakeup mutated (rank=%d, num_total=%d, csr_pairs=%d)\n",
-                   wakeup_violations, ThisTask, num_total, csr_total_pairs);
+            printf("[VERIFY_KERNEL_WRITES] hydro: %ld untouched j's had P_gpu.wakeup mutated (rank=%d, num_total=%d, csr_pairs=%lld)\n",
+                   wakeup_violations, ThisTask, num_total, (long long)csr_total_pairs);
             fflush(stdout);
         }
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
