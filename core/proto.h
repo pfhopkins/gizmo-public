@@ -753,6 +753,7 @@ void open_outputfiles(void);
 void peano_hilbert_order(void);
 void predict(double time);
 void read_ic(char *fname);
+void gizmo_register_hdf5_deflate_filter(void);  /* file_io/hdf5_deflate_filter.cc */
 int read_outputlist(char *fname);
 void read_parameter_file(char *fname);
 void rearrange_particle_sequence(void);

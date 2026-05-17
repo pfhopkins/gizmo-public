@@ -83,6 +83,12 @@ void begrun(void)
 
   read_parameter_file(ParameterFile);	/* ... read in parameters for this run */
 
+  /* Ensure the HDF5 deflate (gzip) filter is available before any IC /
+   * snapshot read — registers a zlib-backed replacement only if the linked
+   * HDF5 library was built without zlib (no-op otherwise). See
+   * file_io/hdf5_deflate_filter.cc. */
+  gizmo_register_hdf5_deflate_filter();
+
   mymalloc_init();
 
 #ifdef GR_TABULATED_COSMOLOGY

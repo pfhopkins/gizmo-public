@@ -1215,7 +1215,16 @@ void read_file(char *fname, int readTask, int lastTask)
                                                 break;
                                         }
 
-                                        H5Dread(hdf5_dataset, hdf5_datatype, hdf5_dataspace_in_memory, hdf5_dataspace_in_file, H5P_DEFAULT, CommBuffer);
+                                        if(H5Dread(hdf5_dataset, hdf5_datatype, hdf5_dataspace_in_memory, hdf5_dataspace_in_file, H5P_DEFAULT, CommBuffer) < 0)
+                                          {
+                                            char ic_read_errmsg[512];
+                                            snprintf(ic_read_errmsg, sizeof(ic_read_errmsg),
+                                                     "read_ic: H5Dread FAILED for dataset '%s' (particle type %d). "
+                                                     "If the IC is HDF5-compressed, the linked HDF5 library is likely "
+                                                     "missing the required filter (e.g. deflate); aborting rather than "
+                                                     "continuing with uninitialized particle data.", buf, type);
+                                            terminate(ic_read_errmsg);
+                                          }
                                         H5Tclose(hdf5_datatype);
                                         H5Sclose(hdf5_dataspace_in_memory);
                                         H5Sclose(hdf5_dataspace_in_file);

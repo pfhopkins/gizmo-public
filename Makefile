@@ -416,7 +416,7 @@ endif
 CORE_OBJS =	core/main.o core/accel.o core/timestep.o core/init.o file_io/restart.o file_io/io.o \
 			core/predict.o declarations/global.o core/begrun.o core/run.o declarations/allvars.o \
 			declarations/lifecycle_counters.o \
-			file_io/read_ic.o domain/domain.o core/driftfac.o core/kicks.o core/step_phases.o \
+			file_io/read_ic.o file_io/hdf5_deflate_filter.o domain/domain.o core/driftfac.o core/kicks.o core/step_phases.o \
 			mesh/ghost_exchange.o mesh/ghost_writeback.o mesh/neighbor_list.o mesh/sfc_tiles.o mesh/gpu_dirty_tracker.o mesh/mode_b_local_walker.o mesh/mode_b_p2p_transport.o mesh/state_hash.o compile_time_info.o mesh/merge_split.o \
 			core/transport_subcycle.o
 
