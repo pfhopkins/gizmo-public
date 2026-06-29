@@ -54,3 +54,14 @@ CpuTimeBetRestartFile              30
 % With no gas in this test the default 5 pc search radius wastes huge amounts of
 % tree-walking; shrinking it to the softening scale eliminates that overhead.
 SinkMaxAccretionRadius             8.726e-5
+% KETJU regularized integrator params, read only when Config.sh has KETJU_REGULARIZATION (the ketju
+% variant also overrides TimeMax and TreeDomainUpdateFrequency, see the test). KetjuMinStarMass=0.5 makes
+% every 1-Msun star a chain center. KetjuRegionRadius=0.01 pc (~2060 AU) captures each 1000-AU binary's
+% partner; the merge radius (2*KetjuRegionRadius = 0.02 pc) is well below the ~0.15 pc inter-binary
+% spacing, so neighbouring binaries stay separate chains.
+KetjuRegionRadius                  0.01
+KetjuMinStarMass                   0.5
+KetjuMinBHMass                     0
+% Unsoftened chains (=0) blew up within 4 time units: transient close encounters between stars of
+% different binaries accelerated single stars to ~400 km/s. Keep =1, the host's star-star softening.
+KetjuUseStarStarSoftening          1

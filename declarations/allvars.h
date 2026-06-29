@@ -1142,6 +1142,9 @@ extern struct gravdata_in
 #if (SINGLE_STAR_TIMESTEPPING > 0)
     int SuperTimestepFlag;  /*!< 2 if allowed to super-timestep, 1 if a candidate for super-timestepping, 0 otherwise */
 #endif
+#ifdef KETJU_REGULARIZATION
+    MyIDType KetjuChainID;  /*!< shared chain ID for KETJU members — tree walk uses this to skip same-chain Type-5 neighbors in Min_Sink_Approach_Time/Freefall_time */
+#endif
     MyFloat OldAcc;
     int NodeList[NODELISTLENGTH];
 }

@@ -240,6 +240,13 @@ extern ALIGN(32) struct particle_data
     int SuperTimestepFlag; // >=2 if allowed to super-timestep (increases with each drift/kick), 1 if a candidate for super-timestepping, 0 otherwise
     MyDouble COM_dt_tidal; //timescale from tidal tensor evaluated at the center of mass without contribution from the companion
     Vec3<MyDouble> COM_GravAccel; //gravitational acceleration evaluated at the center of mass without contribution from the companion
+#elif defined(KETJU_REGULARIZATION)
+    /* KETJU also needs COM-frame quantities to size the host step for chain
+     * members: COM_dt_tidal sets dt_tidal and COM_GravAccel sets the
+     * acceleration-based dt (otherwise the chain partner's gravity dominates
+     * P[i].GravAccel and forces a tiny dt regardless of any tidal fix). */
+    MyDouble COM_dt_tidal;
+    Vec3<MyDouble> COM_GravAccel;
 #endif
 #ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
     MyFloat MaxFeedbackVel; // maximum signal velocity of any feedback mechanism emanating from the star
@@ -271,6 +278,7 @@ extern ALIGN(32) struct particle_data
 #ifdef KETJU_REGULARIZATION
     MyDouble KetjuFinalVel[3];  /* true physical velocity from KETJU, swapped in after drift */
     short int KetjuIntegrated;  /* 1 if this particle was KETJU-integrated this step */
+    MyIDType KetjuChainID;      /* shared ID of the KETJU chain this particle is in (= smallest member ID); 0 if not in a chain. Used by the tree walk to skip same-chain Type-5 neighbors when accumulating Min_Sink_Approach_Time / Min_Sink_Freefall_time, so dt_2body reflects only non-chain encounters. */
 #ifdef SINGLE_STAR_SINK_DYNAMICS
     MyDouble KetjuSpin[3];     /* BH spin angular momentum vector S [length*mass*velocity units] */
 #endif

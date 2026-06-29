@@ -316,11 +316,16 @@ void init(void)
 #endif
 #ifdef KETJU_REGULARIZATION
             P[i].KetjuIntegrated = 0;
+            P[i].KetjuChainID = 0;
 #ifdef HERMITE_INTEGRATION
             P[i].HermiteHistoryStale = 0;
 #endif
 #ifdef SINGLE_STAR_SINK_DYNAMICS
             for(int j = 0; j < 3; j++) P[i].KetjuSpin[j] = 0;
+#endif
+#if !(SINGLE_STAR_TIMESTEPPING > 0)
+            P[i].COM_dt_tidal = 0;  /* timestep.cc treats 0 as "not set" → uses regular dt_tidal */
+            for(int j = 0; j < 3; j++) P[i].COM_GravAccel[j] = 0;
 #endif
 #endif
 #ifdef GALSF_FB_MECHANICAL

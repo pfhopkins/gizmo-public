@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <climits>
 #include <algorithm>
 #include <cctype>
 #include <vector>
@@ -35,9 +36,24 @@
 
 #ifdef KETJU_REGULARIZATION
 
+/* Ratio of the timestep-limiting radius to KetjuRegionRadius. Non-chain
+ * particles within (factor * KetjuRegionRadius) of any chain center
+ * constrain the chain's macro timebin (the chain's effective dt is the MIN
+ * over its members and all such "limiting" particles). Ported from GADGET-4
+ * KETJU's KETJU_TIMESTEP_LIMITING_RADIUS_FACTOR (their default = 100). */
+#ifndef KETJU_TIMESTEP_LIMITING_RADIUS_FACTOR
+#define KETJU_TIMESTEP_LIMITING_RADIUS_FACTOR 100.0
+#endif
+
 /* PN classification for KETJU integrator (0 = PN/BH, 1 = non-PN/star, -1 = not Type 5).
- * Derived from ProtoStellarStage: stage 7 (relic/BH) → 0, stage <7 (star) → 1. */
+ * Derived from ProtoStellarStage: stage 7 (relic/BH) → 0, stage <7 (star) → 1.
+ * When SINGLE_STAR_STARFORGE_PROTOSTELLAR_EVOLUTION is off we lack stage info, so
+ * fall back to non-PN/star (relativistic terms only matter when KetjuPNTerms != "none"). */
+#ifdef SINGLE_STAR_STARFORGE_PROTOSTELLAR_EVOLUTION
 #define KETJU_PN_CLASS(i) ((P[(i)].ProtoStellarStage == 7) ? 0 : 1)
+#else
+#define KETJU_PN_CLASS(i) (1)
+#endif
 
 /* Cost tracking for load balancing (keyed by first center ID per region) */
 static std::unordered_map<MyIDType, double> region_previous_cost;
@@ -464,13 +480,21 @@ static int is_chain_center(int i)
 {
     /* STARFORGE: all sinks are Type 5; ProtoStellarStage selects role.
      * Stages 0-6 (proto / MS / pre-collapse) use KetjuMinStarMass.
-     * Stage 7 (relic/BH) uses KetjuMinBHMass. */
+     * Stage 7 (relic/BH) uses KetjuMinBHMass.
+     * Without SINGLE_STAR_STARFORGE_PROTOSTELLAR_EVOLUTION there's no stage
+     * field — treat every Type 5 as a star (use KetjuMinStarMass only). */
+#ifdef SINGLE_STAR_STARFORGE_PROTOSTELLAR_EVOLUTION
     if(P[i].Type == 5 && P[i].ProtoStellarStage <  7 && All.KetjuMinStarMass > 0) {
         if(P[i].Mass >= All.KetjuMinStarMass) return 1;
     }
     if(P[i].Type == 5 && P[i].ProtoStellarStage == 7 && All.KetjuMinBHMass > 0) {
         if(P[i].Mass >= All.KetjuMinBHMass) return 1;
     }
+#else
+    if(P[i].Type == 5 && All.KetjuMinStarMass > 0) {
+        if(P[i].Mass >= All.KetjuMinStarMass) return 1;
+    }
+#endif
     return 0;
 }
 
@@ -671,11 +695,31 @@ static std::set<int> find_local_members(const std::vector<ketju_mpi_particle> &c
     for(int i = 0; i < NumPart; i++) {
         if(!is_chain_eligible(i)) continue;
         for(size_t c = 0; c < centers.size(); c++) {
-            double dist = particle_distance(P[i].Pos, const_cast<double*>(centers[c].Pos));
+            double dist = particle_distance(P[i].Pos.data_ptr(), const_cast<double*>(centers[c].Pos));
             if(dist < radius) { members.insert(i); break; }
         }
     }
     return members;
+}
+
+/* Find local particles within `radius` of any center of a region, with no
+ * chain-eligibility filter. Used to gather "limiting particles" — non-chain
+ * perturbers whose individual timesteps constrain the chain's macro step.
+ * Pass `exclude` to skip members that are already in the chain itself. */
+static std::set<int> find_local_particles_in_radius(const std::vector<ketju_mpi_particle> &centers,
+                                                    double radius,
+                                                    const std::set<int> &exclude)
+{
+    std::set<int> hits;
+    for(int i = 0; i < NumPart; i++) {
+        if(exclude.count(i)) continue;
+        if(P[i].Mass <= 0) continue;
+        for(size_t c = 0; c < centers.size(); c++) {
+            double dist = particle_distance(P[i].Pos.data_ptr(), const_cast<double*>(centers[c].Pos));
+            if(dist < radius) { hits.insert(i); break; }
+        }
+    }
+    return hits;
 }
 
 /* ============================================================
@@ -871,11 +915,13 @@ static void setup_integrator(KetjuRegion &reg)
         reg.integrator->particle_extra_data = reg.extra_data.data();
         reg.integrator->particle_extra_data_elem_size = sizeof(ketju_extra_data);
 
+#ifdef KETJU_VERBOSE_INTEGRATION
         if(reg.compute_tasks.is_root() && ThisTask == 0) {
             printf("KETJU: Region with %d particles (%d PN), compute tasks %d-%d\n",
                    reg.total_particle_count, reg.num_pn_particles,
                    reg.compute_info.first_task_index, reg.compute_info.final_task_index);
         }
+#endif
     }
 
     /* broadcast CoM data to all tasks that need it (affected group for scatter) */
@@ -1036,11 +1082,13 @@ static void setup_integrator_reuse(KetjuRegion &reg)
         reg.integrator->particle_extra_data = reg.extra_data.data();
         reg.integrator->particle_extra_data_elem_size = sizeof(ketju_extra_data);
 
+#ifdef KETJU_VERBOSE_INTEGRATION
         if(reg.compute_tasks.is_root() && ThisTask == 0) {
             printf("KETJU: Region with %d particles (%d PN), compute tasks %d-%d [cached comms]\n",
                    reg.total_particle_count, reg.num_pn_particles,
                    reg.compute_info.first_task_index, reg.compute_info.final_task_index);
         }
+#endif
     }
 
     if(reg.affected_tasks.is_member()) {
@@ -1225,11 +1273,17 @@ static void integrate_region(KetjuRegion &reg, double dt_physical)
         int n_steps = reg.integrator->perf->successful_steps + reg.integrator->perf->failed_steps;
         double dE = reg.integrator->perf->relative_energy_error;
 
+        /* Per-region integration logs are silenced (they generate ~1 line per
+         * region per step, which produces multi-GB stdout files and dominates
+         * wall time via syscall/format overhead). Mergers and the warnings
+         * below remain. Re-enable by defining KETJU_VERBOSE_INTEGRATION. */
+#ifdef KETJU_VERBOSE_INTEGRATION
         if(reg.compute_tasks.is_root())
         printf("KETJU [task %d]: Integrated %d particles for dt=%g, %d steps (%d failed), dE/E=%g\n",
                ThisTask, reg.total_particle_count, dt_physical,
                reg.integrator->perf->successful_steps,
                reg.integrator->perf->failed_steps, dE);
+#endif
 
         if(All.KetjuMaxStepCount > 0 && n_steps >= All.KetjuMaxStepCount) {
             printf("KETJU WARNING: integration hit max step count (%d) — results may be inaccurate!\n",
@@ -1767,6 +1821,30 @@ static void move_particle_timebin(int i, int old_bin, int new_bin)
  *
  * All particles in a region must be on the same timebin for the velocity trick
  * to work (they all drift by the same dt after KETJU sets their velocities). */
+/* GADGET-4 KETJU two-radius timestep mechanism.
+ *
+ * Each chain region is enforced to a single integer timebin shared by all chain
+ * members. The bin is the MIN of:
+ *   (a) chain members' own integer timesteps (P[i].dt_step from find_timesteps,
+ *       which in GIZMO includes whichever criteria are enabled — tidal,
+ *       approach, freefall, acceleration), and
+ *   (b) the integer timesteps of all "limiting particles" — non-chain
+ *       particles within KETJU_TIMESTEP_LIMITING_RADIUS_FACTOR * KetjuRegionRadius
+ *       of any chain center. These nearby external perturbers force the chain
+ *       to step finely enough to resolve their close approach.
+ *
+ * This is GADGET-4's algorithm (see Bitbucket: helsinkiextragalacticgroup/
+ * gadget4-ketju, src/ketju/ketju_interface.cc :: RegionManager::
+ * set_region_timebins and find_timestep_regions). It supersedes the earlier
+ * "MAX-bin promotion" scheme that left chain partners dominating chain dt and
+ * provided no safety net for transient non-chain close encounters.
+ *
+ * In GIZMO we read each particle's already-computed P[i].dt_step (set by the
+ * standard find_timesteps loop, which honors TIDAL_TIMESTEP_CRITERION,
+ * SINGLE_STAR_TIMESTEPPING dt_2body, and the acceleration fallback). For the
+ * chain members we then also update P[i].dt_step in lockstep with TimeBin
+ * because some readers (e.g. ketju_run_integration line ~2050) consume the
+ * cached dt_step rather than recomputing from TimeBin. */
 void ketju_limit_timesteps(void)
 {
     CachedChainCentersValid = 0;
@@ -1780,44 +1858,81 @@ void ketju_limit_timesteps(void)
     CachedChainCentersValid = 1;
     if(centers.empty()) return;
 
-    /* merge overlapping centers into regions */
+    /* merge overlapping centers into regions (same merge radius as
+     * ketju_find_regions to keep region partitioning identical) */
     double merge_radius = 2.0 * All.KetjuRegionRadius;
     std::vector<std::vector<ketju_mpi_particle>> region_centers = merge_overlapping_regions(centers, merge_radius);
 
+    const double limiting_radius = KETJU_TIMESTEP_LIMITING_RADIUS_FACTOR * All.KetjuRegionRadius;
+
     int n_moved_local = 0;
+    int n_limiting_total = 0;
+    int n_regions_constrained_by_limiting = 0;
 
     for(size_t r = 0; r < region_centers.size(); r++) {
-        /* find local members of this region */
+        /* find local chain members (these get their TimeBin forced) */
         std::set<int> local_members = find_local_members(region_centers[r], All.KetjuRegionRadius);
 
-        /* find local MAXIMUM active timebin (largest = longest step) */
-        int local_max_bin = 0;
+        /* find local limiting particles within KETJU_TIMESTEP_LIMITING_RADIUS_FACTOR
+         * times KetjuRegionRadius, excluding the chain itself */
+        std::set<int> local_limiting = find_local_particles_in_radius(region_centers[r], limiting_radius, local_members);
+        n_limiting_total += (int)local_limiting.size();
+
+        /* local MIN over chain members and limiting particles. Use dt_step from
+         * the standard find_timesteps pass — that's already the MIN over all
+         * enabled criteria (tidal / approach / freefall / acceleration). */
+        integertime local_min_ti = TIMEBASE;
+        integertime min_from_chain = TIMEBASE;
         for(int idx : local_members) {
-            if(P[idx].TimeBin > 0 && TimeBinActive[P[idx].TimeBin] && P[idx].TimeBin > local_max_bin)
-                local_max_bin = P[idx].TimeBin;
+            integertime ti = P[idx].dt_step;
+            if(ti > 0 && ti < local_min_ti) local_min_ti = ti;
+            if(ti > 0 && ti < min_from_chain) min_from_chain = ti;
+        }
+        for(int idx : local_limiting) {
+            integertime ti = P[idx].dt_step;
+            if(ti > 0 && ti < local_min_ti) local_min_ti = ti;
         }
 
-        /* global maximum across all tasks for this region */
-        int global_max_bin;
-        MPI_Allreduce(&local_max_bin, &global_max_bin, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-        if(global_max_bin <= 0) continue;
+        /* global MIN across all tasks for this region */
+        integertime global_min_ti;
+        MPI_Allreduce(&local_min_ti, &global_min_ti, 1, MPI_LONG_LONG, MPI_MIN, MPI_COMM_WORLD);
+        integertime global_min_chain;
+        MPI_Allreduce(&min_from_chain, &global_min_chain, 1, MPI_LONG_LONG, MPI_MIN, MPI_COMM_WORLD);
+        if(global_min_ti <= 0 || global_min_ti >= TIMEBASE) continue;
+        if(global_min_ti < global_min_chain) n_regions_constrained_by_limiting++;
 
-        /* move all local chain particles in this region to the max timebin
-         * (particles on shorter timebins get promoted to the longer step) */
+        int region_bin = get_timestep_bin(global_min_ti);
+        if(region_bin <= 0) continue;
+        /* snap up to the nearest active bin if the requested bin isn't synced */
+        while(region_bin > 0 && TimeBinActive[region_bin] == 0) region_bin--;
+        if(region_bin <= 0) continue;
+        integertime region_ti_step = GET_INTEGERTIME_FROM_TIMEBIN(region_bin);
+
+        /* force chain members to region_bin. Update both TimeBin and dt_step
+         * so MSTAR (which reads dt_step) sees the consistent value. */
         for(int idx : local_members) {
-            if(P[idx].TimeBin < global_max_bin) {
-                move_particle_timebin(idx, P[idx].TimeBin, global_max_bin);
+            if(P[idx].TimeBin != region_bin) {
+                move_particle_timebin(idx, P[idx].TimeBin, region_bin);
+                P[idx].dt_step = region_ti_step;
                 n_moved_local++;
             }
         }
     }
 
+#ifdef KETJU_VERBOSE_INTEGRATION
+    int totals_local[3] = {n_moved_local, n_limiting_total, n_regions_constrained_by_limiting};
+    int totals_global[3];
+    MPI_Reduce(totals_local, totals_global, 3, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+    if(ThisTask == 0 && totals_global[0] > 0) {
+        printf("KETJU LIMIT: moved %d chain particles to region timebin "
+               "(%d limiting-particle slots scanned, %d regions constrained by external perturbers)\n",
+               totals_global[0], totals_global[1], totals_global[2]);
+    }
+#else
+    (void)n_limiting_total; (void)n_regions_constrained_by_limiting;
     int n_moved_global;
     MPI_Reduce(&n_moved_local, &n_moved_global, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
-    if(ThisTask == 0 && n_moved_global > 0) {
-        printf("KETJU SUBCYCLE: Promoted %d particles to longer timebins (MSTAR handles internal accuracy)\n",
-               n_moved_global);
-    }
+#endif
 }
 
 /* Collect sorted (ID,Task) keys for a region across all tasks (for staleness check).
@@ -1858,7 +1973,7 @@ void ketju_find_regions(void)
      * back to KDK once before re-engaging Hermite with fresh OldPos/Acc/Jerk. */
     for(int i = 0; i < NumPart; i++) {if(P[i].KetjuIntegrated) {P[i].HermiteHistoryStale = 1;}}
 #endif
-    for(int i = 0; i < NumPart; i++) {P[i].KetjuIntegrated = 0;}
+    for(int i = 0; i < NumPart; i++) {P[i].KetjuIntegrated = 0; P[i].KetjuChainID = 0;}
     ActiveRegions.clear();
     AllKetjuParticleIndices.clear();
 
@@ -1944,17 +2059,46 @@ void ketju_find_regions(void)
         }
     }
 
+    /* Assign each chain member a shared KetjuChainID = global-min member ID
+     * across the region. forcetree.cc uses this to skip Type-5 neighbors that
+     * belong to the same chain (i.e., MSTAR is integrating that pair internally)
+     * when accumulating Min_Sink_Approach_Time / Min_Sink_Freefall_time, so
+     * dt_2body reflects only non-chain encounters. */
+    for(size_t r = 0; r < ActiveRegions.size(); r++) {
+        KetjuRegion &reg = ActiveRegions[r];
+        if(!reg.affected_tasks.is_member()) continue;
+        if(reg.total_particle_count < 2) continue; /* single-particle "placeholder" regions */
+        MyIDType local_min = (MyIDType)-1; /* unsigned-max */
+        for(int idx : reg.local_member_indices) {
+            if(P[idx].ID < local_min) local_min = P[idx].ID;
+        }
+        MyIDType chain_id;
+        MPI_Allreduce(&local_min, &chain_id, 1, MPI_UNSIGNED_LONG_LONG, MPI_MIN, reg.affected_tasks.comm);
+        for(int idx : reg.local_member_indices) P[idx].KetjuChainID = chain_id;
+    }
+
     /* clear old cache (frees any remaining communicators not transferred) */
     CachedRegions.clear();
     KetjuRegionsStale = 0;
 
+    /* Region-set summary: only print when the set actually changed (otherwise
+     * we emit ~1+N_region lines per step, which dominates IO). The per-region
+     * listing is only printed when the topology changed; silence it otherwise. */
     if(ThisTask == 0 && !ActiveRegions.empty()) {
-        printf("KETJU: Found %d region(s) from %d center(s) at t=%g (%d reused from cache)\n",
-               n_regions, (int)centers.size(), All.Time, n_reused);
-        for(int r = 0; r < n_regions; r++) {
-            printf("KETJU:   region %d: %d particles, %d centers%s\n",
-                   r, ActiveRegions[r].total_particle_count, (int)ActiveRegions[r].centers.size(),
-                   region_changed[r] ? "" : " [cached]");
+        static int last_n_regions = -1, last_n_centers = -1;
+        int n_centers = (int)centers.size();
+        if(n_regions != last_n_regions || n_centers != last_n_centers) {
+            printf("KETJU: Found %d region(s) from %d center(s) at t=%g (%d reused from cache)\n",
+                   n_regions, n_centers, All.Time, n_reused);
+            last_n_regions = n_regions;
+            last_n_centers = n_centers;
+#ifdef KETJU_VERBOSE_INTEGRATION
+            for(int r = 0; r < n_regions; r++) {
+                printf("KETJU:   region %d: %d particles, %d centers%s\n",
+                       r, ActiveRegions[r].total_particle_count, (int)ActiveRegions[r].centers.size(),
+                       region_changed[r] ? "" : " [cached]");
+            }
+#endif
         }
     }
 }
@@ -1980,7 +2124,7 @@ void ketju_run_integration(void)
         integertime local_max_ti = 0;
         for(int idx : reg.local_member_indices) {
             if(!TimeBinActive[P[idx].TimeBin]) continue;
-            integertime ti_i = GET_PARTICLE_INTEGERTIME(idx);
+            integertime ti_i = P[idx].dt_step;
             if(ti_i > local_max_ti) local_max_ti = ti_i;
         }
 
@@ -2042,8 +2186,129 @@ void ketju_set_final_velocities(void)
     }
 }
 
+/* Compute COM-frame tidal timescale for each KETJU chain member.
+ *
+ * Background: the host tree builds full GravAccel and tidal_tensorps including
+ * the chain self-contribution. For find_timesteps that yields dt_2body and
+ * dt_tidal set by the chain partner — exactly the binary-internal timescale
+ * MSTAR is supposed to absorb. The result is GIZMO stepping at the chain
+ * internal cadence (~kyr) even though the external force varies on cluster
+ * timescales (~Myr), and KETJU's speed advantage is lost.
+ *
+ * The existing SINGLE_STAR_TIMESTEPPING super-timestepping path solves this
+ * via subtract_companion_gravity() using P[i].comp_dx — but those fields are
+ * never updated between tree walks while KETJU is doing the integration, so
+ * for chain members they are stale and using them produces a spurious
+ * direction-misaligned subtraction. KETJU, on the other hand, knows the
+ * current chain composition and positions exactly: it just did the integration.
+ *
+ * This function does the subtraction here, after compute_grav_accelerations
+ * has populated fresh tidal_tensorps at the post-drift positions. For each
+ * chain member i: subtract the point-mass tidal contribution of every other
+ * chain member j (T_ab = G m_j (3 dr_a dr_b / r^5 - δ_ab / r^3)) from
+ * tidal_tensorps and store COM_dt_tidal. timestep.cc then uses this in place
+ * of the chain-polluted dt_tidal, and skips the dt_2body criterion entirely
+ * for KETJU particles. */
+void ketju_compute_com_quantities(void)
+{
+    if(ActiveRegions.empty()) return;
+
+    struct ChainMemberData {
+        double mass;
+        double pos[3];
+    };
+
+    for(size_t r = 0; r < ActiveRegions.size(); r++) {
+        KetjuRegion &reg = ActiveRegions[r];
+        if(!reg.affected_tasks.is_member()) continue;
+
+        std::vector<ChainMemberData> local_data;
+        local_data.reserve(reg.local_member_indices.size());
+        for(int idx : reg.local_member_indices) {
+            if(!P[idx].KetjuIntegrated) continue;
+            ChainMemberData d;
+            d.mass = P[idx].Mass;
+            for(int j = 0; j < 3; j++) d.pos[j] = P[idx].Pos[j];
+            local_data.push_back(d);
+        }
+        int n_local = local_data.size();
+
+        std::vector<int> counts(reg.affected_tasks.size, 0);
+        MPI_Allgather(&n_local, 1, MPI_INT, counts.data(), 1, MPI_INT, reg.affected_tasks.comm);
+
+        std::vector<int> displs(reg.affected_tasks.size, 0);
+        int n_total = 0;
+        for(int t = 0; t < reg.affected_tasks.size; t++) { displs[t] = n_total; n_total += counts[t]; }
+        if(n_total < 2) continue; /* single-particle region: nothing to subtract */
+
+        std::vector<ChainMemberData> all_data(n_total);
+        std::vector<int> byte_counts(reg.affected_tasks.size), byte_displs(reg.affected_tasks.size);
+        for(int t = 0; t < reg.affected_tasks.size; t++) {
+            byte_counts[t] = counts[t] * sizeof(ChainMemberData);
+            byte_displs[t] = displs[t] * sizeof(ChainMemberData);
+        }
+        MPI_Allgatherv(local_data.data(), n_local * sizeof(ChainMemberData), MPI_BYTE,
+                       all_data.data(), byte_counts.data(), byte_displs.data(),
+                       MPI_BYTE, reg.affected_tasks.comm);
+
+        for(int idx : reg.local_member_indices) {
+            if(!P[idx].KetjuIntegrated) continue;
+
+            /* Build the chain's contribution to gravity and tidal at P[idx].Pos.
+             * F_a from source m_k at offset dr = pos_k - pos_i:
+             *   F_a = G m_k * dr_a / r^3        (attractive)
+             * T_ab from same source:
+             *   T_ab = G m_k * (3 dr_a dr_b / r^5 - δ_ab / r^3)
+             *
+             * IMPORTANT: P[i].GravAccel and P[i].tidal_tensorps have already had
+             * the *= All.G applied by compute_grav_accelerations() by the time
+             * we run (see gravity/gravtree.cc:512,564). We therefore include G
+             * in fac/fac2 so the chain subtraction is in the same units, unlike
+             * the older subtract_companion_gravity() which runs *before* the
+             * tidal_tensorps *= G line and so omits G. */
+            Vec3<double> chain_grav = {0, 0, 0};
+            SymmetricTensor2<MyFloat> chain_tidal = {0,0,0,0,0,0};
+            for(int k = 0; k < n_total; k++) {
+                double dr[3];
+                for(int j = 0; j < 3; j++) dr[j] = all_data[k].pos[j] - P[idx].Pos[j];
+                double r2 = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
+                if(r2 <= 0) continue; /* self */
+                double r = sqrt(r2);
+                double r3 = r * r2;
+                double r5 = r3 * r2;
+                double fac  = All.G * all_data[k].mass / r3;
+                double fac2 = 3.0 * All.G * all_data[k].mass / r5;
+                for(int j = 0; j < 3; j++) chain_grav[j] += fac * dr[j];
+                chain_tidal.data[0] += fac2 * dr[0]*dr[0] - fac;  /* xx */
+                chain_tidal.data[1] += fac2 * dr[1]*dr[1] - fac;  /* yy */
+                chain_tidal.data[2] += fac2 * dr[2]*dr[2] - fac;  /* zz */
+                chain_tidal.data[3] += fac2 * dr[0]*dr[1];        /* xy */
+                chain_tidal.data[4] += fac2 * dr[1]*dr[2];        /* yz */
+                chain_tidal.data[5] += fac2 * dr[0]*dr[2];        /* xz */
+            }
+
+            /* COM-frame quantities (chain self-contribution removed) */
+            for(int j = 0; j < 3; j++) P[idx].COM_GravAccel[j] = P[idx].GravAccel[j] - chain_grav[j];
+
+            SymmetricTensor2<MyFloat> external_tidal = P[idx].tidal_tensorps - chain_tidal;
+            double tidal_norm = external_tidal.frobenius_norm();
+            /* tidal_tensorps is already in physical units (G-multiplied), so
+             * dt_tidal ~ 1/sqrt(|T_external|_F) directly — no extra G. */
+            if(tidal_norm > 0) {
+                P[idx].COM_dt_tidal = sqrt(1.0 / tidal_norm);
+            } else {
+                P[idx].COM_dt_tidal = MAX_REAL_NUMBER;
+            }
+        }
+    }
+}
+
 void ketju_finish_step(void)
 {
+    /* compute COM-frame tidal timescale for chain members before tearing down
+     * region data — read by find_timesteps next step via P[i].COM_dt_tidal */
+    ketju_compute_com_quantities();
+
     /* NOTE: KetjuIntegrated flags are NOT cleared here — they persist until
      * ketju_find_regions() at the start of the next step, so that guard checks
      * in kicks.cc/predict.cc/gravtree.cc can see which particles were KETJU-integrated */

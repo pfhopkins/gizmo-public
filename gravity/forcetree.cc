@@ -1632,6 +1632,9 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #endif
 #endif
     
+#ifdef KETJU_REGULARIZATION
+    MyIDType source_KetjuChainID = 0;
+#endif
     if(mode == 0)
     {
         pos = P[target].Pos;
@@ -1654,6 +1657,9 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #if defined(PMGRID) && defined(PM_PLACEHIGHRESREGION)
         if(pmforce_is_particle_high_res(ptype, P[target].Pos)) {rcut = All.Rcut[1]; asmth = All.Asmth[1];}
 #endif
+#ifdef KETJU_REGULARIZATION
+        source_KetjuChainID = P[target].KetjuChainID;
+#endif
     }
     else
     {
@@ -1673,6 +1679,9 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
 #endif
 #if defined(PMGRID) && defined(PM_PLACEHIGHRESREGION)
         if(pmforce_is_particle_high_res(ptype, GravDataGet[target].Pos)) {rcut = All.Rcut[1]; asmth = All.Asmth[1];}
+#endif
+#ifdef KETJU_REGULARIZATION
+        source_KetjuChainID = GravDataGet[target].KetjuChainID;
 #endif
     }
     
@@ -1840,7 +1849,12 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                         } // for gas, add the signal velocity of feedback from the star
 #endif
                         double tSqr = r2soft/(vSqr + MIN_REAL_NUMBER), tff4 = r2soft*r2soft*r2soft/(M_total*M_total);
-                        
+
+                        /* NOTE: chain-ID-based skip for KETJU is implemented
+                         * (source_KetjuChainID vs P[no].KetjuChainID) but currently
+                         * disabled — see timestep-optimization note in timestep.cc.
+                         * When enabled, same-chain Type-5 neighbors are excluded so
+                         * dt_2body reflects only non-chain encounters. */
                         if(tSqr < Min_Sink_Approach_Time) {Min_Sink_Approach_Time = tSqr;}
                         if(tff4 < Min_Sink_Freefall_time) {Min_Sink_Freefall_time = tff4;}
 #ifdef SINGLE_STAR_FIND_BINARIES

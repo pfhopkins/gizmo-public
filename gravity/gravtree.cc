@@ -279,6 +279,9 @@ void gravity_tree(void)
 #ifdef ADAPTIVE_GRAVSOFT_FROM_TIDAL_CRITERION
                 GravDataIn[j].tidal_tensorps_prevstep=P[place].tidal_tensorps_prevstep;
 #endif
+#ifdef KETJU_REGULARIZATION
+                GravDataIn[j].KetjuChainID = P[place].KetjuChainID;
+#endif
                 memcpy(GravDataIn[j].NodeList,DataNodeList[DataIndexTable[j].IndexGet].NodeList, NODELISTLENGTH * sizeof(int));
             }
 

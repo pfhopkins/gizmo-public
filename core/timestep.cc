@@ -495,6 +495,13 @@ integertime get_timestep(int p,		/*!< particle index */
 #if (SINGLE_STAR_TIMESTEPPING > 0)
     if(P[p].SuperTimestepFlag>=2) {dt_tidal = sqrt(2*All.ErrTolIntAccuracy) * P[p].COM_dt_tidal;}
 #endif
+    /* KETJU timestep optimizations (COM_dt_tidal override, COM_GravAccel for
+     * dt_accel, chain-ID-filtered dt_2body) are implemented but DISABLED pending
+     * investigation of an energy-conservation regression: when any of these
+     * loosen the host step, close encounters between non-chain binaries in the
+     * dense cluster core produce ~50× KE₀ energy errors over 10 crossing times.
+     * The baseline (standard dt criteria including chain partner) is conservative
+     * but stable. TODO: find the root cause and re-enable. */
     dt=DMIN(dt,dt_tidal);
 #endif
 
@@ -502,6 +509,12 @@ integertime get_timestep(int p,		/*!< particle index */
     if(P[p].Type == 5)
     {
         double dt_2body = sqrt(2*All.ErrTolIntAccuracy) * SINK_TIMESTEP_SAFETY_FACTOR / (1./P[p].Min_Sink_Approach_Time + 1./P[p].Min_Sink_Freefall_time); // timestep is harmonic mean of freefall and approach time
+        /* NOTE: with KETJU_REGULARIZATION, the chain-ID skip in
+         * gravity/forcetree.cc filters same-chain neighbors from
+         * Min_Sink_Approach_Time/Freefall_time, so dt_2body naturally
+         * excludes the chain partner. This is correct — MSTAR handles
+         * the partner — but the optimization is currently inactive
+         * (see timestep-optimization note above). */
 #ifdef HERMITE_INTEGRATION
         if(eligible_for_hermite(p)) dt_2body /= SINK_TIMESTEP_SAFETY_FACTOR;
 #endif
