@@ -730,7 +730,7 @@ static inline int ghost_type_passes(int ptype, unsigned int mask) { return (mask
 static ghost_exchange_result ghost_exchange_request_driven_impl(const struct ghost_exchange_spec_t *spec);
 static ghost_exchange_result ghost_exchange_impl(const struct ghost_exchange_spec_t *spec);
 static ghost_exchange_result ghost_exchange_tile_overlap_impl(const struct ghost_exchange_spec_t *spec);
-static void gx_print_waste(const struct ghost_exchange_spec_t *spec, int this_call, int ghost_base, int total_recv);
+static void gx_print_waste(const struct ghost_exchange_spec_t *spec, int this_call, int total_recv);
 static double gx_eff_h(int j, const struct ghost_exchange_spec_t *spec);
 
 /* Is this spec eligible for the walk-export routed producer (sender fine-tree
@@ -1542,7 +1542,7 @@ static ghost_exchange_result ghost_exchange_tile_overlap_impl(const struct ghost
     }
 
     /* Phase-0 import-waste diagnostic — see gx_print_waste(). */
-    gx_print_waste(spec, this_call, NumPart_before_ghost, total_recv);
+    gx_print_waste(spec, this_call, total_recv);
 
     /* Multi-rank correctness: ghost slots [NumPart_before_ghost, NumPart) just
      * received fresh particle_data from remote ranks via MPI_Alltoallv. Their
@@ -1722,11 +1722,7 @@ static double gx_eff_h(int j, const struct ghost_exchange_spec_t *spec)
 /* Print [GX_WASTE] for any ghost_exchange path. Walks (sampled) local actives
  * × imported ghosts, applies ONEWAY and SYMMETRIC predicates, prints the
  * per-ghost OR-aggregate waste ratio. PAIRS_BUDGET caps cost on global steps. */
-/* ghost_base is where the slots being scored START. It is not NumPart_before_ghost
-   whenever a pool is retained across imports: there the arrivals sit above the
-   ghosts already held, and scoring from the pool base would measure an earlier
-   import's ghosts instead of the ones just delivered. */
-static void gx_print_waste(const struct ghost_exchange_spec_t *spec, int this_call, int ghost_base, int total_recv)
+static void gx_print_waste(const struct ghost_exchange_spec_t *spec, int this_call, int total_recv)
 {
     if(!gizmo_verbose_diag()) return;
     if(total_recv <= 0 || NumPart_before_ghost <= 0) return;
@@ -1768,7 +1764,7 @@ static void gx_print_waste(const struct ghost_exchange_spec_t *spec, int this_ca
         double h2_i = h_i * h_i;
         double px = P[i].Pos[0], py = P[i].Pos[1], pz = P[i].Pos[2];
         for(int g = 0; g < total_recv; g++) {
-            int gi = ghost_base + g;
+            int gi = NumPart_before_ghost + g;
             double dx_raw = px - P[gi].Pos[0];
             double dy_raw = py - P[gi].Pos[1];
             double dz_raw = pz - P[gi].Pos[2];
@@ -3761,7 +3757,7 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
                total_recv, by_type[0], by_type[1], by_type[2], by_type[3], by_type[4], by_type[5]);
         fflush(stdout);
     }
-    gx_print_waste(spec, this_call, ghost_append_base, total_recv);
+    gx_print_waste(spec, this_call, total_recv);
 
     /* Cleanup local. mymalloc requires LIFO free order. Tile/BVH/pool/
      * compact_xyzh/pool_types are now owned by g_glt_cache (malloc-backed)
