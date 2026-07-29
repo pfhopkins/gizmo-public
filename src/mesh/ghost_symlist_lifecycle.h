@@ -100,7 +100,7 @@ static inline void gizmo_density_prep_ghosts(double safety)
  * legacy non-runner callers explicitly pass MODE_B_RADIUS_LEGACY_KERNEL_ALLTYPES
  * + 1.0 to preserve their pre-policy behavior byte-for-byte.  Compiler enforces
  * explicit-thread at every call site (no silent LEGACY fallback default). */
-static inline int gizmo_request_filtered_ghost_import(const char *caller_name,
+static inline void gizmo_request_filtered_ghost_import(const char *caller_name,
                                                        int search_mode,
                                                        unsigned int supply_type_mask,
                                                        const int *active_indices,
@@ -109,8 +109,7 @@ static inline int gizmo_request_filtered_ghost_import(const char *caller_name,
                                                        double safety,
                                                        mode_b_radius_policy_t radius_policy,
                                                        double j_radius_scale,
-                                                       int supply_band_dominated,
-                                                       int retain_pool)
+                                                       int supply_band_dominated)
 {
     double t0 = my_second();
     move_particles(gizmo_host_ti_current());
@@ -138,18 +137,16 @@ static inline int gizmo_request_filtered_ghost_import(const char *caller_name,
         (const double *) qh,
         radius_policy,
         j_radius_scale,
-        supply_band_dominated,
-        retain_pool
+        supply_band_dominated
     };
 
     double t1 = my_second();
-    int rc = ghost_exchange_run(&sp);
+    ghost_exchange_run(&sp);
     double t_ghost = timediff(t1, my_second());
     free(qh);
     free(qpos);
     cpu_charge_child(CPU_DENSMISC, t_drift);
     cpu_charge_child(CPU_GHOSTIMPORT, t_ghost);
-    return rc;
 }
 
 /* gizmo_request_filtered_ghost_import_fresh — collective-safe variant.
@@ -181,54 +178,7 @@ static inline int gizmo_request_filtered_ghost_import_fresh(const char *caller_n
     ghost_exchange_cleanup();
     gizmo_request_filtered_ghost_import(caller_name, search_mode, supply_type_mask,
                                         active_indices, num_active, active_radii, safety,
-                                        radius_policy, j_radius_scale, supply_band_dominated,
-                                        /*retain_pool=*/0);
-    return 1;
-}
-
-/* gizmo_request_filtered_ghost_import_retained — import for an iterative caller
- * that keeps its ghost pool for the duration of the loop.
- *
- * Unlike the _fresh variant there is no cleanup first: a pool that is already
- * live is kept and only the ghosts missing from it are imported. The first call
- * of a loop finds no pool and simply builds one. The caller releases the pool
- * with a single ghost_exchange_cleanup() when the loop ends.
- *
- * If the pool cannot be extended — the local particle set moved under it, or the
- * ghosts it holds no longer leave room for the ones now needed — the exchange
- * releases it on every rank and reports that; this then re-imports the exact set
- * currently required, which is what the caller would have done anyway. So the
- * result is the same pool contents either way, and the caller needs no special
- * case.
- *
- * Sound only for a search that reads no ghost radius and a caller that does no
- * ghost writeback; the runner Spec that opts in asserts both at compile time. */
-static inline int gizmo_request_filtered_ghost_import_retained(const char *caller_name,
-                                                               int search_mode,
-                                                               unsigned int supply_type_mask,
-                                                               const int *active_indices,
-                                                               int num_active,
-                                                               const double *active_radii,
-                                                               double safety,
-                                                               mode_b_radius_policy_t radius_policy,
-                                                               double j_radius_scale,
-                                                               int supply_band_dominated)
-{
-    int rc = gizmo_request_filtered_ghost_import(caller_name, search_mode, supply_type_mask,
-                                                 active_indices, num_active, active_radii, safety,
-                                                 radius_policy, j_radius_scale, supply_band_dominated,
-                                                 /*retain_pool=*/1);
-    if(rc == GHOST_EXCHANGE_RETENTION_ABANDONED) {
-        /* The pool is already released on every rank. Re-import what is needed
-         * now WITHOUT retention, so a capacity failure is not answered by
-         * immediately opening another pool that would grow into the same wall.
-         * Retention resumes at the caller's next import, which finds no live
-         * session and starts one. */
-        gizmo_request_filtered_ghost_import(caller_name, search_mode, supply_type_mask,
-                                            active_indices, num_active, active_radii, safety,
-                                            radius_policy, j_radius_scale, supply_band_dominated,
-                                            /*retain_pool=*/0);
-    }
+                                        radius_policy, j_radius_scale, supply_band_dominated);
     return 1;
 }
 

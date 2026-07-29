@@ -431,7 +431,7 @@ void ghost_exchange(double safety_factor);
 void ghost_exchange_hydro(double safety_factor);
 void ghost_exchange_hydro_oneway(double safety_factor);
 struct ghost_exchange_spec_t;
-extern "C" int ghost_exchange_run(const struct ghost_exchange_spec_t *spec);
+extern "C" void ghost_exchange_run(const struct ghost_exchange_spec_t *spec);
 void ghost_exchange_cleanup(void);
 /* True iff a ghost import is live (pool materialized, between import and cleanup);
  * do not infer liveness from ghost_get_num_ghosts()==0, which also holds for a live
