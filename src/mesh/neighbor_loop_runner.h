@@ -654,6 +654,58 @@ constexpr bool nlr_spec_supply_band_dominated() {
     }
 }
 
+/* nlr_spec_iterative_ghost_pool_retention — optional Spec hook.
+ *
+ * An iterative Mode-A Spec whose h-iteration re-imports a ghost pool that mostly
+ * repeats the previous iteration's declares:
+ *
+ *   static constexpr bool iterative_ghost_pool_retention = true;
+ *
+ * and the runner then keeps the pool across iterations, importing only what is
+ * missing, instead of discarding and re-importing it each time.
+ *
+ * Absent ⇒ false: discard-and-reimport, today's behavior, and the safe answer
+ * for any Spec whose read set has not been shown to tolerate a held ghost.
+ *
+ * Two structural conditions make retention sound, both asserted where the Spec
+ * sets the flag rather than assumed here:
+ *   - ONE-WAY search. Acceptance is r < h_i, so a ghost's own radius is never
+ *     read; the values a held ghost supplies (mass, position, velocity, type) are
+ *     not mutated by the remote rank inside the call, and its position is carried
+ *     by local lazy drift. A symmetric search reads the neighbour radius, which
+ *     the remote density pass is still changing, so it needs a freshness contract
+ *     that does not exist yet.
+ *   - No ghost writeback. A retained pool spans several imports, so the per-import
+ *     reverse-communication maps no longer describe it.
+ * A Spec meeting both may set the flag; it is a property of the loop's structure,
+ * not of which loop it is. */
+template <typename Spec, typename = void>
+struct nlr_spec_has_iterative_ghost_pool_retention : std::false_type {};
+
+template <typename Spec>
+struct nlr_spec_has_iterative_ghost_pool_retention<
+    Spec,
+    std::void_t<decltype(Spec::iterative_ghost_pool_retention)>>
+    : std::true_type {};
+
+template <typename Spec>
+constexpr bool nlr_spec_iterative_ghost_pool_retention() {
+    if constexpr (nlr_spec_has_iterative_ghost_pool_retention<Spec>::value) {
+        static_assert(!Spec::iterative_ghost_pool_retention
+                      || Spec::search_mode == MODE_B_SEARCH_ONEWAY,
+                      "iterative_ghost_pool_retention requires ONEWAY search: a symmetric "
+                      "search reads the neighbour radius, which a held ghost cannot keep fresh");
+        static_assert(!Spec::iterative_ghost_pool_retention
+                      || Spec::uses_ghost_writeback == false,
+                      "iterative_ghost_pool_retention requires uses_ghost_writeback == false: "
+                      "a pool built over several imports is not described by the per-import "
+                      "reverse-communication maps");
+        return Spec::iterative_ghost_pool_retention;
+    } else {
+        return false;
+    }
+}
+
 /* RAII cleanup guard for the runner's DeviceContext. Construct one right
  * after Spec::populate_device_context returns; destruction at function exit
  * (any path) conditionally invokes Spec::cleanup_device_context if the Spec

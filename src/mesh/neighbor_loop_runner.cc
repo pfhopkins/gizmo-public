@@ -3966,7 +3966,9 @@ void NlrIterDriver<Spec>::acquire_arena_and_init_ctx_mode_a()
             }
         }
         const int union_n = (int)union_actives.size();
-        gizmo_request_filtered_ghost_import_fresh(Spec::loop_name,
+        if constexpr (nlr_spec_iterative_ghost_pool_retention<Spec>()) {
+            /* Opens the pool this call keeps across its iterations. */
+            gizmo_request_filtered_ghost_import_retained(Spec::loop_name,
                                                    Spec::search_mode,
                                                    mask_union,
                                                    (union_n > 0) ? union_actives.data() : nullptr,
@@ -3976,6 +3978,18 @@ void NlrIterDriver<Spec>::acquire_arena_and_init_ctx_mode_a()
                                                    Spec::radius_policy,
                                                    nlr_spec_symmetric_j_radius_scale<Spec>(),
                                                    nlr_spec_supply_band_dominated<Spec>());
+        } else {
+            gizmo_request_filtered_ghost_import_fresh(Spec::loop_name,
+                                                   Spec::search_mode,
+                                                   mask_union,
+                                                   (union_n > 0) ? union_actives.data() : nullptr,
+                                                   union_n,
+                                                   (union_n > 0) ? union_radii_oversized.data() : nullptr,
+                                                   args.ghost_safety_factor,
+                                                   Spec::radius_policy,
+                                                   nlr_spec_symmetric_j_radius_scale<Spec>(),
+                                                   nlr_spec_supply_band_dominated<Spec>());
+        }
         ghost_import_done = true;
 
         /* Refresh effective_args from globals (ghost import grew NumPart and
@@ -4100,17 +4114,21 @@ void NlrIterDriver<Spec>::rebuild_mode_a_arena_and_ctx_for_current_active_union(
         arena_acquired = false;
     }
 
-    /* === (3) Destroy current ghost pool === */
-    if (ghost_import_done) {
+    /* === (3) Destroy current ghost pool ===
+     * A Spec that retains its pool skips this: the pool is kept for the whole
+     * call and released once, when the loop ends. */
+    if (ghost_import_done && !nlr_spec_iterative_ghost_pool_retention<Spec>()) {
         ghost_exchange_cleanup();
         ghost_import_done = false;
     }
 
     /* === (4) Reimport with UNION radii / actives / mask (deliberate over-import,
-     * an accepted tradeoff) === */
+     * an accepted tradeoff). With retention this imports only the ghosts the new
+     * union needs that the pool does not already hold. === */
     {
         const int union_n = (int)union_actives.size();
-        gizmo_request_filtered_ghost_import_fresh(Spec::loop_name,
+        if constexpr (nlr_spec_iterative_ghost_pool_retention<Spec>()) {
+            gizmo_request_filtered_ghost_import_retained(Spec::loop_name,
                                                    Spec::search_mode,
                                                    mask_union,
                                                    (union_n > 0) ? union_actives.data() : nullptr,
@@ -4120,7 +4138,20 @@ void NlrIterDriver<Spec>::rebuild_mode_a_arena_and_ctx_for_current_active_union(
                                                    Spec::radius_policy,
                                                    nlr_spec_symmetric_j_radius_scale<Spec>(),
                                                    nlr_spec_supply_band_dominated<Spec>());
-        ghost_import_done = true;
+            ghost_import_done = true;
+        } else {
+            gizmo_request_filtered_ghost_import_fresh(Spec::loop_name,
+                                                   Spec::search_mode,
+                                                   mask_union,
+                                                   (union_n > 0) ? union_actives.data() : nullptr,
+                                                   union_n,
+                                                   (union_n > 0) ? union_radii_oversized.data() : nullptr,
+                                                   args.ghost_safety_factor,
+                                                   Spec::radius_policy,
+                                                   nlr_spec_symmetric_j_radius_scale<Spec>(),
+                                                   nlr_spec_supply_band_dominated<Spec>());
+            ghost_import_done = true;
+        }
     }
 
     /* === (5) Refresh effective_args from post-import globals === */

@@ -30,6 +30,7 @@
 #include <math.h>
 #include <limits.h>
 #include <vector>
+#include <algorithm>
 #include "../declarations/allvars.h"
 #include "../declarations/lifecycle_counters.h"
 #include "../core/proto.h"
@@ -118,6 +119,55 @@ static int *ghost_send_home_idx = NULL;     /* [ghost_send_home_count] exported 
 static int  ghost_send_home_count = 0;      /* == total_send at last import */
 static unsigned long long g_ghost_provenance_epoch = 0; /* import counter (see above) */
 
+/* Local (non-ghost) particle count. While a pool is live NumPart counts local +
+   ghost, so anything that means "the particles this rank owns" — the supply pool
+   and its cache key — must use this, never NumPart. With no pool live the two are
+   equal, so every non-retaining caller is unaffected. */
+static inline int ghost_local_count(void)
+{
+    return (NumPart_before_ghost >= 0) ? NumPart_before_ghost : NumPart;
+}
+
+/* Retained-pool session (spec->retain_pool).
+ *
+ * An iterative caller re-imports a ghost pool that mostly repeats the previous
+ * iteration's. With retention the pool is kept across iterations and each import
+ * ships only what is not already held, so a ghost is transported once per call
+ * instead of once per iteration.
+ *
+ * The owner knows exactly which of its particles it has already sent to each
+ * peer, so the not-yet-held set is a local difference against `sent` below — no
+ * extra transport and no held-list from the requester. `sent[t]` holds POOL
+ * indices in ascending order, which the subtraction below both consumes and
+ * maintains.
+ *
+ * Pool indices are only meaningful against the supply pool they were recorded
+ * from, so the session fingerprints that pool; any change (a different local
+ * particle set, a supply-identity bump, a differently sized pool) makes the
+ * recorded indices meaningless and the session is refused rather than reused —
+ * the caller then falls back to a full cleanup and fresh import.
+ *
+ * Retention is only sound where a held ghost's VALUES cannot go stale within the
+ * call: one-way search reads no ghost radius, and the caller must do no ghost
+ * writeback. Both are enforced at the runner Spec that opts in. */
+struct gx_retained_session {
+    int  live;                       /* a retained pool is open */
+    int  n_local;                    /* local particle count the pool indices were recorded against */
+    int  num_pool;                   /* supply pool size at open */
+    long long identity_epoch;
+    std::vector<std::vector<int> > sent;   /* [NTask][ascending pool indices already shipped] */
+};
+static struct gx_retained_session g_retained = { 0, 0, 0, -1, std::vector<std::vector<int> >() };
+
+static void gx_retained_session_close(void)
+{
+    g_retained.live = 0;
+    g_retained.n_local = 0;
+    g_retained.num_pool = 0;
+    g_retained.identity_epoch = -1;
+    std::vector<std::vector<int> >().swap(g_retained.sent);
+}
+
 /* Persistent local-tree cache (SIDX overlay) for the
  * request-driven ghost exchange path. Within a step, the local pool of
  * particles [0..NumPart_local) is stable across multiple ghost_exchange
@@ -155,7 +205,7 @@ extern "C" void ghost_exchange_supply_identity_changed(const char *reason)
 
 struct ghost_local_tree_cache_t {
     int valid;
-    int NumPart_when_built;
+    int n_local_when_built;   /* LOCAL particle count (never includes ghosts) */
     /* Identity generation this entry's pool/j_to_pool were built against. */
     long long identity_epoch_when_built;
     integertime Ti_when_built;
@@ -175,9 +225,9 @@ struct ghost_local_tree_cache_t {
     tile_bvh_node_t *bvh;          /* [bvh_nnodes] malloc */
     float *compact_xyzh;           /* [num_pool*4] malloc; h field = supply-side policy * j_scale * safety baked in */
     int *pool_types;               /* [num_pool] malloc */
-    int *j_to_pool;                /* [NumPart_when_built] malloc, j -> pool_pos or -1 */
+    int *j_to_pool;                /* [n_local_when_built] malloc, j -> pool_pos or -1 */
     /* SSOT supply-side reach contract. These four fields, together with the
-     * (NumPart, safety, eligible_pool_mask) triple above, form the cache-key
+     * (n_local, safety, eligible_pool_mask) triple above, form the cache-key
      * invariant: any mismatch on any of them forces a full rebuild (NOT a
      * refit).  Ti and the needs_refit dirty bit continue to trigger
      * glt_cache_refit_from_particles() instead of a rebuild — Ti is NOT a
@@ -190,7 +240,7 @@ struct ghost_local_tree_cache_t {
  * field is added to the struct above. */
 static struct ghost_local_tree_cache_t g_glt_cache = {
     .valid = 0,
-    .NumPart_when_built = -1,
+    .n_local_when_built = -1,
     .identity_epoch_when_built = -1,
     .Ti_when_built = -1,
     .safety_factor_when_built = 0.0,
@@ -276,7 +326,7 @@ static void glt_cache_free(void)
     if(g_glt_cache.pool_types)   { free(g_glt_cache.pool_types);   g_glt_cache.pool_types = NULL; }
     if(g_glt_cache.j_to_pool)    { free(g_glt_cache.j_to_pool);    g_glt_cache.j_to_pool = NULL; }
     g_glt_cache.valid = 0;
-    g_glt_cache.NumPart_when_built = -1;
+    g_glt_cache.n_local_when_built = -1;
     g_glt_cache.identity_epoch_when_built = -1;
     g_glt_cache.Ti_when_built = -1;
     g_glt_cache.safety_factor_when_built = 0.0;
@@ -315,7 +365,14 @@ extern "C" void ghost_exchange_local_tree_invalidate_drift(void)
      * the narrow-refit fast path can't represent that, so promote to full. */
     g_glt_dirty_mark_all_();
 }
-extern "C" void ghost_exchange_local_tree_invalidate_full(void)  { glt_cache_free(); }
+/* Closes any retained session too: the session records positions in the supply
+ * pool being dropped here, and those indices lose their meaning with it. This
+ * belongs at this entry point rather than inside glt_cache_free(), which is also
+ * called mid-import on the rebuild path — closing there would empty the session
+ * after a top-up had already been decided against it. Mid-import rebuilds are
+ * covered instead by the pool-size guard, over an unchanged membership that
+ * reproduces identical indices. */
+extern "C" void ghost_exchange_local_tree_invalidate_full(void)  { gx_retained_session_close(); glt_cache_free(); }
 
 /* Read-only view of the owned-local supply pool + its epoch key, for the
  * top-leaf router band builder.  Returns num_pool, or -1 if the cache is not
@@ -343,7 +400,7 @@ extern "C" int ghost_exchange_supply_pool_view(struct gx_supply_pool_view *out,
     out->num_pool              = g_glt_cache.num_pool;
     out->tiles                 = g_glt_cache.tiles;
     out->ntiles                = g_glt_cache.ntiles;
-    out->numpart_when_built    = g_glt_cache.NumPart_when_built;
+    out->numpart_when_built    = g_glt_cache.n_local_when_built;
     out->ti_when_built         = (long long)g_glt_cache.Ti_when_built;
     out->safety_when_built     = g_glt_cache.safety_factor_when_built;
     out->eligible_mask_when_built = g_glt_cache.eligible_type_mask_when_built;
@@ -569,14 +626,14 @@ static void glt_cache_refit_from_particles(void)
         int n_dirty = (int)g_glt_dirty_list.size();
         int ntiles = g_glt_cache.ntiles;
         int bvh_nnodes = g_glt_cache.bvh_nnodes;
-        int NumPart_b = g_glt_cache.NumPart_when_built;
+        int n_local_b = g_glt_cache.n_local_when_built;
         unsigned char *tile_dirty = (unsigned char *) calloc((size_t)(ntiles > 0 ? ntiles : 1), 1);
         unsigned char *node_dirty = (unsigned char *) calloc((size_t)(bvh_nnodes > 0 ? bvh_nnodes : 1), 1);
 
         /* Phase 1: refresh compact_xyzh + pool_types for each dirty j; mark its tile dirty. */
         for(int k = 0; k < n_dirty; k++) {
             int j = g_glt_dirty_list[k];
-            if(j < 0 || j >= NumPart_b) continue;
+            if(j < 0 || j >= n_local_b) continue;
             int pp = g_glt_cache.j_to_pool[j];
             if(pp < 0 || pp >= g_glt_cache.num_pool) continue;
             int t = glt_tile_of_pool_pos_(pp);
@@ -670,13 +727,8 @@ static inline int ghost_type_passes(int ptype, unsigned int mask) { return (mask
  * particle slots, or whose counts overflow the int MPI transport representation,
  * returns WITHOUT materialising ghosts (clean rollback), and the dispatcher
  * falls back to exact request-driven discovery. */
-enum ghost_exchange_result {
-    GHOST_EXCHANGE_COMPLETED = 0,
-    GHOST_EXCHANGE_PARTICLE_CAPACITY_EXCEEDED,
-    GHOST_EXCHANGE_COUNT_RANGE_EXCEEDED
-};
-
 static ghost_exchange_result ghost_exchange_request_driven_impl(const struct ghost_exchange_spec_t *spec);
+static ghost_exchange_result ghost_exchange_impl(const struct ghost_exchange_spec_t *spec);
 static ghost_exchange_result ghost_exchange_tile_overlap_impl(const struct ghost_exchange_spec_t *spec);
 static void gx_print_waste(const struct ghost_exchange_spec_t *spec, int this_call, int total_recv);
 static double gx_eff_h(int j, const struct ghost_exchange_spec_t *spec);
@@ -743,7 +795,7 @@ static void gx_report_symm_broadcast(const struct ghost_exchange_spec_t *spec)
     fflush(stdout);
 }
 
-static void ghost_exchange_impl(const struct ghost_exchange_spec_t *spec)
+static ghost_exchange_result ghost_exchange_impl(const struct ghost_exchange_spec_t *spec)
 {
     /* Tiny-N corridor counter: increments on API entry, before any
      * dispatch. Mode B paths in run_neighbor_loop must NOT enter this
@@ -783,8 +835,9 @@ static void ghost_exchange_impl(const struct ghost_exchange_spec_t *spec)
     if(spec && spec->search_mode == NGB_SEARCH_SYMMETRIC && !gx_walk_export_eligible(spec))
         gx_report_symm_broadcast(spec);
     const char *selected_impl;
+    ghost_exchange_result outcome = GHOST_EXCHANGE_COMPLETED;
     if(want_request_driven) {
-        ghost_exchange_request_driven_impl(spec);
+        outcome = ghost_exchange_request_driven_impl(spec);
         selected_impl = "request_driven";
     } else {
         ghost_exchange_result result = ghost_exchange_tile_overlap_impl(spec);
@@ -804,7 +857,7 @@ static void ghost_exchange_impl(const struct ghost_exchange_spec_t *spec)
                 fflush(stdout);
             }
             gizmo_exit_bad_stop_if_requested("ghost_exchange:tile_fallback");
-            ghost_exchange_request_driven_impl(spec);
+            outcome = ghost_exchange_request_driven_impl(spec);
             selected_impl = "request_driven(fallback)";
         }
     }
@@ -819,6 +872,7 @@ static void ghost_exchange_impl(const struct ghost_exchange_spec_t *spec)
                nlocal_pre, ghost_added, NumPart, dt_ghost_import);
         fflush(stdout);
     }
+    return outcome;
 }
 
 /* Public entry for new-style callers that build their own spec literal at
@@ -826,9 +880,9 @@ static void ghost_exchange_impl(const struct ghost_exchange_spec_t *spec)
  * truth for that loop's physics — to flip mode / supply_mask / query list,
  * edit the literal at the caller. Dispatch keys only on spec fields
  * (explicit query list, or search_mode == NGB_SEARCH_ONEWAY). */
-extern "C" void ghost_exchange_run(const struct ghost_exchange_spec_t *spec)
+extern "C" int ghost_exchange_run(const struct ghost_exchange_spec_t *spec)
 {
-    ghost_exchange_impl(spec);
+    return (int) ghost_exchange_impl(spec);
 }
 
 /* Tile-build SSOT for the tile ghost-exchange pool: particles are chunked
@@ -922,6 +976,15 @@ static ghost_exchange_result ghost_exchange_tile_overlap_impl(const struct ghost
     const int  search_mode = spec->search_mode;
     if(NTask <= 1) return GHOST_EXCHANGE_COMPLETED;
     double t_ghost_start = my_second(), t_ghost_phase;
+
+    /* This impl re-bases the pool from scratch and does not honor retention, so a
+     * live retained pool is RELEASED here and its record dropped. Releasing it is
+     * the load-bearing half: re-basing over materialised ghosts would turn them
+     * into the export basis. Dropping the record then stops a later top-up from
+     * subtracting ghosts the peers no longer hold, which would lose neighbours
+     * silently. */
+    if(g_retained.live) ghost_exchange_cleanup();
+    gx_retained_session_close();
 
     /* save current state for cleanup */
     NumPart_before_ghost = NumPart;
@@ -2603,7 +2666,7 @@ static char *compute_matched_walk_export(
                 const std::vector<int> &cvk = per_recv_cands[k];
                 for(size_t c = 0; c < cvk.size(); c++) {
                     int j = cvk[c];
-                    if(j < 0 || j >= g_glt_cache.NumPart_when_built) continue;
+                    if(j < 0 || j >= g_glt_cache.n_local_when_built) continue;
                     int pp = g_glt_cache.j_to_pool ? g_glt_cache.j_to_pool[j] : -1;
                     if(pp < 0 || pp >= num_pool) continue;
                     /* Reach comes from THIS caller's spec, not from whatever policy
@@ -2637,9 +2700,47 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
     const unsigned int supply_mask  = spec->supply_type_mask;
     const int  search_mode = spec->search_mode;
     double t_ghost_start = my_second();
-    NumPart_before_ghost = NumPart;
-    N_gas_before_ghost = N_gas;
-    NumGhostParticles = 0;
+
+    /* Retained pool: extend the live pool instead of replacing it, but only if
+     * every rank can — the recorded pool indices are rank-local state, so one
+     * rank silently rebuilding while others extend would ship mismatched sets.
+     * When any rank cannot, all ranks drop the pool here and this call proceeds
+     * as an ordinary fresh import that opens a new session. */
+    int topup = 0;
+    if(spec->retain_pool) {
+        int extend_local = (g_retained.live
+                            && g_retained.n_local == ghost_local_count()
+                            && g_retained.identity_epoch == g_supply_identity_epoch) ? 1 : 0;
+        int extend_all = 0;
+        MPI_Allreduce(&extend_local, &extend_all, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+        if(extend_all) {
+            topup = 1;
+        } else {
+            /* Not extending, so start from no pool exactly as a fresh import does.
+             * This must not be conditional on the session: a pool left live by an
+             * unrelated earlier import would otherwise be re-based as though its
+             * ghosts were local particles. Releasing a pool is rank-local work and
+             * a no-op when none is live. */
+            ghost_exchange_cleanup();
+            gx_retained_session_close();
+        }
+    } else if(g_retained.live) {
+        /* A non-retaining import re-bases the pool below, treating whatever is
+         * live as local particles. A retained pool is therefore RELEASED here,
+         * not merely forgotten: dropping the bookkeeping alone would leave its
+         * ghosts materialised and they would become the export basis. */
+        ghost_exchange_cleanup();
+        gx_retained_session_close();
+    }
+
+    /* A top-up keeps the pool bounds and the ghosts already held; only a fresh
+     * import re-bases them. */
+    if(!topup) {
+        NumPart_before_ghost = NumPart;
+        N_gas_before_ghost = N_gas;
+        NumGhostParticles = 0;
+    }
+    const int ghosts_held_before = NumGhostParticles;
 
     static int gx_call_seq_rd = 0;
     gx_call_seq_rd++;
@@ -2774,13 +2875,20 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
      * mask is unproven here — a narrower request would also make in-place Type
      * changes membership-relevant, which the epoch does not track — so anything
      * other than the all-types pool falls through to a full rebuild. */
+    /* The supply pool is what this rank OWNS and may export. Imported ghosts sit
+     * above the local particles and are not exportable — a rank re-shipping a
+     * ghost would attach its own slot index as the home index, which is not a
+     * home at all. With no pool live this equals NumPart, so nothing changes for
+     * a caller that imports into an empty pool; it matters once a pool is
+     * retained across imports and NumPart no longer means "local". */
+    const int n_local_supply = ghost_local_count();
     const int mask_reusable = (desired_pool_mask == GHOST_TYPE_ALL);
     const int identity_valid = (g_glt_cache.valid
                        && (g_glt_cache.caps & GX_POOL_IDENTITY)
                        && g_glt_cache.pool && g_glt_cache.j_to_pool
                        && mask_reusable
                        && g_glt_cache.eligible_type_mask_when_built == desired_pool_mask
-                       && g_glt_cache.NumPart_when_built == NumPart
+                       && g_glt_cache.n_local_when_built == n_local_supply
                        && g_glt_cache.identity_epoch_when_built == g_supply_identity_epoch);
     const int geometry_valid = (identity_valid
                        && (g_glt_cache.caps & GX_POOL_GEOMETRY)
@@ -2903,14 +3011,14 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
         tile_bvh_node_t *tmp_bvh = NULL;
         int tmp_bvh_nnodes = 0;
         if(wanted_caps & GX_POOL_GEOMETRY) {
-            tmp_ntiles = build_sfc_tiles(P, NumPart, (int)desired_pool_mask, TILE_TARGET_SIZE,
+            tmp_ntiles = build_sfc_tiles(P, n_local_supply, (int)desired_pool_mask, TILE_TARGET_SIZE,
                                          &tmp_tiles, &tmp_pool, &tmp_num_pool,
                                          spec->radius_policy,
                                          spec->j_radius_scale * safety_factor);
             tmp_bvh_nnodes = build_tile_bvh(tmp_tiles, tmp_ntiles, &tmp_bvh);
         } else {
             /* Membership only — same selection, none of the position-dependent work. */
-            tmp_num_pool = build_sfc_supply_pool(P, NumPart, (int)desired_pool_mask, &tmp_pool);
+            tmp_num_pool = build_sfc_supply_pool(P, n_local_supply, (int)desired_pool_mask, &tmp_pool);
         }
         int tmp_bvh_root = tmp_bvh_nnodes - 1;
 
@@ -2927,8 +3035,8 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
         float           *c_compact = with_geometry ? (float *)           malloc(sz_compact) : NULL;
         int             *c_types   =                 (int *)             malloc(sz_types);
         /* Reverse map j -> pool_pos (-1 if j is not in this build's pool). Sized
-         * to NumPart_when_built; bounds-checked at narrow-refit lookup time. */
-        size_t sz_jtop = (size_t)(NumPart > 0 ? NumPart : 1) * sizeof(int);
+         * to n_local_when_built; bounds-checked at narrow-refit lookup time. */
+        size_t sz_jtop = (size_t)(n_local_supply > 0 ? n_local_supply : 1) * sizeof(int);
         int             *c_jtop    = (int *)             malloc(sz_jtop);
         /* An allocation failure here would otherwise be a segfault: the buffers are
          * written unconditionally just below, and this producer is now the only
@@ -2939,8 +3047,8 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
          * where every rank converges and before anything reads the pool. */
         if(!c_pool || !c_types || !c_jtop
            || (with_geometry && (!c_tiles || !c_bvh || !c_compact))) {
-            printf("ERROR: supply-cache allocation failed on task %d (num_pool=%d NumPart=%d geometry=%d)\n",
-                   ThisTask, tmp_num_pool, NumPart, with_geometry);
+            printf("ERROR: supply-cache allocation failed on task %d (num_pool=%d n_local=%d geometry=%d)\n",
+                   ThisTask, tmp_num_pool, n_local_supply, with_geometry);
             fflush(stdout);
             free(c_tiles); free(c_pool); free(c_bvh); free(c_compact); free(c_types); free(c_jtop);
             c_tiles = NULL; c_pool = NULL; c_bvh = NULL; c_compact = NULL; c_types = NULL; c_jtop = NULL;
@@ -2952,7 +3060,7 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
             cache_alloc_failed = 1;
         }
         if(!cache_alloc_failed) {
-        for(int j = 0; j < NumPart; j++) c_jtop[j] = -1;
+        for(int j = 0; j < n_local_supply; j++) c_jtop[j] = -1;
         if(tmp_ntiles > 0)     memcpy(c_tiles, tmp_tiles, (size_t)tmp_ntiles * sizeof(sfc_tile_t));
         if(tmp_num_pool > 0)   memcpy(c_pool,  tmp_pool,  (size_t)tmp_num_pool * sizeof(int));
         if(tmp_bvh_nnodes > 0) memcpy(c_bvh,   tmp_bvh,   (size_t)tmp_bvh_nnodes * sizeof(tile_bvh_node_t));
@@ -2970,7 +3078,7 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
                                                             safety_factor);
             }
             c_types[p] = (int)P[j].Type;
-            if(j >= 0 && j < NumPart) c_jtop[j] = p;
+            if(j >= 0 && j < n_local_supply) c_jtop[j] = p;
         }
 
         /* Free mymalloc temps in LIFO order. */
@@ -2989,7 +3097,7 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
         g_glt_cache.num_pool  = tmp_num_pool;
         g_glt_cache.bvh_nnodes = tmp_bvh_nnodes;
         g_glt_cache.bvh_root  = tmp_bvh_root;
-        g_glt_cache.NumPart_when_built = NumPart;
+        g_glt_cache.n_local_when_built = n_local_supply;
         g_glt_cache.identity_epoch_when_built = g_supply_identity_epoch;
         g_glt_cache.Ti_when_built = All.Ti_Current;
         g_glt_cache.safety_factor_when_built = safety_factor;
@@ -3323,6 +3431,44 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
         gizmo_exit_bad_stop_if_requested("ghost_exchange:walk_export_unavailable");
     }
 
+    /* Retained pool: drop from the freshly matched set everything this rank has
+     * already shipped to that peer, so only the genuinely missing ghosts travel.
+     * Doing it on the matched bitmap leaves counting, packing and transport below
+     * untouched — they simply see a smaller set.
+     *
+     * Both sides are ascending pool indices, so one merge pass per peer suffices.
+     * The newly shipped indices are staged and only folded into the session once
+     * the import has actually completed, so an abandoned call leaves the record of
+     * what the peer holds exactly as it was. */
+    std::vector<std::vector<int> > retained_new_sends;
+    if(topup) {
+        retained_new_sends.assign(NTask, std::vector<int>());
+        /* Pool identity was agreed across ranks before the walk; a size change
+         * would mean the epoch missed a structural change, which would silently
+         * corrupt every recorded index. The condition is RANK-LOCAL, so it only
+         * REQUESTS the stop here — the all-rank poll before packing (below) is
+         * where every rank converges and drains it. Draining here would put one
+         * rank into a collective the others are not in. The subtraction is skipped
+         * so nothing is suppressed on the way to that stop. */
+        if(num_pool != g_retained.num_pool) {
+            gizmo_request_controlled_stop(7725,
+                "ghost_exchange: retained supply pool changed size without an identity-epoch bump",
+                __FILE__, __LINE__, __FUNCTION__);
+        } else
+        for(int t = 0; t < NTask; t++) {
+            if(t == ThisTask) continue;
+            char *mf = matched + (size_t)t * (size_t)num_pool;
+            const std::vector<int> &held = g_retained.sent[t];
+            size_t hi = 0;
+            for(int p = 0; p < num_pool; p++) {
+                if(!mf[p]) continue;
+                while(hi < held.size() && held[hi] < p) hi++;
+                if(hi < held.size() && held[hi] == p) { mf[p] = 0; continue; }
+                retained_new_sends[t].push_back(p);
+            }
+        }
+    }
+
     /* === Step 4: per-peer counts + index list === */
     double t_step4_start = my_second();
     int *send_count = (int *) mymalloc("gx_rd_sc", NTask * sizeof(int));
@@ -3359,6 +3505,47 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
     int total_send = count_range_ok ? (int)total_send_ll : 0;
     int total_recv = count_range_ok ? (int)total_recv_ll : 0;
 
+    /* A retained pool holds ghosts the current set no longer needs, so it can run
+     * out of slots where a fresh import of the same set would still fit. That is a
+     * reason to give the pool up, not to stop the run: the caller re-imports the
+     * exact set it needs. The decision is collective — the pool is dropped on every
+     * rank or none — and it is taken before anything is packed or appended. */
+    if(topup) {
+        int no_fit_local = (count_range_ok
+                            && !ghost_particle_slots_fit((long long)NumPart + total_recv_ll)) ? 1 : 0;
+        int no_fit_any = 0;
+        MPI_Allreduce(&no_fit_local, &no_fit_any, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+        if(no_fit_any) {
+            myfree(recv_disp); myfree(send_disp); myfree(recv_count); myfree(send_count);
+            free(matched);
+            free(all_queries); free(q_disps); free(all_q_counts); free(local_queries);
+            ghost_exchange_cleanup();
+            gx_retained_session_close();
+            return GHOST_EXCHANGE_RETENTION_ABANDONED;
+        }
+    }
+
+    /* Cumulative provenance for the WHOLE live pool. Allocated here, before the
+     * all-rank poll below, so an allocation failure — a rank-local condition —
+     * stops the run at that poll instead of after ghosts are installed, when the
+     * maps would already disagree with NumGhostParticles. */
+    const int n_pool_total = ghosts_held_before + total_recv;
+    int *pool_rank = (int *) malloc((n_pool_total > 0 ? n_pool_total : 1) * sizeof(int));
+    int *pool_idx  = (int *) malloc((n_pool_total > 0 ? n_pool_total : 1) * sizeof(int));
+    /* The home-index buffers are hoisted here for the same reason: they are the
+     * only other heap allocations on the path between this poll and the install,
+     * and a NULL either one would be dereferenced by the Alltoallv below with no
+     * all-rank poll left to stop at. */
+    int *send_home_idx = (int *) malloc((total_send > 0 ? total_send : 1) * sizeof(int));
+    int *recv_home_idx = (int *) malloc((total_recv > 0 ? total_recv : 1) * sizeof(int));
+    if(!pool_rank || !pool_idx || !send_home_idx || !recv_home_idx) {
+        printf("ERROR: ghost provenance allocation failed on task %d (pool_total=%d send=%d recv=%d)\n",
+               ThisTask, n_pool_total, total_send, total_recv);
+        fflush(stdout);
+        gizmo_request_controlled_stop(7726, "ghost_exchange: ghost provenance allocation failed",
+                                      __FILE__, __LINE__, __FUNCTION__);
+    }
+
     /* Check space (mirrors legacy guard).  Request-driven is the last-resort
      * Mode-A discovery — there is NO further fallback — so a count/displacement
      * overflow of the int MPI transport range, or ghosts that would not fit
@@ -3383,7 +3570,6 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
         (total_send > 0 ? total_send : 1) * sizeof(struct particle_data));
     struct gas_cell_data *send_CellP = (struct gas_cell_data *) mymalloc("gx_rd_sC",
         (total_send > 0 ? total_send : 1) * sizeof(struct gas_cell_data));
-    int *send_home_idx = (int *) malloc((total_send > 0 ? total_send : 1) * sizeof(int));
     {
         int *task_offset = (int *) mymalloc("gx_rd_toff", NTask * sizeof(int));
         memcpy(task_offset, send_disp, NTask * sizeof(int));
@@ -3407,30 +3593,55 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
     gx_forward_particle_exchange(send_P, send_CellP, send_count, send_disp,
                                  &P[NumPart], &CellP[NumPart], recv_count, recv_disp);
 
-    /* Update counts now so home_idx receive can land at &P[NumPart_before_ghost+...] */
-    NumGhostParticles = total_recv;
+    /* Arriving ghosts append above whatever is already held; on a fresh import
+     * nothing is, so this is the plain install. */
+    const int ghost_append_base = NumPart;
+    NumGhostParticles += total_recv;
     NumPart += total_recv;
 
-    /* Mark dirty for compact_xyzh refresh (same as legacy). */
-    if(NumGhostParticles > 0) {
-        gpu_compact_xyzh_mark_h_dirty_range(NumPart_before_ghost, NumPart);
+    /* Only the slots that just arrived carry new values; ghosts already held were
+     * marked when they arrived. */
+    if(total_recv > 0) {
+        gpu_compact_xyzh_mark_h_dirty_range(ghost_append_base, NumPart);
     }
     /* SIDX lifecycle notify: see comment in tile-overlap impl. Unconditional. */
     gpu_sidx_notify_ghost_imported(NumPart_before_ghost, NumGhostParticles);
 
-    /* Home-index exchange + provenance maps. */
-    int *recv_home_idx = (int *) malloc((total_recv > 0 ? total_recv : 1) * sizeof(int));
+    /* Home-index exchange + provenance maps. The maps describe the WHOLE live
+     * pool, so a top-up extends them rather than replacing them: entries for
+     * ghosts already held keep their slots and the new arrivals are appended in
+     * the order they landed. On a fresh import there is nothing to carry over and
+     * this reduces to building the maps outright. */
     gizmo_mpi_alltoallv_typed(send_home_idx, send_count, send_disp,
                               recv_home_idx, recv_count, recv_disp,
                               sizeof(int), MPI_COMM_WORLD);
-    ghost_home_rank_map = (int *) malloc((total_recv > 0 ? total_recv : 1) * sizeof(int));
-    ghost_home_index_map = recv_home_idx;
-    for(int t = 0; t < NTask; t++) {
-        for(int g = 0; g < recv_count[t]; g++) {
-            ghost_home_rank_map[recv_disp[t] + g] = t;
+    {
+        if(ghosts_held_before > 0 && ghost_home_rank_map && ghost_home_index_map) {
+            memcpy(pool_rank, ghost_home_rank_map, (size_t)ghosts_held_before * sizeof(int));
+            memcpy(pool_idx,  ghost_home_index_map, (size_t)ghosts_held_before * sizeof(int));
         }
+        for(int t = 0; t < NTask; t++) {
+            for(int g = 0; g < recv_count[t]; g++) {
+                const int at = ghosts_held_before + recv_disp[t] + g;
+                pool_rank[at] = t;
+                pool_idx[at]  = recv_home_idx[recv_disp[t] + g];
+            }
+        }
+        free(recv_home_idx);
+        if(ghost_home_rank_map)  free(ghost_home_rank_map);
+        if(ghost_home_index_map) free(ghost_home_index_map);
+        ghost_home_rank_map  = pool_rank;
+        ghost_home_index_map = pool_idx;
     }
-    /* Preserve comm maps for reverse Alltoallv (ghost writeback). */
+    /* Preserve comm maps for reverse Alltoallv (ghost writeback). They describe
+     * ONE import, and a retained session performs many before the single cleanup
+     * that frees them, so the previous set is released here rather than at
+     * cleanup -- otherwise every top-up leaks four arrays. (The send-side
+     * provenance just below has always done this; these four had not.) */
+    if(ghost_wb_recv_count) free(ghost_wb_recv_count);
+    if(ghost_wb_recv_disp)  free(ghost_wb_recv_disp);
+    if(ghost_wb_send_count) free(ghost_wb_send_count);
+    if(ghost_wb_send_disp)  free(ghost_wb_send_disp);
     ghost_wb_recv_count = (int *) malloc(NTask * sizeof(int));
     ghost_wb_recv_disp  = (int *) malloc(NTask * sizeof(int));
     ghost_wb_send_count = (int *) malloc(NTask * sizeof(int));
@@ -3448,6 +3659,35 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
     send_home_idx         = NULL;
     g_ghost_provenance_epoch++;
 
+    /* Record what each peer now holds, so the next import of this call ships only
+     * what is missing. A fresh retaining import starts the record; a top-up merges
+     * into it. Both sides are ascending and disjoint, so the merge keeps the order
+     * the subtraction above relies on. Committed only here, once the ghosts are
+     * actually installed. */
+    if(spec->retain_pool) {
+        if(!topup) {
+            gx_retained_session_close();
+            g_retained.sent.assign(NTask, std::vector<int>());
+            g_retained.live           = 1;
+            g_retained.n_local        = n_local_supply;
+            g_retained.num_pool       = num_pool;
+            g_retained.identity_epoch = g_supply_identity_epoch;
+            for(int t = 0; t < NTask; t++) {
+                if(t == ThisTask) continue;
+                char *mf = matched + (size_t)t * (size_t)num_pool;
+                for(int p = 0; p < num_pool; p++) if(mf[p]) g_retained.sent[t].push_back(p);
+            }
+        } else {
+            for(int t = 0; t < NTask; t++) {
+                if(retained_new_sends[t].empty()) continue;
+                std::vector<int> &held = g_retained.sent[t];
+                const size_t split = held.size();
+                held.insert(held.end(), retained_new_sends[t].begin(), retained_new_sends[t].end());
+                std::inplace_merge(held.begin(), held.begin() + split, held.end());
+            }
+        }
+    }
+
     /* Post-install ghost-set comparison, and it runs ONLY when broadcast supplied the
      * installed set (!used_routed) -- its whole premise is that broadcast is the
      * reference, which is false once anything else installed.
@@ -3457,7 +3697,14 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
      * notice earlier in this call says so out loud.
      * used_routed is uniform across ranks (both producers are collective), so this gate
      * stays collective-safe. */
-    if(ghost_route_oracle_enabled() && search_mode == NGB_SEARCH_ONEWAY && !used_routed) {
+    /* Skipped on a top-up: the comparison's premise is that the installed set IS
+     * the set the queries need, and a top-up deliberately installs only the part
+     * the pool did not already hold. Comparing either segment against a whole-set
+     * reference reports a difference that is the design, not a fault. The fresh
+     * import that opens a retained pool installs the whole set and is still
+     * compared. Validating retention itself needs its own check, against the pool
+     * rather than against one import. */
+    if(ghost_route_oracle_enabled() && search_mode == NGB_SEARCH_ONEWAY && !used_routed && !topup) {
         ghost_route_oracle_compare(spec, this_call, local_queries, n_local_queries,
                                    h_tiles, ntiles, h_pool, num_pool,
                                    h_pool_types, h_compact_xyzh, h_bvh, bvh_root,
@@ -3501,7 +3748,7 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
     if(gizmo_verbose_diag() && total_recv > 0) {
         int by_type[6] = {0,0,0,0,0,0};
         for(int g = 0; g < total_recv; g++) {
-            int gi = NumPart_before_ghost + g;
+            int gi = ghost_append_base + g;   /* the slots this call appended */
             int tt = (int)P[gi].Type;
             if(tt >= 0 && tt < 6) by_type[tt]++;
         }
@@ -3553,7 +3800,7 @@ void ghost_exchange(double safety_factor)
      * Any future physics path that writes a non-gas KernelRadius must preserve
      * that invariant or routed discovery under-imports. */
     struct ghost_exchange_spec_t sp = {GHOST_TYPE_ALL, GHOST_TYPE_ALL, NGB_SEARCH_SYMMETRIC, safety_factor, "all_types", -1, NULL, NULL,
-                                       MODE_B_RADIUS_LEGACY_KERNEL_ALLTYPES, 1.0, 1};
+                                       MODE_B_RADIUS_LEGACY_KERNEL_ALLTYPES, 1.0, 1, /*retain_pool=*/0};
     ghost_exchange_impl(&sp);
 }
 void ghost_exchange_hydro(double safety_factor)
@@ -3566,14 +3813,14 @@ void ghost_exchange_hydro(double safety_factor)
      * safety_factor is checked separately at dispatch (a >1 factor widens the
      * query beyond the band until the opener scales with it). */
     struct ghost_exchange_spec_t sp = {GHOST_TYPE_0, GHOST_TYPE_0, NGB_SEARCH_SYMMETRIC, safety_factor, "hydro_symmetric", -1, NULL, NULL,
-                                       MODE_B_RADIUS_LEGACY_KERNEL_ALLTYPES, 1.0, 1};
+                                       MODE_B_RADIUS_LEGACY_KERNEL_ALLTYPES, 1.0, 1, /*retain_pool=*/0};
     ghost_exchange_impl(&sp);
 }
 void ghost_exchange_hydro_oneway(double safety_factor)
 {
     /* ONEWAY routes on search mode alone; the flag is unread here. */
     struct ghost_exchange_spec_t sp = {GHOST_TYPE_0, GHOST_TYPE_0, NGB_SEARCH_ONEWAY, safety_factor, "hydro_oneway", -1, NULL, NULL,
-                                       MODE_B_RADIUS_LEGACY_KERNEL_ALLTYPES, 1.0, 0};
+                                       MODE_B_RADIUS_LEGACY_KERNEL_ALLTYPES, 1.0, 0, /*retain_pool=*/0};
     ghost_exchange_impl(&sp);
 }
 
@@ -3623,6 +3870,8 @@ void ghost_exchange_cleanup(void)
     if(ghost_wb_send_disp)   { free(ghost_wb_send_disp);   ghost_wb_send_disp = NULL; }
     if(ghost_send_home_idx)  { free(ghost_send_home_idx);  ghost_send_home_idx = NULL; }
     ghost_send_home_count = 0;
+    /* The pool is gone, so any record of what peers hold from it is void. */
+    gx_retained_session_close();
     /* g_ghost_provenance_epoch is a monotonic stamp — NOT reset here. */
 }
 
@@ -3647,6 +3896,11 @@ int ghost_refresh_values(void)
        cleanup since (cleanup NULLs it). */
     if(NTask <= 1)               return GHOST_REFRESH_SKIP_SERIAL;
     if(NumPart_before_ghost < 0) return GHOST_REFRESH_FAIL_NO_POOL;
+    /* A retained pool was assembled over several imports, so the send-side
+     * provenance below describes only the most recent one — enough to refresh
+     * part of the pool, which is worse than not refreshing at all. Report no
+     * provenance and let the caller do a full cleanup and reimport. */
+    if(g_retained.live)          return GHOST_REFRESH_FAIL_NO_PROVENANCE;
     if(!ghost_send_home_idx || !ghost_wb_send_count || !ghost_wb_send_disp ||
        !ghost_wb_recv_count || !ghost_wb_recv_disp)
                                  return GHOST_REFRESH_FAIL_NO_PROVENANCE;

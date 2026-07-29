@@ -30,6 +30,17 @@
 #define GHOST_TYPE_5     (1u << 5)
 #define GHOST_TYPE_ALL   ((1u << 6) - 1u)
 
+/* Outcome of ghost_exchange_run(). Returned as int through core/proto.h, which
+ * sees only an incomplete spec type; include this header to compare by name. */
+enum ghost_exchange_result {
+    GHOST_EXCHANGE_COMPLETED = 0,
+    GHOST_EXCHANGE_PARTICLE_CAPACITY_EXCEEDED,
+    GHOST_EXCHANGE_COUNT_RANGE_EXCEEDED,
+    /* A retained pool could not be extended; it has been released on every rank
+     * and nothing was imported. Re-issue the import without retention. */
+    GHOST_EXCHANGE_RETENTION_ABANDONED
+};
+
 struct ghost_exchange_spec_t {
     /* Legacy: filters ActiveParticleList in tile-overlap impl AND in the
      * request-driven impl when n_queries < 0. New explicit-query callers
@@ -87,6 +98,30 @@ struct ghost_exchange_spec_t {
      * without citing the bound at the call site. This is a STRUCTURAL property
      * of the spec, never a caller identity — dispatch must not name callers. */
     int                     supply_band_dominated;
+
+    /* Retained ghost pool: 1 asks the exchange to keep the pool that is already
+     * live and import only what is missing from it, instead of discarding and
+     * re-importing the whole set. Meant for an iterative caller whose successive
+     * imports mostly repeat each other; the pool is released by the caller's
+     * single ghost_exchange_cleanup() when the loop ends.
+     *
+     * 0 is the default and is exactly today's behavior. Retention is only sound
+     * when a held ghost's values cannot go stale within the call: the search must
+     * read no ghost radius (one-way), and the caller must do no ghost writeback.
+     * The opting runner Spec asserts both at compile time.
+     *
+     * A rank that cannot honor retention (its supply pool moved, or the missing
+     * set would not fit) reports it so the caller can fall back to a full
+     * cleanup and fresh import; retention is never silently partial.
+     *
+     * Only the request-driven path implements this. The tile-overlap path, which
+     * serves symmetric callers that cannot route, ignores the flag and rebuilds
+     * the pool — so it closes any retained session rather than leaving one open
+     * over a pool that no longer exists. A spec that sets this must therefore be
+     * one that always reaches the request-driven path; the one-way requirement
+     * asserted at the opting caller is what guarantees that, not just the
+     * value-freshness argument. */
+    int                     retain_pool;
 };
 
 #endif /* GHOST_EXCHANGE_SPEC_H */

@@ -269,6 +269,27 @@ struct DensitySpec {
     static constexpr bool           uses_ghost_writeback      = false;
     static constexpr bool           uses_ghost_write_detector = false;
 
+    /* Keep the ghost pool across the h-iteration and import only what each new
+     * iteration adds, rather than discarding and re-importing the whole pool
+     * every iteration. The search radius grows as h is solved, so the pool has to
+     * grow with it; what it does not have to do is fetch again what it already
+     * holds.
+     *
+     * Why a held ghost stays valid here: acceptance is r < h_i, so a ghost's own
+     * radius is never read — which matters because the remote rank is solving
+     * that radius at the same time. The other values a ghost supplies (mass,
+     * velocity, type) are not changed remotely during the call, and its position
+     * is carried by the same local lazy drift that applies to every particle.
+     * There is no ghost writeback to place j-side results, so nothing else
+     * depends on the pool being rebuilt. Both conditions are asserted by the
+     * runner hook that reads this flag.
+     *
+     * The pool ends the call holding the union of what the iterations needed,
+     * which is larger than any single iteration's pool; it is released when the
+     * loop ends. If it cannot be extended the exchange releases it and re-imports
+     * exactly what is needed, so the fallback is the previous behavior. */
+    static constexpr bool           iterative_ghost_pool_retention = true;
+
     /* Convergence + iter policy */
     static constexpr double accum_tolerance  = 1e-8;
     static constexpr double radius_tolerance = 1e-9;
