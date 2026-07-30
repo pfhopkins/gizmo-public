@@ -10,6 +10,38 @@
 #include "../core/wakeup_sidecar.h"
 #include "../system/gpu_particles_arena.h"
 #include "../mesh/gpu_neighbor_list.h" /* gizmo_mark_kernel_radius_dirty_range */
+#include "../mesh/topleaf_router.h"    /* topleaf_router_geometry_invalidate */
+
+
+/*! Announce that the local particle array was re-indexed: particles were
+ *  exchanged between ranks and the remaining ones compacted, so a given slot
+ *  in P[] generally holds a different particle than it did before.
+ *
+ *  Everything cached against local slot identity or ordering is therefore
+ *  invalid: the supply pools keyed on membership/order, the ghost-exchange
+ *  local tree, the GPU spatial index (its tiles and pool reference slots by
+ *  number), and the top-leaf router's node geometry. None of them can detect
+ *  this on their own -- a redistribution can leave a rank's particle count
+ *  unchanged, and it changes no particle's own properties, so counts and
+ *  per-particle state both look untouched.
+ *
+ *  This lives here, at the point where the re-indexing happens, because
+ *  callers cannot be relied on to follow every decomposition with the same
+ *  bookkeeping: the initial decomposition, the restart path, FOF and SUBFIND
+ *  all call it from outside the main loop, and a stale index there produced
+ *  neighbour lists that silently omitted real neighbours.
+ *
+ *  Not needed for the GPU particle arena: it aliases P[] directly rather than
+ *  holding a copy, so there is nothing in it to go stale. */
+static void domain_particle_layout_changed(const char *reason)
+{
+    /* Record the event first, so a consumer that only compares the epoch sees
+     * it regardless of what the cache-freeing calls below do. */
+    ghost_exchange_supply_identity_changed(reason);
+    ghost_exchange_local_tree_invalidate_full();
+    gpu_step_sidx_invalidate_full();
+    topleaf_router_geometry_invalidate();
+}
 
 
 /*! \file domain.c
@@ -445,6 +477,7 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
   reconstruct_timebins();
   gpu_particles_arena_invalidate(); /* P[] reordered across ranks; arena stale */
   wakeup_sidecar_invalidate();      /* P[] reindexed across ranks → rebuild WakeupDirty from P[] next scan */
+  domain_particle_layout_changed("domain_Decomposition");
 }
 
 
@@ -680,6 +713,7 @@ void domain_Decomposition_light(int UseAllTimeBins)
     gizmo_exit_bad_stop_if_requested("domain:treeallocate_light"); /* drain a tree-alloc UVM OOM (all-rank) before any tree use */
     reconstruct_timebins();
     wakeup_sidecar_invalidate();   /* light repartition rearranged + exchanged particles → rebuild WakeupDirty next scan */
+    domain_particle_layout_changed("domain_Decomposition_light");
 }
 
 

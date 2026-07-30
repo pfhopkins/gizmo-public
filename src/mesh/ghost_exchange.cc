@@ -126,8 +126,8 @@ static unsigned long long g_ghost_provenance_epoch = 0; /* import counter (see a
  * pool. Caching them across calls saves N-1 of those builds per step.
  *
  * Invalidation is wired to the same hooks as gpu_step_sidx_invalidate_*:
- *   - run.cc post-drift  -> ghost_exchange_local_tree_invalidate_drift()
- *   - run.cc post-decomp -> ghost_exchange_local_tree_invalidate_full()
+ *   - run.cc post-drift            -> ghost_exchange_local_tree_invalidate_drift()
+ *   - the decomposition itself     -> ghost_exchange_local_tree_invalidate_full()
  * Drift/h updates mark the cache for exact refit from P[] on the next hit;
  * domain decomposition and pool/ordering changes fully free it.
  *

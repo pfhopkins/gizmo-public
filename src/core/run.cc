@@ -12,7 +12,6 @@
 #include "../core/step_phases.h"
 #include "../mesh/neighbor_list.h"
 #include "../mesh/gpu_neighbor_list.h"
-#include "../mesh/topleaf_router.h"   /* topleaf_router_geometry_invalidate (rebuild boundary) */
 #include "../cooling/disk_betacool.h"
 #include "../cooling/planet_heating.h"
 #include "../solids/grain_promotion.h"
@@ -299,20 +298,9 @@ void run(void)
         }
 
         if(reconstructed_tree) {
-            /* Domain decomposition (any variant) shuffles particle layout/indices —
-             * the SIDX's pool/tile assignments reference stale slots, so the cheap
-             * drift-time refresh path can't fix it. Force a full rebuild on next use,
-             * which also reseeds per-tile original-extent tracking. */
-            gpu_step_sidx_invalidate_full();
-            ghost_exchange_local_tree_invalidate_full(); /* Bucket 3: drop ghost-exchange
-                                     * local-tree cache too — domain_decomp shuffles
-                                     * particle indices so cached pool[]/tile assignments
-                                     * are stale. Same shape as gpu_step_sidx_invalidate_full. */
-            topleaf_router_geometry_invalidate(); /* top-leaf router: DomainNodeIndex +
-                                     * node geometry rebuilt by the decomposition, so the
-                                     * router's per-leaf {center,len} cache (and the
-                                     * topology-keyed band) are stale — force re-acquire
-                                     * before any routed use (fail closed to broadcast). */
+            /* Caches keyed on particle-slot identity are dropped by the
+             * decomposition itself, not here: it re-indexes P[], and callers
+             * outside this loop decompose too. See domain_particle_layout_changed. */
             /* Trigger a cpu.txt summary at the start of the NEXT iteration (when
              * write_cpu_log fires) — domain-decomp steps are inherently expensive,
              * a per-decomp summary is the most informative cheap-cadence sample. */
