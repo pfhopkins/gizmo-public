@@ -625,6 +625,14 @@ static int                         *nd_list_ = NULL;
 static struct gpu_node_dirty_ctl_t *nd_ctl_  = NULL;
 static int                          nd_cap_  = 0;
 
+/* The fail-safe's own counter lives in the control block, which is the one thing whose
+ * ABSENCE the counter most needs to report: if that allocation fails there is nowhere
+ * device-visible to record anything, and the run reverts to full sweeping permanently while
+ * gpu_node_dirty_unsafe_events() reads zero forever -- indistinguishable from the optimisation
+ * working. This host-resident counter is the floor under that case; it counts the firings that
+ * had no block to be written into, and the accessor reports both. */
+static long long nd_unsafe_events_host_ = 0;
+
 /* Reads the recorder's own storage, so it stays with the storage rather than in the claim header. */
 static inline int nd_is_unsafe_(void)
 {
@@ -649,10 +657,10 @@ static int nd_ensure_(void)
     int cap = MaxNodes + AllocatedForeignNodes;
     const int soa_cap = gpu_gravity_tree_capacity();
     if(soa_cap > 0 && soa_cap < cap) {cap = soa_cap;}
-    if(cap <= 0) {return 1;}
+    if(cap <= 0) {nd_unsafe_events_host_++; return 1;}
     if(!nd_ctl_) {
         nd_ctl_ = (struct gpu_node_dirty_ctl_t *) tree_soa_alloc(sizeof(struct gpu_node_dirty_ctl_t));
-        if(!nd_ctl_) {return 1;}
+        if(!nd_ctl_) {nd_unsafe_events_host_++; return 1;}
         nd_ctl_->generation = 0; nd_ctl_->count = 0; nd_ctl_->unsafe = 0;
         nd_ctl_->owner = GPU_NODE_DIRTY_OWNER_HOST; nd_ctl_->unsafe_events = 0;
     }
@@ -664,7 +672,7 @@ static int nd_ensure_(void)
         if(!nd_seen_ || !nd_list_) {
             if(nd_seen_) {gizmo_gpu_tree_soa_release(nd_seen_); nd_seen_ = NULL;}
             if(nd_list_) {gizmo_gpu_tree_soa_release(nd_list_); nd_list_ = NULL;}
-            nd_cap_ = 0; return 1;
+            nd_cap_ = 0; nd_unsafe_events_host_++; return 1;
         }
         for(int k = 0; k < cap; k++) {nd_seen_[k] = 0u;}
         nd_cap_ = cap; nd_ctl_->generation = 0; nd_ctl_->count = 0;
@@ -693,7 +701,11 @@ void gpu_node_dirty_begin_epoch(void) {gpu_node_dirty_begin_epoch_owned(GPU_NODE
 
 void gpu_node_dirty_claim(int no)
 {
-    if(!nd_seen_ || !nd_list_ || !nd_ctl_) {nd_mark_unsafe_ctl_(nd_ctl_); return;}
+    if(!nd_seen_ || !nd_list_ || !nd_ctl_) {
+        if(!nd_ctl_) {nd_unsafe_events_host_++;}   /* nowhere to record it but here */
+        nd_mark_unsafe_ctl_(nd_ctl_);
+        return;
+    }
     const struct gpu_node_dirty_view_t v = gpu_node_dirty_view();
     gpu_node_dirty_claim_in(v, no, GPU_NODE_DIRTY_OWNER_HOST);
 }
@@ -783,7 +795,13 @@ void gpu_node_dirty_release(void)
 /* How often the fail-safe fired. A permanent silent revert to full sweeping is
    otherwise indistinguishable from the optimisation working. */
 
-long long gpu_node_dirty_unsafe_events(void) {return nd_ctl_ ? Kokkos::atomic_load(&nd_ctl_->unsafe_events) : 0;}
+long long gpu_node_dirty_unsafe_events(void)
+{
+    /* Both, because either alone can be the whole story: the block's own count is empty when the
+       block never existed, and the host count cannot see anything a kernel recorded. */
+    const long long in_block = nd_ctl_ ? Kokkos::atomic_load(&nd_ctl_->unsafe_events) : 0;
+    return in_block + nd_unsafe_events_host_;
+}
 
 int gpu_gravity_tree_oneway_safe_at(integertime ti)
 {
