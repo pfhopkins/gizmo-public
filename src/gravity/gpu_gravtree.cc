@@ -1462,14 +1462,25 @@ struct GpuGravPacketWalk {
     /* One member's evaluation of a recorded element: the leaf through the P_dev adapter,
      * a node re-derived from its index through the same prelude and geometry the walker
      * used (the same statements, so the same values), then the shared evaluation. */
-    KOKKOS_INLINE_FUNCTION void evaluate_record(int no, gpu_grav_member_t &mem) const
+    /* Returns 1 when the element was evaluated, 0 when the record cannot be reproduced.
+     *
+     * A record's accept mask is built only from members whose prelude reached the decision and
+     * whose geometry resolved, so re-deriving here reaches the same two answers -- the node index
+     * and the member's inputs are the same, and nothing between the decision and the flush moves
+     * them. Both are still tested rather than assumed: the invariant lives seventy lines away in
+     * the walker, and the cost of it being wrong is not a skipped contribution but an evaluation
+     * on uninitialised geometry. Declining hands the whole packet to the replay chain that
+     * already exists for every other reason a packet cannot be completed on the device. */
+    KOKKOS_INLINE_FUNCTION int evaluate_record(int no, gpu_grav_member_t &mem) const
     {
-        if(no < ctx.treeParticleSlots) {gpu_grav_evaluate_leaf(ctx, no, mem); return;}
+        if(no < ctx.treeParticleSlots) {gpu_grav_evaluate_leaf(ctx, no, mem); return 1;}
         gpu_grav_node_prelude_t nd;
-        (void) gpu_grav_node_prelude(ctx, no, nd);   /* an accepted node is one the prelude handed to the decision */
+        const gpu_grav_node_step_t step = gpu_grav_node_prelude(ctx, no, nd);
+        if(step != GPU_GRAV_NODE_DECIDE) {return 0;}   /* an accepted node is one the prelude handed to the decision */
         Vec3<MyFloat> s_node; MyFloat mass_node; Vec3<double> dr; double r2;
-        (void) gpu_grav_node_member_geometry(ctx, nd, mem.open, s_node, mass_node, dr, r2);   /* a member with the bit set is never a star seeing a pure-star node */
+        if(!gpu_grav_node_member_geometry(ctx, nd, mem.open, s_node, mass_node, dr, r2)) {return 0;}   /* a member with the bit set is never a star seeing a pure-star node */
         gpu_grav_evaluate_node(ctx, nd, mem, s_node, mass_node, dr, r2);
+        return 1;
     }
 
     /* The walker: advance its item until the chunk is full, the traversal is done, or the
@@ -1622,7 +1633,10 @@ struct GpuGravPacketWalk {
                 const int n_rec = ctr[GRAV_PACKET_CTR_RECORDS];
                 for(int r = 0; r < n_rec; r++) {
                     if(!mask_test(rmasks + (size_t) r * W, t)) {continue;}
-                    evaluate_record(records[r].no, mem);
+                    /* A record this member cannot reproduce fails the whole packet, exactly as a
+                       pseudo-particle or a stale source does: nothing this team computed is
+                       committed, and the replay walks every member again. */
+                    if(!evaluate_record(records[r].no, mem)) {ctr[GRAV_PACKET_CTR_FAILED] = 1; break;}
                 }
             }
             team.team_barrier();
