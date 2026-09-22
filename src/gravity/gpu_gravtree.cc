@@ -1792,6 +1792,9 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
 {
     GIZMO_GPU_ENSURE_ALL_FRESH();
     int num_active_total = (int) ActiveParticleList.size();
+    /* Cleared before any early return, so the shape reported for THIS call is this call's: a
+     * host-routed or empty call reports 0/0 rather than whatever the previous device call ran. */
+    g_packet_team = 0; g_packet_q_dev = 0;
     /* How many candidates this walk leaves to the host loop: every active until this walk has
      * selected and taken some. The host loop sizes its per-thread packet workspace from it. */
     if(host_candidates_left) {*host_candidates_left = (num_active_total > 0) ? num_active_total : 0;}
@@ -2155,7 +2158,7 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
 #endif
     ctx.ewald_pot = ewald_pot_dev;
 
-    int walked_as_packets = 0; g_packet_team = 0; g_packet_q_dev = 0;
+    int walked_as_packets = 0;
 #ifdef GX_B2_FORCE_ENGINE
     /* SPIKE (stage-1 gate arm, torn down when the dispatch between the single-target walk and
        the packet engine is decided from measurement): route every candidate through the engine. */
@@ -2316,8 +2319,14 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
     }
     Costtotal += costtotal_added;
     if(n_stale_source > 0) {
-        printf("gpu_gravtree_walk_primary: task %d: %d of %d targets met a particle source behind the walk time and were handed to the host walk\n", ThisTask, n_stale_source, num_active);
-        fflush(stdout);
+        /* Once per rank: B3a's subset drift is what renders this unreachable, and until then a
+           per-step stream from every rank buries the run's own output. */
+        static int reported_stale_source = 0;
+        if(!reported_stale_source) {
+            reported_stale_source = 1;
+            printf("gpu_gravtree_walk_primary: task %d: %d of %d targets met a particle source behind the walk time and were handed to the host walk (reported once)\n", ThisTask, n_stale_source, num_active);
+            fflush(stdout);
+        }
     }
 
     /* mark_clean (not invalidate): the per-active-i
@@ -2576,6 +2585,14 @@ extern "C" int gpu_ewald_walk_primary(void)
         return 0;
     }
 
+    /* Every particle source this walk evaluates must stand at ti_curr_host, exactly as in the
+     * primary walk -- and this walk reaches inactive particles just as freely. The primary
+     * drifts them only on the route it takes itself, so a step whose primary walk ran on the
+     * HOST arrives here with only the active set current, and without this every target would
+     * meet a stale source and defer, leaving this pass to do nothing at all. Cached: a no-op
+     * when the primary already drifted for its own device route. */
+    gizmo_full_drift_to(ti_curr_host);
+
     /* Particles have already been drifted by the primary walk (Ewald_iter==0);
      * the tree SoA mirror is still valid. Just re-acquire (cache-hit).
      * soa->nextnode_aux aliases UVM Nextnode[]; no per-walk memcpy. */
@@ -2669,8 +2686,14 @@ extern "C" int gpu_ewald_walk_primary(void)
         } else if(d_failed[a] == 2) {n_stale_source++;}
     }
     if(n_stale_source > 0) {
-        printf("gpu_ewald_walk_primary: task %d: %d of %d targets met a particle source behind the walk time and were handed to the host walk\n", ThisTask, n_stale_source, num_active);
-        fflush(stdout);
+        /* Once per rank: B3a's subset drift is what renders this unreachable, and until then a
+           per-step stream from every rank buries the run's own output. */
+        static int reported_stale_source = 0;
+        if(!reported_stale_source) {
+            reported_stale_source = 1;
+            printf("gpu_ewald_walk_primary: task %d: %d of %d targets met a particle source behind the walk time and were handed to the host walk (reported once)\n", ThisTask, n_stale_source, num_active);
+            fflush(stdout);
+        }
     }
 
     Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(scratch_block);
