@@ -179,6 +179,10 @@ void move_particles(integertime time1)
     if(time1 <= g_last_full_drift_Ti) {
         return;
     }
+    /* When every local particle is active, drifting the active set IS the full drift: take the
+       full-drift path so its stamp is published under that path's own proof (the batch completed
+       with nothing pending) and a later full-drift request at this time finds nothing left to do. */
+    if((int) ActiveParticleList.size() == NumPart) {gizmo_full_drift_to(time1); return;}
     /* Drift only the active-particle set. Non-active particles stay at their
      * previous Ti_current; drift_particle fires lazily via the
      * gpu_ngb_list_build hook when a kernel actually reads them.
