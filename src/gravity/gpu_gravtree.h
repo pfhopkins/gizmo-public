@@ -44,6 +44,14 @@ int gpu_gravtree_walk_primary(int *host_candidates_left);
    every candidate took the single-target walk; written into the per-call timings record */
 void gpu_gravtree_packet_shape(int *team, int *q_dev);
 
+/* Packets the device engine gave up on the last primary walk, by reason, so that a traversal
+ * exhausting the engine's continuation budget is visible instead of being a silent slow path.
+ * Slot 0 is unused; the rest follow the engine's own reason order (malformed index, stale
+ * source, pseudo-particle, no continuation, unusable record). Zero on a host-routed call. */
+#define GRAV_PACKET_FAIL_REASON_SLOTS 6
+void gpu_gravtree_packet_failures(long long *out, int n);
+int  gpu_gravtree_packet_failure_reasons(void);
+
 /* GPU Ewald-correction walk. Called from gravity_tree() when Ewald_iter==1
  * (pure-tree periodic, BOX_PERIODIC && !GRAVITY_NOT_PERIODIC && !PMGRID).
  * Mirrors force_treeevaluate_ewald_correction mode=0: walks the local tree a

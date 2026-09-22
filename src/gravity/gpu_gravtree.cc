@@ -1433,11 +1433,29 @@ gpu_grav_packet_scratch_plan(int q_dev, int team_size, int frontier_cap, int chu
     return p;
 }
 
+/* Why a packet gave itself up.  These are NOT interchangeable, which is the whole reason they
+ * are counted apart: meeting a pseudo-particle is the design working (the host owns those
+ * targets), while running out of room for a continuation is the engine hitting its own budget on
+ * a divergent traversal -- correctness is safe either way, but the second is a PERFORMANCE CLIFF
+ * in exactly the deep clustered subtrees this engine exists to speed up, and a single total would
+ * bury it under the ordinary pseudo replays. A stale source should be zero on every call now that
+ * the walk drifts what it evaluates; a malformed index is a broken tree. */
+enum {
+    GRAV_PACKET_FAIL_NONE = 0,
+    GRAV_PACKET_FAIL_MALFORMED_INDEX,    /* an index in the gap between particle slots and the node base */
+    GRAV_PACKET_FAIL_STALE_SOURCE,       /* a particle source behind the walk time */
+    GRAV_PACKET_FAIL_PSEUDO,             /* a pseudo-particle: the host walks every member */
+    GRAV_PACKET_FAIL_NO_CONTINUATION,    /* local stack and frontier both full */
+    GRAV_PACKET_FAIL_RECORD_UNUSABLE,    /* a record the flush could not reproduce */
+    GRAV_PACKET_FAIL_REASONS
+};
+
 /* team-scope counters, one int slot each */
 enum {
     GRAV_PACKET_CTR_RECORDS = 0,       /* records in the chunk */
     GRAV_PACKET_CTR_FRONTIER,          /* items on the frontier */
     GRAV_PACKET_CTR_FAILED,            /* the packet failed: pseudo-particle, stale particle source, malformed index, or no room for a continuation */
+    GRAV_PACKET_CTR_FAIL_REASON,       /* which of the above; read only when FAILED is set */
     GRAV_PACKET_CTR_DONE,              /* the traversal is finished */
     GRAV_PACKET_CTR_NOTE_INCOMPLETE,   /* import-completeness notes, held until success */
     GRAV_PACKET_CTR_NOTE_UNSHIPPABLE,
@@ -1451,6 +1469,15 @@ struct GpuGravPacketWalk {
     int n_cand, q_dev, frontier_cap, chunk_cap;
     struct gpu_grav_packet_scratch_plan_t plan;
     Vec3<double> *d_acc; int *d_ninter; double *d_pot; int *d_failed;
+    int *d_fail_by_reason;   /* [GRAV_PACKET_FAIL_REASONS] packets given up, by reason */
+
+    /* Give the packet up, and say why.  The first reason recorded is kept: it is the one that
+     * actually stopped the traversal, and a later lane writing over it would report a symptom. */
+    KOKKOS_INLINE_FUNCTION static void fail(int *ctr, int reason)
+    {
+        if(!ctr[GRAV_PACKET_CTR_FAILED]) {ctr[GRAV_PACKET_CTR_FAIL_REASON] = reason;}
+        ctr[GRAV_PACKET_CTR_FAILED] = 1;
+    }
 
     KOKKOS_INLINE_FUNCTION static void mask_clear(grav_packet_mask_word_t *m, int words) {for(int w = 0; w < words; w++) {m[w] = 0ULL;}}
     KOKKOS_INLINE_FUNCTION static void mask_copy(grav_packet_mask_word_t *dst, const grav_packet_mask_word_t *src, int words) {for(int w = 0; w < words; w++) {dst[w] = src[w];}}
@@ -1515,7 +1542,7 @@ struct GpuGravPacketWalk {
                 ctr[GRAV_PACKET_CTR_DONE] = 1; return;
             }
             if(no < 0) {item_live = 0; continue;}   /* the single-target walk's end-of-walk sentinel: nothing beyond it */
-            if(no >= treeParticleSlots && no < treeBase) {ctr[GRAV_PACKET_CTR_FAILED] = 1; return;}   /* gap: malformed tree; the host walk stops loudly */
+            if(no >= treeParticleSlots && no < treeBase) {fail(ctr, GRAV_PACKET_FAIL_MALFORMED_INDEX); return;}   /* gap: malformed tree; the host walk stops loudly */
             if(no < treeParticleSlots) /* particle leaf: per member, the star-star pass */
             {
                 mask_clear(accept_mask, W);
@@ -1524,7 +1551,7 @@ struct GpuGravPacketWalk {
                     if(gpu_grav_leaf_member_accepts(ctx, no, open[m])) {mask_set(accept_mask, m);}
                 }
                 if(mask_any(accept_mask, W)) {
-                    if(ctx.P_dev[no].Ti_current != ctx.ti) {ctr[GRAV_PACKET_CTR_FAILED] = 1; return;}   /* a source behind the walk time: the replay classifies and hands it to the host walk */
+                    if(ctx.P_dev[no].Ti_current != ctx.ti) {fail(ctr, GRAV_PACKET_FAIL_STALE_SOURCE); return;}   /* a source behind the walk time: the replay classifies and hands it to the host walk */
                     if(ctr[GRAV_PACKET_CTR_RECORDS] == chunk_cap) {return;}   /* chunk full: the flush follows; resume here */
                     const int r = ctr[GRAV_PACKET_CTR_RECORDS]++;
                     records[r].no = no; records[r].kind = GRAV_NODE_LOCAL; records[r].leaf_tag = LET_LEAF_TAG_NODE;
@@ -1533,7 +1560,7 @@ struct GpuGravPacketWalk {
                 no = ctx.tree_soa.nextnode_aux[no];
                 continue;
             }
-            if(no >= pseudo_start) {ctr[GRAV_PACKET_CTR_FAILED] = 1; return;}   /* pseudo-particle: the host walks every member */
+            if(no >= pseudo_start) {fail(ctr, GRAV_PACKET_FAIL_PSEUDO); return;}   /* pseudo-particle: the host walks every member */
 
             gpu_grav_node_prelude_t nd;
             const gpu_grav_node_step_t step = gpu_grav_node_prelude(ctx, no, nd);
@@ -1568,7 +1595,7 @@ struct GpuGravPacketWalk {
                continuations itself; the oldest moves to the frontier when there is no room,
                and the frontier is popped after the local ones, so the depth-first order is kept. */
             if(local_count == GRAV_PACKET_LOCAL_STACK) {
-                if(ctr[GRAV_PACKET_CTR_FRONTIER] == frontier_cap) {ctr[GRAV_PACKET_CTR_FAILED] = 1; return;}
+                if(ctr[GRAV_PACKET_CTR_FRONTIER] == frontier_cap) {fail(ctr, GRAV_PACKET_FAIL_NO_CONTINUATION); return;}
                 const int fslot = ctr[GRAV_PACKET_CTR_FRONTIER]++;
                 frontier[fslot] = local[local_head]; mask_copy(fmasks + (size_t) fslot * W, lmasks + (size_t) local_head * W, W);
                 local_head = (local_head + 1) % GRAV_PACKET_LOCAL_STACK; local_count--;
@@ -1636,7 +1663,7 @@ struct GpuGravPacketWalk {
                     /* A record this member cannot reproduce fails the whole packet, exactly as a
                        pseudo-particle or a stale source does: nothing this team computed is
                        committed, and the replay walks every member again. */
-                    if(!evaluate_record(records[r].no, mem)) {ctr[GRAV_PACKET_CTR_FAILED] = 1; break;}
+                    if(!evaluate_record(records[r].no, mem)) {fail(ctr, GRAV_PACKET_FAIL_RECORD_UNUSABLE); break;}
                 }
             }
             team.team_barrier();
@@ -1647,6 +1674,14 @@ struct GpuGravPacketWalk {
 
         /* commit, or discard everything */
         if(ctr[GRAV_PACKET_CTR_FAILED]) {
+            /* Once per packet, not per member: the leader owns the tally, so the count is packets
+             * given up rather than targets replayed, which is the quantity the budget question
+             * asks.  d_failed is the replay's channel and is rewritten by it, so the reason needs
+             * this one of its own. */
+            if(t == 0 && d_fail_by_reason) {
+                const int r = ctr[GRAV_PACKET_CTR_FAIL_REASON];
+                Kokkos::atomic_fetch_add(&d_fail_by_reason[(r > 0 && r < GRAV_PACKET_FAIL_REASONS) ? r : 0], 1);
+            }
             if(have_member) {d_failed[first + t] = 1;}
             return;
         }
@@ -1665,6 +1700,20 @@ struct GpuGravPacketWalk {
 static int g_packet_team = 0, g_packet_q_dev = 0;
 extern "C" void gpu_gravtree_packet_shape(int *team, int *q_dev) {*team = g_packet_team; *q_dev = g_packet_q_dev;}
 
+/* Packets given up on the last primary walk, by reason, alongside the shape: a cliff shows up as
+ * a NO_CONTINUATION count that grows while the shape stays put, which a total could not show. */
+/* The public slot count and the engine's reason list must not drift apart: the report indexes
+ * slots by hand, so a new reason added without widening the header would be counted and never
+ * printed. */
+static_assert(GRAV_PACKET_FAIL_REASONS == GRAV_PACKET_FAIL_REASON_SLOTS,
+              "gpu_gravtree.h's GRAV_PACKET_FAIL_REASON_SLOTS must match the engine's reason count");
+static long long g_packet_fail[GRAV_PACKET_FAIL_REASONS] = {0};
+extern "C" void gpu_gravtree_packet_failures(long long *out, int n)
+{
+    for(int r = 0; r < n; r++) {out[r] = (r < GRAV_PACKET_FAIL_REASONS) ? g_packet_fail[r] : 0;}
+}
+extern "C" int gpu_gravtree_packet_failure_reasons(void) {return GRAV_PACKET_FAIL_REASONS;}
+
 /* Host: choose the launch shape and run the packet engine over the candidates.
  * Returns 0 on success (outputs and d_failed filled per candidate), 1 if no legal shape
  * exists for this build (the caller uses the single-target walk).
@@ -1675,11 +1724,13 @@ extern "C" void gpu_gravtree_packet_shape(int *team, int *q_dev) {*team = g_pack
  * as far as the backend requires to launch it with the scratch it asks for (a legality bound
  * only, gpu_dispatch_templates.h); every reduction is reported through the shape above. */
 static int gpu_gravtree_walk_packets(const gpu_grav_walk_ctx_t &ctx, const int *d_idx, int n_cand,
-                                     Vec3<double> *d_acc, int *d_ninter, double *d_pot, int *d_failed)
+                                     Vec3<double> *d_acc, int *d_ninter, double *d_pot, int *d_failed,
+                                     int *d_fail_by_reason)
 {
     GpuGravPacketWalk f;
     f.ctx = ctx; f.d_idx = d_idx; f.n_cand = n_cand;
     f.d_acc = d_acc; f.d_ninter = d_ninter; f.d_pot = d_pot; f.d_failed = d_failed;
+    f.d_fail_by_reason = d_fail_by_reason;
     int team = (TREE_QUERY_PACKET_SIZE < GRAV_PACKET_Q_DEV_MAX) ? TREE_QUERY_PACKET_SIZE : GRAV_PACKET_Q_DEV_MAX;
     while(team >= 1) {
         f.q_dev = team;
@@ -1766,6 +1817,7 @@ struct grav_walk_scratch_plan
 {
     size_t bytes;
     size_t acc, pot, idx, failed, ninter;
+    size_t fail_by_reason;   /* [GRAV_PACKET_FAIL_REASONS], written by the engine's team leaders */
 };
 
 static inline size_t grav_walk_scratch_align(size_t offset, size_t alignment)
@@ -1798,6 +1850,10 @@ grav_walk_scratch_plan_for(int num_targets, int with_potential_and_interactions)
         offset = grav_walk_scratch_align(offset, alignof(int));
         plan.ninter = offset;  offset += n * sizeof(int);
     }
+    /* Not per target: one tally for the whole launch, carved from the same block so it needs no
+     * allocation of its own and is host-readable the moment the kernel has been waited on. */
+    offset = grav_walk_scratch_align(offset, alignof(int));
+    plan.fail_by_reason = offset;  offset += (size_t) GRAV_PACKET_FAIL_REASONS * sizeof(int);
     plan.bytes = offset;
     return plan;
 }
@@ -2063,8 +2119,11 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
     Vec3<double> *d_acc    = (Vec3<double> *) (scratch_block + scratch.acc);
     int          *d_ninter = (int *)          (scratch_block + scratch.ninter);
     double       *d_pot    = (double *)       (scratch_block + scratch.pot);
+    int          *d_fail_by_reason = (int *) (scratch_block + scratch.fail_by_reason);
     memcpy(d_idx, idx_host, num_active * sizeof(int));
     memset(d_failed, 0, num_active * sizeof(int));
+    memset(d_fail_by_reason, 0, GRAV_PACKET_FAIL_REASONS * sizeof(int));
+    for(int r = 0; r < GRAV_PACKET_FAIL_REASONS; r++) {g_packet_fail[r] = 0;}
 
     int treeBase = All.TreeNodeIndexBase;
     int treeParticleSlots_snap = All.TreeParticleSlots;
@@ -2176,7 +2235,12 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
 #ifdef GX_B2_FORCE_ENGINE
     /* SPIKE (stage-1 gate arm, torn down when the dispatch between the single-target walk and
        the packet engine is decided from measurement): route every candidate through the engine. */
-    walked_as_packets = (gpu_gravtree_walk_packets(ctx, d_idx, num_active, d_acc, d_ninter, d_pot, d_failed) == 0);
+    walked_as_packets = (gpu_gravtree_walk_packets(ctx, d_idx, num_active, d_acc, d_ninter, d_pot, d_failed,
+                                                   d_fail_by_reason) == 0);
+    /* The launcher has waited on the kernel, so the tally is complete and in shared space. */
+    if(walked_as_packets) {
+        for(int r = 0; r < GRAV_PACKET_FAIL_REASONS; r++) {g_packet_fail[r] = (long long) d_fail_by_reason[r];}
+    }
 #endif
     /* The single-target walk: every candidate when the engine did not run, otherwise only the
      * members of packets that failed. A packet fails as a whole when any member meets a

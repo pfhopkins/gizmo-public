@@ -784,6 +784,16 @@ gravity_walk_attempt:
     All.TotNumOfForces += GlobNumForceUpdate;
     plb = (NumPart / ((double) All.TotNumPart)) * NTask;
     MPI_Reduce(&plb, &plb_max, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    /* Packets the device engine gave up on this call, by reason, summed over ranks and also taken
+     * at its worst rank: a budget cliff is a property of the rank with the divergent subtree, and
+     * a sum over ranks alone would average it away.  Collective, so it sits with the other
+     * reductions rather than inside the rank-0 report below. */
+    long long packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS] = {0};
+    long long packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS] = {0};
+    long long packet_fail_max[GRAV_PACKET_FAIL_REASON_SLOTS] = {0};
+    gpu_gravtree_packet_failures(packet_fail, GRAV_PACKET_FAIL_REASON_SLOTS);
+    MPI_Reduce(packet_fail, packet_fail_sum, GRAV_PACKET_FAIL_REASON_SLOTS, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(packet_fail, packet_fail_max, GRAV_PACKET_FAIL_REASON_SLOTS, MPI_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
     MPI_Reduce(&Numnodestree, &maxnumnodes, 1, MPI_INT, MPI_MAX, 0, MPI_COMM_WORLD);
     /* The span from the end of the build to here is the force walk.  Only the
      * wait is separately measured inside it, so the walk row is the rest of the
@@ -800,7 +810,10 @@ gravity_walk_attempt:
         fprintf(FdTimings, "work-load balance: %g (%g %g) rel1to2=%g   max=%g avg=%g\n", maxt / (1.0e-6 + sumt / NTask), maxt1 / (1.0e-6 + sumt1 / NTask), maxt2 / (1.0e-6 + sumt2 / NTask), sumt1 / (1.0e-6 + sumt1 + sumt2), maxt, sumt / NTask);
         fprintf(FdTimings, "particle-load balance: %g\n", plb_max);
         fprintf(FdTimings, "max. nodes: %d, filled: %g\n", maxnumnodes, maxnumnodes / ((double) MaxNodes));
-        fprintf(FdTimings, "part/sec=%g | %g  ia/part=%g (%g)\n", GlobNumForceUpdate / (sumt + 1.0e-20), GlobNumForceUpdate / (1.0e-6 + maxt * NTask), ((double) (sum_costtotal)) / (1.0e-20 + GlobNumForceUpdate), ((double) ewaldtot) / (1.0e-20 + GlobNumForceUpdate)); {int packet_team, packet_q_dev; gpu_gravtree_packet_shape(&packet_team, &packet_q_dev); fprintf(FdTimings, "packet: Q=%d T=%d Qdev=%d\n", TREE_QUERY_PACKET_SIZE, packet_team, packet_q_dev);} fprintf(FdTimings, "\n");
+        fprintf(FdTimings, "part/sec=%g | %g  ia/part=%g (%g)\n", GlobNumForceUpdate / (sumt + 1.0e-20), GlobNumForceUpdate / (1.0e-6 + maxt * NTask), ((double) (sum_costtotal)) / (1.0e-20 + GlobNumForceUpdate), ((double) ewaldtot) / (1.0e-20 + GlobNumForceUpdate)); {int packet_team, packet_q_dev; gpu_gravtree_packet_shape(&packet_team, &packet_q_dev); fprintf(FdTimings, "packet: Q=%d T=%d Qdev=%d\n", TREE_QUERY_PACKET_SIZE, packet_team, packet_q_dev);
+            fprintf(FdTimings, "packet-gaveup: malformed=%lld stale=%lld pseudo=%lld nocont=%lld record=%lld (worst rank: %lld %lld %lld %lld %lld)\n",
+                    packet_fail_sum[1], packet_fail_sum[2], packet_fail_sum[3], packet_fail_sum[4], packet_fail_sum[5],
+                    packet_fail_max[1], packet_fail_max[2], packet_fail_max[3], packet_fail_max[4], packet_fail_max[5]);} fprintf(FdTimings, "\n");
         fflush(FdTimings);
     }
     double costtotal_new = 0, sum_costtotal_new;
