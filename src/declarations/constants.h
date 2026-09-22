@@ -239,7 +239,9 @@
  * ranks, 8 cut the host walk by 14% and was never slower than 1 on any class of step, while 64 gave
  * the same gain on the steps that matter most but cost more on the many tiny steps, where a large
  * packet does far more opening-criterion work than the node loads it shares; so 8 is the default.
- * Override in Config.sh. */
+ * Override in Config.sh. Any value of 1 or more is honoured: on the device a packet is walked by a team of
+ * threads, one per member, up to 256 members per packet, and a larger configured size is walked as several
+ * packets of that many; the shape actually launched is written into each call's timings record. */
 #ifndef TREE_QUERY_PACKET_SIZE
 #define TREE_QUERY_PACKET_SIZE 8
 #endif

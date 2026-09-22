@@ -40,6 +40,9 @@ extern "C" {
  * host_candidates_left (may be NULL) receives how many walk candidates this
  * pass leaves to the host loop -- an upper bound on any early return. */
 int gpu_gravtree_walk_primary(int *host_candidates_left);
+/* the packet shape the last primary walk used on this rank (team size, members per packet), 0/0 when
+   every candidate took the single-target walk; written into the per-call timings record */
+void gpu_gravtree_packet_shape(int *team, int *q_dev);
 
 /* GPU Ewald-correction walk. Called from gravity_tree() when Ewald_iter==1
  * (pure-tree periodic, BOX_PERIODIC && !GRAVITY_NOT_PERIODIC && !PMGRID).

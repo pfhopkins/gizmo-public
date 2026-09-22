@@ -1392,7 +1392,7 @@ gpu_gravtree_walk_one(const gpu_grav_walk_ctx_t &ctx, int target, Vec3<double> &
  * ---------------------------------------------------------------------- */
 
 #define GRAV_PACKET_MASK_BITS 64
-#define GRAV_PACKET_MASK_WORDS_MAX 4            /* q_dev <= 256: a launch never asks for more */
+#define GRAV_PACKET_Q_DEV_MAX 256               /* members per packet on the device; a larger configured packet size is walked as several packets */
 #define GRAV_PACKET_LOCAL_STACK 16              /* continuations a walker keeps itself; the oldest moves to the frontier when full */
 typedef unsigned long long grav_packet_mask_word_t;
 
@@ -1400,7 +1400,7 @@ struct gpu_grav_walk_item_t { int no, exit; };   /* a work item's indices; its m
 
 struct gpu_grav_packet_scratch_plan_t {
     int mask_words;
-    size_t open_inputs, frontier, frontier_masks, records, record_masks, local, local_masks, counters, bytes;
+    size_t open_inputs, frontier, frontier_masks, records, record_masks, local, local_masks, walker_masks, counters, bytes;
 };
 
 /* The scratch a team needs for one launch shape: q_dev members, team_size threads,
@@ -1419,6 +1419,7 @@ gpu_grav_packet_scratch_plan(int q_dev, int team_size, int frontier_cap, int chu
     p.record_masks   = take((size_t) chunk_cap * p.mask_words * sizeof(grav_packet_mask_word_t), alignof(grav_packet_mask_word_t));
     p.local          = take((size_t) team_size * GRAV_PACKET_LOCAL_STACK * sizeof(gpu_grav_walk_item_t), alignof(gpu_grav_walk_item_t));
     p.local_masks    = take((size_t) team_size * GRAV_PACKET_LOCAL_STACK * p.mask_words * sizeof(grav_packet_mask_word_t), alignof(grav_packet_mask_word_t));
+    p.walker_masks   = take((size_t) team_size * 3 * p.mask_words * sizeof(grav_packet_mask_word_t), alignof(grav_packet_mask_word_t));   /* a walker's item mask + its two scratch masks */
     p.counters       = take(16 * sizeof(int), alignof(long long));
     p.bytes = off;
     return p;
@@ -1467,6 +1468,7 @@ struct GpuGravPacketWalk {
      * packet fails. All of its state persists across the flush that follows: the item in
      * the caller's variables, the continuations in scratch. */
     KOKKOS_INLINE_FUNCTION void walk(int &no, int &exit, grav_packet_mask_word_t *mask, int &item_live,
+                                     grav_packet_mask_word_t *accept_mask, grav_packet_mask_word_t *open_mask,
                                      int &local_head, int &local_count,
                                      gpu_grav_walk_item_t *local, grav_packet_mask_word_t *lmasks,
                                      const gpu_grav_open_inputs_t *open,
@@ -1476,7 +1478,6 @@ struct GpuGravPacketWalk {
         const int W = plan.mask_words;
         const int treeBase = ctx.treeBase, treeParticleSlots = ctx.treeParticleSlots;
         const int pseudo_start = treeBase + ctx.maxNodes + ctx.maxForeignNodes;
-        grav_packet_mask_word_t accept_mask[GRAV_PACKET_MASK_WORDS_MAX], open_mask[GRAV_PACKET_MASK_WORDS_MAX];
 
         while(1)
         {
@@ -1576,6 +1577,7 @@ struct GpuGravPacketWalk {
         grav_packet_mask_word_t  *rmasks    = (grav_packet_mask_word_t *)  (scratch + plan.record_masks);
         gpu_grav_walk_item_t     *local     = (gpu_grav_walk_item_t *)     (scratch + plan.local) + (size_t) t * GRAV_PACKET_LOCAL_STACK;
         grav_packet_mask_word_t  *lmasks    = (grav_packet_mask_word_t *)  (scratch + plan.local_masks) + (size_t) t * GRAV_PACKET_LOCAL_STACK * W;
+        grav_packet_mask_word_t  *wmasks    = (grav_packet_mask_word_t *)  (scratch + plan.walker_masks) + (size_t) t * 3 * W;
         int                      *ctr       = (int *)                      (scratch + plan.counters);
 
         /* the member this thread owns, if any; every thread publishes an entry so the
@@ -1594,7 +1596,7 @@ struct GpuGravPacketWalk {
         /* stage 1: one walker, thread 0 -- the depth-first order of the single-target walk */
         const int is_walker = (t == 0);
         int no = ctx.treeBase, exit = -1;
-        grav_packet_mask_word_t mask[GRAV_PACKET_MASK_WORDS_MAX]; mask_clear(mask, W);
+        grav_packet_mask_word_t *mask = wmasks, *accept_mask = wmasks + W, *open_mask = wmasks + 2 * W; mask_clear(mask, W);
         for(int m = 0; m < q_dev; m++) {if(open[m].alive) {mask_set(mask, m);}}
         int item_live = mask_any(mask, W);   /* a packet of massless targets walks nothing */
         int local_head = 0, local_count = 0;
@@ -1602,7 +1604,7 @@ struct GpuGravPacketWalk {
         while(1)
         {
             if(is_walker && !ctr[GRAV_PACKET_CTR_FAILED]) {
-                walk(no, exit, mask, item_live, local_head, local_count, local, lmasks, open, frontier, fmasks, records, rmasks, ctr);
+                walk(no, exit, mask, item_live, accept_mask, open_mask, local_head, local_count, local, lmasks, open, frontier, fmasks, records, rmasks, ctr);
             }
             team.team_barrier();
             if(ctr[GRAV_PACKET_CTR_FAILED]) {break;}
@@ -1634,37 +1636,47 @@ struct GpuGravPacketWalk {
     }
 };
 
+/* The shape the last primary walk on this rank used: the team size and the members per
+ * packet, or 0/0 when every candidate took the single-target walk. gravity_tree() writes it
+ * into the per-call timings record, so a run's readout says what was measured. */
+static int g_packet_team = 0, g_packet_q_dev = 0;
+extern "C" void gpu_gravtree_packet_shape(int *team, int *q_dev) {*team = g_packet_team; *q_dev = g_packet_q_dev;}
+
 /* Host: choose the launch shape and run the packet engine over the candidates.
  * Returns 0 on success (outputs and d_failed filled per candidate), 1 if no legal shape
- * exists for this build (the caller uses the single-target walk). */
+ * exists for this build (the caller uses the single-target walk).
+ *
+ * The packet is as wide as the team, one thread per member, so the packet on the device is
+ * the configured size up to GRAV_PACKET_Q_DEV_MAX (the mask storage bound), and a larger
+ * configured size is walked as several packets of that many. The team is then reduced only
+ * as far as the backend requires to launch it with the scratch it asks for (a legality bound
+ * only, gpu_dispatch_templates.h); every reduction is reported through the shape above. */
 static int gpu_gravtree_walk_packets(const gpu_grav_walk_ctx_t &ctx, const int *d_idx, int n_cand,
                                      Vec3<double> *d_acc, int *d_ninter, double *d_pot, int *d_failed)
 {
     GpuGravPacketWalk f;
     f.ctx = ctx; f.d_idx = d_idx; f.n_cand = n_cand;
     f.d_acc = d_acc; f.d_ninter = d_ninter; f.d_pot = d_pot; f.d_failed = d_failed;
-    /* the packet is as wide as the team: every member has its own thread. Start from the
-       configured packet size and halve until the backend can launch the team with the
-       scratch it asks for (a legality bound only, gpu_dispatch_templates.h). */
-    int want = TREE_QUERY_PACKET_SIZE; if(want > 256) {want = 256;}
-    int team = 1; while((team << 1) <= want) {team <<= 1;}
-    for(; team >= 1; team >>= 1) {
+    int team = (TREE_QUERY_PACKET_SIZE < GRAV_PACKET_Q_DEV_MAX) ? TREE_QUERY_PACKET_SIZE : GRAV_PACKET_Q_DEV_MAX;
+    while(team >= 1) {
         f.q_dev = team;
         f.frontier_cap = (2 * team > 16) ? 2 * team : 16;
         f.chunk_cap = (8 * team > 256) ? 8 * team : 256;
         f.plan = gpu_grav_packet_scratch_plan(f.q_dev, team, f.frontier_cap, f.chunk_cap);
-        const int league = (n_cand + f.q_dev - 1) / f.q_dev;
         /* the legality bound is asked of a probe policy carrying the same scratch request: a
            policy constructed at an illegal team size throws before it can be asked anything */
         Kokkos::TeamPolicy<> probe(1, 1, 1);
         probe.set_scratch_size(0, Kokkos::PerTeam(f.plan.bytes));
         const int hw = probe.team_size_max(f, Kokkos::ParallelForTag());
-        if(hw < team) {continue;}
+        if(hw <= 0) {return 1;}
+        if(hw < team) {team = hw; continue;}   /* the scratch shrinks with the team, so this converges */
+        const int league = (n_cand + f.q_dev - 1) / f.q_dev;
         Kokkos::TeamPolicy<> policy(league, team, 1);
         policy.set_scratch_size(0, Kokkos::PerTeam(f.plan.bytes));
         Kokkos::parallel_for("gravtree_walk_packets", policy, f);
         Kokkos::fence();
         gizmo_gpu_check_last_error("gravtree_walk_packets", league);
+        g_packet_team = team; g_packet_q_dev = f.q_dev;
         return 0;
     }
     return 1;
@@ -2132,7 +2144,7 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
 #endif
     ctx.ewald_pot = ewald_pot_dev;
 
-    int walked_as_packets = 0;
+    int walked_as_packets = 0; g_packet_team = 0; g_packet_q_dev = 0;
 #ifdef GX_B2_FORCE_ENGINE
     /* SPIKE (stage-1 gate arm, torn down when the dispatch between the single-target walk and
        the packet engine is decided from measurement): route every candidate through the engine. */
