@@ -18,6 +18,7 @@
 #include "../declarations/allvars.h"
 #include "../declarations/gpu_error_check.h"
 #include "gpu_gravity_tree.h"
+#include "gpu_node_dirty_claim.h"   /* the shared control block + the one claim */
 #include "gpu_topology_finalize.h"   /* gizmo_gpu_prepare_shared_for_free */
 #include "forcetree.h"   /* force_treebuild_generation() — SoA-drift stamp invalidation key */
 
@@ -619,67 +620,16 @@ extern "C" void gpu_nextnode_backup_suns(int n)
  * memory and the claim was a host builtin.  One recorder, one claim, reachable from both
  * sides is what lets the discovery pre-walk record the nodes it finds without a second
  * node-currency system growing up beside this one. */
-struct gpu_node_dirty_ctl_t {
-    unsigned int generation;     /* stamps equal to this are claimed in the current epoch */
-    int          count;          /* append cursor into list[] */
-    int          unsafe;         /* sticky: out-of-range, overflow, or a claim out of phase */
-    int          owner;          /* which phase may claim right now (see gpu_node_dirty_owner_t) */
-    long long    unsafe_events;  /* how often the fail-safe fired, run-total */
-};
-
-/* Everything a claimer needs, and nothing it does not: copied BY VALUE into a kernel, so
- * the claim never dereferences a host pointer from device code. */
-struct gpu_node_dirty_view_t {
-    unsigned int                *seen;   /* [cap] generation stamps, never cleared */
-    int                         *list;   /* [cap] compacted node indices */
-    struct gpu_node_dirty_ctl_t *ctl;
-    int                          cap;
-    int                          base;   /* All.TreeNodeIndexBase at the epoch's start */
-};
-
 static unsigned int                *nd_seen_ = NULL;
 static int                         *nd_list_ = NULL;
 static struct gpu_node_dirty_ctl_t *nd_ctl_  = NULL;
 static int                          nd_cap_  = 0;
 
-/* Ordering.  The claim publishes geometry the claimer wrote just before it, and the
- * consumer must observe that geometry once it observes the claim.  The shipped host-only
- * version rode release/acquire on the stamp itself; one claim now serves host and device,
- * where a per-object memory order is not portably expressible, so the pairing is carried
- * by explicit fences instead -- a full fence before the stamp exchange, and one in the
- * consumer before it reads the list.  Strictly stronger than the ordering it replaces. */
-/* Device-callable: the claim below runs in a kernel, and a host-only helper reached from a
- * KOKKOS_INLINE_FUNCTION is a device-annotation defect no host compiler can see. */
-KOKKOS_INLINE_FUNCTION void nd_mark_unsafe_ctl_(struct gpu_node_dirty_ctl_t *ctl)
-{
-    if(!ctl) {return;}
-    Kokkos::atomic_store(&ctl->unsafe, 1);
-    Kokkos::atomic_fetch_add(&ctl->unsafe_events, 1LL);
-}
+/* Reads the recorder's own storage, so it stays with the storage rather than in the claim header. */
 static inline int nd_is_unsafe_(void)
 {
     return (nd_ctl_ && Kokkos::atomic_load(&nd_ctl_->unsafe)) ? 1 : 0;
 }
-
-/* THE claim, and the only one.  `owner` is the phase the caller believes it is in; a
- * mismatch is a stopped invariant rather than a tolerated race, because the whole point of
- * naming an epoch owner is that host and device claims never interleave. */
-KOKKOS_INLINE_FUNCTION void
-gpu_node_dirty_claim_in(const struct gpu_node_dirty_view_t &v, int no, int owner)
-{
-    if(!v.seen || !v.list || !v.ctl) {nd_mark_unsafe_ctl_(v.ctl); return;}
-    if(v.ctl->owner != owner)       {nd_mark_unsafe_ctl_(v.ctl); return;}
-    const int k = no - v.base;
-    if(k < 0 || k >= v.cap)         {nd_mark_unsafe_ctl_(v.ctl); return;}
-    Kokkos::memory_fence();   /* the geometry this claim refers to is published before the claim is */
-    const unsigned int gen  = v.ctl->generation;   /* constant within an epoch */
-    const unsigned int prev = Kokkos::atomic_exchange(&v.seen[k], gen);
-    if(prev == gen) {return;}                      /* one claim per node per epoch */
-    const int slot = Kokkos::atomic_fetch_add(&v.ctl->count, 1);
-    if(slot < v.cap) {v.list[slot] = no;}
-    else             {nd_mark_unsafe_ctl_(v.ctl);}
-}
-
 struct gpu_node_dirty_view_t gpu_node_dirty_view(void)
 {
     struct gpu_node_dirty_view_t v;
