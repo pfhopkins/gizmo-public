@@ -55,6 +55,203 @@ static double *drift_kick_table_dev_ = NULL;   /* SharedSpace, 2 * DRIFT_TABLE_L
 
 /* --- dispatcher ---------------------------------------------------------- */
 
+/* ============================================================================
+ * THE TWO SHARED PER-NODE UNITS.  The full sweep below and the SUBSET consumer both run
+ * exactly these, so a field added to one is added to both by construction; a hand-copied
+ * field list in a second consumer is how a subset path silently goes stale.
+ * ========================================================================== */
+
+/* Every device-visible mirror field whose canonical AoS value can change BETWEEN TREE
+ * BUILDS: drift moves the positions and lengths, a kick raises the velocities and vmax.
+ * Everything else the walk reads (mass, maxsoft, the topology, the payload moments) is
+ * build- or moment-refresh-owned, and is deliberately absent. */
+struct gpu_node_mirror_ptrs_t {
+    MyFloat           *len;
+    integertime       *node_ti;
+    Vec3<MyGravFloat> *s;
+    Vec3<MyGravFloat> *vs;
+    MyGravFloat       *hmax;
+    MyGravFloat       *vmax;
+    unsigned int      *bitflags;
+#ifdef RT_SEPARATELY_TRACK_LUMPOS
+    Vec3<MyGravFloat> *rt_s;
+    Vec3<MyGravFloat> *rt_vs;
+#endif
+#ifdef DM_SCALARFIELD_SCREENING
+    Vec3<MyGravFloat> *s_dm;
+    Vec3<MyGravFloat> *vs_dm;
+#endif
+#ifdef SINK_NODE_MOTION_TRACKED
+    Vec3<MyGravFloat> *sink_pos;
+    Vec3<MyGravFloat> *sink_vel;
+#endif
+};
+
+static inline struct gpu_node_mirror_ptrs_t gpu_node_mirror_ptrs(struct gpu_gravity_tree_soa_t *soa)
+{
+    struct gpu_node_mirror_ptrs_t m;
+    m.len = soa->len; m.node_ti = soa->node_ti; m.s = soa->s; m.vs = soa->node_vs;
+    m.hmax = soa->hmax; m.vmax = soa->vmax; m.bitflags = soa->bitflags;
+#ifdef RT_SEPARATELY_TRACK_LUMPOS
+    m.rt_s = soa->rt_source_lum_s; m.rt_vs = soa->rt_source_lum_vs;
+#endif
+#ifdef DM_SCALARFIELD_SCREENING
+    m.s_dm = soa->s_dm; m.vs_dm = soa->vs_dm;
+#endif
+#ifdef SINK_NODE_MOTION_TRACKED
+    m.sink_pos = soa->sink_pos; m.sink_vel = soa->sink_vel;
+#endif
+    return m;
+}
+
+/* Advance ONE node's canonical AoS state to `ti_target`.
+ * `fold_kick` is explicit rather than inferred: the host (force_drift_node) does NOT fold a
+ * pending kick on a node that already stands at the target time -- it returns early -- while
+ * this sweep's refresh pass falls through at dt = 0 and does. Both reach the same state once
+ * the next real drift runs, but the node velocity a walk reads in between differs, so the
+ * caller states which behaviour it wants instead of inheriting it. */
+static KOKKOS_INLINE_FUNCTION void
+gpu_node_drift_apply(struct NODE *Nodes_uvm, struct extNODE *Extnodes_uvm, int no,
+                     integertime ti_target, double dt_drift, double dt_drift_hmax, double dt_widen,
+                     int fold_kick)
+{
+    /* Fold a pending kick into vs and clear dp -- only when the caller asks (see above). */
+    if(fold_kick && (Nodes_uvm[no].u.d.bitflags & (1u << BITFLAG_NODEHASBEENKICKED))) {
+        double mass = (double) Nodes_uvm[no].u.d.mass;
+        double fac  = (mass > 0) ? (1.0 / mass) : 0.0;
+
+#ifdef RT_SEPARATELY_TRACK_LUMPOS
+        double l_tot = 0.0;
+        for(int b = 0; b < N_RT_FREQ_BINS; b++) {l_tot += (double)Nodes_uvm[no].stellar_lum[b];}
+        double fac_lum = (l_tot > 0) ? (1.0 / l_tot) : 0.0;
+#endif
+#ifdef DM_SCALARFIELD_SCREENING
+        double mass_dm = (double) Nodes_uvm[no].mass_dm;
+        double fac_dm  = (mass_dm > 0) ? (1.0 / mass_dm) : 0.0;
+#endif
+
+        for(int j = 0; j < 3; j++) {
+            Extnodes_uvm[no].vs[j] = (MyFloat)((double)Extnodes_uvm[no].vs[j] + fac * (double)Extnodes_uvm[no].dp[j]);
+            Extnodes_uvm[no].dp[j] = 0;
+#ifdef RT_SEPARATELY_TRACK_LUMPOS
+            Extnodes_uvm[no].rt_source_lum_vs[j] = (MyFloat)((double)Extnodes_uvm[no].rt_source_lum_vs[j]
+                                                   + fac_lum * (double)Extnodes_uvm[no].rt_source_lum_dp[j]);
+            Extnodes_uvm[no].rt_source_lum_dp[j] = 0;
+#endif
+#ifdef DM_SCALARFIELD_SCREENING
+            Extnodes_uvm[no].vs_dm[j] = (MyFloat)((double)Extnodes_uvm[no].vs_dm[j] + fac_dm * (double)Extnodes_uvm[no].dp_dm[j]);
+            Extnodes_uvm[no].dp_dm[j] = 0;
+#endif
+        }
+#ifdef SINK_NODE_MOTION_TRACKED
+        /* Mirrors the host fold (forcetree_update.cc): normalised by sink_mass, not mass, and
+           consumed before the kicked bitflag is cleared below. */
+        {
+            double sink_mass = (double) Nodes_uvm[no].sink_mass;
+            double fac_sink  = (sink_mass > 0) ? (1.0 / sink_mass) : 0.0;
+            for(int j = 0; j < 3; j++) {
+                Nodes_uvm[no].sink_vel[j] = (MyFloat)((double)Nodes_uvm[no].sink_vel[j] + fac_sink * (double)Extnodes_uvm[no].sink_dp[j]);
+                Extnodes_uvm[no].sink_dp[j] = 0;
+            }
+        }
+#endif
+        Nodes_uvm[no].u.d.bitflags &= (~(1u << BITFLAG_NODEHASBEENKICKED));
+    }
+
+    /* Apply drift to s, len, hmax. */
+    for(int j = 0; j < 3; j++) {
+        Nodes_uvm[no].u.d.s[j] = (MyFloat)((double)Nodes_uvm[no].u.d.s[j] + (double)Extnodes_uvm[no].vs[j] * dt_drift);
+#ifdef SINK_NODE_MOTION_TRACKED
+        Nodes_uvm[no].sink_pos[j] = (MyFloat)((double)Nodes_uvm[no].sink_pos[j] + (double)Nodes_uvm[no].sink_vel[j] * dt_drift);
+#endif
+#ifdef DM_SCALARFIELD_SCREENING
+        Nodes_uvm[no].s_dm[j]  = (MyFloat)((double)Nodes_uvm[no].s_dm[j]  + (double)Extnodes_uvm[no].vs_dm[j] * dt_drift);
+#endif
+#ifdef RT_SEPARATELY_TRACK_LUMPOS
+        Nodes_uvm[no].rt_source_lum_s[j] = (MyFloat)((double)Nodes_uvm[no].rt_source_lum_s[j]
+                                            + (double)Extnodes_uvm[no].rt_source_lum_vs[j] * dt_drift);
+#endif
+    }
+    Nodes_uvm[no].len = (MyFloat)((double)Nodes_uvm[no].len
+                                  + TREE_DRIFT_VELOCITY_PREFAC * (double)Extnodes_uvm[no].vmax * dt_widen);
+
+    {
+        double exp_arg = (double)Extnodes_uvm[no].divVmax * dt_drift_hmax / (double)NUMDIMS;
+        if(exp_arg < -1.0) {exp_arg = -1.0;}
+        if(exp_arg >  1.0) {exp_arg =  1.0;}
+        double decay_fac = exp(exp_arg);
+        if(Extnodes_uvm[no].hmax > 0) {
+            Extnodes_uvm[no].hmax = (MyFloat)((double)Extnodes_uvm[no].hmax * decay_fac);
+        }
+        /* Mode B per-type bands: upward-only inflate.
+         * Bands include static-ish sources (P[j].ForceSoftening) that
+         * don't shrink under drift, so decaying below the actual FS value
+         * would under-bound the node-prune. force_update_hmax() re-grows
+         * bands per-particle each call; we just must not shrink them
+         * here. Scalar `hmax` keeps its legacy bidirectional decay above.
+         * Without this guard, expansion regions (positive divVmax) would
+         * fail to track via the upward branch. */
+        if(decay_fac > 1.0) {
+            for(int t = 0; t < 6; t++) {
+                if(Extnodes_uvm[no].hmax_per_type[t] > 0) {
+                    Extnodes_uvm[no].hmax_per_type[t] = (MyFloat)((double)Extnodes_uvm[no].hmax_per_type[t] * decay_fac);
+                }
+            }
+        }
+    }
+
+    Nodes_uvm[no].Ti_current = ti_target;
+}
+
+/* Publish one node's mirror.  Plain copies from the AoS, never monotone clamps: the moment
+ * refresh copies several of these fields BACK into the AoS, so a mirror value that could ever
+ * exceed its AoS source would be copied back and inflate it. */
+static KOKKOS_INLINE_FUNCTION void
+gpu_node_mirror_publish(const struct gpu_node_mirror_ptrs_t &m, int k, int no,
+                        struct NODE *Nodes_uvm, struct extNODE *Extnodes_uvm)
+{
+    /* SoA mirror update: only the fields the walk reads.  Vec3 narrowing
+     * cast for mixed-precision builds (MyGravFloat=float, MyFloat=double). */
+    m.len[k]  = Nodes_uvm[no].len;
+    /* The time this length was written at: widen-on-open reads the pair. */
+    if(m.node_ti) {m.node_ti[k] = Nodes_uvm[no].Ti_current;}
+    m.s[k]    = { (MyGravFloat)Nodes_uvm[no].u.d.s[0],
+                    (MyGravFloat)Nodes_uvm[no].u.d.s[1],
+                    (MyGravFloat)Nodes_uvm[no].u.d.s[2] };
+    m.vs[k]   = { (MyGravFloat)Extnodes_uvm[no].vs[0],
+                    (MyGravFloat)Extnodes_uvm[no].vs[1],
+                    (MyGravFloat)Extnodes_uvm[no].vs[2] };
+    m.hmax[k] = (MyGravFloat)Extnodes_uvm[no].hmax;
+    m.bitflags[k] = Nodes_uvm[no].u.d.bitflags;
+#ifdef RT_SEPARATELY_TRACK_LUMPOS
+    m.rt_s[k]  = { (MyGravFloat)Nodes_uvm[no].rt_source_lum_s[0],
+                     (MyGravFloat)Nodes_uvm[no].rt_source_lum_s[1],
+                     (MyGravFloat)Nodes_uvm[no].rt_source_lum_s[2] };
+    m.rt_vs[k] = { (MyGravFloat)Extnodes_uvm[no].rt_source_lum_vs[0],
+                     (MyGravFloat)Extnodes_uvm[no].rt_source_lum_vs[1],
+                     (MyGravFloat)Extnodes_uvm[no].rt_source_lum_vs[2] };
+#endif
+#ifdef DM_SCALARFIELD_SCREENING
+    m.s_dm[k]  = { (MyGravFloat)Nodes_uvm[no].s_dm[0],
+                     (MyGravFloat)Nodes_uvm[no].s_dm[1],
+                     (MyGravFloat)Nodes_uvm[no].s_dm[2] };
+    m.vs_dm[k] = { (MyGravFloat)Extnodes_uvm[no].vs_dm[0],
+                     (MyGravFloat)Extnodes_uvm[no].vs_dm[1],
+                     (MyGravFloat)Extnodes_uvm[no].vs_dm[2] };
+#endif
+#ifdef SINK_NODE_MOTION_TRACKED
+    /* the device walk reads sink_pos/sink_vel from the SoA, not the AoS, so the fold and drift
+       above are invisible to it unless they are mirrored here with the other drifted moments */
+    m.sink_pos[k] = { (MyGravFloat)Nodes_uvm[no].sink_pos[0],
+                        (MyGravFloat)Nodes_uvm[no].sink_pos[1],
+                        (MyGravFloat)Nodes_uvm[no].sink_pos[2] };
+    m.sink_vel[k] = { (MyGravFloat)Nodes_uvm[no].sink_vel[0],
+                        (MyGravFloat)Nodes_uvm[no].sink_vel[1],
+                        (MyGravFloat)Nodes_uvm[no].sink_vel[2] };
+#endif
+    if(m.vmax) {m.vmax[k] = (MyGravFloat) Extnodes_uvm[no].vmax;}
+}
+
 extern "C" int gpu_force_drift_nodes_ex(integertime time1, int refresh_mirrors_already_current)
 {
     GIZMO_GPU_ENSURE_ALL_FRESH();
@@ -117,25 +314,9 @@ extern "C" int gpu_force_drift_nodes_ex(integertime time1, int refresh_mirrors_a
     struct NODE     *Nodes_uvm    = Nodes;
     struct extNODE  *Extnodes_uvm = Extnodes;
 
-    /* SoA mirror handles. */
-    MyFloat           *len_soa     = soa->len;
-    integertime       *ti_soa      = soa->node_ti;
-    Vec3<MyGravFloat> *s_soa       = soa->s;
-    Vec3<MyGravFloat> *vs_soa      = soa->node_vs;
-    MyGravFloat       *hmax_soa    = soa->hmax;
-    unsigned int      *bitflags_soa = soa->bitflags;
-#ifdef RT_SEPARATELY_TRACK_LUMPOS
-    Vec3<MyGravFloat> *rt_s_soa    = soa->rt_source_lum_s;
-    Vec3<MyGravFloat> *rt_vs_soa   = soa->rt_source_lum_vs;
-#endif
-#ifdef DM_SCALARFIELD_SCREENING
-    Vec3<MyGravFloat> *s_dm_soa    = soa->s_dm;
-    Vec3<MyGravFloat> *vs_dm_soa   = soa->vs_dm;
-#endif
-#ifdef SINK_NODE_MOTION_TRACKED
-    Vec3<MyGravFloat> *sink_pos_soa = soa->sink_pos;
-    Vec3<MyGravFloat> *sink_vel_soa = soa->sink_vel;
-#endif
+    /* The mirror pointers, packed: the kernel captures ONE value, and the subset consumer
+     * fills the same pack from the same SoA so both publish through one unit. */
+    const struct gpu_node_mirror_ptrs_t mirror = gpu_node_mirror_ptrs(soa);
 
     Kokkos::parallel_for("gpu_force_drift_nodes", n_nodes, KOKKOS_LAMBDA(int kk) {
         /* kk in [0, n_local_nodes) drives local nodes; kk in
@@ -190,132 +371,10 @@ extern "C" int gpu_force_drift_nodes_ex(integertime time1, int refresh_mirrors_a
         double dt_widen = dt_drift;
 #endif
 
-        /* If node has been kicked, fold dp into vs and clear dp. */
-        if(Nodes_uvm[no].u.d.bitflags & (1u << BITFLAG_NODEHASBEENKICKED)) {
-            double mass = (double) Nodes_uvm[no].u.d.mass;
-            double fac  = (mass > 0) ? (1.0 / mass) : 0.0;
+        gpu_node_drift_apply(Nodes_uvm, Extnodes_uvm, no, ti_target,
+                             dt_drift, dt_drift_hmax, dt_widen, /*fold_kick=*/1);
 
-#ifdef RT_SEPARATELY_TRACK_LUMPOS
-            double l_tot = 0.0;
-            for(int b = 0; b < N_RT_FREQ_BINS; b++) {l_tot += (double)Nodes_uvm[no].stellar_lum[b];}
-            double fac_lum = (l_tot > 0) ? (1.0 / l_tot) : 0.0;
-#endif
-#ifdef DM_SCALARFIELD_SCREENING
-            double mass_dm = (double) Nodes_uvm[no].mass_dm;
-            double fac_dm  = (mass_dm > 0) ? (1.0 / mass_dm) : 0.0;
-#endif
-
-            for(int j = 0; j < 3; j++) {
-                Extnodes_uvm[no].vs[j] = (MyFloat)((double)Extnodes_uvm[no].vs[j] + fac * (double)Extnodes_uvm[no].dp[j]);
-                Extnodes_uvm[no].dp[j] = 0;
-#ifdef RT_SEPARATELY_TRACK_LUMPOS
-                Extnodes_uvm[no].rt_source_lum_vs[j] = (MyFloat)((double)Extnodes_uvm[no].rt_source_lum_vs[j]
-                                                       + fac_lum * (double)Extnodes_uvm[no].rt_source_lum_dp[j]);
-                Extnodes_uvm[no].rt_source_lum_dp[j] = 0;
-#endif
-#ifdef DM_SCALARFIELD_SCREENING
-                Extnodes_uvm[no].vs_dm[j] = (MyFloat)((double)Extnodes_uvm[no].vs_dm[j] + fac_dm * (double)Extnodes_uvm[no].dp_dm[j]);
-                Extnodes_uvm[no].dp_dm[j] = 0;
-#endif
-            }
-#ifdef SINK_NODE_MOTION_TRACKED
-            /* Mirrors the host fold (forcetree_update.cc): normalised by sink_mass, not mass, and
-               consumed before the kicked bitflag is cleared below. */
-            {
-                double sink_mass = (double) Nodes_uvm[no].sink_mass;
-                double fac_sink  = (sink_mass > 0) ? (1.0 / sink_mass) : 0.0;
-                for(int j = 0; j < 3; j++) {
-                    Nodes_uvm[no].sink_vel[j] = (MyFloat)((double)Nodes_uvm[no].sink_vel[j] + fac_sink * (double)Extnodes_uvm[no].sink_dp[j]);
-                    Extnodes_uvm[no].sink_dp[j] = 0;
-                }
-            }
-#endif
-            Nodes_uvm[no].u.d.bitflags &= (~(1u << BITFLAG_NODEHASBEENKICKED));
-        }
-
-        /* Apply drift to s, len, hmax. */
-        for(int j = 0; j < 3; j++) {
-            Nodes_uvm[no].u.d.s[j] = (MyFloat)((double)Nodes_uvm[no].u.d.s[j] + (double)Extnodes_uvm[no].vs[j] * dt_drift);
-#ifdef SINK_NODE_MOTION_TRACKED
-            Nodes_uvm[no].sink_pos[j] = (MyFloat)((double)Nodes_uvm[no].sink_pos[j] + (double)Nodes_uvm[no].sink_vel[j] * dt_drift);
-#endif
-#ifdef DM_SCALARFIELD_SCREENING
-            Nodes_uvm[no].s_dm[j]  = (MyFloat)((double)Nodes_uvm[no].s_dm[j]  + (double)Extnodes_uvm[no].vs_dm[j] * dt_drift);
-#endif
-#ifdef RT_SEPARATELY_TRACK_LUMPOS
-            Nodes_uvm[no].rt_source_lum_s[j] = (MyFloat)((double)Nodes_uvm[no].rt_source_lum_s[j]
-                                                + (double)Extnodes_uvm[no].rt_source_lum_vs[j] * dt_drift);
-#endif
-        }
-        Nodes_uvm[no].len = (MyFloat)((double)Nodes_uvm[no].len
-                                      + TREE_DRIFT_VELOCITY_PREFAC * (double)Extnodes_uvm[no].vmax * dt_widen);
-
-        {
-            double exp_arg = (double)Extnodes_uvm[no].divVmax * dt_drift_hmax / (double)NUMDIMS;
-            if(exp_arg < -1.0) {exp_arg = -1.0;}
-            if(exp_arg >  1.0) {exp_arg =  1.0;}
-            double decay_fac = exp(exp_arg);
-            if(Extnodes_uvm[no].hmax > 0) {
-                Extnodes_uvm[no].hmax = (MyFloat)((double)Extnodes_uvm[no].hmax * decay_fac);
-            }
-            /* Mode B per-type bands: upward-only inflate.
-             * Bands include static-ish sources (P[j].ForceSoftening) that
-             * don't shrink under drift, so decaying below the actual FS value
-             * would under-bound the node-prune. force_update_hmax() re-grows
-             * bands per-particle each call; we just must not shrink them
-             * here. Scalar `hmax` keeps its legacy bidirectional decay above.
-             * Without this guard, expansion regions (positive divVmax) would
-             * fail to track via the upward branch. */
-            if(decay_fac > 1.0) {
-                for(int t = 0; t < 6; t++) {
-                    if(Extnodes_uvm[no].hmax_per_type[t] > 0) {
-                        Extnodes_uvm[no].hmax_per_type[t] = (MyFloat)((double)Extnodes_uvm[no].hmax_per_type[t] * decay_fac);
-                    }
-                }
-            }
-        }
-
-        Nodes_uvm[no].Ti_current = ti_target;
-
-        /* SoA mirror update: only the fields the walk reads.  Vec3 narrowing
-         * cast for mixed-precision builds (MyGravFloat=float, MyFloat=double). */
-        len_soa[k]  = Nodes_uvm[no].len;
-        /* The time this length was written at: widen-on-open reads the pair. */
-        if(ti_soa) {ti_soa[k] = Nodes_uvm[no].Ti_current;}
-        s_soa[k]    = { (MyGravFloat)Nodes_uvm[no].u.d.s[0],
-                        (MyGravFloat)Nodes_uvm[no].u.d.s[1],
-                        (MyGravFloat)Nodes_uvm[no].u.d.s[2] };
-        vs_soa[k]   = { (MyGravFloat)Extnodes_uvm[no].vs[0],
-                        (MyGravFloat)Extnodes_uvm[no].vs[1],
-                        (MyGravFloat)Extnodes_uvm[no].vs[2] };
-        hmax_soa[k] = (MyGravFloat)Extnodes_uvm[no].hmax;
-        bitflags_soa[k] = Nodes_uvm[no].u.d.bitflags;
-#ifdef RT_SEPARATELY_TRACK_LUMPOS
-        rt_s_soa[k]  = { (MyGravFloat)Nodes_uvm[no].rt_source_lum_s[0],
-                         (MyGravFloat)Nodes_uvm[no].rt_source_lum_s[1],
-                         (MyGravFloat)Nodes_uvm[no].rt_source_lum_s[2] };
-        rt_vs_soa[k] = { (MyGravFloat)Extnodes_uvm[no].rt_source_lum_vs[0],
-                         (MyGravFloat)Extnodes_uvm[no].rt_source_lum_vs[1],
-                         (MyGravFloat)Extnodes_uvm[no].rt_source_lum_vs[2] };
-#endif
-#ifdef DM_SCALARFIELD_SCREENING
-        s_dm_soa[k]  = { (MyGravFloat)Nodes_uvm[no].s_dm[0],
-                         (MyGravFloat)Nodes_uvm[no].s_dm[1],
-                         (MyGravFloat)Nodes_uvm[no].s_dm[2] };
-        vs_dm_soa[k] = { (MyGravFloat)Extnodes_uvm[no].vs_dm[0],
-                         (MyGravFloat)Extnodes_uvm[no].vs_dm[1],
-                         (MyGravFloat)Extnodes_uvm[no].vs_dm[2] };
-#endif
-#ifdef SINK_NODE_MOTION_TRACKED
-        /* the device walk reads sink_pos/sink_vel from the SoA, not the AoS, so the fold and drift
-           above are invisible to it unless they are mirrored here with the other drifted moments */
-        sink_pos_soa[k] = { (MyGravFloat)Nodes_uvm[no].sink_pos[0],
-                            (MyGravFloat)Nodes_uvm[no].sink_pos[1],
-                            (MyGravFloat)Nodes_uvm[no].sink_pos[2] };
-        sink_vel_soa[k] = { (MyGravFloat)Nodes_uvm[no].sink_vel[0],
-                            (MyGravFloat)Nodes_uvm[no].sink_vel[1],
-                            (MyGravFloat)Nodes_uvm[no].sink_vel[2] };
-#endif
+        gpu_node_mirror_publish(mirror, k, no, Nodes_uvm, Extnodes_uvm);
     });
     Kokkos::fence();
     gizmo_gpu_check_last_error("gpu_force_drift_nodes", n_nodes);
