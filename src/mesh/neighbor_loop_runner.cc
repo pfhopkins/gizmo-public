@@ -2729,6 +2729,23 @@ static void nlr_dispatch_ghost_writeback_end(const neighbor_loop_args& args,
  * Public entry: run_neighbor_loop<Spec>
  * ========================================================================== */
 
+/* The touched-set epoch a fused call opens belongs to that call and to nothing after it.
+ *
+ * Retirement rides a scope guard rather than a statement at the end of the work, because the
+ * epoch is opened by the walk preparation -- before the collective vote that decides whether
+ * Mode D is taken at all -- and the paths between that point and the end of the call include a
+ * vote that routes elsewhere, an out-of-memory fallback to the host walker, and several early
+ * returns.  A recorder left held would refuse every later epoch, which pins the fused walk to
+ * its fallback for the rest of the run while looking exactly like the mechanism working.
+ *
+ * The retirement is ordered after the owner's last consume, which is also what fences the
+ * recording kernel: gx_touched_set_drift_and_mark waits for it, and the guard runs at scope
+ * exit, after every pass has been consumed. */
+struct GxTouchedEpochGuard {
+    int held;
+    ~GxTouchedEpochGuard() {if(held) {gx_touched_set_retire(GX_TOUCHED_OWNER_FUSED_WALK);}}
+};
+
 template <typename Spec>
 void run_neighbor_loop(const neighbor_loop_args& args_in)
 {
@@ -2858,6 +2875,10 @@ void run_neighbor_loop(const neighbor_loop_args& args_in)
                                     : NeighborLoopPlan::Path::ModeB_Local;
         }
     }
+    /* Retires this call's touched-set epoch on every way out of this function; see the guard's
+     * own note.  Declared here so it outlives the decision below and the execution further
+     * down, both of which can route away from Mode D after the epoch is already open. */
+    GxTouchedEpochGuard touched_epoch{0};
 #ifdef NEIGHBOR_LOOP_MODE_D
     /* Mode D takes the calls Mode A would have taken, for every loop it can
      * serve, when every rank can describe its tree to the device -- the same
@@ -2870,6 +2891,9 @@ void run_neighbor_loop(const neighbor_loop_args& args_in)
             (nlr_spec_needs_live_neighbours_v<Spec> && !select_mode_b)) && !force_a &&
            args.external_csr == nullptr) {
             const int ready_local = (gx_device_fused_walk_prepare(&mode_d_tree, Spec::loop_name) == 0) ? 1 : 0;
+            /* This rank's epoch is open exactly when its own preparation succeeded, whatever
+             * the vote below decides for the call. */
+            touched_epoch.held = ready_local;
             int ready = 0;
             MPI_Allreduce(&ready_local, &ready, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
             if(ready) {plan.path = NeighborLoopPlan::Path::ModeD_DeviceFused;}
@@ -3769,6 +3793,7 @@ struct NlrModeDReduceLeaf {
     }
 };
 
+
 /* What a walk's anomaly report means, for the three sites that stop the run on
  * one.  The states are distinct and so are their causes, so a single message
  * naming only the tree would send the reader looking in the wrong place. */
@@ -3779,6 +3804,8 @@ static const char *nlr_walk_anomaly_text(int code)
         return "a query reached an index in the gap between the particle slots and the node base; the tree is malformed";
     case GX_WALK_ANOMALY_TOUCHED_SET_FULL:
         return "the touched-set list was shorter than the distinct set the recording walk put in it";
+    case GX_WALK_ANOMALY_RECORDER_OUT_OF_PHASE:
+        return "a walk claimed into a recorder epoch its own phase does not own";
     default:
         return "an unrecognised walk anomaly";
     }
@@ -3817,22 +3844,11 @@ struct NlrRecordLeaf {
         const struct particle_data &Pj = P[j];
         if(!(supply_mask & (1u << (unsigned int)Pj.Type))) {return;}
         if(Pj.Mass <= 0) {return;}
-        /* Claim the slot for this generation.  The exchange returns what was
-         * there, so exactly one work item sees a value other than the current
-         * generation and exactly one item appends -- several actives reaching the
-         * same particle is the ordinary case, not the exception. */
-        if(Kokkos::atomic_exchange(&ts.seen[j], ts.gen) == ts.gen) {return;}
-        const int slot = Kokkos::atomic_fetch_add(ts.counter, 1);
-        if(slot < ts.capacity) {
-            ts.list[slot] = j;
-        } else {
-            /* Unreachable: the stamp admits each owned slot once per generation
-             * and the list is as long as there are owned slots.  Reported rather
-             * than dropped, because a dropped index is a particle silently
-             * evaluated at a stale position -- the one failure this design must
-             * not be able to have quietly. */
-            Kokkos::atomic_store(anomaly, GX_WALK_ANOMALY_TOUCHED_SET_FULL);
-        }
+        /* The one claim, shared with the gravity discovery pre-walk.  A full list or an
+         * out-of-phase claim is reported rather than dropped, because a dropped index is a
+         * particle silently evaluated at a stale position -- the one failure this design
+         * must not be able to have quietly. */
+        gx_touched_set_claim_in(ts, j, GX_TOUCHED_OWNER_FUSED_WALK, anomaly);
     }
 };
 
@@ -4912,6 +4928,13 @@ static bool nlr_mode_d_evaluate_single_rank(const typename Spec::DeviceContext& 
 template <typename Spec>
 void run_neighbor_loop_iterative(const neighbor_loop_args_iterative& args_in)
 {
+    /* Retires this call's touched-set epoch on every way out, exactly as the non-iterative
+     * runner does.  The iterative driver opens its own epoch at its own dispatch decision, so
+     * it owns its own retirement: without this the recorder stays held after the first
+     * iterative call and every later fused call is refused, which silently pins the whole run
+     * to the fallback path. */
+    GxTouchedEpochGuard touched_epoch{0};
+
     /* The one live argument view for this call.  A ghost import can raise the particle
      * capacity and move P[]/CellP[], so the cached base pointers are refreshed in this
      * object as they change; the driver holds a reference to it, so the runner and every
@@ -5079,6 +5102,8 @@ void run_neighbor_loop_iterative(const neighbor_loop_args_iterative& args_in)
            nlr_spec_modeb_eval_omp<Spec>() != ModeBEvalOMP::SerialOnly &&
            Spec::search_mode == MODE_B_SEARCH_ONEWAY) {
             const int ready_local = (gx_device_fused_walk_prepare(&mode_d_tree, Spec::loop_name) == 0) ? 1 : 0;
+            /* Open exactly when this rank's own preparation succeeded, whatever the vote decides. */
+            touched_epoch.held = ready_local;
             int ready = 0;
             MPI_Allreduce(&ready_local, &ready, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
             if(ready) {path = DispatchPath::ModeD_DeviceFused;}

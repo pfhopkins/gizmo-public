@@ -87,13 +87,10 @@
                                        * the SAME interpolator the node sweep uses
                                        * (gpu_force_drift.cc:184), not a second one */
 
-/* What a walk reports through `anomaly`.  Distinct values because the states are
- * distinct: one says the tree cannot be walked, the other says a caller's own
- * bookkeeping broke.  Both are fatal to the caller, so the value is for whoever
- * reads the report, not for deciding whether to stop.  Zero means nothing was
- * reported; callers test against it and must not assume 1. */
-#define GX_WALK_ANOMALY_MALFORMED_TREE     1  /* index in no class, or an unfilled view */
-#define GX_WALK_ANOMALY_TOUCHED_SET_FULL   2  /* touched-set list shorter than the set it recorded */
+/* What a walk reports through `anomaly`: the codes live with the claims that also emit them,
+ * in declarations/gpu_recorder_claim.h, so one code set has one home.  Every one of them is
+ * fatal to THIS walk's caller, which stops the run; the value is for whoever reads the report. */
+#include "../declarations/gpu_recorder_claim.h"
 
 /* Which entry point a walk is using.  See the entry discussion at the top of
  * this file; the two forms correspond to the host walker's start node and

@@ -18,7 +18,7 @@
 #include "../declarations/allvars.h"
 #include "../declarations/gpu_error_check.h"
 #include "gpu_gravity_tree.h"
-#include "gpu_node_dirty_claim.h"   /* the shared control block + the one claim */
+#include "../declarations/gpu_recorder_claim.h"   /* the shared control block + the one claim */
 #include "gpu_topology_finalize.h"   /* gizmo_gpu_prepare_shared_for_free */
 #include "forcetree.h"   /* force_treebuild_generation() — SoA-drift stamp invalidation key */
 

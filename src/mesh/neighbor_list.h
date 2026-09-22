@@ -148,12 +148,23 @@ struct GxDeviceTreeView {
  *
  * Lives in this header, not beside the traversal, for the reason the tree view
  * does: plain data, read by host units that no device compiler ever sees. */
+/* Which phase may claim right now.  One generation deliberately spans several passes of one
+ * fused call while the cursor resets at each consume, so "whose generation is this" cannot be
+ * inferred from the cursor and has to be named.  NONE is the retired state: every claim in it is
+ * out of phase, which is what makes a claim from a kernel that outlived its epoch visible. */
+enum gx_touched_owner_t {
+    GX_TOUCHED_OWNER_NONE       = 0,
+    GX_TOUCHED_OWNER_FUSED_WALK = 1,   /* the Mode-D fused walk's discovery passes */
+    GX_TOUCHED_OWNER_GRAVITY    = 2    /* the device gravity walk's one-shot discovery pre-walk */
+};
+
 struct GxTouchedSet {
     unsigned int *seen     = nullptr;  /* [capacity] generation stamps, never cleared */
     int          *list     = nullptr;  /* [capacity] compacted distinct local indices */
     int          *counter  = nullptr;  /* [1] append cursor for the current pass */
     int           capacity = 0;        /* owned local particle slots at the last ensure */
     unsigned int  gen      = 0;        /* this call's generation */
+    int           owner    = GX_TOUCHED_OWNER_NONE;  /* constant within an epoch, like gen */
 };
 
 
