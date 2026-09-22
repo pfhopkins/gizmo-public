@@ -268,8 +268,19 @@ int gpu_gravity_tree_nodes_current_at(integertime ti);
  * MaxForeignNodes (the worst rank's import, deliberately generous). Foreign nodes
  * ARE dirtied in practice: 274 per rank per span, present in 91.5% of spans.
  * ========================================================================== */
-void gpu_node_dirty_begin_epoch(void);
-void gpu_node_dirty_claim(int no);
+/* Epoch ownership.  Claims are legal only from the phase that owns the open epoch, and a
+ * claim from any other phase is a stopped invariant (it trips the fail-safe and the caller
+ * sweeps) rather than a race to be reasoned about.  The sequence per gravity call is:
+ * host claims consumed -> a FRESH epoch for the discovery pre-walk -> its claims consumed.
+ * Mode-D and the host lazy drift share the HOST phase, exactly as they do today. */
+enum gpu_node_dirty_owner_t {
+    GPU_NODE_DIRTY_OWNER_HOST   = 0,   /* force_drift_node and every other host claimer */
+    GPU_NODE_DIRTY_OWNER_DEVICE = 1    /* the gravity discovery pre-walk kernel */
+};
+void gpu_node_dirty_begin_epoch(void);              /* opens a HOST-owned epoch */
+void gpu_node_dirty_begin_epoch_owned(int owner);
+void gpu_node_dirty_claim(int no);                  /* host claim; owner must be HOST */
+int  gpu_node_dirty_count(void);                    /* claims outstanding in this epoch */
 int  gpu_node_dirty_repair(integertime ti);   /* 0 = repaired; 1 = caller must sweep */
 void gpu_node_dirty_grow_to(int cap);   /* keep the set as large as the mirror when foreign storage grows */
 void gpu_node_dirty_release(void);
