@@ -795,17 +795,19 @@ gravity_walk_attempt:
      * optimisation working, and nothing read either of them; but observability may not charge the
      * path it is watching, and this call already carries collectives.  Three extra words on an
      * existing reduction is free; two more reductions per gravity call would not be. */
-#define GRAV_REPORT_RECORDER_SLOTS 3
-#define GRAV_REPORT_SLOTS (GRAV_PACKET_FAIL_REASON_SLOTS + GRAV_REPORT_RECORDER_SLOTS)
-    long long packet_fail[GRAV_REPORT_SLOTS] = {0};
-    long long packet_fail_sum[GRAV_REPORT_SLOTS] = {0};
-    long long packet_fail_max[GRAV_REPORT_SLOTS] = {0};
+    /* Scoped, not #define: a macro here would be translation-unit-wide despite sitting in a
+       function. */
+    constexpr int recorder_slots = 3;
+    constexpr int report_slots   = GRAV_PACKET_FAIL_REASON_SLOTS + recorder_slots;
+    long long packet_fail[report_slots] = {0};
+    long long packet_fail_sum[report_slots] = {0};
+    long long packet_fail_max[report_slots] = {0};
     gpu_gravtree_packet_failures(packet_fail, GRAV_PACKET_FAIL_REASON_SLOTS);
     packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 0] = gpu_node_dirty_unsafe_events();
     packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 1] = gx_touched_set_refused_epochs();
     packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 2] = gx_touched_set_retire_faults();
-    MPI_Reduce(packet_fail, packet_fail_sum, GRAV_REPORT_SLOTS, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(packet_fail, packet_fail_max, GRAV_REPORT_SLOTS, MPI_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(packet_fail, packet_fail_sum, report_slots, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(packet_fail, packet_fail_max, report_slots, MPI_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
     MPI_Reduce(&Numnodestree, &maxnumnodes, 1, MPI_INT, MPI_MAX, 0, MPI_COMM_WORLD);
     /* The span from the end of the build to here is the force walk.  Only the
      * wait is separately measured inside it, so the walk row is the rest of the
