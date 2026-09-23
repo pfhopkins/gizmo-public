@@ -1780,12 +1780,17 @@ int gx_touched_set_ensure(int local_particle_slots)
  * mechanism simply working. */
 static long long g_touched_refused_epochs  = 0;
 static long long g_touched_retire_faults   = 0;
+/* Whether this epoch's claims have already been waited for.  A consume fences; retire needs to
+ * know so it does not fence a second time on every successful call. */
+static int       g_touched_consumed_this_epoch = 0;
 
-static void touched_report_once_(const char *what)
+/* Each fault owns its latch.  One shared latch let the first report -- typically the benign
+ * "another phase still holds it" refusal -- silence the serious one for the rest of the run,
+ * so a recorder retired with claims nobody consumed could pass unmentioned. */
+static void touched_report_once_(int *latch, const char *what)
 {
-    static int reported = 0;
-    if(reported) {return;}
-    reported = 1;
+    if(!latch || *latch) {return;}
+    *latch = 1;
     printf("touched set: task %d: %s\n", ThisTask, what);
     fflush(stdout);
 }
@@ -1814,7 +1819,9 @@ int gx_touched_set_begin_epoch_owned(int owner)
     }
     if(g_touched_set.owner != GX_TOUCHED_OWNER_NONE) {
         g_touched_refused_epochs++;
-        touched_report_once_("an epoch was requested while another phase still held the recorder; "
+        static int latch_busy = 0;
+        touched_report_once_(&latch_busy,
+                             "an epoch was requested while another phase still held the recorder; "
                              "the requester takes its own fallback");
         return 1;
     }
@@ -1828,6 +1835,7 @@ int gx_touched_set_begin_epoch_owned(int owner)
     }
     *g_touched_set.counter = 0;
     g_touched_set.owner    = owner;
+    g_touched_consumed_this_epoch = 0;
     Kokkos::memory_fence();   /* the epoch is open before any claim in it is visible */
     return 0;
 }
@@ -1854,21 +1862,23 @@ void gx_touched_set_retire(int owner)
 {
     if(g_touched_set.owner != owner) {
         g_touched_retire_faults++;
-        touched_report_once_("a phase tried to retire a recorder epoch it does not hold");
+        static int latch_wrong_owner = 0;
+        touched_report_once_(&latch_wrong_owner, "a phase tried to retire a recorder epoch it does not hold");
         return;
     }
-    /* Wait for the recording kernel before reading the cursor.  On the ordinary path the
-     * owner's last consume already did this, so there is nothing outstanding and the wait
-     * costs nothing -- but the check below exists for the path where NO consume ran, and on
-     * that path nothing else has waited for the claims.  Reading the cursor there without
-     * this would report the epoch as clean whenever the kernel's writes were simply not
-     * visible yet, i.e. the detector would be blind in exactly the case it is for.  It must
-     * be a full fence rather than a memory fence: the kernel may still be running, so
-     * ordering the accesses is not enough, they have to have happened. */
-    Kokkos::fence();
+    /* Wait for the recording kernel before reading the cursor -- but only when nothing else
+     * already has.  A consume fences, so after one the cursor is readable and a second wait
+     * would be a host-side device synchronize on the critical path of every fused call.  It is
+     * the path with NO consume that the check below exists for, and there nothing has waited,
+     * so reading the cursor would report the epoch clean whenever the kernel's writes were
+     * merely not visible yet -- blind in exactly the case it is for.  A full fence, not a
+     * memory fence: the kernel may still be running, so ordering the accesses is not enough. */
+    if(!g_touched_consumed_this_epoch) {Kokkos::fence();}
     if(g_touched_set.counter && *g_touched_set.counter != 0) {
         g_touched_retire_faults++;
-        touched_report_once_("a recorder epoch retired with claims nobody consumed; "
+        static int latch_undrained = 0;
+        touched_report_once_(&latch_undrained,
+                             "a recorder epoch retired with claims nobody consumed; "
                              "the particles they name were never drifted");
         *g_touched_set.counter = 0;
     }
@@ -1917,6 +1927,7 @@ void gx_touched_set_drift_and_mark(integertime time1)
      * allocation, here, several kernel launches before the anomaly that records
      * the overflow is ever looked at.  So the allocation bounds the read, and the
      * anomaly stays the thing that reports it. */
+    g_touched_consumed_this_epoch = 1;   /* the fence above has waited for this epoch's claims */
     const int claimed = *g_touched_set.counter;
     const int n = (claimed < g_touched_set.capacity) ? claimed : g_touched_set.capacity;
     /* First claims for THIS pass. Reported separately from the pass and call
@@ -2069,6 +2080,17 @@ int gx_device_fused_walk_prepare(struct GxDeviceTreeView *out, const char *calle
         }
         return 1;
     }
+    /* From here the epoch is OPEN, and this function owns it until it reports success.  The
+     * caller arms its own guard only once we return 0, so anything that leaves by another door
+     * has to close the epoch itself -- otherwise the recorder stays held, every later call is
+     * refused, and the run is pinned to its fallback while looking exactly like the mechanism
+     * working.  That is the failure the caller's guard was added to prevent, and it reappears
+     * here because opening and closing sat with different owners.  Holding it in a scope guard
+     * puts both with whoever opened it, so a return added below cannot reintroduce it. */
+    struct FusedPrepareEpoch {
+        int held = 1;
+        ~FusedPrepareEpoch() {if(held) {gx_touched_set_retire(GX_TOUCHED_OWNER_FUSED_WALK);}}
+    } prepare_epoch;
 
     const int nodes_already_current = gpu_gravity_tree_nodes_current_at(All.Ti_Current) ? 1 : 0;
     /* Nothing dirtied them, so the span the census measures starts here. */
@@ -2138,6 +2160,7 @@ int gx_device_fused_walk_prepare(struct GxDeviceTreeView *out, const char *calle
         }
     }
 
+    prepare_epoch.held = 0;   /* success: the epoch passes to the caller's guard, which retires it */
     return 0;
 }
 
