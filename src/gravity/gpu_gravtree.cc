@@ -1428,6 +1428,10 @@ gpu_grav_packet_scratch_plan(int q_dev, int team_size, int frontier_cap, int chu
     p.local          = take((size_t) team_size * GRAV_PACKET_LOCAL_STACK * sizeof(gpu_grav_walk_item_t), alignof(gpu_grav_walk_item_t));
     p.local_masks    = take((size_t) team_size * GRAV_PACKET_LOCAL_STACK * p.mask_words * sizeof(grav_packet_mask_word_t), alignof(grav_packet_mask_word_t));
     p.walker_masks   = take((size_t) team_size * 3 * p.mask_words * sizeof(grav_packet_mask_word_t), alignof(grav_packet_mask_word_t));   /* a walker's item mask + its two scratch masks */
+    /* 16 ints, deliberately not sized to GRAV_PACKET_CTR_COUNT: the scratch request feeds
+     * team_size_max, so shrinking it could change the launch shape and with it what is being
+     * measured.  The static_assert that keeps the slack honest sits with the enum below, which
+     * is where a counter would be added. */
     p.counters       = take(16 * sizeof(int), alignof(long long));
     p.bytes = off;
     return p;
@@ -1461,6 +1465,12 @@ enum {
     GRAV_PACKET_CTR_NOTE_UNSHIPPABLE,
     GRAV_PACKET_CTR_COUNT
 };
+
+/* The team's counter block is a fixed 16 ints in the scratch plan above, and it is the LAST
+ * region taken -- so a counter added past that bound would not overlap another region, it would
+ * run off the end of the team's scratch with nothing to say so. */
+static_assert(GRAV_PACKET_CTR_COUNT <= 16,
+              "the per-team counter block is 16 ints; widen it in gpu_grav_packet_scratch_plan");
 
 /* What a walker does when it reaches a node or a leaf: the per-node decision, and what
  * becomes of the elements that decision accepts.
@@ -1916,8 +1926,12 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
     GIZMO_GPU_ENSURE_ALL_FRESH();
     int num_active_total = (int) ActiveParticleList.size();
     /* Cleared before any early return, so the shape reported for THIS call is this call's: a
-     * host-routed or empty call reports 0/0 rather than whatever the previous device call ran. */
+     * host-routed or empty call reports 0/0 rather than whatever the previous device call ran.
+     * The give-up tally is cleared with it and for the same reason -- it was cleared only where
+     * the engine runs, so a host-routed step re-reported, and re-reduced, the previous device
+     * call's counts against gpu_gravtree.h's promise that they read zero on such a call. */
     g_packet_team = 0; g_packet_q_dev = 0;
+    for(int r = 0; r < GRAV_PACKET_FAIL_REASONS; r++) {g_packet_fail[r] = 0;}
     /* How many candidates this walk leaves to the host loop: every active until this walk has
      * selected and taken some. The host loop sizes its per-thread packet workspace from it. */
     if(host_candidates_left) {*host_candidates_left = (num_active_total > 0) ? num_active_total : 0;}

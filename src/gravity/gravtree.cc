@@ -11,6 +11,7 @@
 #include "../core/proto.h"
 #include "gpu_gravtree.h"
 #include "gpu_gravity_tree.h"   /* gpu_gravity_tree_mark_born_current */
+#include "../mesh/gpu_neighbor_list.h"   /* the touched set's lifecycle counters, reported below */
 #include "../system/gpu_particles_arena.h"
 #include "../core/timestep_functions.h"   /* Hermite pass state, refreshed below */
 #include "../mesh/kernel.h"
@@ -794,6 +795,17 @@ gravity_walk_attempt:
     gpu_gravtree_packet_failures(packet_fail, GRAV_PACKET_FAIL_REASON_SLOTS);
     MPI_Reduce(packet_fail, packet_fail_sum, GRAV_PACKET_FAIL_REASON_SLOTS, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(packet_fail, packet_fail_max, GRAV_PACKET_FAIL_REASON_SLOTS, MPI_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
+    /* The two stamped recorders' fail-safes, summed and at the worst rank.  Each exists so that a
+     * permanent silent revert -- to full sweeping, or to the full particle drift -- is visible
+     * rather than indistinguishable from the optimisation working, and until now nothing read
+     * them, which left exactly the blindness they were added to remove.  Per step rather than at
+     * exit: production arms are wall-killed and never reach an exit summary. */
+    long long rec_local[3] = {gpu_node_dirty_unsafe_events(),
+                              gx_touched_set_refused_epochs(),
+                              gx_touched_set_retire_faults()};
+    long long rec_sum[3] = {0}, rec_max[3] = {0};
+    MPI_Reduce(rec_local, rec_sum, 3, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(rec_local, rec_max, 3, MPI_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
     MPI_Reduce(&Numnodestree, &maxnumnodes, 1, MPI_INT, MPI_MAX, 0, MPI_COMM_WORLD);
     /* The span from the end of the build to here is the force walk.  Only the
      * wait is separately measured inside it, so the walk row is the rest of the
@@ -813,7 +825,9 @@ gravity_walk_attempt:
         fprintf(FdTimings, "part/sec=%g | %g  ia/part=%g (%g)\n", GlobNumForceUpdate / (sumt + 1.0e-20), GlobNumForceUpdate / (1.0e-6 + maxt * NTask), ((double) (sum_costtotal)) / (1.0e-20 + GlobNumForceUpdate), ((double) ewaldtot) / (1.0e-20 + GlobNumForceUpdate)); {int packet_team, packet_q_dev; gpu_gravtree_packet_shape(&packet_team, &packet_q_dev); fprintf(FdTimings, "packet: Q=%d T=%d Qdev=%d\n", TREE_QUERY_PACKET_SIZE, packet_team, packet_q_dev);
             fprintf(FdTimings, "packet-gaveup: malformed=%lld stale=%lld pseudo=%lld nocont=%lld record=%lld (worst rank: %lld %lld %lld %lld %lld)\n",
                     packet_fail_sum[1], packet_fail_sum[2], packet_fail_sum[3], packet_fail_sum[4], packet_fail_sum[5],
-                    packet_fail_max[1], packet_fail_max[2], packet_fail_max[3], packet_fail_max[4], packet_fail_max[5]);} fprintf(FdTimings, "\n");
+                    packet_fail_max[1], packet_fail_max[2], packet_fail_max[3], packet_fail_max[4], packet_fail_max[5]);
+            fprintf(FdTimings, "recorder-failsafe: node-unsafe=%lld touched-refused=%lld touched-retire-faults=%lld (worst rank: %lld %lld %lld)\n",
+                    rec_sum[0], rec_sum[1], rec_sum[2], rec_max[0], rec_max[1], rec_max[2]);} fprintf(FdTimings, "\n");
         fflush(FdTimings);
     }
     double costtotal_new = 0, sum_costtotal_new;
