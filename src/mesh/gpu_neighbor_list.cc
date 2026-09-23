@@ -1857,6 +1857,15 @@ void gx_touched_set_retire(int owner)
         touched_report_once_("a phase tried to retire a recorder epoch it does not hold");
         return;
     }
+    /* Wait for the recording kernel before reading the cursor.  On the ordinary path the
+     * owner's last consume already did this, so there is nothing outstanding and the wait
+     * costs nothing -- but the check below exists for the path where NO consume ran, and on
+     * that path nothing else has waited for the claims.  Reading the cursor there without
+     * this would report the epoch as clean whenever the kernel's writes were simply not
+     * visible yet, i.e. the detector would be blind in exactly the case it is for.  It must
+     * be a full fence rather than a memory fence: the kernel may still be running, so
+     * ordering the accesses is not enough, they have to have happened. */
+    Kokkos::fence();
     if(g_touched_set.counter && *g_touched_set.counter != 0) {
         g_touched_retire_faults++;
         touched_report_once_("a recorder epoch retired with claims nobody consumed; "
