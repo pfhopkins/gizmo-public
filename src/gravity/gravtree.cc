@@ -789,23 +789,23 @@ gravity_walk_attempt:
      * at its worst rank: a budget cliff is a property of the rank with the divergent subtree, and
      * a sum over ranks alone would average it away.  Collective, so it sits with the other
      * reductions rather than inside the rank-0 report below. */
-    long long packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS] = {0};
-    long long packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS] = {0};
-    long long packet_fail_max[GRAV_PACKET_FAIL_REASON_SLOTS] = {0};
+    /* The two stamped recorders' fail-safe totals ride in the same two reductions rather than
+     * adding their own.  Each exists so that a permanent silent revert -- to sweeping every node,
+     * or to drifting every particle -- is visible rather than indistinguishable from the
+     * optimisation working, and nothing read either of them; but observability may not charge the
+     * path it is watching, and this call already carries collectives.  Three extra words on an
+     * existing reduction is free; two more reductions per gravity call would not be. */
+#define GRAV_REPORT_RECORDER_SLOTS 3
+#define GRAV_REPORT_SLOTS (GRAV_PACKET_FAIL_REASON_SLOTS + GRAV_REPORT_RECORDER_SLOTS)
+    long long packet_fail[GRAV_REPORT_SLOTS] = {0};
+    long long packet_fail_sum[GRAV_REPORT_SLOTS] = {0};
+    long long packet_fail_max[GRAV_REPORT_SLOTS] = {0};
     gpu_gravtree_packet_failures(packet_fail, GRAV_PACKET_FAIL_REASON_SLOTS);
-    MPI_Reduce(packet_fail, packet_fail_sum, GRAV_PACKET_FAIL_REASON_SLOTS, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(packet_fail, packet_fail_max, GRAV_PACKET_FAIL_REASON_SLOTS, MPI_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
-    /* The two stamped recorders' fail-safes, summed and at the worst rank.  Each exists so that a
-     * permanent silent revert -- to full sweeping, or to the full particle drift -- is visible
-     * rather than indistinguishable from the optimisation working, and until now nothing read
-     * them, which left exactly the blindness they were added to remove.  Per step rather than at
-     * exit: production arms are wall-killed and never reach an exit summary. */
-    long long rec_local[3] = {gpu_node_dirty_unsafe_events(),
-                              gx_touched_set_refused_epochs(),
-                              gx_touched_set_retire_faults()};
-    long long rec_sum[3] = {0}, rec_max[3] = {0};
-    MPI_Reduce(rec_local, rec_sum, 3, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(rec_local, rec_max, 3, MPI_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
+    packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 0] = gpu_node_dirty_unsafe_events();
+    packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 1] = gx_touched_set_refused_epochs();
+    packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 2] = gx_touched_set_retire_faults();
+    MPI_Reduce(packet_fail, packet_fail_sum, GRAV_REPORT_SLOTS, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(packet_fail, packet_fail_max, GRAV_REPORT_SLOTS, MPI_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
     MPI_Reduce(&Numnodestree, &maxnumnodes, 1, MPI_INT, MPI_MAX, 0, MPI_COMM_WORLD);
     /* The span from the end of the build to here is the force walk.  Only the
      * wait is separately measured inside it, so the walk row is the rest of the
@@ -826,8 +826,21 @@ gravity_walk_attempt:
             fprintf(FdTimings, "packet-gaveup: malformed=%lld stale=%lld pseudo=%lld nocont=%lld record=%lld (worst rank: %lld %lld %lld %lld %lld)\n",
                     packet_fail_sum[1], packet_fail_sum[2], packet_fail_sum[3], packet_fail_sum[4], packet_fail_sum[5],
                     packet_fail_max[1], packet_fail_max[2], packet_fail_max[3], packet_fail_max[4], packet_fail_max[5]);
-            fprintf(FdTimings, "recorder-failsafe: node-unsafe=%lld touched-refused=%lld touched-retire-faults=%lld (worst rank: %lld %lld %lld)\n",
-                    rec_sum[0], rec_sum[1], rec_sum[2], rec_max[0], rec_max[1], rec_max[2]);} fprintf(FdTimings, "\n");
+            /* Only when there is something to say.  These are fail-safe EVENTS, not telemetry:
+               a zero line on every call would be noise in the artifact the track reads, while a
+               nonzero one is the whole point -- it says the run has quietly stopped using the
+               mechanism being priced. */
+            if(packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + 0] ||
+               packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + 1] ||
+               packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + 2]) {
+                fprintf(FdTimings, "recorder-failsafe: node-unsafe=%lld touched-refused=%lld touched-retire-faults=%lld (worst rank: %lld %lld %lld)\n",
+                        packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + 0],
+                        packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + 1],
+                        packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + 2],
+                        packet_fail_max[GRAV_PACKET_FAIL_REASON_SLOTS + 0],
+                        packet_fail_max[GRAV_PACKET_FAIL_REASON_SLOTS + 1],
+                        packet_fail_max[GRAV_PACKET_FAIL_REASON_SLOTS + 2]);
+            }} fprintf(FdTimings, "\n");
         fflush(FdTimings);
     }
     double costtotal_new = 0, sum_costtotal_new;
