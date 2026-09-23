@@ -1462,6 +1462,85 @@ enum {
     GRAV_PACKET_CTR_COUNT
 };
 
+/* What a walker does when it reaches a node or a leaf: the per-node decision, and what
+ * becomes of the elements that decision accepts.
+ *
+ * The traversal itself -- the (no, exit, mask) work item, the local LIFO and the frontier, the
+ * give-up accounting -- is the same whatever is being decided, so it stays in the engine below
+ * and the flavour is a template parameter of it.  One engine with a flavour parameter rather
+ * than one walk per flavour is what stops a second device traversal growing up beside this one
+ * with its own copy of the periodic-wrap convention and its own rule for which index classes a
+ * walk may follow (mesh/device_tree_walk.h states the same invariant for the neighbour walk).
+ *
+ * A flavour returns YIELD to stop the walker for this round with its item intact; the engine
+ * resumes at the same node afterwards, which is why a decision must be reproducible rather than
+ * consumed.  CONTINUE means the walker advances as the traversal says.
+ */
+enum gpu_grav_packet_step_t {
+    GRAV_PACKET_STEP_CONTINUE = 0,
+    GRAV_PACKET_STEP_YIELD          /* chunk full, or the packet gave up; the engine returns */
+};
+
+/* The fidelity flavour, and the only one instantiated today: every member judges every node for
+ * itself, and the elements it accepts are reserved in the record chunk for the member-major
+ * flush.  Bitwise per member against the single-target walk at n_walkers = 1. */
+struct GravPacketMaskedPolicy {
+    /* Which members take this particle leaf, and the record that the flush evaluates. */
+    template <class Engine>
+    KOKKOS_INLINE_FUNCTION static gpu_grav_packet_step_t
+    visit_leaf(const Engine &e, int no, const gpu_grav_open_inputs_t *open,
+               const grav_packet_mask_word_t *mask, grav_packet_mask_word_t *accept_mask,
+               int *ctr, grav_walk_record_t *records, grav_packet_mask_word_t *rmasks)
+    {
+        const int W = e.plan.mask_words;
+        Engine::mask_clear(accept_mask, W);
+        for(int m = 0; m < e.q_dev; m++) {
+            if(!Engine::mask_test(mask, m)) {continue;}
+            if(gpu_grav_leaf_member_accepts(e.ctx, no, open[m])) {Engine::mask_set(accept_mask, m);}
+        }
+        if(!Engine::mask_any(accept_mask, W)) {return GRAV_PACKET_STEP_CONTINUE;}
+        if(e.ctx.P_dev[no].Ti_current != e.ctx.ti) {Engine::fail(ctr, GRAV_PACKET_FAIL_STALE_SOURCE); return GRAV_PACKET_STEP_YIELD;}   /* a source behind the walk time: the replay classifies and hands it to the host walk */
+        if(ctr[GRAV_PACKET_CTR_RECORDS] == e.chunk_cap) {return GRAV_PACKET_STEP_YIELD;}   /* chunk full: the flush follows; resume here */
+        const int r = ctr[GRAV_PACKET_CTR_RECORDS]++;
+        records[r].no = no; records[r].kind = GRAV_NODE_LOCAL; records[r].leaf_tag = LET_LEAF_TAG_NODE;
+        Engine::mask_copy(rmasks + (size_t) r * W, accept_mask, W);
+        return GRAV_PACKET_STEP_CONTINUE;
+    }
+
+    /* Which members accept this node's multipole and which must descend into it, and the record
+     * for the accepting ones.  `open_mask` is the engine's: it decides the continuation from it. */
+    template <class Engine>
+    KOKKOS_INLINE_FUNCTION static gpu_grav_packet_step_t
+    visit_node(const Engine &e, int no, const gpu_grav_node_prelude_t &nd, const gpu_grav_open_inputs_t *open,
+               const grav_packet_mask_word_t *mask, grav_packet_mask_word_t *accept_mask,
+               grav_packet_mask_word_t *open_mask, int *ctr, grav_walk_record_t *records,
+               grav_packet_mask_word_t *rmasks, int &n_note, int &n_unship)
+    {
+        const int W = e.plan.mask_words;
+        Engine::mask_clear(accept_mask, W); Engine::mask_clear(open_mask, W);
+        n_note = 0; n_unship = 0;
+        for(int m = 0; m < e.q_dev; m++) {
+            if(!Engine::mask_test(mask, m)) {continue;}
+            Vec3<MyFloat> s_node; MyFloat mass_node; Vec3<double> dr; double r2;
+            if(!gpu_grav_node_member_geometry(e.ctx, nd, open[m], s_node, mass_node, dr, r2)) {continue;}   /* a star member is done with a pure-star node */
+            int note;
+            const gravtree_open_t pred = gpu_grav_node_member_decide(e.ctx, nd, open[m], mass_node, r2, note);
+            if(note != GPU_GRAV_NOTE_NONE) {n_note++; if(note == GPU_GRAV_NOTE_UNSHIPPABLE) {n_unship++;}}
+            if(pred == GRAV_SKIP_NODE) {continue;}
+            if(pred == GRAV_OPEN_NODE) {Engine::mask_set(open_mask, m); continue;}
+            Engine::mask_set(accept_mask, m);
+        }
+        if(Engine::mask_any(accept_mask, W)) {
+            if(ctr[GRAV_PACKET_CTR_RECORDS] == e.chunk_cap) {return GRAV_PACKET_STEP_YIELD;}   /* chunk full: resume at this node after the flush (its decisions are re-made identically) */
+            const int r = ctr[GRAV_PACKET_CTR_RECORDS]++;
+            records[r].no = no; records[r].kind = nd.node_kind; records[r].leaf_tag = nd.fl_tag;
+            Engine::mask_copy(rmasks + (size_t) r * W, accept_mask, W);
+        }
+        return GRAV_PACKET_STEP_CONTINUE;
+    }
+};
+
+template <class Policy>
 struct GpuGravPacketWalk {
     using TeamMember = Kokkos::TeamPolicy<>::member_type;
     gpu_grav_walk_ctx_t ctx;
@@ -1545,18 +1624,7 @@ struct GpuGravPacketWalk {
             if(no >= treeParticleSlots && no < treeBase) {fail(ctr, GRAV_PACKET_FAIL_MALFORMED_INDEX); return;}   /* gap: malformed tree; the host walk stops loudly */
             if(no < treeParticleSlots) /* particle leaf: per member, the star-star pass */
             {
-                mask_clear(accept_mask, W);
-                for(int m = 0; m < q_dev; m++) {
-                    if(!mask_test(mask, m)) {continue;}
-                    if(gpu_grav_leaf_member_accepts(ctx, no, open[m])) {mask_set(accept_mask, m);}
-                }
-                if(mask_any(accept_mask, W)) {
-                    if(ctx.P_dev[no].Ti_current != ctx.ti) {fail(ctr, GRAV_PACKET_FAIL_STALE_SOURCE); return;}   /* a source behind the walk time: the replay classifies and hands it to the host walk */
-                    if(ctr[GRAV_PACKET_CTR_RECORDS] == chunk_cap) {return;}   /* chunk full: the flush follows; resume here */
-                    const int r = ctr[GRAV_PACKET_CTR_RECORDS]++;
-                    records[r].no = no; records[r].kind = GRAV_NODE_LOCAL; records[r].leaf_tag = LET_LEAF_TAG_NODE;
-                    mask_copy(rmasks + (size_t) r * W, accept_mask, W);
-                }
+                if(Policy::visit_leaf(*this, no, open, mask, accept_mask, ctr, records, rmasks) == GRAV_PACKET_STEP_YIELD) {return;}
                 no = ctx.tree_soa.nextnode_aux[no];
                 continue;
             }
@@ -1567,26 +1635,11 @@ struct GpuGravPacketWalk {
             if(step == GPU_GRAV_NODE_SKIP_TO_SIBLING) {no = nd.sibling; continue;}
             if(step == GPU_GRAV_NODE_DESCEND) {no = nd.nextnode; continue;}
 
-            /* every member in the item judges the node for itself */
-            mask_clear(accept_mask, W); mask_clear(open_mask, W);
+            /* the flavour judges the node and records what it accepts; the engine owns only
+               what the resulting open mask means for the traversal */
             int n_note = 0, n_unship = 0;
-            for(int m = 0; m < q_dev; m++) {
-                if(!mask_test(mask, m)) {continue;}
-                Vec3<MyFloat> s_node; MyFloat mass_node; Vec3<double> dr; double r2;
-                if(!gpu_grav_node_member_geometry(ctx, nd, open[m], s_node, mass_node, dr, r2)) {continue;}   /* a star member is done with a pure-star node */
-                int note;
-                const gravtree_open_t pred = gpu_grav_node_member_decide(ctx, nd, open[m], mass_node, r2, note);
-                if(note != GPU_GRAV_NOTE_NONE) {n_note++; if(note == GPU_GRAV_NOTE_UNSHIPPABLE) {n_unship++;}}
-                if(pred == GRAV_SKIP_NODE) {continue;}
-                if(pred == GRAV_OPEN_NODE) {mask_set(open_mask, m); continue;}
-                mask_set(accept_mask, m);
-            }
-            if(mask_any(accept_mask, W)) {
-                if(ctr[GRAV_PACKET_CTR_RECORDS] == chunk_cap) {return;}   /* chunk full: resume at this node after the flush (its decisions are re-made identically) */
-                const int r = ctr[GRAV_PACKET_CTR_RECORDS]++;
-                records[r].no = no; records[r].kind = nd.node_kind; records[r].leaf_tag = nd.fl_tag;
-                mask_copy(rmasks + (size_t) r * W, accept_mask, W);
-            }
+            if(Policy::visit_node(*this, no, nd, open, mask, accept_mask, open_mask, ctr, records, rmasks,
+                                  n_note, n_unship) == GRAV_PACKET_STEP_YIELD) {return;}
             ctr[GRAV_PACKET_CTR_NOTE_INCOMPLETE] += n_note; ctr[GRAV_PACKET_CTR_NOTE_UNSHIPPABLE] += n_unship;
             if(!mask_any(open_mask, W)) {no = nd.sibling; continue;}
             if(mask_equal(open_mask, mask, W)) {no = nd.nextnode; continue;}   /* everyone descends: same item, deeper */
@@ -1727,7 +1780,7 @@ static int gpu_gravtree_walk_packets(const gpu_grav_walk_ctx_t &ctx, const int *
                                      Vec3<double> *d_acc, int *d_ninter, double *d_pot, int *d_failed,
                                      int *d_fail_by_reason)
 {
-    GpuGravPacketWalk f;
+    GpuGravPacketWalk<GravPacketMaskedPolicy> f;
     f.ctx = ctx; f.d_idx = d_idx; f.n_cand = n_cand;
     f.d_acc = d_acc; f.d_ninter = d_ninter; f.d_pot = d_pot; f.d_failed = d_failed;
     f.d_fail_by_reason = d_fail_by_reason;
