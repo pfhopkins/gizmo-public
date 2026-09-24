@@ -2157,6 +2157,41 @@ void ketju_run_integration(void)
     /* update cost estimates for next step's load balancing */
     update_region_costs();
 
+    /* Cumulative MSTAR statistics, printed every 1024 steps and on the step that reaches the end of
+     * the timeline: the per-region log is compiled out, so otherwise nothing shows how hard the
+     * integrator works. A step-count bail-out cannot appear here: MSTAR aborts the run past
+     * KetjuMaxStepCount. */
+    {
+        static long long cum_calls = 0, cum_regions = 0, cum_ok = 0, cum_failed = 0, cum_big_dE = 0;
+        static long long cum_max_steps = 0; static double cum_max_dE = 0;
+        long long loc[4] = {0, 0, 0, 0}, glob[4]; /* regions integrated, accepted, failed, |dE/E| > 1e-4 */
+        double loc_max[2] = {0, 0}, glob_max[2]; /* max steps in one region, max |dE/E| */
+        integertime max_ti_step = 0;
+        for(size_t r = 0; r < ActiveRegions.size(); r++) {
+            KetjuRegion &reg = ActiveRegions[r];
+            if(reg.ti_step > max_ti_step) max_ti_step = reg.ti_step;
+            if(!reg.compute_tasks.is_root() || !reg.integrator) continue;
+            long long n = (long long)reg.integrator->perf->successful_steps + reg.integrator->perf->failed_steps;
+            if(n <= 0) continue;
+            double dE = fabs(reg.integrator->perf->relative_energy_error);
+            loc[0]++; loc[1] += reg.integrator->perf->successful_steps; loc[2] += reg.integrator->perf->failed_steps;
+            if(dE > 1e-4) loc[3]++;
+            if((double)n > loc_max[0]) loc_max[0] = (double)n;
+            if(dE > loc_max[1]) loc_max[1] = dE;
+        }
+        MPI_Reduce(loc, glob, 4, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+        MPI_Reduce(loc_max, glob_max, 2, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+        if(ThisTask == 0) {
+            cum_calls++; cum_regions += glob[0]; cum_ok += glob[1]; cum_failed += glob[2]; cum_big_dE += glob[3];
+            if((long long)glob_max[0] > cum_max_steps) cum_max_steps = (long long)glob_max[0];
+            if(glob_max[1] > cum_max_dE) cum_max_dE = glob_max[1];
+            if((cum_calls % 1024) == 0 || All.Ti_Current + max_ti_step >= TIMEBASE)
+                printf("KETJU STATS: t=%g steps=%lld region-integrations=%lld MSTAR accepted=%lld failed=%lld "
+                       "max-per-region=%lld |dE/E|>1e-4: %lld max|dE/E|=%g\n", All.Time, cum_calls, cum_regions,
+                       cum_ok, cum_failed, cum_max_steps, cum_big_dE, cum_max_dE);
+        }
+    }
+
     if(ThisTask == 0 && !ActiveRegions.empty()) {
         int total_mergers = 0;
         for(size_t r = 0; r < ActiveRegions.size(); r++) {
