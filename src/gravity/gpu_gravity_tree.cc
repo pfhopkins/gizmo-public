@@ -489,9 +489,7 @@ extern "C" void gpu_gravity_tree_release(void)
     soa_valid_    = 0;
     gpu_force_drift_release();
     gpu_moment_refresh_release();
-#ifdef HERMITE_INTEGRATION
-    gpu_gravtree_hermite_release();
-#endif
+    gpu_gravtree_tables_release();
 }
 
 /* Record node geometry drifted to `ti` (snapshot current treebuild gen). Set by
@@ -680,8 +678,13 @@ static int nd_ensure_(void)
     return 0;
 }
 
-/* Open an epoch owned by `owner`. Only that phase may claim until the next call. */
-void gpu_node_dirty_begin_epoch_owned(int owner)
+/* Open a fresh epoch owned by `owner`, discarding whatever the last one held.
+ *
+ * The discard is the whole point at the two call sites that use it: the full-refresh sweep and
+ * the subset consumer have both just ANSWERED every claim, so the stamps describe work that is
+ * done.  It is also why this is not the entry point a phase uses to TAKE the recorder -- see
+ * the admission below. */
+static void nd_open_epoch_(int owner)
 {
     if(nd_ensure_() != 0) {nd_mark_unsafe_ctl_(nd_ctl_); return;}
     /* Zero is the never-claimed value, so a wrap must skip it AND clear, or a slot
@@ -697,7 +700,46 @@ void gpu_node_dirty_begin_epoch_owned(int owner)
     Kokkos::memory_fence();   /* the epoch is open before any claim in it is visible */
 }
 
-void gpu_node_dirty_begin_epoch(void) {gpu_node_dirty_begin_epoch_owned(GPU_NODE_DIRTY_OWNER_HOST);}
+void gpu_node_dirty_begin_epoch(void) {nd_open_epoch_(GPU_NODE_DIRTY_OWNER_HOST);}
+
+/* Admission for a phase that wants to CLAIM into this recorder itself.
+ *
+ * Unlike the reset above it can fail, and it has to be able to: opening an epoch discards the
+ * previous one's stamps, so a phase that took the recorder while another phase's claims were
+ * still outstanding would erase them -- and those claims are the only record that a node's
+ * mirror needs repairing.  The nodes would then be walked at stale geometry with nothing left
+ * to say so, which is the failure the explicit owner exists to prevent.
+ *
+ * HOST is the resting owner, because host claims accumulate between phases with no epoch of
+ * their own; anything else means a phase is live.  Refused means NOTHING was touched, and the
+ * caller takes its own safe route -- for gravity, the full drift and the full sweep.
+ * Returns 0 when the epoch is held by `owner`. */
+int gpu_node_dirty_acquire_epoch(int owner)
+{
+    if(nd_ensure_() != 0) {nd_mark_unsafe_ctl_(nd_ctl_); return 1;}
+    if(nd_ctl_->owner != GPU_NODE_DIRTY_OWNER_HOST && nd_ctl_->owner != owner) {
+        nd_mark_unsafe_ctl_(nd_ctl_);   /* another phase is live: visible, not silent */
+        return 1;
+    }
+    if(Kokkos::atomic_load(&nd_ctl_->count) != 0) {
+        nd_mark_unsafe_ctl_(nd_ctl_);   /* claims nobody has answered; taking the epoch erases them */
+        return 1;
+    }
+    nd_open_epoch_(owner);
+    return 0;
+}
+
+/* Hand the recorder back to the resting owner.  Called on EVERY exit path of whoever acquired
+ * it: the epoch opens before the outcome is known, and an epoch left held refuses every later
+ * admission while looking exactly like the mechanism working. */
+void gpu_node_dirty_retire(int owner)
+{
+    if(!nd_ctl_) {return;}
+    if(nd_ctl_->owner == GPU_NODE_DIRTY_OWNER_HOST) {return;}   /* already handed back */
+    if(nd_ctl_->owner != owner) {nd_mark_unsafe_ctl_(nd_ctl_); return;}   /* retiring another phase's epoch */
+    nd_ctl_->owner = GPU_NODE_DIRTY_OWNER_HOST;
+    Kokkos::memory_fence();
+}
 
 void gpu_node_dirty_claim(int no)
 {

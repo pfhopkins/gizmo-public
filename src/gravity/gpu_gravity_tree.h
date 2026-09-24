@@ -211,9 +211,7 @@ int gpu_gravity_tree_valid(void);
 int gpu_force_drift_nodes_ex(integertime time1, int refresh_mirrors_already_current);
 int gpu_force_drift_nodes(integertime time1);
 void gpu_force_drift_release(void);
-#ifdef HERMITE_INTEGRATION
-void gpu_gravtree_hermite_release(void);   /* frees the drift/kick table mirror the Hermite source prediction reads */
-#endif
+void gpu_gravtree_tables_release(void);   /* frees the drift/gravkick table mirror the walk TU keeps */
 
 /* Record that the SoA+AoS node geometry is drifted to `ti` (snapshots the
  * current treebuild generation).  Called by the drift sweep on success so every
@@ -277,11 +275,21 @@ enum gpu_node_dirty_owner_t {
     GPU_NODE_DIRTY_OWNER_HOST   = 0,   /* force_drift_node and every other host claimer */
     GPU_NODE_DIRTY_OWNER_DEVICE = 1    /* the gravity discovery pre-walk kernel */
 };
-void gpu_node_dirty_begin_epoch(void);              /* opens a HOST-owned epoch */
-void gpu_node_dirty_begin_epoch_owned(int owner);
+void gpu_node_dirty_begin_epoch(void);              /* the claims are ANSWERED: fresh HOST-owned epoch */
+/* Admission for a phase that will claim into the recorder itself.  0 = acquired; nonzero =
+ * refused with nothing touched, and the caller takes its own safe route.  Refuses a recorder
+ * another phase still holds, or one whose claims nobody has answered -- opening an epoch
+ * discards the previous one's stamps, so taking it would erase them. */
+int  gpu_node_dirty_acquire_epoch(int owner);
+void gpu_node_dirty_retire(int owner);             /* hand back; on every exit path of the acquirer */
 void gpu_node_dirty_claim(int no);                  /* host claim; owner must be HOST */
 int  gpu_node_dirty_count(void);                    /* claims outstanding in this epoch */
 int  gpu_node_dirty_repair(integertime ti);   /* 0 = repaired; 1 = caller must sweep */
+/* Bring every listed node current at `ti` -- drifting the ones behind it and publishing every
+ * mirror field the gravity walk reads -- instead of sweeping the whole tree.  Defined beside
+ * the sweep (gpu_force_drift.cc) because it runs the sweep's own per-node units.
+ * 0 = the listed set stands at `ti`; 1 = the caller must take the full sweep. */
+int  gpu_node_dirty_bring_gravity_current(integertime time1);
 void gpu_node_dirty_grow_to(int cap);   /* keep the set as large as the mirror when foreign storage grows */
 void gpu_node_dirty_release(void);
 long long gpu_node_dirty_unsafe_events(void);   /* fail-safe firings; a silent permanent

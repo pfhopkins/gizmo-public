@@ -39,6 +39,8 @@
 #include "../core/timestep_functions.h"   /* Hermite source eligibility + prediction, shared verbatim with the host walk */
 #include "../declarations/gpu_error_check.h"
 #include "gpu_gravity_tree.h"
+#include "../declarations/gpu_recorder_claim.h"   /* the one claim each stamped recorder has, device-callable */
+#include "../mesh/gpu_neighbor_list.h"            /* the particle touched set's epoch lifecycle (host side) */
 #include "gpu_gravtree.h"
 #include "forcetree.h"
 #include "gravity_box_distance.h"   /* shared CPU/GPU gravity box-distance SSOT */
@@ -1607,6 +1609,199 @@ struct GravPacketMaskedPolicy {
     }
 };
 
+/* The DISCOVERY flavour: it takes ONE conservative decision for the whole packet and writes
+ * down what the exact walk will need brought current, instead of evaluating anything.
+ *
+ * It exists so an intermediate-N device step stops paying an O(NumPart) + O(Nnodes) entry fee
+ * to drift everything: this traversal names the subset the exact walk actually reaches, and only
+ * that subset is drifted.  For that to be safe the set it names must be a SUPERSET of everything
+ * the exact walk goes on to touch, and the two traversals are separated in time by exactly the
+ * drift the first one asks for -- so the decision here is taken on STALE geometry and must
+ * contain every decision the exact walk will take on DRIFTED geometry.
+ *
+ * THE CONTAINMENT BOUND, and both of its terms are required.  For a node standing behind the
+ * walk time, define ONE quantity from the same velocity bound the drift itself widens by:
+ *
+ *     R = TREE_DRIFT_VELOCITY_PREFAC * vmax * dt_widen        (the undilated clock)
+ *
+ *   TERM 1 -- the node's length is taken as len + R, which is exactly what the drift will add
+ *             to it (gpu_force_drift.cc, the widen-on-open convention).
+ *   TERM 2 -- the packet's target box is expanded by R on EACH AXIS, which is what bounds the
+ *             motion of everything the decision reads POSITIONS of: the node's centre of mass,
+ *             and under their own flags its sink, scalar-field and luminosity centres.  Per
+ *             axis rather than as a ball because the bound behind vmax is max(|vx|,|vy|,|vz|),
+ *             and a box of half-width R contains the ball of radius R.
+ *
+ * Expanding the TARGET box is how the SOURCE's motion is bounded: the decision depends on the
+ * separation between the two, so letting the box grow by R admits every position the node's
+ * centre of mass can reach.  A node already standing at the walk time has R = 0.
+ *
+ * There is deliberately NO softening term: both traversals read the same stored maxsoft, which
+ * no drift path writes, so it cannot differ between them.  Whether that bound should track the
+ * particles beneath it is a separate, pre-existing question about both walks.
+ *
+ * It writes NOTHING but its two recorders -- no forces, no interaction counts, no import notes,
+ * no processed flags.  Anything it cannot decide conservatively (a pseudo-particle, a malformed
+ * index) gives the packet up through the engine's own channel, and the caller answers a given-up
+ * packet by drifting everything, before any force kernel runs.
+ */
+struct GravPacketCoverPolicy {
+    static constexpr bool records_elements = false;   /* it evaluates nothing, so there is nothing to record */
+    static constexpr bool splits_items     = false;   /* one decision for the packet: members never diverge (see below) */
+    static constexpr bool evaluates        = false;
+    static constexpr int  local_stack      = 0;       /* never splits, so it keeps no continuations */
+
+    /* the two recorders, by value, and what the widening needs */
+    struct gpu_node_dirty_view_t nodes;
+    struct GxTouchedSet          parts;
+    int                         *anomaly;
+    struct DriftKickTableView    tables;
+
+    /* How far this node's geometry can move between this traversal and the exact one. */
+    template <class Engine>
+    KOKKOS_INLINE_FUNCTION double widen_radius(const Engine &e, int idx) const
+    {
+        const integertime node_ti = e.ctx.tree_soa.node_ti ? e.ctx.tree_soa.node_ti[idx] : e.ctx.ti;
+        if(node_ti >= e.ctx.ti) {return 0.0;}
+        const double vmax = e.ctx.tree_soa.vmax ? (double) e.ctx.tree_soa.vmax[idx] : 0.0;
+        const double dt_widen = get_drift_factor_impl(node_ti, e.ctx.ti, 1.0, &tables);
+        const double r = TREE_DRIFT_VELOCITY_PREFAC * vmax * dt_widen;
+        return (r > 0.0) ? r : 0.0;
+    }
+
+    /* Every node the walker reaches that stands behind the walk time is written down, before
+     * anything is decided about it.  Claiming here rather than at the decision is the more
+     * conservative of the two and the easier to argue: the prelude's own branches key on mass
+     * and on the topology bits, none of which a drift writes, so this set contains the one a
+     * decision-stage claim would name. */
+    template <class Engine>
+    KOKKOS_INLINE_FUNCTION void note_node(const Engine &e, int no) const
+    {
+        const int idx = no - e.ctx.treeBase;
+        const integertime node_ti = e.ctx.tree_soa.node_ti ? e.ctx.tree_soa.node_ti[idx] : e.ctx.ti;
+        if(node_ti < e.ctx.ti) {gpu_node_dirty_claim_in(nodes, no, GPU_NODE_DIRTY_OWNER_DEVICE);}
+    }
+
+    /* Every local particle leaf the traversal steps through is written down, with NO acceptance
+     * test applied first.  That is the correctness argument, not an economy: the accept test
+     * compares positions, and the positions are precisely what has not been brought current yet,
+     * so a particle that will move into range would be rejected here and then evaluated on its
+     * undrifted position by the walk that follows.  Type and mass tests would be safe, since a
+     * drift changes neither, but they buy nothing here.  (The fused neighbour walk's recording
+     * visitor states the same rule for the same reason.) */
+    template <class Engine>
+    KOKKOS_INLINE_FUNCTION gpu_grav_packet_step_t
+    visit_leaf(const Engine &e, int no, const gpu_grav_open_inputs_t *,
+               const grav_packet_mask_word_t *, grav_packet_mask_word_t *accept_mask,
+               int *, grav_walk_record_t *, grav_packet_mask_word_t *) const
+    {
+        Engine::mask_clear(accept_mask, e.plan.mask_words);
+        gx_touched_set_claim_in(parts, no, GX_TOUCHED_OWNER_GRAVITY, anomaly);
+        return GRAV_PACKET_STEP_CONTINUE;
+    }
+
+    /* ONE decision for the whole packet, over the box its members occupy, on geometry widened by
+     * the bound above.  The result is all-or-nothing by construction -- open_mask is the item's
+     * own mask or it is empty -- which is why this flavour never splits an item and needs neither
+     * a continuation stack nor a frontier. */
+    template <class Engine>
+    KOKKOS_INLINE_FUNCTION gpu_grav_packet_step_t
+    visit_node(const Engine &e, int, const gpu_grav_node_prelude_t &nd, const gpu_grav_open_inputs_t *open,
+               const grav_packet_mask_word_t *mask, grav_packet_mask_word_t *accept_mask,
+               grav_packet_mask_word_t *open_mask, int *, grav_walk_record_t *,
+               grav_packet_mask_word_t *, int &n_note, int &n_unship) const
+    {
+        const int W = e.plan.mask_words;
+        Engine::mask_clear(accept_mask, W); Engine::mask_clear(open_mask, W);
+        n_note = 0; n_unship = 0;   /* import-completeness notes belong to the walk that evaluates */
+
+        /* the packet's own extremes: the box its targets occupy, and the target-side scalars the
+           shared cover predicate reduces over (widest softening, narrowest softening, least
+           OldAcc, whether any member is a sink, the largest PM cutoff) */
+        double cover_min[3], cover_max[3];
+        double t_soft_max = 0.0, t_soft_min = 0.0, t_aold_min = 0.0;
+        double cover_rcut = 0.0, cover_rcut2 = 0.0;
+        int cover_has_sink = 0, n_members = 0;
+        for(int m = 0; m < e.q_dev; m++) {
+            if(!Engine::mask_test(mask, m)) {continue;}
+            if(!open[m].alive) {continue;}
+            const gpu_grav_open_inputs_t &o = open[m];
+            if(n_members == 0) {
+                for(int d = 0; d < 3; d++) {cover_min[d] = o.pos[d]; cover_max[d] = o.pos[d];}
+                t_soft_max = o.soft; t_soft_min = o.soft; t_aold_min = o.aold;
+#ifdef PMGRID
+                cover_rcut = o.rcut; cover_rcut2 = o.rcut2;
+#endif
+            } else {
+                for(int d = 0; d < 3; d++) {
+                    if(o.pos[d] < cover_min[d]) {cover_min[d] = o.pos[d];}
+                    if(o.pos[d] > cover_max[d]) {cover_max[d] = o.pos[d];}
+                }
+                if(o.soft > t_soft_max) {t_soft_max = o.soft;}
+                if(o.soft < t_soft_min) {t_soft_min = o.soft;}
+                if(o.aold < t_aold_min) {t_aold_min = o.aold;}
+#ifdef PMGRID
+                if(o.rcut > cover_rcut) {cover_rcut = o.rcut; cover_rcut2 = o.rcut2;}
+#endif
+            }
+            if(o.ptype == 5) {cover_has_sink = 1;}
+            n_members++;
+        }
+        if(n_members == 0) {return GRAV_PACKET_STEP_CONTINUE;}   /* empty mask: nothing descends */
+
+        const double R = widen_radius(e, nd.idx);
+        for(int d = 0; d < 3; d++) {cover_min[d] -= R; cover_max[d] += R;}
+        const double len_widened = (double) nd.len_node + R;
+
+#if (defined(SINGLE_STAR_TIMESTEPPING) || defined(SINGLE_STAR_FIND_BINARIES)) && defined(SINGLE_STAR_DIRECT_GRAVITY_RADIUS)
+        const int pred_n_sink = (int) e.ctx.tree_soa.N_SINK[nd.idx];
+#else
+        const int pred_n_sink = 0;
+#endif
+#ifdef GRAVITY_HYBRID_OPENING_CRIT
+        const int pred_is_first_step = e.ctx.is_first_step;
+#else
+        const int pred_is_first_step = 0;
+#endif
+
+        int opens = (gravtree_open_decision_cell(
+                         (double) nd.center_node[0], (double) nd.center_node[1], (double) nd.center_node[2],
+                         (double) nd.s_node[0], (double) nd.s_node[1], (double) nd.s_node[2],
+                         len_widened, (double) nd.mass_node, (double) nd.msoft_node, pred_n_sink,
+                         cover_min, cover_max, t_soft_max, t_soft_min, t_aold_min, cover_has_sink,
+                         cover_rcut, cover_rcut2, pred_is_first_step) == GRAV_OPEN_NODE);
+
+#ifdef SINGLE_STAR_DIRECT_GRAVITY
+        /* A sink member takes no star mass from this node, so it judges a DIFFERENT multipole:
+           the sinks removed and the centre of mass shifted to what is left.  Both moments are on
+           one clock, so the shifted centre moves no further than R either.  The two variants are
+           judged against the same cover box, which only ever opens more than each would alone. */
+        if(!opens && cover_has_sink && (double) e.ctx.tree_soa.sink_mass[nd.idx] > 0.0) {
+            const double sm = (double) e.ctx.tree_soa.sink_mass[nd.idx];
+            const double mass_nosink = (double) nd.mass_node - sm;
+            if(mass_nosink > 0.0) {
+                double s_nosink[3];
+                for(int d = 0; d < 3; d++) {
+                    s_nosink[d] = ((double) nd.s_node[d] * (double) nd.mass_node
+                                   - (double) e.ctx.tree_soa.sink_pos[nd.idx][d] * sm) / mass_nosink;
+                }
+                opens = (gravtree_open_decision_cell(
+                             (double) nd.center_node[0], (double) nd.center_node[1], (double) nd.center_node[2],
+                             s_nosink[0], s_nosink[1], s_nosink[2],
+                             len_widened, mass_nosink, (double) nd.msoft_node, pred_n_sink,
+                             cover_min, cover_max, t_soft_max, t_soft_min, t_aold_min, cover_has_sink,
+                             cover_rcut, cover_rcut2, pred_is_first_step) == GRAV_OPEN_NODE);
+            }
+        }
+#endif
+
+        /* A terminal import has no children here, so opening it means accepting it: there is
+           nothing below to descend into and nothing further to bring current. */
+        if(opens && !grav_node_is_terminal(nd.node_kind)) {Engine::mask_copy(open_mask, mask, W);}
+        return GRAV_PACKET_STEP_CONTINUE;
+    }
+};
+
 template <class Policy>
 struct GpuGravPacketWalk {
     using TeamMember = Kokkos::TeamPolicy<>::member_type;
@@ -1924,6 +2119,125 @@ static int gpu_gravtree_walk_packets(const gpu_grav_walk_ctx_t &ctx, const int *
     return 0;
 }
 
+/* Run the discovery traversal over this call's candidates: the engine with the cover flavour,
+ * claiming into the two recorders.  Returns 0 when the launch happened, 1 when no legal shape
+ * exists for this build -- in which case the caller drifts everything, as it does for every
+ * other reason discovery cannot be relied on. */
+static int gpu_grav_discover_sources(const gpu_grav_walk_ctx_t &ctx, const int *d_idx, int n_cand,
+                                     const struct DriftKickTableView &tables,
+                                     int *d_discover_fail, int *d_anomaly)
+{
+    GpuGravPacketWalk<GravPacketCoverPolicy> f;
+    f.ctx = ctx; f.d_idx = d_idx; f.n_cand = n_cand;
+    f.d_acc = NULL; f.d_ninter = NULL; f.d_pot = NULL; f.d_failed = NULL;   /* it writes no target outputs */
+    f.d_fail_by_reason = d_discover_fail;
+    f.policy.nodes   = gpu_node_dirty_view();
+    f.policy.parts   = gx_touched_set_view();
+    f.policy.anomaly = d_anomaly;
+    f.policy.tables  = tables;
+    int team = 0;
+    return gpu_grav_packet_launch(f, "gravtree_discover_sources", &team);
+}
+
+/* Bring every source this walk will evaluate -- local particles and tree nodes -- to the walk
+ * time, by finding them first instead of drifting everything.
+ *
+ * The order below is the contract, not an arrangement of convenience:
+ *
+ *   1. answer the claims the HOST made earlier in the step.  A node the host lazily drifted
+ *      stands at the walk time with a STALE centre of mass in the mirror, so a discovery run
+ *      before this step would widen by zero around the wrong position and its containment
+ *      argument would be false.
+ *   2. open an epoch on each recorder, owned by this phase.  A refusal means another phase
+ *      still holds one; the caller drifts everything rather than claim into it.
+ *   3. the discovery traversal.
+ *   4. wait for it, then read what its claims reported.
+ *   5. consume: the listed nodes, then the listed particles.
+ *   6. retire, on EVERY exit path -- the epoch opens before the outcome is known, and a leaked
+ *      one refuses every later call while looking exactly like the mechanism working.
+ *
+ * Returns 0 when every source the walk can reach stands at the walk time.  Any other outcome
+ * returns nonzero and the caller takes the full particle drift and the full node sweep BEFORE
+ * any force kernel is launched -- never after, never best-effort. */
+/* How the device gravity route has been getting its sources current, as run totals on this
+ * rank.  A subset path that quietly stops being taken -- a recorder that stays unsafe, an epoch
+ * another phase never gives back, a traversal that keeps giving packets up -- leaves the run
+ * drifting everything on every call while every other number looks exactly as it does when the
+ * mechanism works.  That is the failure this pair exists to make visible, and it is why they
+ * ship rather than living in a probe. */
+static long long g_subset_taken = 0, g_subset_declined = 0;
+extern "C" void gpu_gravtree_subset_drift_counts(long long *taken, long long *declined)
+{
+    if(taken)    {*taken    = g_subset_taken;}
+    if(declined) {*declined = g_subset_declined;}
+}
+
+static int gpu_grav_bring_sources_current(const gpu_grav_walk_ctx_t &ctx, const int *d_idx, int n_cand,
+                                          int *d_discover_fail, int *d_anomaly)
+{
+    const integertime ti = ctx.ti;
+
+    /* 1 */
+    if(gpu_node_dirty_bring_gravity_current(ti) != 0) {g_subset_declined++; return 1;}
+
+    /* 2 -- the particle recorder first, because it is the one that can refuse; the node
+     *      recorder's epoch is opened only once there is a discovery to run.  Neither early
+     *      return has an epoch to retire: the first is before any is opened, the second is the
+     *      open itself failing. */
+    if(gx_touched_set_ensure(ctx.treeParticleSlots) != 0) {g_subset_declined++; return 1;}
+    if(gx_touched_set_begin_epoch_owned(GX_TOUCHED_OWNER_GRAVITY) != 0) {g_subset_declined++; return 1;}
+
+    int status = 1;   /* nothing is relied on until the whole sequence has run */
+    {
+        struct DriftKickTableView tables;
+        if(drift_kick_table_mirror_refresh(&tu_drift_kick_table_dev, &tables) == 0)
+        {
+            memset(d_discover_fail, 0, GRAV_PACKET_FAIL_REASONS * sizeof(int));
+            *d_anomaly = 0;
+
+            if(gpu_node_dirty_acquire_epoch(GPU_NODE_DIRTY_OWNER_DEVICE) != 0) {
+                /* another phase holds the node recorder, or its claims are unanswered; the
+                   discovery cannot record into it, so the caller drifts everything */
+                gx_touched_set_retire(GX_TOUCHED_OWNER_GRAVITY);
+                g_subset_declined++;
+                return 1;
+            }
+
+            /* 3 + 4 -- the launcher waits on the kernel, so the claims and everything they
+             *           reported are complete and readable once it returns. */
+            if(gpu_grav_discover_sources(ctx, d_idx, n_cand, tables, d_discover_fail, d_anomaly) == 0)
+            {
+                int gave_up = 0;
+                for(int r = 0; r < GRAV_PACKET_FAIL_REASONS; r++) {gave_up += d_discover_fail[r];}
+                /* A packet that gave up walked only part of the tree, so the set is incomplete;
+                 * an out-of-phase or overflowed claim means the recorders cannot be trusted.
+                 * Either way this is a DECLINE, counted rather than fatal -- the fused walk
+                 * treats the same reports as fatal because it has no second route, and this
+                 * one does. */
+                if(gave_up == 0 && *d_anomaly == 0) {
+                    /* 5 -- nodes, then particles */
+                    if(gpu_node_dirty_bring_gravity_current(ti) == 0) {
+                        gx_touched_set_drift_and_mark(ti);
+                        status = 0;
+                    }
+                }
+            }
+            /* The node recorder returns to the host claimers whatever happened.  On the
+             * declining path the generation bump also invalidates this epoch's stamps, so the
+             * sweep that follows finds nothing left behind to trip over; on the succeeding path
+             * the consumer has already answered the claims and re-opened a host epoch, and this
+             * retire is the no-op that says so. */
+            if(status != 0) {gpu_node_dirty_begin_epoch();}
+            gpu_node_dirty_retire(GPU_NODE_DIRTY_OWNER_DEVICE);
+        }
+    }
+
+    /* 6 */
+    gx_touched_set_retire(GX_TOUCHED_OWNER_GRAVITY);
+    if(status == 0) {g_subset_taken++;} else {g_subset_declined++;}
+    return status;
+}
+
 #ifdef PMGRID
 /* SharedSpace mirrors of the PM short-range lookup tables. Seeded once and kept
  * for the run: force_treeallocate() rebuilds the host tables from
@@ -1986,6 +2300,8 @@ struct grav_walk_scratch_plan
     size_t bytes;
     size_t acc, pot, idx, failed, ninter;
     size_t fail_by_reason;   /* [GRAV_PACKET_FAIL_REASONS], written by the engine's team leaders */
+    size_t discover_fail;    /* [GRAV_PACKET_FAIL_REASONS], the discovery traversal's own tally */
+    size_t discover_anomaly; /* [1], what the discovery's recorder claims reported */
 };
 
 static inline size_t grav_walk_scratch_align(size_t offset, size_t alignment)
@@ -2022,6 +2338,13 @@ grav_walk_scratch_plan_for(int num_targets, int with_potential_and_interactions)
      * allocation of its own and is host-readable the moment the kernel has been waited on. */
     offset = grav_walk_scratch_align(offset, alignof(int));
     plan.fail_by_reason = offset;  offset += (size_t) GRAV_PACKET_FAIL_REASONS * sizeof(int);
+    /* The discovery traversal's channels.  Separate from the tally above because the walk's own
+     * one is read after the walk and would otherwise carry the discovery's counts into the
+     * per-call packet report. */
+    offset = grav_walk_scratch_align(offset, alignof(int));
+    plan.discover_fail = offset;  offset += (size_t) GRAV_PACKET_FAIL_REASONS * sizeof(int);
+    offset = grav_walk_scratch_align(offset, alignof(int));
+    plan.discover_anomaly = offset;  offset += sizeof(int);
     plan.bytes = offset;
     return plan;
 }
@@ -2085,25 +2408,6 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
      * ProcessedFlag untouched leaves every candidate to the host loop in gravtree.cc. */
     if(gravity_walk_route_to_host(num_active)) {myfree(idx_host); return 0;}
 
-    /* Every particle source this walk evaluates must stand at ti_curr_host, and the walk opens
-     * inactive particles as freely as the host walk does. The host walk drifts such a source
-     * when it reaches it; this walk has no such moment, so it drifts every local particle once
-     * here -- after the routing decision, so a host-routed call pays nothing for it. The stamp
-     * this leaves is the proof; the walk still checks each accepted source against ti and hands
-     * a stale one to the host walk rather than evaluate it where it stands. */
-    gizmo_full_drift_to(ti_curr_host);
-
-    /* Already-current geometry needs no sweep, and asking for one when a host
-     * lazy drift armed the latch earlier in the step would fail rather than
-     * no-op.  A tree built since that drift is current and its mirror was
-     * rewritten with it. */
-    if(!gpu_gravity_tree_nodes_current_at(ti_curr_host)
-            && gpu_force_drift_nodes(ti_curr_host) != 0) {
-        myfree(idx_host);   /* LIFO mymalloc cleanup before drain */
-        endrun(929702);
-        return 1;   /* soft bad-stop: skip walk on un-drifted nodes; drains at next poll */
-    }
-
     /* Acquire the arena (P_dev + CellP_dev in SharedSpace) */
     gpu_particles_arena_set_site("gpu_gravtree_walk_primary");
     gpu_particles_arena_acquire(NumPart, P, CellP);
@@ -2126,6 +2430,118 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
         myfree(idx_host);   /* LIFO mymalloc cleanup before drain */
         return 1;
     }
+
+    int treeBase = All.TreeNodeIndexBase;
+    int treeParticleSlots_snap = All.TreeParticleSlots;
+    int maxNodes_snap = MaxNodes;
+    int maxForeignNodes_snap = MaxForeignNodes;    /* LET */
+    const struct gpu_gravity_tree_soa_t soa_snap = *soa;
+#ifdef GRAVITY_HYBRID_OPENING_CRIT
+    /* host-evaluate the first-step predicate once; captured by value into the device walk */
+    int is_first_step_snap = (All.Ti_Current == 0 && RestartFlag != 1);
+#endif
+
+#ifdef PMGRID
+    double rcut_snap     = All.Rcut[0];
+    double rcut2_snap    = rcut_snap * rcut_snap;
+    double asmthfac_snap = 0.5 / All.Asmth[0] * (GIZMO_GPU_GRAVTREE_NTAB / 3.0);
+    /* shortrange_table is a host global (forcetree.cc); the SharedSpace mirror the
+     * kernel reads is seeded once per run, not per call. */
+    if(gpu_shortrange_tables_acquire() != 0) {
+        myfree(idx_host);
+        return 1;
+    }
+#endif
+    /* read-only PM short-range config captured by value into the device walk (empty when
+     * !PMGRID; per-target PLACEHIGHRESREGION override happens inside the walk on its copy). */
+    grav_pm_shortrange_t pm_snap{};
+#ifdef PMGRID
+    pm_snap.rcut = rcut_snap; pm_snap.rcut2 = rcut2_snap; pm_snap.asmthfac = asmthfac_snap;
+    pm_snap.shortrange_tab = g_d_shortrange_tab;
+#ifdef EVALPOTENTIAL
+    pm_snap.shortrange_pot_tab = g_d_shortrange_pot_tab;
+#endif
+#ifdef COMPUTE_TIDAL_TENSOR_IN_GRAVTREE
+    pm_snap.shortrange_tidal_tab = g_d_shortrange_tidal_tab;
+#endif
+#endif
+
+    /* Scratch arrays for per-target results, carved from one allocation */
+    const struct grav_walk_scratch_plan scratch = grav_walk_scratch_plan_for(num_active, 1);
+    char *scratch_block = (char *) gizmo_gpu_alloc_shared(scratch.bytes, "gravity_walk");
+    if(!scratch_block) {
+        printf("gpu_gravtree_walk_primary: kokkos_malloc failed\n");
+        endrun(913201);
+        myfree(idx_host);   /* LIFO mymalloc cleanup before drain */
+        return 1;
+    }
+    int          *d_idx    = (int *)          (scratch_block + scratch.idx);
+    int          *d_failed = (int *)          (scratch_block + scratch.failed);
+    Vec3<double> *d_acc    = (Vec3<double> *) (scratch_block + scratch.acc);
+    int          *d_ninter = (int *)          (scratch_block + scratch.ninter);
+    double       *d_pot    = (double *)       (scratch_block + scratch.pot);
+    int          *d_fail_by_reason = (int *) (scratch_block + scratch.fail_by_reason);
+    memcpy(d_idx, idx_host, num_active * sizeof(int));
+    memset(d_failed, 0, num_active * sizeof(int));
+    memset(d_fail_by_reason, 0, GRAV_PACKET_FAIL_REASONS * sizeof(int));
+    for(int r = 0; r < GRAV_PACKET_FAIL_REASONS; r++) {g_packet_fail[r] = 0;}
+
+    /* The decision half of the walk context: the tree, the arena, the walk time, the topology
+     * bounds and the PM cutoff -- everything BOTH traversals read to decide which sources they
+     * reach.  It is filled here, before anything is drifted, because the discovery traversal
+     * below runs on it.  The evaluation half -- the RT / sink / cosmic-ray source arrays, the
+     * Hermite and Ewald payload state -- is attached further down, AFTER the sources are
+     * current, so nothing derived from particle state is built ahead of the drift that decides
+     * what those particles are. */
+    gpu_grav_walk_ctx_t ctx{};
+    ctx.treeBase = treeBase; ctx.treeParticleSlots = treeParticleSlots_snap;
+    ctx.maxNodes = maxNodes_snap; ctx.maxForeignNodes = maxForeignNodes_snap;
+    ctx.P_dev = P_dev; ctx.CellP_dev = CellP_dev; ctx.ti = ti_curr_host; ctx.tree_soa = soa_snap;
+#ifdef GRAVITY_HYBRID_OPENING_CRIT
+    ctx.is_first_step = is_first_step_snap;
+#endif
+    ctx.pm = pm_snap;
+
+    /* Every source this walk evaluates -- particle and node -- must stand at ti_curr_host, and
+     * the walk opens inactive particles as freely as the host walk does.  The host walk drifts
+     * such a source at the moment it reaches it; this walk has no such moment, so the sources
+     * are brought current up front, here, after the routing decision so a host-routed call pays
+     * nothing for it.
+     *
+     * Which sources: the ones this walk actually reaches, found by a conservative discovery
+     * traversal, rather than every local particle and every stale node in the tree.  When that
+     * cannot be established -- for any reason at all -- the fallback is the whole thing,
+     * drifted before any force kernel is launched, never after and never partially. */
+    /* PARTICLE currency.  A full-N drift may ALREADY have run for this step -- the tree build
+     * does one, and gizmo_full_drift_to is idempotent against the stamp it leaves -- in which
+     * case every local particle stands at ti, there is no drift work to place, and launching a
+     * discovery would traverse the tree to rediscover a saving that is not there.  Measured on
+     * test/fire with every call device-routed: 18 of 66 calls are in exactly that state.
+     *
+     * Otherwise the drift is real work, and the subset places it on the sources the walk
+     * actually reaches.  Anything the subset cannot establish -- a refused epoch, a recorder
+     * fail-safe, a packet given up -- takes the full drift instead, before any force kernel. */
+    if(gizmo_full_drift_ti() < ti_curr_host
+       && gpu_grav_bring_sources_current(ctx, d_idx, num_active,
+                                         (int *) (scratch_block + scratch.discover_fail),
+                                         (int *) (scratch_block + scratch.discover_anomaly)) != 0)
+    {
+        gizmo_full_drift_to(ti_curr_host);
+    }
+
+    /* NODE currency, asked separately because it has a different answer: a host lazy drift can
+     * leave node mirrors behind on a step whose particles are entirely current.  The certificate
+     * says whether a build or a sweep has left every mirror current, and the sweep answers it
+     * when nothing has -- asking for one when a host lazy drift armed the latch earlier in the
+     * step would fail rather than no-op, which is what the certificate check avoids. */
+    if(!gpu_gravity_tree_nodes_current_at(ti_curr_host)
+            && gpu_force_drift_nodes(ti_curr_host) != 0) {
+        Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(scratch_block);
+        myfree(idx_host);   /* LIFO mymalloc cleanup before drain */
+        endrun(929702);
+        return 1;   /* soft bad-stop: skip walk on un-drifted nodes; drains at next poll */
+    }
+
 
     /* Per-particle gravity source inputs (RT luminosity / sink bolometric luminosity /
      * CR injection), evaluated via the shared SSOT helper gravtree_fill_particle_source_
@@ -2276,63 +2692,7 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
 #endif
     };
 
-    /* Scratch arrays for per-target results, carved from one allocation */
-    const struct grav_walk_scratch_plan scratch = grav_walk_scratch_plan_for(num_active, 1);
-    char *scratch_block = (char *) gizmo_gpu_alloc_shared(scratch.bytes, "gravity_walk");
-    if(!scratch_block) {
-        printf("gpu_gravtree_walk_primary: kokkos_malloc failed\n");
-        endrun(913201);
-        release_payload_buffers();
-        myfree(idx_host);   /* LIFO mymalloc cleanup before drain */
-        return 1;
-    }
-    int          *d_idx    = (int *)          (scratch_block + scratch.idx);
-    int          *d_failed = (int *)          (scratch_block + scratch.failed);
-    Vec3<double> *d_acc    = (Vec3<double> *) (scratch_block + scratch.acc);
-    int          *d_ninter = (int *)          (scratch_block + scratch.ninter);
-    double       *d_pot    = (double *)       (scratch_block + scratch.pot);
-    int          *d_fail_by_reason = (int *) (scratch_block + scratch.fail_by_reason);
-    memcpy(d_idx, idx_host, num_active * sizeof(int));
-    memset(d_failed, 0, num_active * sizeof(int));
-    memset(d_fail_by_reason, 0, GRAV_PACKET_FAIL_REASONS * sizeof(int));
-    for(int r = 0; r < GRAV_PACKET_FAIL_REASONS; r++) {g_packet_fail[r] = 0;}
 
-    int treeBase = All.TreeNodeIndexBase;
-    int treeParticleSlots_snap = All.TreeParticleSlots;
-    int maxNodes_snap = MaxNodes;
-    int maxForeignNodes_snap = MaxForeignNodes;    /* LET */
-    const struct gpu_gravity_tree_soa_t soa_snap = *soa;
-#ifdef GRAVITY_HYBRID_OPENING_CRIT
-    /* host-evaluate the first-step predicate once; captured by value into the device walk */
-    int is_first_step_snap = (All.Ti_Current == 0 && RestartFlag != 1);
-#endif
-
-#ifdef PMGRID
-    double rcut_snap     = All.Rcut[0];
-    double rcut2_snap    = rcut_snap * rcut_snap;
-    double asmthfac_snap = 0.5 / All.Asmth[0] * (GIZMO_GPU_GRAVTREE_NTAB / 3.0);
-    /* shortrange_table is a host global (forcetree.cc); the SharedSpace mirror the
-     * kernel reads is seeded once per run, not per call. */
-    if(gpu_shortrange_tables_acquire() != 0) {
-        Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(scratch_block);
-        release_payload_buffers();
-        myfree(idx_host);
-        return 1;
-    }
-#endif
-    /* read-only PM short-range config captured by value into the device walk (empty when
-     * !PMGRID; per-target PLACEHIGHRESREGION override happens inside the walk on its copy). */
-    grav_pm_shortrange_t pm_snap{};
-#ifdef PMGRID
-    pm_snap.rcut = rcut_snap; pm_snap.rcut2 = rcut2_snap; pm_snap.asmthfac = asmthfac_snap;
-    pm_snap.shortrange_tab = g_d_shortrange_tab;
-#ifdef EVALPOTENTIAL
-    pm_snap.shortrange_pot_tab = g_d_shortrange_pot_tab;
-#endif
-#ifdef COMPUTE_TIDAL_TENSOR_IN_GRAVTREE
-    pm_snap.shortrange_tidal_tab = g_d_shortrange_tidal_tab;
-#endif
-#endif
 
 #ifdef RT_USE_GRAVTREE
     const struct gpu_rt_walk_data_t rt_data_dev = rt_data_snap;
@@ -2368,7 +2728,7 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
     hermite_dev.tables = drift_kick_table_view(NULL, NULL, 0.0, 0.0, All.Timebase_interval, 0);
     /* the mirror is only built on a Hermite pass: the predictor returns immediately when
        HermiteOnlyFlag is 0, so an ordinary pass would be copying a table nothing reads */
-    if(HermiteOnlyFlag && drift_kick_table_mirror_refresh(&hermite_drift_kick_table_dev, &hermite_dev.tables) != 0) {
+    if(HermiteOnlyFlag && drift_kick_table_mirror_refresh(&tu_drift_kick_table_dev, &hermite_dev.tables) != 0) {
         Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(scratch_block);
         release_payload_buffers();
         myfree(idx_host);   /* soft bad-stop already requested: no launch without the tables the prediction reads */
@@ -2379,15 +2739,10 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
     /* Invariant guard: reset the per-walk counter. */
     g_inv_fterm_aggregate = 0; g_unship_aggregate = 0;
 
-    /* the per-call context the walk reads, captured by value; the pointers it holds are
-     * SharedSpace / captured-snapshot addresses valid for the launch */
-    gpu_grav_walk_ctx_t ctx;
-    ctx.treeBase = treeBase; ctx.treeParticleSlots = treeParticleSlots_snap; ctx.maxNodes = maxNodes_snap; ctx.maxForeignNodes = maxForeignNodes_snap;
-    ctx.P_dev = P_dev; ctx.CellP_dev = CellP_dev; ctx.ti = ti_curr_host; ctx.tree_soa = soa_snap;
-#ifdef GRAVITY_HYBRID_OPENING_CRIT
-    ctx.is_first_step = is_first_step_snap;
-#endif
-    ctx.pm = pm_snap;
+    /* The evaluation half of the context (see the decision half above): everything derived from
+     * particle state, attached only now that the sources it is derived from stand at the walk
+     * time.  The pointers it holds are SharedSpace / captured-snapshot addresses valid for the
+     * launch. */
 #ifdef RT_USE_GRAVTREE
     ctx.rt_data = rt_data_dev;
 #endif

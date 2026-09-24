@@ -797,7 +797,7 @@ gravity_walk_attempt:
      * existing reduction is free; two more reductions per gravity call would not be. */
     /* Scoped, not #define: a macro here would be translation-unit-wide despite sitting in a
        function. */
-    constexpr int recorder_slots = 3;
+    constexpr int recorder_slots = 5;
     constexpr int report_slots   = GRAV_PACKET_FAIL_REASON_SLOTS + recorder_slots;
     long long packet_fail[report_slots] = {0};
     long long packet_fail_sum[report_slots] = {0};
@@ -806,6 +806,8 @@ gravity_walk_attempt:
     packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 0] = gpu_node_dirty_unsafe_events();
     packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 1] = gx_touched_set_refused_epochs();
     packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 2] = gx_touched_set_retire_faults();
+    gpu_gravtree_subset_drift_counts(&packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 3],
+                                     &packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 4]);
     MPI_Reduce(packet_fail, packet_fail_sum, report_slots, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(packet_fail, packet_fail_max, report_slots, MPI_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
     MPI_Reduce(&Numnodestree, &maxnumnodes, 1, MPI_INT, MPI_MAX, 0, MPI_COMM_WORLD);
@@ -842,6 +844,17 @@ gravity_walk_attempt:
                         packet_fail_max[GRAV_PACKET_FAIL_REASON_SLOTS + 0],
                         packet_fail_max[GRAV_PACKET_FAIL_REASON_SLOTS + 1],
                         packet_fail_max[GRAV_PACKET_FAIL_REASON_SLOTS + 2]);
+            }
+            /* How the sources were brought current, on the same cadence as the packet shape
+               beside it: this is the row's own quantity, not a fail-safe, so it prints whenever
+               the device route ran rather than only when something went wrong. */
+            if(packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + 3] ||
+               packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + 4]) {
+                fprintf(FdTimings, "subset-drift: taken=%lld declined=%lld (worst rank: %lld %lld)\n",
+                        packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + 3],
+                        packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + 4],
+                        packet_fail_max[GRAV_PACKET_FAIL_REASON_SLOTS + 3],
+                        packet_fail_max[GRAV_PACKET_FAIL_REASON_SLOTS + 4]);
             }} fprintf(FdTimings, "\n");
         fflush(FdTimings);
     }
