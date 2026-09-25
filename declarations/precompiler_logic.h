@@ -620,6 +620,9 @@
 #endif
 #ifdef HERMITE_INTEGRATION
 #define COMPUTE_JERK_IN_GRAVTREE /* needs to be computed in order to do the Hermite integration */
+#ifndef HERMITE_CORRECTOR_ITERATIONS
+#define HERMITE_CORRECTOR_ITERATIONS 1 /* P(EC)^n: n>1 re-evaluates gravity at the corrected state and re-applies the corrector (Kokubo, Yoshinaga & Makino 1998) */
+#endif
 #ifndef TIDAL_TIMESTEP_CRITERION
 #define TIDAL_TIMESTEP_CRITERION // use tidal tensor timestep criterion -- otherwise won't effectively leverage the Hermite integrator timesteps
 #endif

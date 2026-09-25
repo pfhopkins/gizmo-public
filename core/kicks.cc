@@ -153,7 +153,7 @@ void do_hermite_prediction(void)
 		}}} // for (int i : ActiveParticleList)
 }
 
-void do_hermite_correction(void) // corrector step
+void do_hermite_correction(int final_pass) // corrector step; final_pass: last of the HERMITE_CORRECTOR_ITERATIONS passes
 {
     int i; integertime ti_step, tstart=0, tend=0;
 #ifdef _OPENMP
@@ -170,7 +170,8 @@ void do_hermite_correction(void) // corrector step
                     P[i].Pos = P[i].OldPos + (P[i].Vel + P[i].OldVel) * (dt_grav * 0.5) + (P[i].Hermite_OldAcc - P[i].GravAccel) * (dt_grav * dt_grav / 12);
 #ifdef PMGRID
                     //Add the long-range kick from the second half-step, if necessary (since we are overwriting the previous kick operations with the Hermite scheme)
-                    if(All.PM_Ti_endstep == All.Ti_Current)	/* need to do long-range kick */
+                    //Final pass only: an intermediate corrected state is a force-evaluation point and, like the predicted state, carries no PM kick
+                    if(final_pass && All.PM_Ti_endstep == All.Ti_Current)	/* need to do long-range kick */
                     {
                         double dt_grav_pm = get_gravkick_factor(All.PM_Ti_begstep + (All.PM_Ti_endstep - All.PM_Ti_begstep)/2, All.PM_Ti_endstep, i, 0);
                         P[i].Vel += P[i].GravPM * dt_grav_pm;

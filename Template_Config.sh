@@ -245,6 +245,7 @@
 ## ----------------------------------------------------------------------------------------------------
 #SINGLE_STAR_TIMESTEPPING=1     # use additional timestep criteria to ensure resolved binaries/multiples dont dissolve in close encounters. 0=most conservative. 1=super-timestep hard binaries by operator-splitting the binary orbit. 2=more aggressive super-timestep. cite Grudic et al., arXiv:2010.11254, for the methods here.
 #HERMITE_INTEGRATION=32         # Instead of the usual 2nd order DKD Leapfrog timestep, do 4th order Hermite integration for particles matching the bitflag. Allows longer timesteps and higher accuracy collisional dynamics. cite Grudic et al., arXiv:2010.11254, for the methods here.
+#HERMITE_CORRECTOR_ITERATIONS=2 # P(EC)^n Hermite: after the corrector, re-evaluate gravity at the corrected state and re-apply the corrector, n passes in all (default 1 = standard PEC). n=2 removes the secular energy drift of a fixed-step orbit (~1000x on circular pairs) for one extra Hermite force pass per step, but on its own makes eccentric orbits on adaptive block steps WORSE (test/binary |dE/E| 8.9e-5 -> 1.9e-3). Off by default: its cost in production runs is unmeasured
 ## ----------------------------------------------------------------------------------------------------
 # ----- sink creation and accretion/growth/merger modules
 ## ----------------------------------------------------------------------------------------------------
