@@ -1860,16 +1860,19 @@ struct GpuGravPacketWalk {
 
     /* Give the packet up, and say why.  The first reason recorded is kept: it is the one that
      * actually stopped the traversal, and a later lane writing over it would report a symptom. */
+    /* Several threads can reach a give-up at once, so the flag is CLAIMED rather than assigned:
+     * whoever claims it writes the reason, and the reason the report carries is the one that
+     * actually stopped a traversal first.
+     *
+     * Always claimed, never a cheaper unsynchronised path for a single walker: this is reached
+     * from the record-evaluation loop as well as the traversal, and that loop runs on every
+     * member thread whatever n_walkers is. Keying the cheap path on n_walkers would be sound only
+     * while the two happen to move together, and the failure it would produce -- FAILED set with
+     * the reason still zero, tallied into the unused slot -- is invisible in the output and
+     * corrupts the very counter the continuation-budget question is read from. It costs an atomic
+     * on a path that by construction runs at most once per packet. */
     KOKKOS_INLINE_FUNCTION void fail(int *ctr, int reason) const
     {
-        if(n_walkers == 1) {
-            if(!ctr[GRAV_PACKET_CTR_FAILED]) {ctr[GRAV_PACKET_CTR_FAIL_REASON] = reason;}
-            ctr[GRAV_PACKET_CTR_FAILED] = 1;
-            return;
-        }
-        /* Several walkers can reach a give-up in the same round, so the flag is claimed rather
-         * than assigned: the one that claims it writes the reason, and the reason the report
-         * carries is the one that actually stopped a traversal first. */
         if(Kokkos::atomic_compare_exchange(&ctr[GRAV_PACKET_CTR_FAILED], 0, 1) == 0) {
             ctr[GRAV_PACKET_CTR_FAIL_REASON] = reason;
         }
@@ -2283,19 +2286,19 @@ extern "C" void gpu_gravtree_packet_failures(long long *out, int n)
 extern "C" int gpu_gravtree_packet_failure_reasons(void) {return GRAV_PACKET_FAIL_REASONS;}
 
 /* Host: choose the launch shape and run the packet engine over the candidates.
- * Returns 0 on success (outputs and d_failed filled per candidate), 1 if no legal shape
- * exists for this build (the caller uses the single-target walk).
+ * Returns 0 on success (outputs and d_failed filled per candidate), 1 if no legal shape exists
+ * for this build, in which case the caller uses the single-target walk.
  *
- * The packet is as wide as the team, one thread per member, so the packet on the device is
- * the configured size up to GRAV_PACKET_Q_DEV_MAX (the mask storage bound), and a larger
- * configured size is walked as several packets of that many. The team is then reduced only
- * as far as the backend requires to launch it with the scratch it asks for (a legality bound
- * only, gpu_dispatch_templates.h); every reduction is reported through the shape above. */
-/* Size the launch shape for a flavour and run it.  Every capacity comes from the flavour's own
- * traits, so the instantiation that neither records nor splits asks for none of that storage and
- * is priced accordingly by team_size_max -- the scratch request is what the legality bound reads,
- * so a region left in "because it is unused anyway" would still cost occupancy.
- * Returns 0 on success with `team_out` set, 1 if no legal shape exists for this build. */
+ * Every capacity comes from the flavour's own traits, so the instantiation that neither records
+ * nor splits asks for none of that storage and is priced accordingly by team_size_max -- the
+ * scratch request is what the legality bound reads, so a region left in "because it is unused
+ * anyway" would still cost occupancy.
+ *
+ * The team is NOT the packet width: it is the row's, and the members are the configured packet
+ * size when that is narrower, a configured size above the team being walked as several packets of
+ * team-many. That ceiling is deliberate -- every member owns a thread, so no thread carries
+ * several complete target states across rounds -- and it does mean a row chosen for occupancy
+ * caps how many targets can share one traversal, which is why both numbers are reported. */
 /* The launch shapes, widest team first.  A row is the WHOLE shape, because the pieces are not
  * independent: a wide team is what gives a rank with few targets more than a handful of traversing
  * lanes, but it also multiplies the per-walker continuation storage, and the scratch that buys is

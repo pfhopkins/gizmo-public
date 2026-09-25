@@ -240,7 +240,8 @@
  * the same gain on the steps that matter most but cost more on the many tiny steps, where a large
  * packet does far more opening-criterion work than the node loads it shares; so 8 is the default.
  * Override in Config.sh. Any value of 1 or more is honoured, up to 256 members per packet; a larger
- * configured size is walked as several packets of that many.
+ * configured size is walked as several packets of that many. The members actually used are further
+ * capped by the team the call runs on, and reported with the shape as Qdev.
  *
  * On the device the team that walks a packet is generally WIDER than the packet. Every thread in it
  * traverses, sharing one target's descent as readily as several targets', while the first members-many
