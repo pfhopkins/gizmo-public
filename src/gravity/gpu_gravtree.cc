@@ -1548,6 +1548,9 @@ struct GravPacketMaskedPolicy {
     static constexpr bool evaluates        = true;    /* members carry accumulators and write per-target outputs */
     /* Compile-time so the walker's ring index stays a mask rather than a division. */
     static constexpr int  local_stack      = GRAV_PACKET_LOCAL_STACK;
+    /* Members share one traversal and then evaluate its records in parallel, so the packet is
+       what makes that sharing worth having: the configured size. */
+    static constexpr int  packet_size      = TREE_QUERY_PACKET_SIZE;
 
     /* Called for every node the walker reaches, before the prelude classifies it.  The
      * evaluating flavour has nothing to write down: it reads the tree, it does not record it. */
@@ -1650,6 +1653,20 @@ struct GravPacketCoverPolicy {
     static constexpr bool splits_items     = false;   /* one decision for the packet: members never diverge (see below) */
     static constexpr bool evaluates        = false;
     static constexpr int  local_stack      = 0;       /* never splits, so it keeps no continuations */
+    /* ONE TARGET PER PACKET, and this is the whole reason the flavour states its own size.
+     *
+     * A packet earns its keep in the evaluating flavour because its members share one traversal
+     * and then evaluate the records together -- the sharing pays for itself at the second level.
+     * This flavour has no second level: it records and returns, so a packet of Q would leave one
+     * walker traversing while Q-1 threads waited at the barrier, and it would traverse a union
+     * box over Q scattered targets, which opens far more of the tree than any single target's own
+     * box does.  Both costs, no benefit.
+     *
+     * At one target per packet the league is the candidate count, every lane walks, and the box is
+     * that target's own -- the launch shape the fused neighbour walk's discovery already uses
+     * (neighbor_loop_runner.cc, nlr_record_and_drift_for_sources: one independently parallel walk
+     * per work item, recording visitor, then one batched drift). */
+    static constexpr int  packet_size      = 1;
 
     /* the two recorders, by value, and what the widening needs */
     struct gpu_node_dirty_view_t nodes;
@@ -2080,7 +2097,7 @@ extern "C" int gpu_gravtree_packet_failure_reasons(void) {return GRAV_PACKET_FAI
 template <class Policy>
 static int gpu_grav_packet_launch(GpuGravPacketWalk<Policy> &f, const char *kernel_name, int *team_out)
 {
-    int team = (TREE_QUERY_PACKET_SIZE < GRAV_PACKET_Q_DEV_MAX) ? TREE_QUERY_PACKET_SIZE : GRAV_PACKET_Q_DEV_MAX;
+    int team = (Policy::packet_size < GRAV_PACKET_Q_DEV_MAX) ? Policy::packet_size : GRAV_PACKET_Q_DEV_MAX;
     while(team >= 1) {
         f.q_dev = team;
         f.frontier_cap = Policy::splits_items     ? ((2 * team > 16) ? 2 * team : 16) : 0;
@@ -2521,12 +2538,21 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
      * Otherwise the drift is real work, and the subset places it on the sources the walk
      * actually reaches.  Anything the subset cannot establish -- a refused epoch, a recorder
      * fail-safe, a packet given up -- takes the full drift instead, before any force kernel. */
-    if(gizmo_full_drift_ti() < ti_curr_host
-       && gpu_grav_bring_sources_current(ctx, d_idx, num_active,
-                                         (int *) (scratch_block + scratch.discover_fail),
-                                         (int *) (scratch_block + scratch.discover_anomaly)) != 0)
+    /* Whether the subset brought THIS walk's sources current.  It is a per-call result, private
+       to this dispatch: it never becomes a whole-tree certificate, and no other consumer reads it. */
+    int sources_brought_current_here = 0;
+    if(gizmo_full_drift_ti() < ti_curr_host)
     {
-        gizmo_full_drift_to(ti_curr_host);
+        if(gpu_grav_bring_sources_current(ctx, d_idx, num_active,
+                                          (int *) (scratch_block + scratch.discover_fail),
+                                          (int *) (scratch_block + scratch.discover_anomaly)) == 0)
+        {
+            sources_brought_current_here = 1;
+        }
+        else
+        {
+            gizmo_full_drift_to(ti_curr_host);
+        }
     }
 
     /* NODE currency, asked separately because it has a different answer: a host lazy drift can
@@ -2534,7 +2560,12 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
      * says whether a build or a sweep has left every mirror current, and the sweep answers it
      * when nothing has -- asking for one when a host lazy drift armed the latch earlier in the
      * step would fail rather than no-op, which is what the certificate check avoids. */
-    if(!gpu_gravity_tree_nodes_current_at(ti_curr_host)
+    /* The subset already brought every node this walk reaches current, so sweeping the whole tree
+       here would redo it -- which is what stopped the node half from replacing anything.  The
+       GLOBAL certificate keeps its meaning untouched for every other consumer; only this call's
+       sweep is suppressed, and only when the subset succeeded for this call. */
+    if(!sources_brought_current_here
+            && !gpu_gravity_tree_nodes_current_at(ti_curr_host)
             && gpu_force_drift_nodes(ti_curr_host) != 0) {
         Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(scratch_block);
         myfree(idx_host);   /* LIFO mymalloc cleanup before drain */
