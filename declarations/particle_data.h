@@ -35,6 +35,10 @@ extern ALIGN(32) struct particle_data
     Vec3<MyFloat> OldPos;
     Vec3<MyFloat> OldVel;
     Vec3<MyFloat> OldJerk;
+#ifdef HERMITE_SYMMETRIC_TIMESTEP_ACTIVE
+    MyDouble dt_crit_last;  /*!< step criterion (code time, all factors and caps, not quantised) from the latest get_timestep call; 0 if not Hermite-eligible then */
+    MyDouble dt_crit_prev;  /*!< dt_crit_last as it stood when the current step started */
+#endif
 #endif
 #ifdef COUNT_MASS_IN_GRAVTREE
     MyFloat TreeMass;  /*!< Mass seen by the particle as it sums up the gravitational force from the tree - should be equal to total mass, a useful debug diagnostic  */

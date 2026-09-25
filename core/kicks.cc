@@ -376,6 +376,9 @@ void do_the_kick(int i, integertime tstart, integertime tend, integertime tcurre
                 P[i].OldPos = P[i].Pos;
                 P[i].OldJerk = P[i].GravJerk;
                 P[i].Hermite_OldAcc = P[i].GravAccel; // this is the value from the first Hermite tree pass for this timestep
+#ifdef HERMITE_SYMMETRIC_TIMESTEP_ACTIVE
+                P[i].dt_crit_prev = P[i].dt_crit_last; // criterion at the start of this step, for the next step choice
+#endif
             }
         }
 #endif
