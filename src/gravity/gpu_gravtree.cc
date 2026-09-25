@@ -38,6 +38,7 @@
 #include "../system/gpu_particles_arena.h"
 #include "../core/timestep_functions.h"   /* Hermite source eligibility + prediction, shared verbatim with the host walk */
 #include "../declarations/gpu_error_check.h"
+#include "../declarations/gpu_dispatch_templates.h"   /* the backend's lane count, which decides how lanes spread over targets */
 #include "gpu_gravity_tree.h"
 #include "../declarations/gpu_recorder_claim.h"   /* the one claim each stamped recorder has, device-callable */
 #include "../mesh/gpu_neighbor_list.h"            /* the particle touched set's epoch lifecycle (host side) */
@@ -2264,7 +2265,7 @@ struct GpuGravPacketWalk {
 
 /* The shape the last primary walk on this rank used, in full, so a pricing arm records what it
  * measured rather than what it asked for. */
-static struct gpu_grav_packet_shape_t g_packet_shape = {0, 0, 0, 0, 0, 0, -1, -1, 0};
+static struct gpu_grav_packet_shape_t g_packet_shape = {GRAV_PACKET_MODE_NONE, 0, 0, 0, 0, 0, 0, -1, -1, 0};
 
 /* gravity_tree() writes it into the per-call timings record, so a run's readout says what was
  * measured -- including the table row, which is how a backend that could not launch the requested
@@ -2299,67 +2300,118 @@ extern "C" int gpu_gravtree_packet_failure_reasons(void) {return GRAV_PACKET_FAI
  * team-many. That ceiling is deliberate -- every member owns a thread, so no thread carries
  * several complete target states across rounds -- and it does mean a row chosen for occupancy
  * caps how many targets can share one traversal, which is why both numbers are reported. */
-/* The launch shapes, widest team first.  A row is the WHOLE shape, because the pieces are not
- * independent: a wide team is what gives a rank with few targets more than a handful of traversing
- * lanes, but it also multiplies the per-walker continuation storage, and the scratch that buys is
- * paid for in teams resident per compute unit.  Which way that trades depends on how many packets
- * there are to run at once, which is the rank's own candidate count -- hence a table keyed on it
- * rather than one shape for every step.
+/* HOW THE DEVICE SPREADS ITS LANES OVER THIS CALL'S TARGETS.
  *
- * ⛔ A row that the backend cannot launch selects the NEXT ROW, and a call with no legal row
- * declines to the single-target walk.  It is never quietly narrowed to whatever happened to fit:
- * that would answer a pricing arm with a shape nobody chose and nothing would say so.  The row
- * actually used is reported with the shape.
+ * ⛔ This decides NOTHING about whether the device is used. That decision is made upstream from
+ * the rank's active count, exactly as it always has been, and nothing here is consulted for it or
+ * may change it. Every path below ends on the device; none of them can route work to the host.
  *
- * The values are the starting bracket, not a measurement; the B3 pricing campaign sets them, and
- * reads `steps_per_round` (how long a walker runs before what it published becomes visible to an
- * idle one) over {16, 32, 64, 128}. */
-struct gpu_grav_packet_row_t {
-    int team;              /* threads, and therefore walkers */
-    int frontier_mul;      /* frontier items per thread */
+ * The question here is only which of two device schedules fits the call:
+ *
+ *   MORE TARGETS THAN LANES -- the ordinary schedule, and today's code unchanged. Each lane takes
+ *     a target and walks it alone, covering several targets in turn when there are more targets
+ *     than lanes. Nothing is shared, nothing can overflow, and a well-populated call therefore
+ *     cannot be slower than it is today. This is the default whenever the device has enough work
+ *     to fill itself, which is the common case.
+ *
+ *   FEWER TARGETS THAN LANES -- the cooperative schedule. Giving each of a handful of targets one
+ *     lane leaves almost the whole device idle while those few lanes each grind down a long serial
+ *     traversal, which is the defect the cooperative walk exists to remove. So each target gets a
+ *     TEAM, and that team's lanes share its descent.
+ *
+ * The key is structural -- lanes the machine has, against targets this rank must walk -- not a
+ * tuned target count, so the same code chooses correctly on a laptop thread pool and on a GPU
+ * three orders of magnitude wider:
+ *
+ *     lanes_per_target = lane_count / n_targets        (0 or 1 => the ordinary schedule)
+ *     team             = min(cap, lanes_per_target), rounded down to a power of two
+ *
+ * ⛔ Capacity exhaustion inside a cooperative team is a RARE, COUNTED safety valve and must never
+ * be how an ordinary call gets handled: a packet that gives up is re-walked by the device
+ * single-target walk, which is the ordinary schedule, so correctness is safe and the cost is the
+ * traversal it threw away. The production schedules are therefore required to show zero
+ * give-ups; a deliberately undersized capacity is a gate-only positive control. */
+enum gpu_grav_sched_mode_t {
+    GRAV_SCHED_FLAT = 0,      /* one lane per target, the target's own serial walk: today's path */
+    GRAV_SCHED_PACKET,        /* one walker per team, members sharing its traversal (kept for the team-vs-flat measurement) */
+    GRAV_SCHED_COOPERATIVE    /* one target per team, the team's lanes sharing that target's traversal */
+};
+
+/* A schedule is the WHOLE shape, because its pieces are not independent: a wide team is what gives
+ * a target with few companions more than one traversing lane, but it also multiplies the
+ * per-walker continuation storage, and that scratch is paid for in teams resident per compute
+ * unit. The capacities below are a starting bracket, not a measurement -- the B3 pricing campaign
+ * sets them, and reads `steps_per_round` (how long a walker runs before what it published becomes
+ * visible to an idle one) over {16, 32, 64, 128}. */
+struct gpu_grav_sched_row_t {
+    enum gpu_grav_sched_mode_t mode;
+    int team;              /* threads in the team */
+    int n_walkers;         /* of those, how many traverse */
+    int frontier_mul;      /* frontier items per walker */
     int chunk;             /* records held between flushes */
     int steps_per_round;
 };
 
-static const struct gpu_grav_packet_row_t g_grav_packet_rows[] = {
-    {64, 4, 256, 32},
-    {32, 4, 256, 64},
-    {16, 4, 256, 64},
-    { 8, 4, 256, 64},
-    { 4, 4, 256, 64},
-    { 2, 4, 256, 64},
-    { 1, 2, 256, 64},   /* one walker: the depth-first traversal, and the last resort before the flat walk */
+/* The cooperative schedules, widest first. A team the backend cannot launch steps to the next
+ * NAMED row, and when none is launchable the call takes GRAV_SCHED_FLAT -- still on the device.
+ * It is never narrowed silently to whatever happened to fit: that would answer a pricing arm with
+ * a shape nobody chose, and nothing in the output would say so. */
+static const struct gpu_grav_sched_row_t g_grav_coop_rows[] = {
+    {GRAV_SCHED_COOPERATIVE, 64, 64, 4, 256, 32},
+    {GRAV_SCHED_COOPERATIVE, 32, 32, 4, 256, 64},
+    {GRAV_SCHED_COOPERATIVE, 16, 16, 4, 256, 64},
+    {GRAV_SCHED_COOPERATIVE,  8,  8, 4, 256, 64},
+    {GRAV_SCHED_COOPERATIVE,  4,  4, 4, 256, 64},
+    {GRAV_SCHED_COOPERATIVE,  2,  2, 4, 256, 64},
 };
-static const int g_grav_packet_n_rows = (int) (sizeof(g_grav_packet_rows) / sizeof(g_grav_packet_rows[0]));
+static const int g_grav_coop_n_rows = (int) (sizeof(g_grav_coop_rows) / sizeof(g_grav_coop_rows[0]));
 
-/* Which row a call starts from.  Few candidates means few packets, so the width has to come from
- * the team; many candidates means the league already fills the device and a wide team only spends
- * scratch. */
-static int gpu_grav_packet_first_row(int n_cand)
+/* The most lanes worth putting on one target's traversal. Beyond some width the walkers spend
+ * more of the round waiting at the barrier and contending for the frontier than they save on the
+ * descent, and the shared frontier has to hold a continuation for every one of them. Internal,
+ * and the pricing campaign's to set. */
+#define GRAV_COOP_MAX_LANES_PER_TARGET 64
+
+/* Which cooperative row a call starts from, or -1 for the ordinary schedule. */
+static int gpu_grav_coop_first_row(int n_cand)
 {
-    if(n_cand <= 64)   {return 0;}
-    if(n_cand <= 1024) {return 1;}
-    return 2;
+    if(n_cand <= 0) {return -1;}
+    const int lanes_per_target = gizmo_gpu_lane_count() / n_cand;
+    if(lanes_per_target < 2) {return -1;}   /* the device already has a target for every lane */
+    int want = (lanes_per_target < GRAV_COOP_MAX_LANES_PER_TARGET) ? lanes_per_target
+                                                                  : GRAV_COOP_MAX_LANES_PER_TARGET;
+    for(int row = 0; row < g_grav_coop_n_rows; row++) {
+        if(g_grav_coop_rows[row].team <= want) {return row;}   /* rows descend, so this is the widest that fits */
+    }
+    return -1;
 }
 
+/* Run one schedule row, or report that the backend cannot launch it.
+ *
+ * Returns 0 on success, 1 when this row is not launchable here -- which is a statement about the
+ * row and the backend only. What the caller does about it (the next named row, then the ordinary
+ * device schedule) is the caller's, and in no case is it to send work to the host. */
 template <class Policy>
-static int gpu_grav_packet_launch(GpuGravPacketWalk<Policy> &f, const char *kernel_name,
-                                  struct gpu_grav_packet_shape_t *shape_out)
+static int gpu_grav_packet_launch_row(GpuGravPacketWalk<Policy> &f, const struct gpu_grav_sched_row_t &r,
+                                      int row_requested, int row_effective, const char *kernel_name,
+                                      struct gpu_grav_packet_shape_t *shape_out)
 {
-    /* A flavour that never splits an item has nothing to share and no second level to fill, so it
-     * keeps the single-walker shape it was built and gated with, whatever the table says. */
-    const int first_row = Policy::splits_items ? gpu_grav_packet_first_row(f.n_cand)
-                                               : (g_grav_packet_n_rows - 1);
-    for(int row = first_row; row < g_grav_packet_n_rows; row++) {
-        const struct gpu_grav_packet_row_t r = g_grav_packet_rows[row];
+    {
         int team = r.team;
         if(team > GRAV_PACKET_Q_DEV_MAX) {team = GRAV_PACKET_Q_DEV_MAX;}
-        /* members per packet: the configured size, or the team when it is narrower -- a larger
-           configured size is walked as several packets (78b.1) */
-        f.q_dev = (Policy::packet_size < team) ? Policy::packet_size : team;
-        f.n_walkers = Policy::splits_items ? team : 1;
+        /* Members per packet. The cooperative schedule puts ONE target on a team and spends the
+         * rest of its threads traversing, which is what makes a rank with few targets fill the
+         * device; every other schedule shares a traversal between members instead, up to the
+         * configured packet size or the team, whichever is narrower (78b.1). */
+        if(r.mode == GRAV_SCHED_COOPERATIVE) {
+            f.q_dev = 1;
+        } else {
+            f.q_dev = (Policy::packet_size < team) ? Policy::packet_size : team;
+        }
+        f.n_walkers = Policy::splits_items ? ((r.n_walkers < team) ? r.n_walkers : team) : 1;
         f.steps_per_round = r.steps_per_round;
-        f.frontier_cap = Policy::splits_items     ? ((r.frontier_mul * team > 16) ? r.frontier_mul * team : 16) : 0;
+        f.frontier_cap = (Policy::splits_items && f.n_walkers > 1)
+                             ? ((r.frontier_mul * team > 16) ? r.frontier_mul * team : 16) : 0;
         f.chunk_cap    = Policy::records_elements ? r.chunk : 0;
         f.plan = gpu_grav_packet_scratch_plan(f.q_dev, team, f.frontier_cap, f.chunk_cap, Policy::local_stack);
         /* the legality bound is asked of a probe policy carrying the same scratch request: a
@@ -2367,7 +2419,7 @@ static int gpu_grav_packet_launch(GpuGravPacketWalk<Policy> &f, const char *kern
         Kokkos::TeamPolicy<> probe(1, 1, 1);
         probe.set_scratch_size(0, Kokkos::PerTeam(f.plan.bytes));
         const int hw = probe.team_size_max(f, Kokkos::ParallelForTag());
-        if(hw < team) {continue;}   /* this row does not fit this backend: take the next NAMED row */
+        if(hw < team) {return 1;}   /* this row does not fit this backend */
         const int league = (f.n_cand + f.q_dev - 1) / f.q_dev;
         Kokkos::TeamPolicy<> policy(league, team, 1);
         policy.set_scratch_size(0, Kokkos::PerTeam(f.plan.bytes));
@@ -2375,15 +2427,48 @@ static int gpu_grav_packet_launch(GpuGravPacketWalk<Policy> &f, const char *kern
         Kokkos::fence();
         gizmo_gpu_check_last_error(kernel_name, league);
         if(shape_out) {
+            shape_out->mode = (int) r.mode;
             shape_out->team = team; shape_out->q_dev = f.q_dev;
             shape_out->n_walkers = f.n_walkers; shape_out->frontier = f.frontier_cap;
             shape_out->chunk = f.chunk_cap; shape_out->steps_per_round = f.steps_per_round;
-            shape_out->row_requested = first_row; shape_out->row_effective = row;
+            shape_out->row_requested = row_requested; shape_out->row_effective = row_effective;
             shape_out->scratch_bytes = (long long) f.plan.bytes;
         }
         return 0;
     }
-    return 1;
+}
+
+/* Choose and run a device schedule for this call's targets.
+ *
+ * Returns 0 when the engine ran and filled the outputs, 1 when the call should take the ORDINARY
+ * device schedule -- the single-target walk the caller already has. ⛔ A 1 here never means "use
+ * the host": the host/device decision was taken before this function was reached and is not
+ * revisited by it.
+ *
+ * A flavour that judges a whole packet at once has no second level to fill and keeps the
+ * single-walker shape it was built and gated with, whatever the schedules say. */
+template <class Policy>
+static int gpu_grav_packet_launch(GpuGravPacketWalk<Policy> &f, const char *kernel_name,
+                                  struct gpu_grav_packet_shape_t *shape_out)
+{
+    if constexpr (!Policy::splits_items) {
+        const struct gpu_grav_sched_row_t solo = {GRAV_SCHED_PACKET, 1, 1, 0, 256, 64};
+        return gpu_grav_packet_launch_row(f, solo, -1, -1, kernel_name, shape_out);
+    } else {
+        const int first_row = gpu_grav_coop_first_row(f.n_cand);
+        /* More targets than lanes: the device already has a target for every lane, so the ordinary
+         * schedule is both the right one and the one already measured. Nothing is shared, nothing
+         * can overflow, and the call cannot be slower than it is today. */
+        if(first_row < 0) {return 1;}
+        for(int row = first_row; row < g_grav_coop_n_rows; row++) {
+            if(gpu_grav_packet_launch_row(f, g_grav_coop_rows[row], first_row, row, kernel_name, shape_out) == 0) {
+                return 0;
+            }
+        }
+        /* No cooperative team is launchable on this backend. The ordinary device schedule takes the
+         * call -- narrower than intended, never off the device. */
+        return 1;
+    }
 }
 
 static int gpu_gravtree_walk_packets(const gpu_grav_walk_ctx_t &ctx, const int *d_idx, int n_cand,
@@ -2636,7 +2721,7 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
      * The give-up tally is cleared with it and for the same reason -- it was cleared only where
      * the engine runs, so a host-routed step re-reported, and re-reduced, the previous device
      * call's counts against gpu_gravtree.h's promise that they read zero on such a call. */
-    {struct gpu_grav_packet_shape_t cleared = {0, 0, 0, 0, 0, 0, -1, -1, 0}; g_packet_shape = cleared;}
+    {struct gpu_grav_packet_shape_t cleared = {GRAV_PACKET_MODE_NONE, 0, 0, 0, 0, 0, 0, -1, -1, 0}; g_packet_shape = cleared;}
     for(int r = 0; r < GRAV_PACKET_FAIL_REASONS; r++) {g_packet_fail[r] = 0;}
     /* How many candidates this walk leaves to the host loop: every active until this walk has
      * selected and taken some. The host loop sizes its per-thread packet workspace from it. */
@@ -3050,17 +3135,23 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
 #endif
     ctx.ewald_pot = ewald_pot_dev;
 
-    int walked_as_packets = 0;
-#ifdef GX_B2_FORCE_ENGINE
-    /* SPIKE (stage-1 gate arm, torn down when the dispatch between the single-target walk and
-       the packet engine is decided from measurement): route every candidate through the engine. */
-    walked_as_packets = (gpu_gravtree_walk_packets(ctx, d_idx, num_active, d_acc, d_ninter, d_pot, d_failed,
-                                                   d_fail_by_reason) == 0);
-    /* The launcher has waited on the kernel, so the tally is complete and in shared space. */
+    /* Choose the device schedule for this call. The engine takes the call only when this rank has
+     * so few targets that giving each one a lane would leave most of the device idle; otherwise
+     * this returns nonzero and the ordinary single-target walk below takes every candidate, which
+     * is exactly what this code did before the cooperative walk existed.
+     *
+     * ⛔ Neither branch is a routing decision. The host/device question was settled before this
+     * point and is not reopened here: both of these run on the device. */
+    int walked_as_packets = (gpu_gravtree_walk_packets(ctx, d_idx, num_active, d_acc, d_ninter, d_pot, d_failed,
+                                                       d_fail_by_reason) == 0);
     if(walked_as_packets) {
+        /* The launcher has waited on the kernel, so the tally is complete and in shared space. */
         for(int r = 0; r < GRAV_PACKET_FAIL_REASONS; r++) {g_packet_fail[r] = (long long) d_fail_by_reason[r];}
+    } else {
+        /* Say so in the artifact rather than leaving the record empty: "the ordinary schedule ran"
+           and "no device walk ran" are different facts and a pricing arm has to tell them apart. */
+        g_packet_shape.mode = GRAV_PACKET_MODE_FLAT;
     }
-#endif
     /* The single-target walk: every candidate when the engine did not run, otherwise only the
      * members of packets that failed. A packet fails as a whole when any member meets a
      * pseudo-particle, so its other members are walked here exactly as the flat route would

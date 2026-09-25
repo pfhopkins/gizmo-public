@@ -798,7 +798,13 @@ gravity_walk_attempt:
     /* Scoped, not #define: a macro here would be translation-unit-wide despite sitting in a
        function. */
     constexpr int recorder_slots = 5;
-    constexpr int report_slots   = GRAV_PACKET_FAIL_REASON_SLOTS + recorder_slots;
+    /* Which device schedule each rank took this call, counted across ranks.  The shape line below
+       is one rank's, and on an inhomogeneous problem the ranks that matter are the ones with the
+       fewest targets -- exactly the ones that take a different schedule from rank 0.  Without this
+       an arm cannot tell whether the cooperative path ran at all, and a null result would be
+       unreadable rather than negative. */
+    constexpr int mode_slots     = 3;   /* flat, packet, cooperative */
+    constexpr int report_slots   = GRAV_PACKET_FAIL_REASON_SLOTS + recorder_slots + mode_slots;
     long long packet_fail[report_slots] = {0};
     long long packet_fail_sum[report_slots] = {0};
     long long packet_fail_max[report_slots] = {0};
@@ -808,6 +814,13 @@ gravity_walk_attempt:
     packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 2] = gx_touched_set_retire_faults();
     gpu_gravtree_subset_drift_counts(&packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 3],
                                      &packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 4]);
+    {
+        struct gpu_grav_packet_shape_t ps_local; gpu_gravtree_packet_shape(&ps_local);
+        const int mode_base = GRAV_PACKET_FAIL_REASON_SLOTS + recorder_slots;
+        if(ps_local.mode == GRAV_PACKET_MODE_FLAT)             {packet_fail[mode_base + 0] = 1;}
+        else if(ps_local.mode == GRAV_PACKET_MODE_PACKET)      {packet_fail[mode_base + 1] = 1;}
+        else if(ps_local.mode == GRAV_PACKET_MODE_COOPERATIVE) {packet_fail[mode_base + 2] = 1;}
+    }
     MPI_Reduce(packet_fail, packet_fail_sum, report_slots, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(packet_fail, packet_fail_max, report_slots, MPI_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
     MPI_Reduce(&Numnodestree, &maxnumnodes, 1, MPI_INT, MPI_MAX, 0, MPI_COMM_WORLD);
@@ -827,8 +840,17 @@ gravity_walk_attempt:
         fprintf(FdTimings, "particle-load balance: %g\n", plb_max);
         fprintf(FdTimings, "max. nodes: %d, filled: %g\n", maxnumnodes, maxnumnodes / ((double) MaxNodes));
         fprintf(FdTimings, "part/sec=%g | %g  ia/part=%g (%g)\n", GlobNumForceUpdate / (sumt + 1.0e-20), GlobNumForceUpdate / (1.0e-6 + maxt * NTask), ((double) (sum_costtotal)) / (1.0e-20 + GlobNumForceUpdate), ((double) ewaldtot) / (1.0e-20 + GlobNumForceUpdate)); {struct gpu_grav_packet_shape_t ps; gpu_gravtree_packet_shape(&ps);
-            fprintf(FdTimings, "packet: Q=%d T=%d Qdev=%d walkers=%d F=%d C=%d k=%d row=%d/%d scratch=%lld\n",
-                    TREE_QUERY_PACKET_SIZE, ps.team, ps.q_dev, ps.n_walkers, ps.frontier, ps.chunk,
+            /* Which device schedule ran, spelled out, so a run that was meant to exercise wide
+               cooperative teams cannot quietly have taken a narrow or serial one instead. */
+            const char *ps_mode = (ps.mode == GRAV_PACKET_MODE_COOPERATIVE) ? "cooperative"
+                                : (ps.mode == GRAV_PACKET_MODE_PACKET)      ? "packet"
+                                : (ps.mode == GRAV_PACKET_MODE_FLAT)        ? "flat" : "none";
+            fprintf(FdTimings, "packet-modes: ranks flat=%lld packet=%lld cooperative=%lld\n",
+                    packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + recorder_slots + 0],
+                    packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + recorder_slots + 1],
+                    packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + recorder_slots + 2]);
+            fprintf(FdTimings, "packet: mode=%s Q=%d T=%d Qdev=%d walkers=%d F=%d C=%d k=%d row=%d/%d scratch=%lld\n",
+                    ps_mode, TREE_QUERY_PACKET_SIZE, ps.team, ps.q_dev, ps.n_walkers, ps.frontier, ps.chunk,
                     ps.steps_per_round, ps.row_requested, ps.row_effective, ps.scratch_bytes);
             fprintf(FdTimings, "packet-gaveup: malformed=%lld stale=%lld pseudo=%lld nocont=%lld record=%lld noprogress=%lld (worst rank: %lld %lld %lld %lld %lld %lld)\n",
                     packet_fail_sum[1], packet_fail_sum[2], packet_fail_sum[3], packet_fail_sum[4], packet_fail_sum[5], packet_fail_sum[6],
