@@ -279,6 +279,11 @@ static int KetjuRegionsStale = 1; /* 1 = force rebuild (after domain decomp or f
 static std::vector<ketju_mpi_particle> CachedChainCenters;
 static int CachedChainCentersValid = 0;
 
+/* ketju_limit_timesteps tallies since the last KETJU STATS reduction: limited particles moved to a
+ * shorter / longer bin, timestep regions set, and those whose bin a limiting particle set (the
+ * last two counted on task 0 only, since every task computes the same bins) */
+static long long LimitTally[4] = {0, 0, 0, 0};
+
 /* ============================================================
  *  Cost-based scheduling (Phase B)
  *  Based on public GADGET4-KETJU (Mannerkoski+ 2023).
@@ -1910,13 +1915,8 @@ void ketju_limit_timesteps(void)
         }
     }
 
-#ifdef KETJU_VERBOSE_INTEGRATION
-    long long counts_glob[4];
-    MPI_Reduce(counts, counts_glob, 4, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-    if(ThisTask == 0 && (counts_glob[0] + counts_glob[1] > 0))
-        printf("KETJU LIMIT: %d timestep regions, %lld limited particles moved down, %lld up, %lld regions set by limiting particles\n",
-               n_tsr, counts_glob[0], counts_glob[1], counts_glob[2]);
-#endif
+    LimitTally[0] += counts[0]; LimitTally[1] += counts[1];
+    if(ThisTask == 0) {LimitTally[2] += n_tsr; LimitTally[3] += counts[2];}
     if(counts[3]) {PRINT_WARNING("KETJU: %lld timestep-region bins were not synchronised and were lowered", counts[3]);}
 }
 
@@ -2152,9 +2152,10 @@ void ketju_run_integration(void)
      * integrator works. A step-count bail-out cannot appear here: MSTAR aborts the run past
      * KetjuMaxStepCount. */
     {
-        static long long cum_calls = 0, cum_regions = 0, cum_ok = 0, cum_failed = 0, cum_big_dE = 0;
+        static long long cum_calls = 0, cum_regions = 0, cum_ok = 0, cum_failed = 0, cum_big_dE = 0, cum_limit[4] = {0, 0, 0, 0};
         static long long cum_max_steps = 0; static double cum_max_dE = 0;
-        long long loc[4] = {0, 0, 0, 0}, glob[4]; /* regions integrated, accepted, failed, |dE/E| > 1e-4 */
+        long long loc[8] = {0, 0, 0, 0, LimitTally[0], LimitTally[1], LimitTally[2], LimitTally[3]}, glob[8]; /* regions integrated, accepted, failed, |dE/E| > 1e-4, then LimitTally */
+        for(int k = 0; k < 4; k++) LimitTally[k] = 0;
         double loc_max[2] = {0, 0}, glob_max[2]; /* max steps in one region, max |dE/E| */
         integertime max_ti_step = 0;
         for(size_t r = 0; r < ActiveRegions.size(); r++) {
@@ -2169,16 +2170,18 @@ void ketju_run_integration(void)
             if((double)n > loc_max[0]) loc_max[0] = (double)n;
             if(dE > loc_max[1]) loc_max[1] = dE;
         }
-        MPI_Reduce(loc, glob, 4, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+        MPI_Reduce(loc, glob, 8, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
         MPI_Reduce(loc_max, glob_max, 2, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
         if(ThisTask == 0) {
             cum_calls++; cum_regions += glob[0]; cum_ok += glob[1]; cum_failed += glob[2]; cum_big_dE += glob[3];
+            for(int k = 0; k < 4; k++) cum_limit[k] += glob[4 + k];
             if((long long)glob_max[0] > cum_max_steps) cum_max_steps = (long long)glob_max[0];
             if(glob_max[1] > cum_max_dE) cum_max_dE = glob_max[1];
             if((cum_calls % 1024) == 0 || All.Ti_Current + max_ti_step >= TIMEBASE)
                 printf("KETJU STATS: t=%g steps=%lld region-integrations=%lld MSTAR accepted=%lld failed=%lld "
-                       "max-per-region=%lld |dE/E|>1e-4: %lld max|dE/E|=%g\n", All.Time, cum_calls, cum_regions,
-                       cum_ok, cum_failed, cum_max_steps, cum_big_dE, cum_max_dE);
+                       "max-per-region=%lld |dE/E|>1e-4: %lld max|dE/E|=%g limited-moves down=%lld up=%lld "
+                       "timestep-regions=%lld set-by-limiting=%lld\n", All.Time, cum_calls, cum_regions,
+                       cum_ok, cum_failed, cum_max_steps, cum_big_dE, cum_max_dE, cum_limit[0], cum_limit[1], cum_limit[2], cum_limit[3]);
         }
     }
 
