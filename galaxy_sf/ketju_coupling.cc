@@ -726,6 +726,23 @@ static std::set<int> find_local_particles_in_radius(const std::vector<ketju_mpi_
  *  PHASE 3: MPI gather and integrator setup
  * ============================================================ */
 
+/* com_pos/com_vel are computed on the compute tasks, but the scatter reads them on the affected
+ * tasks. The two groups can be disjoint (the cost allocator does not look at where a region's
+ * particles live), and then the affected root never computed them: forward them first. */
+static void forward_com_to_affected_root(KetjuRegion &reg)
+{
+    if(reg.affected_tasks.root_sim == reg.compute_tasks.root_sim) return;
+    double buf[6];
+    if(ThisTask == reg.compute_tasks.root_sim) {
+        for(int j = 0; j < 3; j++) { buf[j] = reg.com_pos[j]; buf[3 + j] = reg.com_vel[j]; }
+        MPI_Send(buf, 6, MPI_DOUBLE, reg.affected_tasks.root_sim, 996, MPI_COMM_WORLD);
+    }
+    if(ThisTask == reg.affected_tasks.root_sim) {
+        MPI_Recv(buf, 6, MPI_DOUBLE, reg.compute_tasks.root_sim, 996, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        for(int j = 0; j < 3; j++) { reg.com_pos[j] = buf[j]; reg.com_vel[j] = buf[3 + j]; }
+    }
+}
+
 static void setup_integrator(KetjuRegion &reg)
 {
     /* gather particle counts per task */
@@ -925,6 +942,7 @@ static void setup_integrator(KetjuRegion &reg)
     }
 
     /* broadcast CoM data to all tasks that need it (affected group for scatter) */
+    forward_com_to_affected_root(reg);
     if(reg.affected_tasks.is_member()) {
         MPI_Bcast(reg.com_pos, 3, MPI_DOUBLE, reg.affected_tasks.root, reg.affected_tasks.comm);
         MPI_Bcast(reg.com_vel, 3, MPI_DOUBLE, reg.affected_tasks.root, reg.affected_tasks.comm);
@@ -1091,6 +1109,7 @@ static void setup_integrator_reuse(KetjuRegion &reg)
 #endif
     }
 
+    forward_com_to_affected_root(reg);
     if(reg.affected_tasks.is_member()) {
         MPI_Bcast(reg.com_pos, 3, MPI_DOUBLE, reg.affected_tasks.root, reg.affected_tasks.comm);
         MPI_Bcast(reg.com_vel, 3, MPI_DOUBLE, reg.affected_tasks.root, reg.affected_tasks.comm);
