@@ -115,6 +115,10 @@ struct KetjuTaskGroup {
     }
 
     void free_comms() {
+        /* the cached regions are file-scope statics, destroyed at exit after MPI_Finalize, and
+           freeing a handle then aborts the job with a nonzero status */
+        int finalized = 0; MPI_Finalized(&finalized);
+        if(finalized) { comm = MPI_COMM_NULL; group = MPI_GROUP_NULL; rank = MPI_UNDEFINED; size = 0; root = MPI_UNDEFINED; root_sim = MPI_UNDEFINED; return; }
         if(comm != MPI_COMM_NULL) { MPI_Comm_free(&comm); comm = MPI_COMM_NULL; }
         if(group != MPI_GROUP_NULL) { MPI_Group_free(&group); group = MPI_GROUP_NULL; }
         rank = MPI_UNDEFINED; size = 0; root = MPI_UNDEFINED; root_sim = MPI_UNDEFINED;
