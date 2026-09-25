@@ -70,6 +70,11 @@ V_OUT = np.sqrt(G_CODE * MTOT / A_OUT)
 # drift's growth exponent, a check removed pending recalibration (see README.md).
 MAX_DE_OVER_E = 1.7e-4
 
+# nbody_accuracy variant (HERMITE_CORRECTOR_ITERATIONS=2 + HERMITE_SYMMETRIC_TIMESTEP): 3x its measured
+# envelope, 4.10e-5 over the same 50 orbits.
+NBODY_ACCURACY_FLAGS = ("HERMITE_CORRECTOR_ITERATIONS=2", "HERMITE_SYMMETRIC_TIMESTEP")
+MAX_DE_OVER_E_NBODY_ACCURACY = 1.2e-4
+
 def _ic_matches():
     """Does the IC on disk have the configuration this test is calibrated for?
 
@@ -203,6 +208,7 @@ def _plot(t, de, dr, variant_id):
 # IO_HERMITE_SYNC output block is covered by test/binary's kdk variant.
 @pytest.mark.parametrize("extra_config_flags", [
     pytest.param((), id="starforge_defaults"),
+    pytest.param(NBODY_ACCURACY_FLAGS, id="nbody_accuracy"),
 ])
 def test_triple(num_mpi_ranks, num_omp_threads, extra_config_flags, request):
     _ensure_ic()
@@ -236,6 +242,7 @@ def test_triple(num_mpi_ranks, num_omp_threads, extra_config_flags, request):
     # One assertion. The COM drift ceiling and growth exponents are reported above but not
     # asserted: they were calibrated on a configuration this IC no longer produces. The
     # convergence sweep was withdrawn; README.md records why and what a valid one would need.
-    assert de_env[-1] < MAX_DE_OVER_E, (
+    max_de = MAX_DE_OVER_E_NBODY_ACCURACY if variant_id == "nbody_accuracy" else MAX_DE_OVER_E
+    assert de_env[-1] < max_de, (
         f"relative energy error {de_env[-1]:.3e} over {n_orbits:.0f} outer orbits "
-        f"(tol {MAX_DE_OVER_E})")
+        f"(tol {max_de})")

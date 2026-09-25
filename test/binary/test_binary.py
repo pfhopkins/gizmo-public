@@ -81,6 +81,12 @@ P_ORB = 2.0 * np.pi * np.sqrt(A0 ** 3 / (G_CODE * MTOT))
 MAX_DE_OVER_E = 1.5e-3
 MAX_COM_DRIFT = 5e-4
 
+# nbody_accuracy variant (HERMITE_CORRECTOR_ITERATIONS=2 + HERMITE_SYMMETRIC_TIMESTEP): 3x its measured
+# 1000-orbit envelope, 3.72e-6. The ceiling above sits ~20x over the default arm and would not notice
+# this variant losing its 24x gain. The drift ceiling is shared: both arms sit at round-off.
+NBODY_ACCURACY_FLAGS = ("HERMITE_CORRECTOR_ITERATIONS=2", "HERMITE_SYMMETRIC_TIMESTEP")
+MAX_DE_OVER_E_NBODY_ACCURACY = 1.1e-5
+
 # A systematic (secular) error grows as t^1, a random walk as t^0.5. Anything at or above
 # ~0.85 is a drift with a mechanism behind it and should be investigated rather than
 # absorbed into a looser tolerance.
@@ -299,6 +305,7 @@ def _order_sweep(extra_config_flags, n_ranks, n_omp, variant_id):
         try:
             chdir(TEST_DIR)
             run_test(TEST_NAME, n_ranks, n_omp, param_overrides={
+                "OutputDir": path.basename(outdir),   # a variant's run otherwise writes to output/
                 "ErrTolIntAccuracy": float(eta),
                 "TimeMax": float(SWEEP_ORBITS * P_ORB),
                 "TimeBetSnapshot": float(P_ORB / 4.0),
@@ -338,6 +345,7 @@ def _order_sweep(extra_config_flags, n_ranks, n_omp, variant_id):
                "not hold the orbit, and this variant records by how much",
         strict=False,
     )),
+    pytest.param(NBODY_ACCURACY_FLAGS, id="nbody_accuracy"),
 ])
 def test_binary(num_mpi_ranks, num_omp_threads, extra_config_flags, request):
     _ensure_ic()
@@ -380,8 +388,9 @@ def test_binary(num_mpi_ranks, num_omp_threads, extra_config_flags, request):
     print(f"  pericentre  min separation {sep.min():.4e} pc "
           f"(softening 1e-7, so {sep.min() / 1e-7:.0f}x above it)")
 
-    assert de < MAX_DE_OVER_E, (
-        f"relative energy error {de:.3e} over {n_orbits:.1f} orbits (tol {MAX_DE_OVER_E}); "
+    max_de = MAX_DE_OVER_E_NBODY_ACCURACY if variant_id == "nbody_accuracy" else MAX_DE_OVER_E
+    assert de < max_de, (
+        f"relative energy error {de:.3e} over {n_orbits:.1f} orbits (tol {max_de}); "
         f"E0={energy[0]:.6e}, E_final={energy[-1]:.6e}. Measured on the IO_HERMITE_SYNC state, "
         f"so this is the integrator and not the output convention."
     )
