@@ -2352,10 +2352,23 @@ struct gpu_grav_sched_row_t {
     int steps_per_round;
 };
 
-/* The cooperative schedules, widest first. A team the backend cannot launch steps to the next
- * NAMED row, and when none is launchable the call takes GRAV_SCHED_FLAT -- still on the device.
- * It is never narrowed silently to whatever happened to fit: that would answer a pricing arm with
- * a shape nobody chose, and nothing in the output would say so. */
+/* The cooperative schedules, widest first.
+ *
+ * ⛔ ONLY THE FIRST ROW IS SELECTED IN PRODUCTION, and deliberately so: a partially wide team is
+ * the shape that was MEASURED TO LOSE. On a 128-rank clustered zoom at the stock routing
+ * threshold, ranks taking the device route hold ~1e4 targets against ~2e5 lanes -- about 20 lanes
+ * per target, so a team of ~16 -- and on the six steps where that happened the imbalance row cost
+ * 101.8 s where the same steps without it cost 2-4 s apiece. Cooperation there buys a little
+ * traversal sharing on a device that was already fed, pays the barrier and frontier for it, and
+ * gives up the packet sharing (q_dev drops to 1) into the bargain; and because the schedule is
+ * chosen per rank, only the handful of ranks that qualify slow down, so the whole of it lands in
+ * the imbalance row while the other hundred ranks wait.
+ *
+ * The narrower rows therefore stay here as the shape a MEASURED dispatch table would fill in, and
+ * as the only way to exercise cooperation on a host backend whose lane count is its thread count.
+ * They are not reachable from the production criterion, and a team the backend cannot launch falls
+ * to GRAV_SCHED_FLAT -- still on the device -- rather than quietly narrowing, which would answer a
+ * pricing arm with a shape nobody chose. */
 static const struct gpu_grav_sched_row_t g_grav_coop_rows[] = {
     {GRAV_SCHED_COOPERATIVE, 64, 64, 4, 256, 32},
     {GRAV_SCHED_COOPERATIVE, 32, 32, 4, 256, 64},
@@ -2372,18 +2385,23 @@ static const int g_grav_coop_n_rows = (int) (sizeof(g_grav_coop_rows) / sizeof(g
  * and the pricing campaign's to set. */
 #define GRAV_COOP_MAX_LANES_PER_TARGET 64
 
-/* Which cooperative row a call starts from, or -1 for the ordinary schedule. */
+/* The cooperative row this call takes, or -1 for the ordinary schedule.
+ *
+ * The test is FULL-TEAM ELIGIBILITY, not a fitted crossover: cooperate only where every target can
+ * be given a whole team. It is stated that way because it is the honest reading of what is known.
+ * A rank with ~20 lanes per target was measured to lose badly, and above the cap the team size is
+ * the cap whatever the ratio is -- so raising the bar past the cap would change no team allocation
+ * anywhere, only exclude a middle band that no per-rank measurement has yet adjudicated. When one
+ * does, this becomes a table with narrower rows in it.
+ *
+ * ⛔ The ratio is this RANK's, from its own target count, because the schedule is this rank's. A
+ * global active count divided by the rank count is not this quantity and must not be substituted
+ * for it: the ranks are precisely what is inhomogeneous here. */
 static int gpu_grav_coop_first_row(int n_cand)
 {
     if(n_cand <= 0) {return -1;}
-    const int lanes_per_target = gizmo_gpu_lane_count() / n_cand;
-    if(lanes_per_target < 2) {return -1;}   /* the device already has a target for every lane */
-    int want = (lanes_per_target < GRAV_COOP_MAX_LANES_PER_TARGET) ? lanes_per_target
-                                                                  : GRAV_COOP_MAX_LANES_PER_TARGET;
-    for(int row = 0; row < g_grav_coop_n_rows; row++) {
-        if(g_grav_coop_rows[row].team <= want) {return row;}   /* rows descend, so this is the widest that fits */
-    }
-    return -1;
+    if(gizmo_gpu_lane_count() / n_cand < GRAV_COOP_MAX_LANES_PER_TARGET) {return -1;}
+    return 0;
 }
 
 /* Run one schedule row, or report that the backend cannot launch it.
@@ -2456,18 +2474,15 @@ static int gpu_grav_packet_launch(GpuGravPacketWalk<Policy> &f, const char *kern
         return gpu_grav_packet_launch_row(f, solo, -1, -1, kernel_name, shape_out);
     } else {
         const int first_row = gpu_grav_coop_first_row(f.n_cand);
-        /* More targets than lanes: the device already has a target for every lane, so the ordinary
-         * schedule is both the right one and the one already measured. Nothing is shared, nothing
-         * can overflow, and the call cannot be slower than it is today. */
+        /* Not enough lanes to give every target a whole team: the ordinary schedule is both the
+         * right one and the one already measured. Nothing is shared, nothing can overflow, and the
+         * call cannot be slower than it is today. */
         if(first_row < 0) {return 1;}
-        for(int row = first_row; row < g_grav_coop_n_rows; row++) {
-            if(gpu_grav_packet_launch_row(f, g_grav_coop_rows[row], first_row, row, kernel_name, shape_out) == 0) {
-                return 0;
-            }
-        }
-        /* No cooperative team is launchable on this backend. The ordinary device schedule takes the
-         * call -- narrower than intended, never off the device. */
-        return 1;
+        /* ONE attempt, at the row the criterion chose. There is deliberately no step-down to a
+         * narrower cooperative team: a partial team is the shape that was measured to lose, so a
+         * backend that cannot launch the full one takes the ordinary device schedule instead. */
+        return gpu_grav_packet_launch_row(f, g_grav_coop_rows[first_row], first_row, first_row,
+                                          kernel_name, shape_out);
     }
 }
 
