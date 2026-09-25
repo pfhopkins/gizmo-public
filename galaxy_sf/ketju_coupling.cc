@@ -1961,7 +1961,7 @@ void ketju_find_regions(void)
          * back to KDK once before re-engaging Hermite with fresh OldPos/Acc/Jerk. */
         if(P[i].KetjuIntegrated) {P[i].HermiteHistoryStale = 1;}
 #endif
-        P[i].KetjuIntegrated = 0; P[i].KetjuChainID = 0;
+        P[i].KetjuIntegrated = 0; P[i].KetjuChainID = 0; P[i].COM_dt_tidal = 0; /* 0 = no chain-external value (see timestep.cc) */
     }
     ActiveRegions.clear();
     AllKetjuParticleIndices.clear();
@@ -2216,127 +2216,89 @@ void ketju_set_final_velocities(void)
     }
 }
 
-/* Compute COM-frame tidal timescale for each KETJU chain member.
+/* Chain-external gravity and tidal timescale for chain members whose step ends at this sync point.
  *
- * Background: the host tree builds full GravAccel and tidal_tensorps including
- * the chain self-contribution. For find_timesteps that yields dt_2body and
- * dt_tidal set by the chain partner — exactly the binary-internal timescale
- * MSTAR is supposed to absorb. The result is GIZMO stepping at the chain
- * internal cadence (~kyr) even though the external force varies on cluster
- * timescales (~Myr), and KETJU's speed advantage is lost.
- *
- * The existing SINGLE_STAR_TIMESTEPPING super-timestepping path solves this
- * via subtract_companion_gravity() using P[i].comp_dx — but those fields are
- * never updated between tree walks while KETJU is doing the integration, so
- * for chain members they are stale and using them produces a spurious
- * direction-misaligned subtraction. KETJU, on the other hand, knows the
- * current chain composition and positions exactly: it just did the integration.
- *
- * This function does the subtraction here, after compute_grav_accelerations
- * has populated fresh tidal_tensorps at the post-drift positions. For each
- * chain member i: subtract the point-mass tidal contribution of every other
- * chain member j (T_ab = G m_j (3 dr_a dr_b / r^5 - δ_ab / r^3)) from
- * tidal_tensorps and store COM_dt_tidal. timestep.cc then uses this in place
- * of the chain-polluted dt_tidal, and skips the dt_2body criterion entirely
- * for KETJU particles. */
+ * The host tree's GravAccel and tidal_tensorps include the chain members' pull on each other, so
+ * the standard criteria would step a member at its internal orbital cadence -- the dynamics MSTAR
+ * integrates -- rather than at the cadence of the field external to the chain. This subtracts the
+ * point-mass contribution of the other members of the same chain,
+ *   F_a  = G m_k dr_a / r^3,   T_ab = G m_k (3 dr_a dr_b / r^5 - delta_ab / r^3),
+ * leaving COM_GravAccel and COM_dt_tidal = |T_external|_F^(-1/2) for find_timesteps (timestep.cc).
+ * Only members within KetjuRegionRadius are subtracted: those stay in the chain for the next step.
+ * Runs in finish_step, after compute_grav_accelerations has refreshed GravAccel/tidal_tensorps (which
+ * are already multiplied by G there, gravity/gravtree.cc) at the members' end-of-step positions.
+ * Every member of a chain shares its bin, so all of them end together and are found here; the
+ * chain is identified by KetjuChainID, which persists over the member's step, not by ActiveRegions,
+ * which only holds the regions started this step. The tree's pair field is softened and the
+ * subtraction is not, so for a pair inside the softening kernel part of its own field remains. */
 void ketju_compute_com_quantities(void)
 {
-    if(ActiveRegions.empty()) return;
-
     struct ChainMemberData {
+        MyIDType chain;
         double mass;
         double pos[3];
     };
 
-    for(size_t r = 0; r < ActiveRegions.size(); r++) {
-        KetjuRegion &reg = ActiveRegions[r];
-        if(!reg.affected_tasks.is_member()) continue;
+    std::vector<ChainMemberData> local_data;
+    std::vector<int> local_index;
+    for(int i : ActiveParticleList) {
+        if(!P[i].KetjuIntegrated || P[i].KetjuChainID == 0 || P[i].Mass <= 0) continue;
+        ChainMemberData d;
+        d.chain = P[i].KetjuChainID; d.mass = P[i].Mass;
+        for(int j = 0; j < 3; j++) d.pos[j] = P[i].Pos[j];
+        local_data.push_back(d); local_index.push_back(i);
+    }
+    int n_local = local_data.size();
+    std::vector<int> counts(NTask), byte_counts(NTask), byte_displs(NTask);
+    MPI_Allgather(&n_local, 1, MPI_INT, counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+    int n_total = 0;
+    for(int t = 0; t < NTask; t++) {
+        byte_counts[t] = counts[t] * sizeof(ChainMemberData);
+        byte_displs[t] = n_total * sizeof(ChainMemberData);
+        n_total += counts[t];
+    }
+    if(n_total == 0) return;
+    std::vector<ChainMemberData> all_data(n_total);
+    MPI_Allgatherv(local_data.data(), n_local * sizeof(ChainMemberData), MPI_BYTE,
+                   all_data.data(), byte_counts.data(), byte_displs.data(), MPI_BYTE, MPI_COMM_WORLD);
+    std::sort(all_data.begin(), all_data.end(), [](const ChainMemberData &a, const ChainMemberData &b) {return a.chain < b.chain;});
 
-        std::vector<ChainMemberData> local_data;
-        local_data.reserve(reg.local_member_indices.size());
-        for(int idx : reg.local_member_indices) {
-            if(!P[idx].KetjuIntegrated) continue;
-            ChainMemberData d;
-            d.mass = P[idx].Mass;
-            for(int j = 0; j < 3; j++) d.pos[j] = P[idx].Pos[j];
-            local_data.push_back(d);
+    for(int n = 0; n < n_local; n++) {
+        int idx = local_index[n];
+        auto lo = std::lower_bound(all_data.begin(), all_data.end(), local_data[n],
+                                   [](const ChainMemberData &a, const ChainMemberData &b) {return a.chain < b.chain;});
+        Vec3<double> chain_grav = {0, 0, 0};
+        SymmetricTensor2<MyFloat> chain_tidal = {0,0,0,0,0,0};
+        for(auto it = lo; it != all_data.end() && it->chain == local_data[n].chain; ++it) {
+            double dr[3];
+            for(int j = 0; j < 3; j++) dr[j] = it->pos[j] - P[idx].Pos[j];
+#ifdef BOX_PERIODIC
+            NEAREST_XYZ(dr[0], dr[1], dr[2], -1);
+#endif
+            double r2 = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
+            if(r2 <= 0) continue; /* self */
+            if(r2 >= All.KetjuRegionRadius * All.KetjuRegionRadius) continue; /* may leave the chain next step: keep it, as the tree walk does for dt_2body */
+            double r = sqrt(r2), r3 = r * r2, r5 = r3 * r2;
+            double fac  = All.G * it->mass / r3;
+            double fac2 = 3.0 * All.G * it->mass / r5;
+            for(int j = 0; j < 3; j++) chain_grav[j] += fac * dr[j];
+            chain_tidal.data[0] += fac2 * dr[0]*dr[0] - fac;  /* xx */
+            chain_tidal.data[1] += fac2 * dr[1]*dr[1] - fac;  /* yy */
+            chain_tidal.data[2] += fac2 * dr[2]*dr[2] - fac;  /* zz */
+            chain_tidal.data[3] += fac2 * dr[0]*dr[1];        /* xy */
+            chain_tidal.data[4] += fac2 * dr[1]*dr[2];        /* yz */
+            chain_tidal.data[5] += fac2 * dr[0]*dr[2];        /* xz */
         }
-        int n_local = local_data.size();
-
-        std::vector<int> counts(reg.affected_tasks.size, 0);
-        MPI_Allgather(&n_local, 1, MPI_INT, counts.data(), 1, MPI_INT, reg.affected_tasks.comm);
-
-        std::vector<int> displs(reg.affected_tasks.size, 0);
-        int n_total = 0;
-        for(int t = 0; t < reg.affected_tasks.size; t++) { displs[t] = n_total; n_total += counts[t]; }
-        if(n_total < 2) continue; /* single-particle region: nothing to subtract */
-
-        std::vector<ChainMemberData> all_data(n_total);
-        std::vector<int> byte_counts(reg.affected_tasks.size), byte_displs(reg.affected_tasks.size);
-        for(int t = 0; t < reg.affected_tasks.size; t++) {
-            byte_counts[t] = counts[t] * sizeof(ChainMemberData);
-            byte_displs[t] = displs[t] * sizeof(ChainMemberData);
-        }
-        MPI_Allgatherv(local_data.data(), n_local * sizeof(ChainMemberData), MPI_BYTE,
-                       all_data.data(), byte_counts.data(), byte_displs.data(),
-                       MPI_BYTE, reg.affected_tasks.comm);
-
-        for(int idx : reg.local_member_indices) {
-            if(!P[idx].KetjuIntegrated) continue;
-
-            /* Build the chain's contribution to gravity and tidal at P[idx].Pos.
-             * F_a from source m_k at offset dr = pos_k - pos_i:
-             *   F_a = G m_k * dr_a / r^3        (attractive)
-             * T_ab from same source:
-             *   T_ab = G m_k * (3 dr_a dr_b / r^5 - δ_ab / r^3)
-             *
-             * IMPORTANT: P[i].GravAccel and P[i].tidal_tensorps have already had
-             * the *= All.G applied by compute_grav_accelerations() by the time
-             * we run (see gravity/gravtree.cc:512,564). We therefore include G
-             * in fac/fac2 so the chain subtraction is in the same units, unlike
-             * the older subtract_companion_gravity() which runs *before* the
-             * tidal_tensorps *= G line and so omits G. */
-            Vec3<double> chain_grav = {0, 0, 0};
-            SymmetricTensor2<MyFloat> chain_tidal = {0,0,0,0,0,0};
-            for(int k = 0; k < n_total; k++) {
-                double dr[3];
-                for(int j = 0; j < 3; j++) dr[j] = all_data[k].pos[j] - P[idx].Pos[j];
-                double r2 = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
-                if(r2 <= 0) continue; /* self */
-                double r = sqrt(r2);
-                double r3 = r * r2;
-                double r5 = r3 * r2;
-                double fac  = All.G * all_data[k].mass / r3;
-                double fac2 = 3.0 * All.G * all_data[k].mass / r5;
-                for(int j = 0; j < 3; j++) chain_grav[j] += fac * dr[j];
-                chain_tidal.data[0] += fac2 * dr[0]*dr[0] - fac;  /* xx */
-                chain_tidal.data[1] += fac2 * dr[1]*dr[1] - fac;  /* yy */
-                chain_tidal.data[2] += fac2 * dr[2]*dr[2] - fac;  /* zz */
-                chain_tidal.data[3] += fac2 * dr[0]*dr[1];        /* xy */
-                chain_tidal.data[4] += fac2 * dr[1]*dr[2];        /* yz */
-                chain_tidal.data[5] += fac2 * dr[0]*dr[2];        /* xz */
-            }
-
-            /* COM-frame quantities (chain self-contribution removed) */
-            for(int j = 0; j < 3; j++) P[idx].COM_GravAccel[j] = P[idx].GravAccel[j] - chain_grav[j];
-
-            SymmetricTensor2<MyFloat> external_tidal = P[idx].tidal_tensorps - chain_tidal;
-            double tidal_norm = external_tidal.frobenius_norm();
-            /* tidal_tensorps is already in physical units (G-multiplied), so
-             * dt_tidal ~ 1/sqrt(|T_external|_F) directly — no extra G. */
-            if(tidal_norm > 0) {
-                P[idx].COM_dt_tidal = sqrt(1.0 / tidal_norm);
-            } else {
-                P[idx].COM_dt_tidal = MAX_REAL_NUMBER;
-            }
-        }
+        for(int j = 0; j < 3; j++) P[idx].COM_GravAccel[j] = P[idx].GravAccel[j] - chain_grav[j];
+        SymmetricTensor2<MyFloat> external_tidal = P[idx].tidal_tensorps - chain_tidal;
+        double tidal_norm = external_tidal.frobenius_norm();
+        P[idx].COM_dt_tidal = (tidal_norm > 0) ? sqrt(1.0 / tidal_norm) : MAX_REAL_NUMBER;
     }
 }
 
 void ketju_finish_step(void)
 {
-    /* compute COM-frame tidal timescale for chain members before tearing down
-     * region data — read by find_timesteps next step via P[i].COM_dt_tidal */
+    /* chain-external field for members ending their step here, read by the next find_timesteps */
     ketju_compute_com_quantities();
 
     /* NOTE: KetjuIntegrated flags are NOT cleared here — they persist until
