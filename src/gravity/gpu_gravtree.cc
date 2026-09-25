@@ -1495,16 +1495,27 @@ enum {
     GRAV_PACKET_FAIL_PSEUDO,             /* a pseudo-particle: the host walks every member */
     GRAV_PACKET_FAIL_NO_CONTINUATION,    /* local stack and frontier both full */
     GRAV_PACKET_FAIL_RECORD_UNUSABLE,    /* a record the flush could not reproduce */
+    GRAV_PACKET_FAIL_NO_PROGRESS,        /* a round in which no walker advanced and none was waiting on the chunk */
     GRAV_PACKET_FAIL_REASONS
 };
 
 /* team-scope counters, one int slot each */
 enum {
-    GRAV_PACKET_CTR_RECORDS = 0,       /* records in the chunk */
-    GRAV_PACKET_CTR_FRONTIER,          /* items on the frontier */
+    GRAV_PACKET_CTR_RECORDS = 0,       /* records in the chunk; reserved by atomic increment, clamped to the chunk once per round */
+    /* The frontier's three counters.  Slots [0, FR_PUB) are the published stack and do not move
+     * for the length of a round; new pushes grow above it and are read by nobody until the round
+     * boundary compacts them in.  That is what makes a failed reservation harmless: an overflowing
+     * pusher leaves its index above the cap and simply does not write, where a pusher that tried to
+     * hand the index back could race a second overflowing pusher and wind the counter back below a
+     * slot already holding a live continuation, which the next push would then overwrite. */
+    GRAV_PACKET_CTR_FR_PUB,            /* published items, poppable this round */
+    GRAV_PACKET_CTR_FR_TAKEN,          /* published items claimed this round */
+    GRAV_PACKET_CTR_FR_NEW,            /* reservations made above the published block this round */
     GRAV_PACKET_CTR_FAILED,            /* the packet failed: pseudo-particle, stale particle source, malformed index, or no room for a continuation */
     GRAV_PACKET_CTR_FAIL_REASON,       /* which of the above; read only when FAILED is set */
-    GRAV_PACKET_CTR_DONE,              /* the traversal is finished */
+    GRAV_PACKET_CTR_DONE,              /* the traversal is finished: a team-level verdict taken at the round boundary, never by one walker */
+    GRAV_PACKET_CTR_WORKING,           /* walkers still holding an item or a continuation at the end of the round */
+    GRAV_PACKET_CTR_STEPPED,           /* nodes stepped this round, by the whole team */
     GRAV_PACKET_CTR_NOTE_INCOMPLETE,   /* import-completeness notes, held until success */
     GRAV_PACKET_CTR_NOTE_UNSHIPPABLE,
     GRAV_PACKET_CTR_COUNT
@@ -1571,9 +1582,9 @@ struct GravPacketMaskedPolicy {
             if(gpu_grav_leaf_member_accepts(e.ctx, no, open[m])) {Engine::mask_set(accept_mask, m);}
         }
         if(!Engine::mask_any(accept_mask, W)) {return GRAV_PACKET_STEP_CONTINUE;}
-        if(e.ctx.P_dev[no].Ti_current != e.ctx.ti) {Engine::fail(ctr, GRAV_PACKET_FAIL_STALE_SOURCE); return GRAV_PACKET_STEP_YIELD;}   /* a source behind the walk time: the replay classifies and hands it to the host walk */
-        if(ctr[GRAV_PACKET_CTR_RECORDS] == e.chunk_cap) {return GRAV_PACKET_STEP_YIELD;}   /* chunk full: the flush follows; resume here */
-        const int r = ctr[GRAV_PACKET_CTR_RECORDS]++;
+        if(e.ctx.P_dev[no].Ti_current != e.ctx.ti) {e.fail(ctr, GRAV_PACKET_FAIL_STALE_SOURCE); return GRAV_PACKET_STEP_YIELD;}   /* a source behind the walk time: the replay classifies and hands it to the host walk */
+        const int r = e.record_reserve(ctr);
+        if(r < 0) {return GRAV_PACKET_STEP_YIELD;}   /* chunk full: the flush follows; resume here */
         records[r].no = no; records[r].kind = GRAV_NODE_LOCAL; records[r].leaf_tag = LET_LEAF_TAG_NODE;
         Engine::mask_copy(rmasks + (size_t) r * W, accept_mask, W);
         return GRAV_PACKET_STEP_CONTINUE;
@@ -1603,8 +1614,8 @@ struct GravPacketMaskedPolicy {
             Engine::mask_set(accept_mask, m);
         }
         if(Engine::mask_any(accept_mask, W)) {
-            if(ctr[GRAV_PACKET_CTR_RECORDS] == e.chunk_cap) {return GRAV_PACKET_STEP_YIELD;}   /* chunk full: resume at this node after the flush (its decisions are re-made identically) */
-            const int r = ctr[GRAV_PACKET_CTR_RECORDS]++;
+            const int r = e.record_reserve(ctr);
+            if(r < 0) {return GRAV_PACKET_STEP_YIELD;}   /* chunk full: resume at this node after the flush (its decisions are re-made identically) */
             records[r].no = no; records[r].kind = nd.node_kind; records[r].leaf_tag = nd.fl_tag;
             Engine::mask_copy(rmasks + (size_t) r * W, accept_mask, W);
         }
@@ -1825,6 +1836,20 @@ struct GpuGravPacketWalk {
     gpu_grav_walk_ctx_t ctx;
     const int *d_idx;   /* candidates in ActiveParticleList order */
     int n_cand, q_dev, frontier_cap, chunk_cap;
+    /* How many of the team's threads traverse, and how far each one goes before returning to the
+     * round boundary.
+     *
+     * n_walkers = 1 is the single-walker traversal: the frontier publishes on the push and pops
+     * from its top, which is depth-first order and bitwise against the single-target walk.
+     * n_walkers = T is the cooperative traversal -- every thread walks, and an opened subtree is
+     * offered to the others through the frontier.  Members are still threads 0..q_eff-1, so a wide
+     * team with a narrow packet is a team where most threads only traverse, which is the shape a
+     * step with few targets and a deep tree wants.
+     *
+     * steps_per_round bounds a walker's run so that what it published becomes visible to an idle
+     * walker: too large and the others wait, too small and the round boundary is the cost.  It is
+     * a column of the launch table, not a knob. */
+    int n_walkers, steps_per_round;
     struct gpu_grav_packet_scratch_plan_t plan;
     Vec3<double> *d_acc; int *d_ninter; double *d_pot; int *d_failed;
     int *d_fail_by_reason;   /* [GRAV_PACKET_FAIL_REASONS] packets given up, by reason */
@@ -1835,10 +1860,26 @@ struct GpuGravPacketWalk {
 
     /* Give the packet up, and say why.  The first reason recorded is kept: it is the one that
      * actually stopped the traversal, and a later lane writing over it would report a symptom. */
-    KOKKOS_INLINE_FUNCTION static void fail(int *ctr, int reason)
+    KOKKOS_INLINE_FUNCTION void fail(int *ctr, int reason) const
     {
-        if(!ctr[GRAV_PACKET_CTR_FAILED]) {ctr[GRAV_PACKET_CTR_FAIL_REASON] = reason;}
-        ctr[GRAV_PACKET_CTR_FAILED] = 1;
+        if(n_walkers == 1) {
+            if(!ctr[GRAV_PACKET_CTR_FAILED]) {ctr[GRAV_PACKET_CTR_FAIL_REASON] = reason;}
+            ctr[GRAV_PACKET_CTR_FAILED] = 1;
+            return;
+        }
+        /* Several walkers can reach a give-up in the same round, so the flag is claimed rather
+         * than assigned: the one that claims it writes the reason, and the reason the report
+         * carries is the one that actually stopped a traversal first. */
+        if(Kokkos::atomic_compare_exchange(&ctr[GRAV_PACKET_CTR_FAILED], 0, 1) == 0) {
+            ctr[GRAV_PACKET_CTR_FAIL_REASON] = reason;
+        }
+    }
+
+    /* Add to a team counter several walkers may be adding to at once.  Plain arithmetic with one
+     * walker, so the single-walker traversal keeps the instruction sequence it was gated with. */
+    KOKKOS_INLINE_FUNCTION void ctr_add(int *slot, int by) const
+    {
+        if(n_walkers == 1) {*slot += by;} else {Kokkos::atomic_fetch_add(slot, by);}
     }
 
     KOKKOS_INLINE_FUNCTION static void mask_clear(grav_packet_mask_word_t *m, int words) {for(int w = 0; w < words; w++) {m[w] = 0ULL;}}
@@ -1847,6 +1888,64 @@ struct GpuGravPacketWalk {
     KOKKOS_INLINE_FUNCTION static void mask_set(grav_packet_mask_word_t *m, int b) {m[b / GRAV_PACKET_MASK_BITS] |= (1ULL << (b % GRAV_PACKET_MASK_BITS));}
     KOKKOS_INLINE_FUNCTION static int  mask_any(const grav_packet_mask_word_t *m, int words) {for(int w = 0; w < words; w++) {if(m[w]) {return 1;}} return 0;}
     KOKKOS_INLINE_FUNCTION static int  mask_equal(const grav_packet_mask_word_t *a, const grav_packet_mask_word_t *b, int words) {for(int w = 0; w < words; w++) {if(a[w] != b[w]) {return 0;}} return 1;}
+
+    /* Offer a continuation to the other walkers, or keep it if there is no room.  Returns 1 when
+     * the item is on the frontier and the caller is rid of it.
+     *
+     * With one walker the frontier is a plain stack that publishes on the push, which is the
+     * depth-first overflow store the single-walker traversal is gated on.  With several, a push
+     * reserves above the published block and a reservation past the cap is simply not taken: the
+     * counter is left where it is and clamped once, at the round boundary, by the one thread doing
+     * the compaction.  Handing a failed index back would be the race -- two overflowing pushers
+     * each decrementing can leave the counter below a slot that already holds a live continuation. */
+    KOKKOS_INLINE_FUNCTION int frontier_push(int *ctr, gpu_grav_walk_item_t *frontier, grav_packet_mask_word_t *fmasks,
+                                             const gpu_grav_walk_item_t &item, const grav_packet_mask_word_t *item_mask) const
+    {
+        const int W = plan.mask_words;
+        int slot;
+        if(n_walkers == 1) {
+            if(ctr[GRAV_PACKET_CTR_FR_PUB] == frontier_cap) {return 0;}
+            slot = ctr[GRAV_PACKET_CTR_FR_PUB]++;
+        } else {
+            const int n = Kokkos::atomic_fetch_add(&ctr[GRAV_PACKET_CTR_FR_NEW], 1);
+            slot = ctr[GRAV_PACKET_CTR_FR_PUB] + n;
+            if(slot >= frontier_cap) {return 0;}
+        }
+        frontier[slot] = item;
+        mask_copy(fmasks + (size_t) slot * W, item_mask, W);
+        return 1;
+    }
+
+    /* Take a published item, if this walker gets one.  A claim past the published block is not
+     * handed back either: the compaction clamps it against what was actually published. */
+    KOKKOS_INLINE_FUNCTION int frontier_pop(int *ctr, const gpu_grav_walk_item_t *frontier, const grav_packet_mask_word_t *fmasks,
+                                            int &no, int &exit, grav_packet_mask_word_t *mask) const
+    {
+        const int W = plan.mask_words;
+        const int pub = ctr[GRAV_PACKET_CTR_FR_PUB];
+        if(pub <= 0) {return 0;}
+        int slot;
+        if(n_walkers == 1) {
+            slot = --ctr[GRAV_PACKET_CTR_FR_PUB];
+        } else {
+            const int k = Kokkos::atomic_fetch_add(&ctr[GRAV_PACKET_CTR_FR_TAKEN], 1);
+            if(k >= pub) {return 0;}
+            slot = pub - 1 - k;   /* newest first, over a block that does not move during the round */
+        }
+        no = frontier[slot].no; exit = frontier[slot].exit;
+        mask_copy(mask, fmasks + (size_t) slot * W, W);
+        return 1;
+    }
+
+    /* Reserve a record slot.  Past the chunk nothing is written and nothing is handed back: the
+     * walker yields with its item intact, the flush follows, and the node is reached again and
+     * decided identically.  The clamp at the round boundary is what keeps the count honest. */
+    KOKKOS_INLINE_FUNCTION int record_reserve(int *ctr) const
+    {
+        const int r = (n_walkers == 1) ? ctr[GRAV_PACKET_CTR_RECORDS]++
+                                       : Kokkos::atomic_fetch_add(&ctr[GRAV_PACKET_CTR_RECORDS], 1);
+        return (r < chunk_cap) ? r : -1;
+    }
 
     /* One member's evaluation of a recorded element: the leaf through the P_dev adapter,
      * a node re-derived from its index through the same prelude and geometry the walker
@@ -1872,9 +1971,12 @@ struct GpuGravPacketWalk {
         return 1;
     }
 
-    /* The walker: advance its item until the chunk is full, the traversal is done, or the
-     * packet fails. All of its state persists across the flush that follows: the item in
-     * the caller's variables, the continuations in scratch. */
+    /* The walker: advance its item until its step budget runs out, the chunk is full, it runs out
+     * of work, or the packet fails. All of its state persists across the round boundary and the
+     * flush that follows: the item in the caller's variables, the continuations in scratch.
+     *
+     * Running out of work is not the end of the traversal -- another walker may be about to
+     * publish -- so the walker simply comes back idle and the round boundary decides. */
     KOKKOS_INLINE_FUNCTION void walk(int &no, int &exit, grav_packet_mask_word_t *mask, int &item_live,
                                      grav_packet_mask_word_t *accept_mask, grav_packet_mask_word_t *open_mask,
                                      int &local_head, int &local_count,
@@ -1886,34 +1988,35 @@ struct GpuGravPacketWalk {
         const int W = plan.mask_words;
         const int treeBase = ctx.treeBase, treeParticleSlots = ctx.treeParticleSlots;
         const int pseudo_start = treeBase + ctx.maxNodes + ctx.maxForeignNodes;
+        int budget = steps_per_round, stepped = 0;
 
         while(1)
         {
-            /* the item is complete: resume the newest continuation, else one from the frontier, else finish */
+            /* the item is complete: resume the newest continuation, else one the frontier has
+               published, else come back idle and let the round boundary decide */
             if(!item_live || no == exit) {
+                item_live = 0;
                 if constexpr (Policy::splits_items) {
                     if(local_count > 0) {
                         const int slot = (local_head + local_count - 1) % Policy::local_stack;
                         no = local[slot].no; exit = local[slot].exit; mask_copy(mask, lmasks + (size_t) slot * W, W);
                         local_count--; item_live = 1; continue;
                     }
-                    if(ctr[GRAV_PACKET_CTR_FRONTIER] > 0) {
-                        const int slot = --ctr[GRAV_PACKET_CTR_FRONTIER];   /* one walker: no contention on the frontier */
-                        no = frontier[slot].no; exit = frontier[slot].exit; mask_copy(mask, fmasks + (size_t) slot * W, W);
-                        item_live = 1; continue;
-                    }
+                    if(frontier_pop(ctr, frontier, fmasks, no, exit, mask)) {item_live = 1; continue;}
                 }
-                ctr[GRAV_PACKET_CTR_DONE] = 1; return;
+                break;
             }
+            if(budget <= 0) {break;}   /* back to the round boundary, item intact */
+            budget--; stepped++;
             if(no < 0) {item_live = 0; continue;}   /* the single-target walk's end-of-walk sentinel: nothing beyond it */
-            if(no >= treeParticleSlots && no < treeBase) {fail(ctr, GRAV_PACKET_FAIL_MALFORMED_INDEX); return;}   /* gap: malformed tree; the host walk stops loudly */
+            if(no >= treeParticleSlots && no < treeBase) {fail(ctr, GRAV_PACKET_FAIL_MALFORMED_INDEX); break;}   /* gap: malformed tree; the host walk stops loudly */
             if(no < treeParticleSlots) /* particle leaf: per member, the star-star pass */
             {
-                if(policy.visit_leaf(*this, no, open, mask, accept_mask, ctr, records, rmasks) == GRAV_PACKET_STEP_YIELD) {return;}
+                if(policy.visit_leaf(*this, no, open, mask, accept_mask, ctr, records, rmasks) == GRAV_PACKET_STEP_YIELD) {break;}
                 no = ctx.tree_soa.nextnode_aux[no];
                 continue;
             }
-            if(no >= pseudo_start) {fail(ctr, GRAV_PACKET_FAIL_PSEUDO); return;}   /* pseudo-particle: the host walks every member */
+            if(no >= pseudo_start) {fail(ctr, GRAV_PACKET_FAIL_PSEUDO); break;}   /* pseudo-particle: the host walks every member */
 
             /* the index is a node: the flavour sees it before the prelude, which is where a
                recording flavour writes it down -- earlier than any decision, so what it records
@@ -1929,36 +2032,66 @@ struct GpuGravPacketWalk {
                what the resulting open mask means for the traversal */
             int n_note = 0, n_unship = 0;
             if(policy.visit_node(*this, no, nd, open, mask, accept_mask, open_mask, ctr, records, rmasks,
-                                 n_note, n_unship) == GRAV_PACKET_STEP_YIELD) {return;}
-            ctr[GRAV_PACKET_CTR_NOTE_INCOMPLETE] += n_note; ctr[GRAV_PACKET_CTR_NOTE_UNSHIPPABLE] += n_unship;
+                                 n_note, n_unship) == GRAV_PACKET_STEP_YIELD) {break;}
+            if(n_note)   {ctr_add(&ctr[GRAV_PACKET_CTR_NOTE_INCOMPLETE], n_note);}
+            if(n_unship) {ctr_add(&ctr[GRAV_PACKET_CTR_NOTE_UNSHIPPABLE], n_unship);}
             if(!mask_any(open_mask, W)) {no = nd.sibling; continue;}
-            if(mask_equal(open_mask, mask, W)) {no = nd.nextnode; continue;}   /* everyone descends: same item, deeper */
             if constexpr (!Policy::splits_items) {
+                if(mask_equal(open_mask, mask, W)) {no = nd.nextnode; continue;}
                 /* A flavour that takes one decision for the whole packet leaves open_mask either
                    the item's own mask or empty, so both branches above are taken and this is
                    unreachable. It is a counted give-up rather than an assumption because the
                    alternative to noticing here is a member walking a subtree it was excluded
                    from, and the packet has a safe route out either way. */
-                fail(ctr, GRAV_PACKET_FAIL_NO_CONTINUATION); return;
+                fail(ctr, GRAV_PACKET_FAIL_NO_CONTINUATION); break;
             } else {
-                /* the packet descends for the openers; the others re-join at the node's sibling
-                   through the continuation (sibling, exit, mask). The walker keeps the newest
-                   continuations itself; the oldest moves to the frontier when there is no room,
-                   and the frontier is popped after the local ones, so the depth-first order is kept. */
-                if(local_count == Policy::local_stack) {
-                    if(ctr[GRAV_PACKET_CTR_FRONTIER] == frontier_cap) {fail(ctr, GRAV_PACKET_FAIL_NO_CONTINUATION); return;}
-                    const int fslot = ctr[GRAV_PACKET_CTR_FRONTIER]++;
-                    frontier[fslot] = local[local_head]; mask_copy(fmasks + (size_t) fslot * W, lmasks + (size_t) local_head * W, W);
-                    local_head = (local_head + 1) % Policy::local_stack; local_count--;
-                }
-                {
-                    const int slot = (local_head + local_count) % Policy::local_stack;
-                    local[slot].no = nd.sibling; local[slot].exit = exit; mask_copy(lmasks + (size_t) slot * W, mask, W);
-                    local_count++;
+                /* The packet descends for the openers; the others re-join at the node's sibling
+                   through the continuation (sibling, exit, mask).
+                 *
+                 * WHERE that continuation goes is the difference between one walker and many, and
+                 * it is the whole of the cooperative traversal.
+                 *
+                 * One walker keeps it, because the only thing the frontier can do for it is hold
+                 * an overflow, and keeping the newest locally and spilling the OLDEST is what
+                 * preserves depth-first order.  It also descends in place when nobody was excluded,
+                 * since there is nothing to hand anyone.
+                 *
+                 * Several walkers OFFER it, on every open and even when nobody was excluded: a
+                 * subtree nobody can reach is a subtree the other walkers sit idle through, and
+                 * the sibling continuation is precisely the independent piece of work to give
+                 * away.  Only when the frontier is full does the walker keep it, and only when its
+                 * own stack is full too does the packet give up -- counted, and handed to the
+                 * replay, never a spin.
+                 *
+                 * An empty continuation (the node's sibling IS the item's exit) is not worth a
+                 * slot in either regime. */
+                const int share = (n_walkers > 1);
+                const int have_continuation = (nd.sibling != exit);
+                const int all_descend = mask_equal(open_mask, mask, W);
+                if(!share && all_descend) {no = nd.nextnode; continue;}   /* same item, deeper */
+                if(have_continuation) {
+                    gpu_grav_walk_item_t cont; cont.no = nd.sibling; cont.exit = exit;
+                    int placed = 0;
+                    if(share) {placed = frontier_push(ctr, frontier, fmasks, cont, mask);}
+                    if(!placed) {
+                        if(local_count == Policy::local_stack) {
+                            /* the oldest of this walker's own continuations makes room; with one
+                               walker that is the spill that keeps the local stack depth-first */
+                            gpu_grav_walk_item_t oldest = local[local_head];
+                            if(!frontier_push(ctr, frontier, fmasks, oldest, lmasks + (size_t) local_head * W)) {
+                                fail(ctr, GRAV_PACKET_FAIL_NO_CONTINUATION); break;
+                            }
+                            local_head = (local_head + 1) % Policy::local_stack; local_count--;
+                        }
+                        const int slot = (local_head + local_count) % Policy::local_stack;
+                        local[slot] = cont; mask_copy(lmasks + (size_t) slot * W, mask, W);
+                        local_count++;
+                    }
                 }
                 no = nd.nextnode; exit = nd.sibling; mask_copy(mask, open_mask, W);
             }
         }
+        if(stepped) {ctr_add(&ctr[GRAV_PACKET_CTR_STEPPED], stepped);}
     }
 
     KOKKOS_INLINE_FUNCTION void operator()(const TeamMember &team) const
@@ -2000,37 +2133,103 @@ struct GpuGravPacketWalk {
         if(t == 0) {for(int c = 0; c < GRAV_PACKET_CTR_COUNT; c++) {ctr[c] = 0;}}
         team.team_barrier();
 
-        /* stage 1: one walker, thread 0 -- the depth-first order of the single-target walk */
-        const int is_walker = (t == 0);
+        /* Every thread below n_walkers traverses; the root item starts with one of them and the
+         * rest join as subtrees are offered. Members are threads below q_eff, so a team wider than
+         * the packet is a team whose extra threads only ever walk -- which is the point when a
+         * rank has few targets and a deep tree. */
+        const int is_walker = (t < n_walkers);
         int no = ctx.treeBase, exit = -1;
         grav_packet_mask_word_t *mask = wmasks, *accept_mask = wmasks + W, *open_mask = wmasks + 2 * W; mask_clear(mask, W);
         for(int m = 0; m < q_dev; m++) {if(open[m].alive) {mask_set(mask, m);}}
-        int item_live = mask_any(mask, W);   /* a packet of massless targets walks nothing */
+        int item_live = (t == 0) ? mask_any(mask, W) : 0;   /* a packet of massless targets walks nothing */
         int local_head = 0, local_count = 0;
 
         while(1)
         {
             if(is_walker && !ctr[GRAV_PACKET_CTR_FAILED]) {
                 walk(no, exit, mask, item_live, accept_mask, open_mask, local_head, local_count, local, lmasks, open, frontier, fmasks, records, rmasks, ctr);
+                if(item_live || local_count > 0) {ctr_add(&ctr[GRAV_PACKET_CTR_WORKING], 1);}
             }
             team.team_barrier();
             if(ctr[GRAV_PACKET_CTR_FAILED]) {break;}
-            /* the chunk is full, or the traversal has finished: every member evaluates its records */
-            if constexpr (Policy::records_elements) {
-                if(have_member && mem.open.alive) {
-                    const int n_rec = ctr[GRAV_PACKET_CTR_RECORDS];
-                    for(int r = 0; r < n_rec; r++) {
-                        if(!mask_test(rmasks + (size_t) r * W, t)) {continue;}
-                        /* A record this member cannot reproduce fails the whole packet, exactly as a
-                           pseudo-particle or a stale source does: nothing this team computed is
-                           committed, and the replay walks every member again. */
-                        if(!evaluate_record(records[r].no, mem)) {fail(ctr, GRAV_PACKET_FAIL_RECORD_UNUSABLE); break;}
+
+            /* The round boundary, and the only place the frontier changes shape.  What survives is
+             * the published block the pops did not reach, and on top of it this round's new pushes
+             * moved down to meet it -- so the stack stays newest-on-top and holds no gap.  When
+             * nothing was popped the two blocks are already adjacent and nothing moves at all. */
+            /* read before the compaction writes anything, so no thread is reading a counter
+               another is settling */
+            const int chunk_full = Policy::records_elements && (ctr[GRAV_PACKET_CTR_RECORDS] >= chunk_cap);
+            const int fr_pub    = ctr[GRAV_PACKET_CTR_FR_PUB];
+            const int fr_taken  = (ctr[GRAV_PACKET_CTR_FR_TAKEN] < fr_pub) ? ctr[GRAV_PACKET_CTR_FR_TAKEN] : fr_pub;
+            const int survivors = fr_pub - fr_taken;
+            const int room      = frontier_cap - fr_pub;
+            const int fr_new    = (ctr[GRAV_PACKET_CTR_FR_NEW] < room) ? ctr[GRAV_PACKET_CTR_FR_NEW] : room;
+            if(fr_taken > 0 && fr_new > 0) {
+                /* ONE thread, ASCENDING, and both halves of that are load-bearing.
+                 *
+                 * The source and destination blocks OVERLAP whenever more items were pushed than
+                 * popped, which is the ordinary case: the slot this step writes,
+                 * survivors + j, is the source of item j - fr_taken, an EARLIER index.  Ascending
+                 * order is therefore safe by construction -- that earlier item has already been
+                 * copied out before anything writes over it -- while a parallel copy has no order
+                 * at all, so one lane can destroy a continuation before the lane that owns it has
+                 * read it.  The subtree in the destroyed slot is then lost and the overwriting one
+                 * is walked twice, with no failure raised, because both are perfectly well-formed
+                 * items.  Measured that way: 79% of evrard's particles wrong at the first snapshot,
+                 * and per-step interaction counts moving in BOTH directions.
+                 *
+                 * It costs one thread a run over at most the frontier once per round, against T
+                 * walkers each taking up to steps_per_round node steps; if a round boundary ever
+                 * shows up in a measurement, the fix is a ring buffer that never moves anything,
+                 * not a parallel copy. */
+                if(t == 0) {
+                    for(int j = 0; j < fr_new; j++) {
+                        frontier[survivors + j] = frontier[fr_pub + j];
+                        mask_copy(fmasks + (size_t) (survivors + j) * W, fmasks + (size_t) (fr_pub + j) * W, W);
                     }
                 }
             }
             team.team_barrier();
+
+            if(t == 0) {
+                ctr[GRAV_PACKET_CTR_FR_PUB] = survivors + fr_new;
+                ctr[GRAV_PACKET_CTR_FR_TAKEN] = 0; ctr[GRAV_PACKET_CTR_FR_NEW] = 0;
+                if(ctr[GRAV_PACKET_CTR_RECORDS] > chunk_cap) {ctr[GRAV_PACKET_CTR_RECORDS] = chunk_cap;}
+                ctr[GRAV_PACKET_CTR_DONE] = (ctr[GRAV_PACKET_CTR_WORKING] == 0 && ctr[GRAV_PACKET_CTR_FR_PUB] == 0);
+                /* A round in which nobody advanced and nobody was waiting on the chunk cannot
+                 * happen: a walker holding an item steps at least once, and a team holding nothing
+                 * is done.  It is tested rather than asserted because the alternative to noticing
+                 * is a kernel that never returns, and the packet has a counted way out. */
+                if(ctr[GRAV_PACKET_CTR_STEPPED] == 0 && !ctr[GRAV_PACKET_CTR_DONE] && !chunk_full) {
+                    fail(ctr, GRAV_PACKET_FAIL_NO_PROGRESS);
+                }
+                ctr[GRAV_PACKET_CTR_STEPPED] = 0;
+            }
+            team.team_barrier();
+            if(ctr[GRAV_PACKET_CTR_FAILED]) {break;}
+
+            /* the chunk is full, or the traversal has finished: every member evaluates its records */
+            if constexpr (Policy::records_elements) {
+                if(ctr[GRAV_PACKET_CTR_RECORDS] > 0 && (chunk_full || ctr[GRAV_PACKET_CTR_DONE])) {
+                    if(have_member && mem.open.alive) {
+                        const int n_rec = ctr[GRAV_PACKET_CTR_RECORDS];
+                        for(int r = 0; r < n_rec; r++) {
+                            if(!mask_test(rmasks + (size_t) r * W, t)) {continue;}
+                            /* A record this member cannot reproduce fails the whole packet, exactly as a
+                               pseudo-particle or a stale source does: nothing this team computed is
+                               committed, and the replay walks every member again. */
+                            if(!evaluate_record(records[r].no, mem)) {fail(ctr, GRAV_PACKET_FAIL_RECORD_UNUSABLE); break;}
+                        }
+                    }
+                    team.team_barrier();
+                    if(t == 0) {ctr[GRAV_PACKET_CTR_RECORDS] = 0;}
+                }
+            }
+            team.team_barrier();
+            if(ctr[GRAV_PACKET_CTR_FAILED]) {break;}
             if(ctr[GRAV_PACKET_CTR_DONE]) {break;}
-            if constexpr (Policy::records_elements) {if(t == 0) {ctr[GRAV_PACKET_CTR_RECORDS] = 0;}}
+            if(t == 0) {ctr[GRAV_PACKET_CTR_WORKING] = 0;}
             team.team_barrier();
         }
 
@@ -2060,11 +2259,14 @@ struct GpuGravPacketWalk {
     }
 };
 
-/* The shape the last primary walk on this rank used: the team size and the members per
- * packet, or 0/0 when every candidate took the single-target walk. gravity_tree() writes it
- * into the per-call timings record, so a run's readout says what was measured. */
-static int g_packet_team = 0, g_packet_q_dev = 0;
-extern "C" void gpu_gravtree_packet_shape(int *team, int *q_dev) {*team = g_packet_team; *q_dev = g_packet_q_dev;}
+/* The shape the last primary walk on this rank used, in full, so a pricing arm records what it
+ * measured rather than what it asked for. */
+static struct gpu_grav_packet_shape_t g_packet_shape = {0, 0, 0, 0, 0, 0, -1, -1, 0};
+
+/* gravity_tree() writes it into the per-call timings record, so a run's readout says what was
+ * measured -- including the table row, which is how a backend that could not launch the requested
+ * shape is seen instead of silently changing the experiment. */
+extern "C" void gpu_gravtree_packet_shape(struct gpu_grav_packet_shape_t *out) {*out = g_packet_shape;}
 
 /* Packets given up on the last primary walk, by reason, alongside the shape: a cliff shows up as
  * a NO_CONTINUATION count that grows while the shape stays put, which a total could not show. */
@@ -2094,29 +2296,88 @@ extern "C" int gpu_gravtree_packet_failure_reasons(void) {return GRAV_PACKET_FAI
  * is priced accordingly by team_size_max -- the scratch request is what the legality bound reads,
  * so a region left in "because it is unused anyway" would still cost occupancy.
  * Returns 0 on success with `team_out` set, 1 if no legal shape exists for this build. */
-template <class Policy>
-static int gpu_grav_packet_launch(GpuGravPacketWalk<Policy> &f, const char *kernel_name, int *team_out)
+/* The launch shapes, widest team first.  A row is the WHOLE shape, because the pieces are not
+ * independent: a wide team is what gives a rank with few targets more than a handful of traversing
+ * lanes, but it also multiplies the per-walker continuation storage, and the scratch that buys is
+ * paid for in teams resident per compute unit.  Which way that trades depends on how many packets
+ * there are to run at once, which is the rank's own candidate count -- hence a table keyed on it
+ * rather than one shape for every step.
+ *
+ * ⛔ A row that the backend cannot launch selects the NEXT ROW, and a call with no legal row
+ * declines to the single-target walk.  It is never quietly narrowed to whatever happened to fit:
+ * that would answer a pricing arm with a shape nobody chose and nothing would say so.  The row
+ * actually used is reported with the shape.
+ *
+ * The values are the starting bracket, not a measurement; the B3 pricing campaign sets them, and
+ * reads `steps_per_round` (how long a walker runs before what it published becomes visible to an
+ * idle one) over {16, 32, 64, 128}. */
+struct gpu_grav_packet_row_t {
+    int team;              /* threads, and therefore walkers */
+    int frontier_mul;      /* frontier items per thread */
+    int chunk;             /* records held between flushes */
+    int steps_per_round;
+};
+
+static const struct gpu_grav_packet_row_t g_grav_packet_rows[] = {
+    {64, 4, 256, 32},
+    {32, 4, 256, 64},
+    {16, 4, 256, 64},
+    { 8, 4, 256, 64},
+    { 4, 4, 256, 64},
+    { 2, 4, 256, 64},
+    { 1, 2, 256, 64},   /* one walker: the depth-first traversal, and the last resort before the flat walk */
+};
+static const int g_grav_packet_n_rows = (int) (sizeof(g_grav_packet_rows) / sizeof(g_grav_packet_rows[0]));
+
+/* Which row a call starts from.  Few candidates means few packets, so the width has to come from
+ * the team; many candidates means the league already fills the device and a wide team only spends
+ * scratch. */
+static int gpu_grav_packet_first_row(int n_cand)
 {
-    int team = (Policy::packet_size < GRAV_PACKET_Q_DEV_MAX) ? Policy::packet_size : GRAV_PACKET_Q_DEV_MAX;
-    while(team >= 1) {
-        f.q_dev = team;
-        f.frontier_cap = Policy::splits_items     ? ((2 * team > 16) ? 2 * team : 16) : 0;
-        f.chunk_cap    = Policy::records_elements ? ((8 * team > 256) ? 8 * team : 256) : 0;
+    if(n_cand <= 64)   {return 0;}
+    if(n_cand <= 1024) {return 1;}
+    return 2;
+}
+
+template <class Policy>
+static int gpu_grav_packet_launch(GpuGravPacketWalk<Policy> &f, const char *kernel_name,
+                                  struct gpu_grav_packet_shape_t *shape_out)
+{
+    /* A flavour that never splits an item has nothing to share and no second level to fill, so it
+     * keeps the single-walker shape it was built and gated with, whatever the table says. */
+    const int first_row = Policy::splits_items ? gpu_grav_packet_first_row(f.n_cand)
+                                               : (g_grav_packet_n_rows - 1);
+    for(int row = first_row; row < g_grav_packet_n_rows; row++) {
+        const struct gpu_grav_packet_row_t r = g_grav_packet_rows[row];
+        int team = r.team;
+        if(team > GRAV_PACKET_Q_DEV_MAX) {team = GRAV_PACKET_Q_DEV_MAX;}
+        /* members per packet: the configured size, or the team when it is narrower -- a larger
+           configured size is walked as several packets (78b.1) */
+        f.q_dev = (Policy::packet_size < team) ? Policy::packet_size : team;
+        f.n_walkers = Policy::splits_items ? team : 1;
+        f.steps_per_round = r.steps_per_round;
+        f.frontier_cap = Policy::splits_items     ? ((r.frontier_mul * team > 16) ? r.frontier_mul * team : 16) : 0;
+        f.chunk_cap    = Policy::records_elements ? r.chunk : 0;
         f.plan = gpu_grav_packet_scratch_plan(f.q_dev, team, f.frontier_cap, f.chunk_cap, Policy::local_stack);
         /* the legality bound is asked of a probe policy carrying the same scratch request: a
            policy constructed at an illegal team size throws before it can be asked anything */
         Kokkos::TeamPolicy<> probe(1, 1, 1);
         probe.set_scratch_size(0, Kokkos::PerTeam(f.plan.bytes));
         const int hw = probe.team_size_max(f, Kokkos::ParallelForTag());
-        if(hw <= 0) {return 1;}
-        if(hw < team) {team = hw; continue;}   /* the scratch shrinks with the team, so this converges */
+        if(hw < team) {continue;}   /* this row does not fit this backend: take the next NAMED row */
         const int league = (f.n_cand + f.q_dev - 1) / f.q_dev;
         Kokkos::TeamPolicy<> policy(league, team, 1);
         policy.set_scratch_size(0, Kokkos::PerTeam(f.plan.bytes));
         Kokkos::parallel_for(kernel_name, policy, f);
         Kokkos::fence();
         gizmo_gpu_check_last_error(kernel_name, league);
-        if(team_out) {*team_out = team;}
+        if(shape_out) {
+            shape_out->team = team; shape_out->q_dev = f.q_dev;
+            shape_out->n_walkers = f.n_walkers; shape_out->frontier = f.frontier_cap;
+            shape_out->chunk = f.chunk_cap; shape_out->steps_per_round = f.steps_per_round;
+            shape_out->row_requested = first_row; shape_out->row_effective = row;
+            shape_out->scratch_bytes = (long long) f.plan.bytes;
+        }
         return 0;
     }
     return 1;
@@ -2130,10 +2391,7 @@ static int gpu_gravtree_walk_packets(const gpu_grav_walk_ctx_t &ctx, const int *
     f.ctx = ctx; f.d_idx = d_idx; f.n_cand = n_cand;
     f.d_acc = d_acc; f.d_ninter = d_ninter; f.d_pot = d_pot; f.d_failed = d_failed;
     f.d_fail_by_reason = d_fail_by_reason;
-    int team = 0;
-    if(gpu_grav_packet_launch(f, "gravtree_walk_packets", &team) != 0) {return 1;}
-    g_packet_team = team; g_packet_q_dev = f.q_dev;
-    return 0;
+    return gpu_grav_packet_launch(f, "gravtree_walk_packets", &g_packet_shape);
 }
 
 /* Run the discovery traversal over this call's candidates: the engine with the cover flavour,
@@ -2152,8 +2410,8 @@ static int gpu_grav_discover_sources(const gpu_grav_walk_ctx_t &ctx, const int *
     f.policy.parts   = gx_touched_set_view();
     f.policy.anomaly = d_anomaly;
     f.policy.tables  = tables;
-    int team = 0;
-    return gpu_grav_packet_launch(f, "gravtree_discover_sources", &team);
+    /* the reported shape belongs to the walk that is being priced, not to this traversal */
+    return gpu_grav_packet_launch(f, "gravtree_discover_sources", NULL);
 }
 
 /* Bring every source this walk will evaluate -- local particles and tree nodes -- to the walk
@@ -2375,7 +2633,7 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
      * The give-up tally is cleared with it and for the same reason -- it was cleared only where
      * the engine runs, so a host-routed step re-reported, and re-reduced, the previous device
      * call's counts against gpu_gravtree.h's promise that they read zero on such a call. */
-    g_packet_team = 0; g_packet_q_dev = 0;
+    {struct gpu_grav_packet_shape_t cleared = {0, 0, 0, 0, 0, 0, -1, -1, 0}; g_packet_shape = cleared;}
     for(int r = 0; r < GRAV_PACKET_FAIL_REASONS; r++) {g_packet_fail[r] = 0;}
     /* How many candidates this walk leaves to the host loop: every active until this walk has
      * selected and taken some. The host loop sizes its per-thread packet workspace from it. */

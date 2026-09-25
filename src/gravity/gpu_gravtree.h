@@ -40,15 +40,31 @@ extern "C" {
  * host_candidates_left (may be NULL) receives how many walk candidates this
  * pass leaves to the host loop -- an upper bound on any early return. */
 int gpu_gravtree_walk_primary(int *host_candidates_left);
-/* the packet shape the last primary walk used on this rank (team size, members per packet), 0/0 when
-   every candidate took the single-target walk; written into the per-call timings record */
-void gpu_gravtree_packet_shape(int *team, int *q_dev);
+/* The launch shape the last primary walk used on this rank, written into the per-call timings
+ * record.  Zeros, with both row indices -1, when every candidate took the single-target walk.
+ *
+ * It carries the row the call ASKED the launch table for and the row it actually ran, because the
+ * two differ exactly when the backend could not launch the requested shape -- and a pricing arm
+ * that cannot see that difference is reading a measurement of a shape nobody chose. */
+struct gpu_grav_packet_shape_t {
+    int team;              /* threads in the team */
+    int q_dev;             /* members (targets) per packet */
+    int n_walkers;         /* threads that traverse; 1 is the depth-first single-walker traversal */
+    int frontier;          /* items the shared frontier holds */
+    int chunk;             /* records held between flushes */
+    int steps_per_round;   /* node steps a walker takes before the round boundary */
+    int row_requested;
+    int row_effective;
+    long long scratch_bytes;
+};
+void gpu_gravtree_packet_shape(struct gpu_grav_packet_shape_t *out);
 
 /* Packets the device engine gave up on the last primary walk, by reason, so that a traversal
  * exhausting the engine's continuation budget is visible instead of being a silent slow path.
  * Slot 0 is unused; the rest follow the engine's own reason order (malformed index, stale
- * source, pseudo-particle, no continuation, unusable record). Zero on a host-routed call. */
-#define GRAV_PACKET_FAIL_REASON_SLOTS 6
+ * source, pseudo-particle, no continuation, unusable record, no progress in a round). Zero on a
+ * host-routed call. */
+#define GRAV_PACKET_FAIL_REASON_SLOTS 7
 void gpu_gravtree_packet_failures(long long *out, int n);
 int  gpu_gravtree_packet_failure_reasons(void);
 /* Run totals on this rank: device gravity calls whose sources were brought current by the
