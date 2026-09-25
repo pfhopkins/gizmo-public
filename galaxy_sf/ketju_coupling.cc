@@ -32,6 +32,7 @@
 
 #include "../declarations/allvars.h"
 #include "../core/proto.h"
+#include "../mesh/kernel.h"
 #include "ketju_coupling.h"
 
 #ifdef KETJU_REGULARIZATION
@@ -549,19 +550,15 @@ static double particle_distance(double *pos1, double *pos2)
 }
 
 /* ============================================================
- *  Helper: GIZMO softening kernel (same as gravtree.cc)
+ *  Helper: the tree's softened pair force, F = G m dr * softened_force_factor(r, h)
+ *  The negative half-kicks must remove exactly what the tree kick added, so this is the tree's own
+ *  kernel_gravity() (mesh/kernel.h), not a copy of it.
  * ============================================================ */
 static double softened_force_factor(double r, double h)
 {
-    /* Returns G*m/r^2 factor with softening: equivalent to 1/r^2 for r>h */
     if(h <= 0 || r >= h) return 1.0 / (r * r * r);
     double h_inv = 1.0 / h;
-    double u = r * h_inv;
-    if(u < 0.5) {
-        return h_inv * h_inv * h_inv * (32.0/3.0 + u*u*(32.0*u - 38.4));
-    } else {
-        return h_inv * h_inv * h_inv * (-1.0/(30.0*u*u*u) + 64.0/3.0 + u*u*(-48.0 + u*(38.4 - 32.0/3.0*u)));
-    }
+    return kernel_gravity(r * h_inv, h_inv, h_inv * h_inv * h_inv, 1);
 }
 
 /* ============================================================
@@ -1140,11 +1137,9 @@ static void do_negative_halfstep_kick(KetjuRegion &reg, double kick_factor)
     int n = reg.integrator->num_particles;
     struct ketju_system_physical_state *ps = reg.integrator->physical_state;
 
-    /* softening: use the star softening (comoving -> physical) */
-    double h = All.ForceSoftening[4] * All.cf_atime;
-#ifdef SINGLE_STAR_SINK_DYNAMICS
-    if(All.ForceSoftening[5] > 0) h = DMIN(h, All.ForceSoftening[5] * All.cf_atime);
-#endif
+    /* softening of a pair of chain members (all Type 5) as the tree computes it: the larger of the two
+     * particles' softenings, i.e. ForceSoftening[5] (comoving -> physical) */
+    double h = All.ForceSoftening[5] * All.cf_atime;
 
     /* distribute N² loop across compute tasks */
     int loop_start = loop_scheduling_block_edge(n, reg.compute_tasks.size, reg.compute_tasks.rank);
