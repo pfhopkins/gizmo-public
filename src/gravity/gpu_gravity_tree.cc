@@ -162,13 +162,37 @@ static void free_arrays_(void)
  * transactional rollback in gpu_gravity_tree_grow_foreign are written against.
  * Kept local rather than delegating to the shared helper: this TU does not
  * include proto.h, and a GPU TU should not take that dependency for one call. */
+/* Which side the tree mirror belongs to. 0 none / 1 host / 2 device, the same three values the
+ * particle-storage knob uses.
+ *
+ * This mirror is the DEVICE's copy of the tree -- it exists because the device walk needs a layout
+ * it can read, and the walk reads nothing else; the AoS is the host's structure and no device code
+ * touches it. Left unhinted, though, a managed buffer settles where it is FIRST TOUCHED, and the
+ * host builds the tree, so the device then chases pointers through it a page at a time across the
+ * fabric. That is not a neutral default, it is a host-resident default for a device-only reader.
+ *
+ * It is a knob rather than a constant because the answer moves as the rest of the corridor moves:
+ * the moment refresh and the node drift sweep are already device kernels writing this mirror, and
+ * more is going the same way, while the build and the lazy per-node repair still write it from the
+ * host. ⛔ The default below is TODAY'S BEHAVIOUR, and it is a placeholder, not a verdict -- no arm
+ * has yet priced the alternative, and the first one that does should move it. */
+#define GRAV_TREE_PLACEMENT_NONE   0
+#define GRAV_TREE_PLACEMENT_HOST   1
+#define GRAV_TREE_PLACEMENT_DEVICE 2
+#ifndef GPU_TREE_STORAGE_PLACEMENT
+#define GPU_TREE_STORAGE_PLACEMENT GRAV_TREE_PLACEMENT_NONE
+#endif
+
 static void *tree_soa_alloc(size_t bytes)
 {
     /* The mirror is about half the shared-space bytes a tree build releases, so it takes
      * the same treatment as the node arrays: its length is recorded here and used to
      * migrate it home before it is released. */
     try { void *ptr = Kokkos::kokkos_malloc<GIZMO_KOKKOS_SHARED_SPACE>("gravity_tree_soa", bytes);
-          gizmo_gpu_shared_track(ptr, bytes); return ptr; }
+          gizmo_gpu_shared_track(ptr, bytes);
+          /* before anything touches it, so the first write already lands where the policy wants */
+          gizmo_gpu_place_shared(ptr, bytes, GPU_TREE_STORAGE_PLACEMENT, "Gravity tree mirror");
+          return ptr; }
     catch(const std::exception &) { return NULL; }
 }
 

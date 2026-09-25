@@ -2306,25 +2306,31 @@ extern "C" int gpu_gravtree_packet_failure_reasons(void) {return GRAV_PACKET_FAI
  * the rank's active count, exactly as it always has been, and nothing here is consulted for it or
  * may change it. Every path below ends on the device; none of them can route work to the host.
  *
- * The question here is only which of two device schedules fits the call:
+ * The question here is only which device schedule fits the call:
  *
- *   MORE TARGETS THAN LANES -- the ordinary schedule, and today's code unchanged. Each lane takes
- *     a target and walks it alone, covering several targets in turn when there are more targets
- *     than lanes. Nothing is shared, nothing can overflow, and a well-populated call therefore
- *     cannot be slower than it is today. This is the default whenever the device has enough work
- *     to fill itself, which is the common case.
+ *   A WHOLE TEAM PER TARGET IS AFFORDABLE -- the cooperative schedule. Giving each of a handful of
+ *     targets one lane leaves almost the whole device idle while those few lanes each grind down a
+ *     long serial traversal, which is the defect the cooperative walk exists to remove. So each
+ *     target gets a TEAM, and that team's lanes share its descent.
  *
- *   FEWER TARGETS THAN LANES -- the cooperative schedule. Giving each of a handful of targets one
- *     lane leaves almost the whole device idle while those few lanes each grind down a long serial
- *     traversal, which is the defect the cooperative walk exists to remove. So each target gets a
- *     TEAM, and that team's lanes share its descent.
+ *   OTHERWISE -- the ordinary schedule. Each lane takes a target and walks it alone, covering
+ *     several targets in turn when there are more targets than lanes.
  *
- * The key is structural -- lanes the machine has, against targets this rank must walk -- not a
- * tuned target count, so the same code chooses correctly on a laptop thread pool and on a GPU
- * three orders of magnitude wider:
+ * The key is structural -- lanes the machine has, against targets THIS RANK must walk -- not a
+ * tuned target count, so the same code chooses on a laptop thread pool and on a GPU three orders
+ * of magnitude wider:
  *
- *     lanes_per_target = lane_count / n_targets        (0 or 1 => the ordinary schedule)
- *     team             = min(cap, lanes_per_target), rounded down to a power of two
+ *     cooperative  iff  lane_count / n_targets >= GRAV_COOP_MAX_LANES_PER_TARGET
+ *     team              = GRAV_COOP_MAX_LANES_PER_TARGET, one target per team
+ *
+ * ⛔⛔ THE ORDINARY SCHEDULE IS NOT A GOOD SCHEDULE, AND NOTHING HERE SHOULD BE READ AS SAYING IT
+ * IS. It is one independent pointer-chasing walk per lane, so a wavefront's lanes diverge across
+ * unrelated paths; measured against seven host threads on the same problem it loses by 4x at ten
+ * thousand targets a rank, and wins only 4x where the step is fully active -- a whole GCD
+ * performing like a couple of host cores. The masked packet schedule below, where several targets
+ * share ONE traversal, exists precisely to attack that, and until it is measured at large N the
+ * ordinary schedule is a PLACEHOLDER that happens to be what this code did before, not a choice
+ * anything has justified.
  *
  * ⛔ Capacity exhaustion inside a cooperative team is a RARE, COUNTED safety valve and must never
  * be how an ordinary call gets handled: a packet that gives up is re-walked by the device
@@ -2384,6 +2390,17 @@ static const int g_grav_coop_n_rows = (int) (sizeof(g_grav_coop_rows) / sizeof(g
  * descent, and the shared frontier has to hold a continuation for every one of them. Internal,
  * and the pricing campaign's to set. */
 #define GRAV_COOP_MAX_LANES_PER_TARGET 64
+
+/* Which schedule a DENSE call takes -- one where the device cannot give every target a whole team.
+ * GRAV_SCHED_FLAT is one independent traversal per lane, which is what this code has always done;
+ * GRAV_SCHED_PACKET puts TREE_QUERY_PACKET_SIZE neighbouring targets on one shared traversal.
+ *
+ * ⛔ The default is TODAY'S BEHAVIOUR AND NOTHING MORE. It is not a measured choice, and the
+ * measurement that would settle it -- packets against the flat walk at large N, on the device --
+ * is owed. Until it exists neither value here may be described as the right one. */
+#ifndef GRAV_DENSE_SCHEDULE
+#define GRAV_DENSE_SCHEDULE GRAV_SCHED_FLAT
+#endif
 
 /* The cooperative row this call takes, or -1 for the ordinary schedule.
  *
@@ -2474,10 +2491,27 @@ static int gpu_grav_packet_launch(GpuGravPacketWalk<Policy> &f, const char *kern
         return gpu_grav_packet_launch_row(f, solo, -1, -1, kernel_name, shape_out);
     } else {
         const int first_row = gpu_grav_coop_first_row(f.n_cand);
-        /* Not enough lanes to give every target a whole team: the ordinary schedule is both the
-         * right one and the one already measured. Nothing is shared, nothing can overflow, and the
-         * call cannot be slower than it is today. */
-        if(first_row < 0) {return 1;}
+        if(first_row < 0) {
+            /* Not enough lanes for a whole team per target. The dense schedule decides between the
+             * ordinary walk -- one independent traversal per lane -- and MASKED PACKETS, where
+             * TREE_QUERY_PACKET_SIZE targets adjacent in the active list, and therefore adjacent
+             * in space, share ONE traversal while each still judges every node for itself.
+             *
+             * Which of the two is right here is UNMEASURED, and the ordinary walk is not a safe
+             * default merely because it is the incumbent: against seven host threads on the same
+             * problem it loses by 4x at ten thousand targets a rank and wins only 4x at full
+             * activity, a whole GCD performing like a couple of host cores. Packets exist to
+             * attack the reason -- every lane chasing its own pointer chain, so a wavefront's
+             * lanes diverge across unrelated paths and the shared node loads are not shared at
+             * all. */
+            if(GRAV_DENSE_SCHEDULE == GRAV_SCHED_PACKET && Policy::packet_size > 1) {
+                const int t = (Policy::packet_size < GRAV_PACKET_Q_DEV_MAX) ? Policy::packet_size
+                                                                            : GRAV_PACKET_Q_DEV_MAX;
+                const struct gpu_grav_sched_row_t dense = {GRAV_SCHED_PACKET, t, 1, 0, 256, 64};
+                return gpu_grav_packet_launch_row(f, dense, -1, -1, kernel_name, shape_out);
+            }
+            return 1;
+        }
         /* ONE attempt, at the row the criterion chose. There is deliberately no step-down to a
          * narrower cooperative team: a partial team is the shape that was measured to lose, so a
          * backend that cannot launch the full one takes the ordinary device schedule instead. */

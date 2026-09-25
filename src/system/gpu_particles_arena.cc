@@ -408,6 +408,56 @@ extern "C" void *gizmo_gpu_alloc_shared(size_t nbytes, const char *label)
     catch(const std::exception &) { return NULL; }
 }
 
+/*! Place a shared-space buffer that one side reads far more than the other.
+ *
+ *  The particle records get their placement inside their own allocator, keyed on how big the
+ *  arena is; this is for the buffers that are not particle records and were therefore, until now,
+ *  left with no hint at all -- which is not a neutral state. An unhinted managed buffer settles
+ *  where it is FIRST TOUCHED and is then reached from the other side page by page, so a structure
+ *  the host builds and the device reads ends up host-resident for the whole of every device read
+ *  of it, at whatever the fabric costs.
+ *
+ *  `placement` is one of the PARTICLE_STORAGE_PLACEMENT_* values, so a caller can carry its own
+ *  tri-state knob and this stays the one place that knows how to speak to the driver. */
+extern "C" void gizmo_gpu_place_shared(void *p, size_t nbytes, int placement, const char *what)
+{
+    if(!p || nbytes == 0 || placement == PARTICLE_STORAGE_PLACEMENT_NONE) {return;}
+#if defined(KOKKOS_ENABLE_HIP)
+    int dev = 0;
+    if(hipGetDevice(&dev) != hipSuccess) {return;}
+    const int on_device   = (placement == PARTICLE_STORAGE_PLACEMENT_DEVICE);
+    const int prefer_id   = on_device ? dev : hipCpuDeviceId;
+    const int accessor_id = on_device ? hipCpuDeviceId : dev;
+    hipError_t rc_pref = hipMemAdvise(p, nbytes, hipMemAdviseSetPreferredLocation, prefer_id);
+    hipError_t rc_acc  = hipMemAdvise(p, nbytes, hipMemAdviseSetAccessedBy, accessor_id);
+    /* Reported once per buffer kind rather than per allocation: the tree reallocates whenever it
+     * grows, and a line each time would bury the one fact worth having, which is whether the hint
+     * was accepted at all. A refusal is named because a later measurement taken against a
+     * half-applied hint otherwise reads as a measurement of the default. */
+    static int reported_ok = 0, reported_bad = 0;
+    if(rc_pref != hipSuccess || rc_acc != hipSuccess) {
+        if(!reported_bad && ThisTask == 0) {
+            reported_bad = 1;
+            printf("%s placement: the %s-preferred hint was not fully applied (preferred location: %s; "
+                   "other-side access: %s). Whatever part of it was accepted stands.\n",
+                   what ? what : "shared buffer", on_device ? "device" : "host",
+                   hipGetErrorString(rc_pref), hipGetErrorString(rc_acc));
+            fflush(stdout);
+        }
+        return;
+    }
+    if(!reported_ok && ThisTask == 0) {
+        reported_ok = 1;
+        printf("%s placement: %s-preferred applied (first buffer %g MByte).\n",
+               what ? what : "shared buffer", on_device ? "device" : "host",
+               (double) nbytes / (1024.0 * 1024.0));
+        fflush(stdout);
+    }
+#else
+    (void) nbytes; (void) what;   /* see the note in particle_storage_apply_placement */
+#endif
+}
+
 extern "C" void *gizmo_gpu_alloc_device(size_t nbytes, const char *label)
 {
     try { return label ? Kokkos::kokkos_malloc<GIZMO_KOKKOS_DEVICE_SPACE>(label, nbytes)
