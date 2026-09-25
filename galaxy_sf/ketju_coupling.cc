@@ -502,6 +502,13 @@ static int is_chain_center(int i)
     return 0;
 }
 
+/* Synchronised this step: its bin is active, so find_timesteps has just started its step at
+ * All.Ti_Current. Only such particles may be retimed or enter a region (see ketju_limit_timesteps). */
+static int is_synchronized(int i)
+{
+    return (P[i].Mass > 0 && TimeBinActive[P[i].TimeBin]) ? 1 : 0;
+}
+
 /* ============================================================
  *  Helper: is this particle eligible for chain membership?
  * ============================================================ */
@@ -593,20 +600,20 @@ static int parse_pn_terms(void)
  *  PHASE 2: Find chain centers and build regions
  * ============================================================ */
 
-/* Gather all chain centers across MPI tasks */
+/* Gather all synchronised chain centers across MPI tasks */
 static std::vector<ketju_mpi_particle> gather_chain_centers(void)
 {
     /* count local centers */
     int n_local = 0;
     for(int i = 0; i < NumPart; i++) {
-        if(is_chain_center(i)) n_local++;
+        if(is_chain_center(i) && is_synchronized(i)) n_local++;
     }
 
     /* fill local array */
     std::vector<ketju_mpi_particle> local_centers(n_local);
     int k = 0;
     for(int i = 0; i < NumPart; i++) {
-        if(is_chain_center(i)) {
+        if(is_chain_center(i) && is_synchronized(i)) {
             local_centers[k].ID = P[i].ID;
             local_centers[k].Type = P[i].Type;
             local_centers[k].Task = ThisTask;
@@ -692,12 +699,12 @@ static std::vector<std::vector<ketju_mpi_particle>> merge_overlapping_regions(
     return regions;
 }
 
-/* Find local particles within r_region of any center in a region */
+/* Find synchronised local chain-eligible particles within `radius` of any center in a region */
 static std::set<int> find_local_members(const std::vector<ketju_mpi_particle> &centers, double radius)
 {
     std::set<int> members;
     for(int i = 0; i < NumPart; i++) {
-        if(!is_chain_eligible(i)) continue;
+        if(!is_chain_eligible(i) || !is_synchronized(i)) continue;
         for(size_t c = 0; c < centers.size(); c++) {
             double dist = particle_distance(P[i].Pos.data_ptr(), const_cast<double*>(centers[c].Pos));
             if(dist < radius) { members.insert(i); break; }
@@ -706,7 +713,7 @@ static std::set<int> find_local_members(const std::vector<ketju_mpi_particle> &c
     return members;
 }
 
-/* Find local particles within `radius` of any center of a region, with no
+/* Find synchronised local particles within `radius` of any center of a region, with no
  * chain-eligibility filter. Used to gather "limiting particles" — non-chain
  * perturbers whose individual timesteps constrain the chain's macro step.
  * Pass `exclude` to skip members that are already in the chain itself. */
@@ -717,7 +724,7 @@ static std::set<int> find_local_particles_in_radius(const std::vector<ketju_mpi_
     std::set<int> hits;
     for(int i = 0; i < NumPart; i++) {
         if(exclude.count(i)) continue;
-        if(P[i].Mass <= 0) continue;
+        if(!is_synchronized(i)) continue;
         for(size_t c = 0; c < centers.size(); c++) {
             double dist = particle_distance(P[i].Pos.data_ptr(), const_cast<double*>(centers[c].Pos));
             if(dist < radius) { hits.insert(i); break; }
@@ -1833,41 +1840,30 @@ static void move_particle_timebin(int i, int old_bin, int new_bin)
     P[i].TimeBin = new_bin;
 }
 
-/* PHASE 6: Synchronize chain particles within each region.
+/* PHASE 6: put every chain region on one timebin, changing only particles synchronised this step.
  *
- * SUBCYCLING: instead of forcing all chain particles globally to the minimum
- * timebin (which drags the entire simulation down), we synchronize particles
- * within each region to the region's MAXIMUM active timebin. This is the
- * normal hydro/gravity step for the slowest-evolving particle in the region.
- * MSTAR handles internal substeps via its adaptive GBS integrator (η=10⁻⁷),
- * so tight binaries are resolved internally without shrinking the global step.
+ * The velocity trick needs every member of a region to start and end its step with the region: the
+ * first half-kick, the MSTAR interval and the drift all have to cover [Ti_Current, Ti_Current +
+ * ti_step]. A particle part-way through its step cannot be retimed -- it has had no first half-kick
+ * for this interval, and its step marker would be left pointing at the old one. So, as in
+ * GADGET4-KETJU (RegionManager::find_timestep_regions / set_region_timebins), only synchronised
+ * particles are considered at all: regions are built around synchronised centres from synchronised
+ * members (gather_chain_centers, find_local_members), and a star still in mid-step inside R joins
+ * at its own next step boundary, integrated by the host until then.
  *
- * All particles in a region must be on the same timebin for the velocity trick
- * to work (they all drift by the same dt after KETJU sets their velocities). */
-/* GADGET-4 KETJU two-radius timestep mechanism.
- *
- * Each chain region is enforced to a single integer timebin shared by all chain
- * members. The bin is the MIN of:
- *   (a) chain members' own integer timesteps (P[i].dt_step from find_timesteps,
- *       which in GIZMO includes whichever criteria are enabled — tidal,
- *       approach, freefall, acceleration), and
- *   (b) the integer timesteps of all "limiting particles" — non-chain
- *       particles within KETJU_TIMESTEP_LIMITING_RADIUS_FACTOR * KetjuRegionRadius
- *       of any chain center. These nearby external perturbers force the chain
- *       to step finely enough to resolve their close approach.
- *
- * This is GADGET-4's algorithm (see Bitbucket: helsinkiextragalacticgroup/
- * gadget4-ketju, src/ketju/ketju_interface.cc :: RegionManager::
- * set_region_timebins and find_timestep_regions). It supersedes the earlier
- * "MAX-bin promotion" scheme that left chain partners dominating chain dt and
- * provided no safety net for transient non-chain close encounters.
- *
- * In GIZMO we read each particle's already-computed P[i].dt_step (set by the
- * standard find_timesteps loop, which honors TIDAL_TIMESTEP_CRITERION,
- * SINGLE_STAR_TIMESTEPPING dt_2body, and the acceleration fallback). For the
- * chain members we then also update P[i].dt_step in lockstep with TimeBin
- * because some readers (e.g. ketju_run_integration line ~2050) consume the
- * cached dt_step rather than recomputing from TimeBin. */
+ * What keeps members co-binned is the "limited" set: every chain-eligible synchronised particle
+ * within 2R of a centre is put on the region's bin, so anything that drifts inside R is already
+ * on it. Centres whose 2R spheres overlap share one "timestep region", so the limited sets are
+ * disjoint and each chain region (merge radius 2R) lies inside exactly one of them. The shared
+ * bin is the MIN over
+ *   (a) the limited particles' own steps from find_timesteps, and
+ *   (b) the steps of the "limiting" particles: synchronised particles of any type within
+ *       KETJU_TIMESTEP_LIMITING_RADIUS_FACTOR * R, so the region resolves perturbers approaching it.
+ * Every such step was assigned at this sync point and obeys the grow-only-when-synchronised rule,
+ * so their minimum does too; moving a synchronised particle to it is always legal. A particle
+ * that is not synchronised has a longer step than any bin chosen now, so leaving it out of (b)
+ * cannot change the minimum. All bins are found before any particle is moved, so the result does
+ * not depend on region order. */
 void ketju_limit_timesteps(void)
 {
     CachedChainCentersValid = 0;
@@ -1875,87 +1871,58 @@ void ketju_limit_timesteps(void)
     if(All.KetjuRegionRadius <= 0) return;
     if(All.KetjuMinBHMass <= 0 && All.KetjuMinStarMass <= 0) return;
 
-    /* gather chain center positions (cache for ketju_find_regions) */
+    /* gather synchronised chain centres (cached for ketju_find_regions) */
     std::vector<ketju_mpi_particle> centers = gather_chain_centers();
     CachedChainCenters = centers;
     CachedChainCentersValid = 1;
     if(centers.empty()) return;
 
-    /* merge overlapping centers into regions (same merge radius as
-     * ketju_find_regions to keep region partitioning identical) */
-    double merge_radius = 2.0 * All.KetjuRegionRadius;
-    std::vector<std::vector<ketju_mpi_particle>> region_centers = merge_overlapping_regions(centers, merge_radius);
-
+    const double limited_radius = 2.0 * All.KetjuRegionRadius;
     const double limiting_radius = KETJU_TIMESTEP_LIMITING_RADIUS_FACTOR * All.KetjuRegionRadius;
+    std::vector<std::vector<ketju_mpi_particle>> tsr_centers = merge_overlapping_regions(centers, 2.0 * limited_radius);
+    const int n_tsr = (int)tsr_centers.size();
 
-    int n_moved_local = 0;
-    int n_limiting_total = 0;
-    int n_regions_constrained_by_limiting = 0;
-
-    for(size_t r = 0; r < region_centers.size(); r++) {
-        /* find local chain members (these get their TimeBin forced) */
-        std::set<int> local_members = find_local_members(region_centers[r], All.KetjuRegionRadius);
-
-        /* find local limiting particles within KETJU_TIMESTEP_LIMITING_RADIUS_FACTOR
-         * times KetjuRegionRadius, excluding the chain itself */
-        std::set<int> local_limiting = find_local_particles_in_radius(region_centers[r], limiting_radius, local_members);
-        n_limiting_total += (int)local_limiting.size();
-
-        /* local MIN over chain members and limiting particles. Use dt_step from
-         * the standard find_timesteps pass — that's already the MIN over all
-         * enabled criteria (tidal / approach / freefall / acceleration). */
-        integertime local_min_ti = TIMEBASE;
-        integertime min_from_chain = TIMEBASE;
-        for(int idx : local_members) {
-            integertime ti = P[idx].dt_step;
-            if(ti > 0 && ti < local_min_ti) local_min_ti = ti;
-            if(ti > 0 && ti < min_from_chain) min_from_chain = ti;
+    std::vector<std::set<int>> limited(n_tsr);
+    std::vector<long long> min_ti(2 * n_tsr, (long long)TIMEBASE); /* [2r] over limited+limiting, [2r+1] limited only */
+    for(int r = 0; r < n_tsr; r++) {
+        limited[r] = find_local_members(tsr_centers[r], limited_radius);
+        std::set<int> limiting = find_local_particles_in_radius(tsr_centers[r], limiting_radius, limited[r]);
+        for(int idx : limited[r]) {
+            long long ti = GET_INTEGERTIME_FROM_TIMEBIN(P[idx].TimeBin);
+            if(ti > 0 && ti < min_ti[2*r]) min_ti[2*r] = ti;
+            if(ti > 0 && ti < min_ti[2*r+1]) min_ti[2*r+1] = ti;
         }
-        for(int idx : local_limiting) {
-            integertime ti = P[idx].dt_step;
-            if(ti > 0 && ti < local_min_ti) local_min_ti = ti;
+        for(int idx : limiting) {
+            long long ti = GET_INTEGERTIME_FROM_TIMEBIN(P[idx].TimeBin);
+            if(ti > 0 && ti < min_ti[2*r]) min_ti[2*r] = ti;
         }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, min_ti.data(), 2 * n_tsr, MPI_LONG_LONG, MPI_MIN, MPI_COMM_WORLD);
 
-        /* global MIN across all tasks for this region */
-        integertime global_min_ti;
-        MPI_Allreduce(&local_min_ti, &global_min_ti, 1, MPI_LONG_LONG, MPI_MIN, MPI_COMM_WORLD);
-        integertime global_min_chain;
-        MPI_Allreduce(&min_from_chain, &global_min_chain, 1, MPI_LONG_LONG, MPI_MIN, MPI_COMM_WORLD);
-        if(global_min_ti <= 0 || global_min_ti >= TIMEBASE) continue;
-        if(global_min_ti < global_min_chain) n_regions_constrained_by_limiting++;
-
-        int region_bin = get_timestep_bin(global_min_ti);
-        if(region_bin <= 0) continue;
-        /* snap up to the nearest active bin if the requested bin isn't synced */
-        while(region_bin > 0 && TimeBinActive[region_bin] == 0) region_bin--;
-        if(region_bin <= 0) continue;
-        integertime region_ti_step = GET_INTEGERTIME_FROM_TIMEBIN(region_bin);
-
-        /* force chain members to region_bin. Update both TimeBin and dt_step
-         * so MSTAR (which reads dt_step) sees the consistent value. */
-        for(int idx : local_members) {
-            if(P[idx].TimeBin != region_bin) {
-                move_particle_timebin(idx, P[idx].TimeBin, region_bin);
-                P[idx].dt_step = region_ti_step;
-                n_moved_local++;
-            }
+    long long counts[4] = {0, 0, 0, 0}; /* limited particles moved (down, up), timestep regions set by limiting particles, unsynchronised target bins */
+    for(int r = 0; r < n_tsr; r++) {
+        if(min_ti[2*r] <= 0 || min_ti[2*r] >= TIMEBASE) continue;
+        int bin = get_timestep_bin((integertime)min_ti[2*r]);
+        if(bin <= 0) continue;
+        if(!TimeBinActive[bin]) {counts[3]++; while(bin > 0 && !TimeBinActive[bin]) {bin--;}} /* cannot happen for a minimum of legal steps */
+        if(min_ti[2*r] < min_ti[2*r+1]) counts[2]++;
+        integertime ti_bin = GET_INTEGERTIME_FROM_TIMEBIN(bin);
+        for(int idx : limited[r]) {
+            if(P[idx].TimeBin == bin) continue;
+            counts[(bin < P[idx].TimeBin) ? 0 : 1]++;
+            move_particle_timebin(idx, P[idx].TimeBin, bin);
+            P[idx].dt_step = ti_bin; /* find_timesteps set it from the bin just replaced; integertime_step() reads it */
         }
     }
 
 #ifdef KETJU_VERBOSE_INTEGRATION
-    int totals_local[3] = {n_moved_local, n_limiting_total, n_regions_constrained_by_limiting};
-    int totals_global[3];
-    MPI_Reduce(totals_local, totals_global, 3, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
-    if(ThisTask == 0 && totals_global[0] > 0) {
-        printf("KETJU LIMIT: moved %d chain particles to region timebin "
-               "(%d limiting-particle slots scanned, %d regions constrained by external perturbers)\n",
-               totals_global[0], totals_global[1], totals_global[2]);
-    }
-#else
-    (void)n_limiting_total; (void)n_regions_constrained_by_limiting;
-    int n_moved_global;
-    MPI_Reduce(&n_moved_local, &n_moved_global, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+    long long counts_glob[4];
+    MPI_Reduce(counts, counts_glob, 4, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    if(ThisTask == 0 && (counts_glob[0] + counts_glob[1] > 0))
+        printf("KETJU LIMIT: %d timestep regions, %lld limited particles moved down, %lld up, %lld regions set by limiting particles\n",
+               n_tsr, counts_glob[0], counts_glob[1], counts_glob[2]);
 #endif
+    if(counts[3]) {PRINT_WARNING("KETJU: %lld timestep-region bins were not synchronised and were lowered", counts[3]);}
 }
 
 /* Collect sorted (ID,Task) keys for a region across all tasks (for staleness check).
@@ -1987,16 +1954,20 @@ static std::vector<CachedRegionKey> gather_sorted_region_keys(const std::set<int
 
 void ketju_find_regions(void)
 {
-    /* clear previous state — KetjuIntegrated is cleared here (not in finish_step)
-     * so the flag survives across the step boundary for guard checks in kicks/predict/gravtree */
+    /* Clear the chain flags of particles whose step has ended, and only theirs: a member of a region
+     * on a longer bin is still inside the step MSTAR integrated, and its flags keep it out of Hermite
+     * and mark it for the velocity swap at the end of that step. KetjuIntegrated is cleared here, not
+     * in finish_step, so it also survives to the guard checks of the step that follows. */
+    for(int i = 0; i < NumPart; i++) {
+        if(!is_synchronized(i)) continue;
 #ifdef HERMITE_INTEGRATION
-    /* Mark particles that were KETJU-integrated last step as "Hermite history stale".
-     * If they remain in a chain this step they never reach the stale check (in-region
-     * guard fires first); if they exit, the next eligible_for_hermite() call falls
-     * back to KDK once before re-engaging Hermite with fresh OldPos/Acc/Jerk. */
-    for(int i = 0; i < NumPart; i++) {if(P[i].KetjuIntegrated) {P[i].HermiteHistoryStale = 1;}}
+        /* A member whose step just ended: if it stays in a chain it never reaches the stale check
+         * (in-region guard fires first); if it exits, the next eligible_for_hermite() call falls
+         * back to KDK once before re-engaging Hermite with fresh OldPos/Acc/Jerk. */
+        if(P[i].KetjuIntegrated) {P[i].HermiteHistoryStale = 1;}
 #endif
-    for(int i = 0; i < NumPart; i++) {P[i].KetjuIntegrated = 0; P[i].KetjuChainID = 0;}
+        P[i].KetjuIntegrated = 0; P[i].KetjuChainID = 0;
+    }
     ActiveRegions.clear();
     AllKetjuParticleIndices.clear();
 
@@ -2140,21 +2111,22 @@ void ketju_run_integration(void)
         if(reg.compute_info.compute_sequence_position != seq) continue;
         if(reg.total_particle_count < 2) continue;
 
-        /* Subcycling: use the MAXIMUM active timebin among chain members.
-         * This is the normal hydro/gravity step for these particles.
-         * MSTAR internally substeps to whatever accuracy it needs (GBS adaptive).
-         * Previously we used the MINIMUM, which dragged the whole simulation down. */
-        integertime local_max_ti = 0;
+        /* Members are synchronised and share one bin (ketju_limit_timesteps), and MSTAR substeps
+         * internally, so the region step is that bin's. Check the sharing: a member on another bin
+         * would be drifted over a different interval than the one the velocity trick was set for. */
+        long long ti_range[2] = {-(long long)TIMEBASE, 0}; /* {-min, max} over members */
         for(int idx : reg.local_member_indices) {
-            if(!TimeBinActive[P[idx].TimeBin]) continue;
-            integertime ti_i = P[idx].dt_step;
-            if(ti_i > local_max_ti) local_max_ti = ti_i;
+            long long ti_i = P[idx].dt_step;
+            if(-ti_i > ti_range[0]) ti_range[0] = -ti_i;
+            if(ti_i > ti_range[1]) ti_range[1] = ti_i;
         }
-
-        /* global maximum across all tasks (all tasks participate since region spans tasks) */
-        integertime global_max_ti;
-        MPI_Allreduce(&local_max_ti, &global_max_ti, 1, MPI_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, ti_range, 2, MPI_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+        integertime global_max_ti = ti_range[1];
         if(global_max_ti <= 0 || global_max_ti > TIMEBASE) continue;
+        if(-ti_range[0] != ti_range[1] && ThisTask == 0) {
+            PRINT_WARNING("KETJU: region of %d particles has members on steps %lld..%lld; integrating over the longest",
+                          reg.total_particle_count, -ti_range[0], ti_range[1]);
+        }
 
         reg.ti_step = global_max_ti;
 
@@ -2230,9 +2202,11 @@ void ketju_set_final_velocities(void)
 {
     /* called after drift: swap in true physical velocities and correct dp[] momentum.
      * The velocity trick set Vel = delta_pos/dt_drift for the drift.
-     * Now we replace it with the true MSTAR velocity and correct dp[]. */
+     * Now we replace it with the true MSTAR velocity and correct dp[].
+     * Only for members whose step ends at this sync point (their bin is active and they were just
+     * drifted to it): a region on a longer bin is still drifting along its chord. */
     for(int i = 0; i < NumPart; i++) {
-        if(P[i].KetjuIntegrated) {
+        if(P[i].KetjuIntegrated && TimeBinActive[P[i].TimeBin]) {
             for(int j = 0; j < 3; j++) {
                 /* dp correction: the difference between true velocity and trick velocity,
                  * converted to momentum. This ensures the kick integrator is consistent. */
