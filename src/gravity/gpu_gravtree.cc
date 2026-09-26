@@ -2338,8 +2338,8 @@ extern "C" int gpu_gravtree_packet_failure_reasons(void) {return GRAV_PACKET_FAI
  * traversal it threw away. The production schedules are therefore required to show zero
  * give-ups; a deliberately undersized capacity is a gate-only positive control. */
 enum gpu_grav_sched_mode_t {
-    GRAV_SCHED_FLAT = 0,      /* one lane per target, the target's own serial walk: today's path */
-    GRAV_SCHED_PACKET,        /* one walker per team, members sharing its traversal (kept for the team-vs-flat measurement) */
+    GRAV_SCHED_FLAT = 0,      /* one lane per target, the target's own serial walk: the fallback, and the replay of a packet that gives up */
+    GRAV_SCHED_PACKET,        /* one walker per team, members sharing its traversal: the dense schedule */
     GRAV_SCHED_COOPERATIVE    /* one target per team, the team's lanes sharing that target's traversal */
 };
 
@@ -2391,16 +2391,12 @@ static const int g_grav_coop_n_rows = (int) (sizeof(g_grav_coop_rows) / sizeof(g
  * and the pricing campaign's to set. */
 #define GRAV_COOP_MAX_LANES_PER_TARGET 64
 
-/* Which schedule a DENSE call takes -- one where the device cannot give every target a whole team.
- * GRAV_SCHED_FLAT is one independent traversal per lane, which is what this code has always done;
- * GRAV_SCHED_PACKET puts TREE_QUERY_PACKET_SIZE neighbouring targets on one shared traversal.
- *
- * ⛔ The default is TODAY'S BEHAVIOUR AND NOTHING MORE. It is not a measured choice, and the
- * measurement that would settle it -- packets against the flat walk at large N, on the device --
- * is owed. Until it exists neither value here may be described as the right one. */
-#ifndef GRAV_DENSE_SCHEDULE
-#define GRAV_DENSE_SCHEDULE GRAV_SCHED_FLAT
-#endif
+/* A DENSE call -- one where the device cannot give every target a whole team -- walks as MASKED
+ * PACKETS: TREE_QUERY_PACKET_SIZE neighbouring targets share one traversal, each still judging every
+ * node for itself.  Against one independent traversal per lane, on a 128-rank zoom both with and
+ * without the FIRE physics, packets are 27-45% faster in every step class they serve and neutral in
+ * the rest (which the cooperative row takes).  The single-target walk remains the schedule when a
+ * packet row cannot be launched, and the replay for a packet that gives up. */
 
 /* The cooperative row this call takes, or -1 for the ordinary schedule.
  *
@@ -2501,19 +2497,13 @@ static int gpu_grav_packet_launch(GpuGravPacketWalk<Policy> &f, const char *kern
     } else {
         const int first_row = gpu_grav_coop_first_row(f.n_cand);
         if(first_row < 0) {
-            /* Not enough lanes for a whole team per target. The dense schedule decides between the
-             * ordinary walk -- one independent traversal per lane -- and MASKED PACKETS, where
+            /* Not enough lanes for a whole team per target: MASKED PACKETS, where
              * TREE_QUERY_PACKET_SIZE targets adjacent in the active list, and therefore adjacent
-             * in space, share ONE traversal while each still judges every node for itself.
-             *
-             * Which of the two is right here is UNMEASURED, and the ordinary walk is not a safe
-             * default merely because it is the incumbent: against seven host threads on the same
-             * problem it loses by 4x at ten thousand targets a rank and wins only 4x at full
-             * activity, a whole GCD performing like a couple of host cores. Packets exist to
-             * attack the reason -- every lane chasing its own pointer chain, so a wavefront's
-             * lanes diverge across unrelated paths and the shared node loads are not shared at
-             * all. */
-            if(GRAV_DENSE_SCHEDULE == GRAV_SCHED_PACKET && Policy::packet_size > 1) {
+             * in space, share ONE traversal while each still judges every node for itself.  One
+             * independent traversal per lane instead has every lane chasing its own pointer chain,
+             * so a wavefront's lanes diverge across unrelated paths and the node loads they have in
+             * common are never shared. */
+            if(Policy::packet_size > 1) {
                 const int t = (Policy::packet_size < GRAV_PACKET_Q_DEV_MAX) ? Policy::packet_size
                                                                             : GRAV_PACKET_Q_DEV_MAX;
                 const struct gpu_grav_sched_row_t dense = {GRAV_SCHED_PACKET, t, 1, 0, 256, 64};
