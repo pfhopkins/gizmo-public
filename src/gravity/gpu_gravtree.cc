@@ -2414,6 +2414,12 @@ static const int g_grav_coop_n_rows = (int) (sizeof(g_grav_coop_rows) / sizeof(g
  * ⛔ The ratio is this RANK's, from its own target count, because the schedule is this rank's. A
  * global active count divided by the rank count is not this quantity and must not be substituted
  * for it: the ranks are precisely what is inhomogeneous here. */
+/* ⚠ The test below asks for a whole team per TARGET, while a cooperative team now serves a whole
+ * PACKET of them -- so it demands more lanes than the shape strictly needs, by the packet size.
+ * That is deliberate for now: it engages cooperation only where cooperation was already measured
+ * to win, and adds the member sharing on top. Relaxing it toward what the shape actually costs
+ * (a full team per PACKET) is a MEASUREMENT, not an adjustment, and the last time a criterion here
+ * was chosen by argument it cost 42 s of imbalance. */
 static int gpu_grav_coop_first_row(int n_cand)
 {
     if(n_cand <= 0) {return -1;}
@@ -2434,15 +2440,18 @@ static int gpu_grav_packet_launch_row(GpuGravPacketWalk<Policy> &f, const struct
     {
         int team = r.team;
         if(team > GRAV_PACKET_Q_DEV_MAX) {team = GRAV_PACKET_Q_DEV_MAX;}
-        /* Members per packet. The cooperative schedule puts ONE target on a team and spends the
-         * rest of its threads traversing, which is what makes a rank with few targets fill the
-         * device; every other schedule shares a traversal between members instead, up to the
-         * configured packet size or the team, whichever is narrower (78b.1). */
-        if(r.mode == GRAV_SCHED_COOPERATIVE) {
-            f.q_dev = 1;
-        } else {
-            f.q_dev = (Policy::packet_size < team) ? Policy::packet_size : team;
-        }
+        /* Members per packet: the configured packet size, or the team when that is narrower
+         * (78b.1), for EVERY evaluating schedule including the cooperative one.
+         *
+         * The cooperative schedule is a team of walkers on a packet, not on a single target. Both
+         * levels are wanted and they compose: the members share ONE traversal of the tree and then
+         * evaluate its records in parallel, while the team's threads share the descent that
+         * traversal makes. Forcing one member here -- which this did -- discards the first level
+         * entirely, so the tree was walked once per target rather than once per packet and the
+         * flush ran on a single lane of the team. That is the reasoning that belongs to the
+         * DISCOVERY flavour, which has no second level and states its own packet_size of 1 as a
+         * trait; it does not transfer to the flavour that evaluates. */
+        f.q_dev = (Policy::packet_size < team) ? Policy::packet_size : team;
         f.n_walkers = Policy::splits_items ? ((r.n_walkers < team) ? r.n_walkers : team) : 1;
         f.steps_per_round = r.steps_per_round;
         f.frontier_cap = (Policy::splits_items && f.n_walkers > 1)
