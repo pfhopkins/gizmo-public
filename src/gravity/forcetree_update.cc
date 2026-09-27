@@ -635,7 +635,11 @@ void force_drift_node(int no, integertime time1)
     Nodes[no].rt_source_lum_s += Extnodes[no].rt_source_lum_vs * dt_drift;
 #endif
 
-    if(Extnodes[no].hmax > 0) {Extnodes[no].hmax *= exp(DMAX(-1.,DMIN(1.,Extnodes[no].divVmax * dt_drift_hmax / NUMDIMS)));}
+    /* The particle drift's capped factor, applied to divVmax.  divVmax is gathered from gas
+     * members only, so this bounds the growth of gas radii; a band holding non-gas radii
+     * (adaptive softening) is grown by the gas divergence, not its own members'. */
+    const double hmax_drift_fac = kernel_radius_drift_factor(Extnodes[no].divVmax * dt_drift_hmax);
+    if(Extnodes[no].hmax > 0) {Extnodes[no].hmax *= hmax_drift_fac;}
     /* Mode B per-type bands: upward-only inflate. The bands
      * include static-ish sources like P[j].ForceSoftening (per
      * force_hmax_per_type_particle_radius), so decaying the band below the
@@ -644,7 +648,7 @@ void force_drift_node(int no, integertime time1)
      * them under drift. (Scalar `hmax` retains its legacy bidirectional decay
      * — its semantics are unchanged.) */
     {
-        double decay_fac = exp(DMAX(-1., DMIN(1., Extnodes[no].divVmax * dt_drift_hmax / NUMDIMS)));
+        const double decay_fac = hmax_drift_fac;
         if(decay_fac > 1.0) {
             for(int t = 0; t < 6; t++) {
                 if(Extnodes[no].hmax_per_type[t] > 0) {

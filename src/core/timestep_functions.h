@@ -258,6 +258,29 @@ int motion_bound_widening_is_valid(double dl)
     return (dl >= 0.0) && (dl < 1.0e30);
 }
 
+/* The kernel radius a drift predicts follows the local compression: over an interval in
+ * which the volume changes by exp(DivVel*dt), the radius changes by the NUMDIMS-th root of
+ * that.  The exponent is capped so a prediction cannot move far from the last solved value,
+ * which also gives anything that bounds a radius across a drift one known limit.  The
+ * particle drift and the tree-node drift take their radius factor from here. */
+static constexpr double KERNEL_RADIUS_DRIFT_MAX_LOG_CHANGE = 0.3;
+
+/* The capped change in log-volume over the drift; the predicted density moves by its inverse. */
+KOKKOS_INLINE_FUNCTION
+double kernel_radius_drift_log_change(double divv_times_dt)
+{
+    if(divv_times_dt > +KERNEL_RADIUS_DRIFT_MAX_LOG_CHANGE) {return +KERNEL_RADIUS_DRIFT_MAX_LOG_CHANGE;}
+    if(divv_times_dt < -KERNEL_RADIUS_DRIFT_MAX_LOG_CHANGE) {return -KERNEL_RADIUS_DRIFT_MAX_LOG_CHANGE;}
+    return divv_times_dt;
+}
+
+/* The factor a radius (or a bound on radii) is multiplied by over the drift. */
+KOKKOS_INLINE_FUNCTION
+double kernel_radius_drift_factor(double divv_times_dt)
+{
+    return exp(kernel_radius_drift_log_change(divv_times_dt) / ((double)NUMDIMS));
+}
+
 
 /* --- 4th-order Hermite integration -----------------------------------------
  * Which particles the Hermite integrator advances, and how a source that is not

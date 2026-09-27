@@ -251,10 +251,8 @@ extern "C" int gpu_force_drift_nodes_ex(integertime time1, int refresh_mirrors_a
                                       + TREE_DRIFT_VELOCITY_PREFAC * (double)Extnodes_uvm[no].vmax * dt_widen);
 
         {
-            double exp_arg = (double)Extnodes_uvm[no].divVmax * dt_drift_hmax / (double)NUMDIMS;
-            if(exp_arg < -1.0) {exp_arg = -1.0;}
-            if(exp_arg >  1.0) {exp_arg =  1.0;}
-            double decay_fac = exp(exp_arg);
+            /* Same capped factor as the host drift and the particle drift. */
+            const double decay_fac = kernel_radius_drift_factor((double)Extnodes_uvm[no].divVmax * dt_drift_hmax);
             if(Extnodes_uvm[no].hmax > 0) {
                 Extnodes_uvm[no].hmax = (MyFloat)((double)Extnodes_uvm[no].hmax * decay_fac);
             }

@@ -104,18 +104,13 @@ static inline int sphere_aabb_overlap(const double pos[3],
  * Returns 0 if no requested type has a populated band (degenerates to ONEWAY
  * pruning, which is still correct given the leaf-level filter).
  *
- * Node-open slack: between force_update_hmax() refreshes, per-particle
- * KernelRadius can grow under drift — up to ~exp(divv_fac_max/NUMDIMS) ≈ 1.105
- * per refresh for gas, more for AGS-active — while node hmax decays under a
- * different (looser) clamp. Legacy carried NO extra node-open slack: with
- * force_update_hmax refreshed every step, the within-step gas growth is covered
- * by the enclosing-sphere 0.866*len node term, so no inflation is needed. Set
- * to 0 to match legacy. Over-search is safe (extra candidates filter at the
- * leaf); under-search is a correctness bug — an exhaustive membership check on
- * the downsampled m11i confirmed 0 lost neighbors under real FIRE (gas) drift
- * at slack 0. AGS-active builds (larger per-step growth) rely on the same
- * per-step refresh cadence and were not separately checked; re-verify by
- * exhaustive comparison if a SYMMETRIC Mode-B loop runs in an AGS config. */
+ * Node-open slack: none is carried. A drift grows a particle's radius by at
+ * most exp(KERNEL_RADIUS_DRIFT_MAX_LOG_CHANGE/NUMDIMS), and force_drift_node
+ * grows the node's hmax and bands by the same capped rule applied to divVmax.
+ * divVmax is gathered from gas members only, so a band holding adaptive-
+ * softening radii of non-gas members is not grown by its own members'
+ * divergence between force_update_hmax refreshes. Over-search is safe (extra
+ * candidates filter at the leaf); under-search is a correctness bug. */
 static constexpr double MODE_B_NODE_H_SLACK = 0.0;  /* no node-open drift slack; legacy has none (relies on force_update_hmax cadence + 0.866*len node term) */
 
 static inline double mode_b_node_symmetric_radius(int no,
@@ -406,8 +401,8 @@ void mode_b_lazy_drift_candidates(const int *indices, int n)
             drift_particle(j, time1);
         }
     }
-    /* drift_particle mutates Pos and KernelRadius (the *= exp(divv_fac/N)
-     * factor in predict.cc:160,229). The next gpu_ngb_list_build call (for
+    /* drift_particle mutates Pos and KernelRadius (by kernel_radius_drift_factor).
+     * The next gpu_ngb_list_build call (for
      * non-Mode-B callers) needs to refresh compact_h from these freshly
      * drifted KernelRadius values. */
     gizmo_mark_kernel_radius_dirty_indices(indices, n);

@@ -156,8 +156,8 @@ void gizmo_full_drift_to(integertime time1)
        otherwise skip and costs nothing else -- the alternative is a false claim that
        suppresses the very scan that would notice it. */
     if(drift_particles_batch(NULL, NumPart, time1) == 0) {g_last_full_drift_Ti = time1;}
-    /* drift_particle just multiplied KernelRadius by exp(divv_fac/N) for every
-     * particle (predict.cc:160,229). Mark the whole pool h-dirty so the next
+    /* drift_particle just multiplied KernelRadius by kernel_radius_drift_factor for every
+     * particle. Mark the whole pool h-dirty so the next
      * NGL build / next ghost_exchange refreshes compact_xyzh.h from current P[].
      * Conservative: covers all types at once. (A future refinement could narrow
      * to only Type 0 + AGS-active types if profiling shows this is too eager.) */
