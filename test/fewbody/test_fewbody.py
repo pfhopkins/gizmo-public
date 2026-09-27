@@ -30,6 +30,18 @@ universal step. So a difference down a column is the tree, a difference across a
 timestep hierarchy, and the last row measures the integrator with nothing else in the way -- no
 single number would tell you which of the three you were looking at.
 
+Three KETJU_REGULARIZATION variants hand the close encounters to MSTAR's regularised chain
+integrator instead of Hermite. Every star is a chain centre (KetjuMinStarMass is below the lightest
+star) and centres closer than 2R share a chain, so R sets how much of each problem is regularised:
+
+  ketju          R = 0.005 pc, tree        -- most of each system is one chain after the collapse
+  ketju_r200au   R = 0.001 pc, tree        -- only close subsystems are chains
+  ketju_direct   R = 0.005 pc, direct sum  -- as ketju, without tree force error in the coupling
+
+Chains use the host's star-star softening, so the softened energy reported below is also the
+Hamiltonian MSTAR conserves. That energy is valid for chain members because it is only reported at
+full synchronization, where every chain has just ended its step and been given its true velocity.
+
 Energy is read from the in-code synced diagnostic (ENERGY_BUDGET_DIAGNOSTIC), not from snapshots.
 Snapshots write Velocities at kick-time against drift-time positions, an O(dt/2t_dyn) error per
 particle; measured on this suite that is 3-10% with no secular trend, an order of magnitude above
@@ -44,6 +56,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from os import path
 
@@ -96,6 +109,10 @@ PROBLEM_TIMEOUT_S = float(os.environ.get("FEWBODY_PROBLEM_TIMEOUT", "1800"))
 # number of problems over threshold is not asserted: it counts chaotic outcomes.
 ENERGY_TOL = 0.10  # >10% is a fail, for both variants
 
+# KETJU parameters, only written for the KETJU variants (KetjuRegionRadius comes from the variant).
+# The minimum centre mass is below the suite's 0.5 Msun floor, so every star can anchor a chain.
+KETJU_PARAMS = {"KetjuMinStarMass": 0.1, "KetjuMinBHMass": 0, "KetjuUseStarStarSoftening": 1}
+
 PLOT_PATH = f"{TEST_DIR}/{TEST_NAME}_energy.png"
 CURVES_PATH = f"{TEST_DIR}/{TEST_NAME}_energy_curves.png"
 PAIRS_PATH = f"{TEST_DIR}/{TEST_NAME}_energy_pairs.png"
@@ -143,7 +160,7 @@ def _make_suite():
         outdir=path.join(TEST_DIR, "ics"), prefix=TEST_NAME)
 
 
-def _write_problem_params(base_text, prob, out_rel):
+def _write_problem_params(base_text, prob, out_rel, extra=None):
     """One params file per problem: same base settings, only the IC-dependent values differ."""
     tmax = N_TFF * prob["t_ff"]
     over = {
@@ -157,6 +174,7 @@ def _write_problem_params(base_text, prob, out_rel):
         "MaxSizeTimestep": f"{prob['t_ff'] / 100.0:.8g}",
         "BoxSize": f"{BOXSIZE:.8g}",
     }
+    over.update({k: f"{v:.8g}" if isinstance(v, float) else str(v) for k, v in (extra or {}).items()})
     lines, seen = [], set()
     for line in base_text.split("\n"):
         k = line.split()
@@ -176,7 +194,7 @@ def _write_problem_params(base_text, prob, out_rel):
 
 
 def _run_problem(prob, params_rel, out_abs):
-    """Run one problem. Returns (index, returncode, message)."""
+    """Run one problem. Returns (index, returncode, message, wall seconds)."""
     os.makedirs(out_abs, exist_ok=True)
     log = path.join(out_abs, "run.log")
     # mpirun, not srun, even inside a Slurm allocation: concurrent srun steps contend for the
@@ -186,13 +204,15 @@ def _run_problem(prob, params_rel, out_abs):
     cmd = ["mpirun", "-np", str(RANKS_PER_PROBLEM), "--bind-to", "none",
            "--oversubscribe", "./GIZMO", params_rel, "0"]
     env = dict(os.environ, OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1")
+    t0 = time.monotonic()
     try:
         with open(log, "w") as fh:
             r = subprocess.run(cmd, cwd=TEST_DIR, stdout=fh, stderr=subprocess.STDOUT,
                                timeout=PROBLEM_TIMEOUT_S, check=False, env=env)
-        return prob["index"], r.returncode, ("ok" if r.returncode == 0 else f"exit {r.returncode}")
+        return (prob["index"], r.returncode, ("ok" if r.returncode == 0 else f"exit {r.returncode}"),
+                time.monotonic() - t0)
     except subprocess.TimeoutExpired:
-        return prob["index"], -1, f"timeout after {PROBLEM_TIMEOUT_S:.0f}s"
+        return prob["index"], -1, f"timeout after {PROBLEM_TIMEOUT_S:.0f}s", time.monotonic() - t0
 
 
 SYNC_RE = re.compile(r"Energy \(synced,grav\) t=(\S+) E_kin=(\S+) E_pot=(\S+) E_tot=(\S+)")
@@ -239,7 +259,9 @@ def _plot_summary():
         return
     fig, ax = plt.subplots(figsize=(7.5, 4.5))
     marks = {"tree": ("o", "#2a78d6"), "tree_equaldt": ("v", "#1baf7a"),
-             "direct_gravity": ("s", "#eb6834"), "direct_equaldt": ("D", "#eda100")}
+             "direct_gravity": ("s", "#eb6834"), "direct_equaldt": ("D", "#eda100"),
+             "ketju": ("P", "#8e44ad"), "ketju_r200au": ("X", "#c0392b"),
+             "ketju_direct": ("*", "#555555")}
     for f in files:
         with open(f) as fh:
             d = json.load(fh)
@@ -248,9 +270,9 @@ def _plot_summary():
         n = np.array([p["n"] for p in d["problems"]], dtype=float)
         w = np.array([p["worst"] for p in d["problems"]], dtype=float)
         ok = np.isfinite(w) & (w > 0)
-        # jitter in N only, so overlapping integer N stay legible
         # small horizontal offset per variant so overlapping integer N stay legible
-        dx = {"tree": -0.18, "tree_equaldt": -0.06, "direct_gravity": 0.06, "direct_equaldt": 0.18}
+        dx = {"tree": -0.18, "tree_equaldt": -0.06, "direct_gravity": 0.06, "direct_equaldt": 0.18,
+              "ketju": -0.3, "ketju_r200au": -0.24, "ketju_direct": 0.3}
         ax.semilogy(n[ok] + dx.get(vid, 0.0), w[ok],
                     mk, ms=5, mew=0, color=col, alpha=0.8, label=vid)
     ax.axhline(ENERGY_TOL, color="k", ls="--", lw=1, label=f"tolerance ({_pct(ENERGY_TOL)})")
@@ -325,6 +347,8 @@ PAIR_PANELS = [
     ("tree_equaldt",   "direct_equaldt", "effect of the tree (equal dt)"),
     ("tree",           "tree_equaldt",   "effect of unequal dt (tree)"),
     ("direct_gravity", "direct_equaldt", "effect of unequal dt (direct)"),
+    ("tree",           "ketju",          "effect of KETJU (tree)"),
+    ("direct_gravity", "ketju_direct",   "effect of KETJU (direct)"),
 ]
 
 
@@ -344,9 +368,9 @@ def _plot_pairwise():
         return
     ns = [q["n"] for v in res.values() for q in v.values()]
     norm = plt.Normalize(min(ns), max(ns)); cmap = plt.get_cmap("viridis")
-    fig, axes = plt.subplots(2, 2, figsize=(9.2, 8.6))
+    fig, axes = plt.subplots(3, 2, figsize=(9.2, 12.9))
     # limits from the data rather than fixed, so the panels are not mostly empty decades; shared
-    # across all four so the 1:1 diagonal means the same thing everywhere and panels stay
+    # across all panels so the 1:1 diagonal means the same thing everywhere and panels stay
     # comparable. The tolerance is forced into range so its line is always visible.
     allw = np.array([q["worst"] for v in res.values() for q in v.values()], dtype=float)
     allw = allw[np.isfinite(allw) & (allw > 0)]
@@ -399,39 +423,53 @@ def _plot_pairwise():
 # which is affordable at N<=10 and has a useful side effect: every step is then a full
 # synchronization, so the synced energy diagnostic reports on all of them instead of only at the
 # rare moments the hierarchy happens to line up.
-@pytest.mark.parametrize("extra_config_flags", [
-    pytest.param((), id="tree"),
-    pytest.param(("FORCE_EQUAL_TIMESTEPS",), id="tree_equaldt"),
-    pytest.param(("SINGLE_STAR_DIRECT_GRAVITY",), id="direct_gravity"),
-    pytest.param(("SINGLE_STAR_DIRECT_GRAVITY", "FORCE_EQUAL_TIMESTEPS"), id="direct_equaldt"),
+#
+# The KETJU variants (see the module docstring) use individual timesteps only: KETJU_REGULARIZATION
+# and FORCE_EQUAL_TIMESTEPS are a compile-time #error together.
+@pytest.mark.parametrize("extra_config_flags,ketju_radius", [
+    pytest.param((), None, id="tree"),
+    pytest.param(("FORCE_EQUAL_TIMESTEPS",), None, id="tree_equaldt"),
+    pytest.param(("SINGLE_STAR_DIRECT_GRAVITY",), None, id="direct_gravity"),
+    pytest.param(("SINGLE_STAR_DIRECT_GRAVITY", "FORCE_EQUAL_TIMESTEPS"), None, id="direct_equaldt"),
+    pytest.param(("KETJU_REGULARIZATION",), 0.005, id="ketju"),
+    pytest.param(("KETJU_REGULARIZATION",), 0.001, id="ketju_r200au"),
+    pytest.param(("KETJU_REGULARIZATION", "SINGLE_STAR_DIRECT_GRAVITY"), 0.005, id="ketju_direct"),
 ])
-def test_fewbody(extra_config_flags, request):
+def test_fewbody(extra_config_flags, ketju_radius, request):
     variant_id = request.node.callspec.id.split("-")[0]
     problems = _make_suite()
     base_text = open(f"{TEST_DIR}/{TEST_NAME}.params").read()
     parse_params(f"{TEST_DIR}/{TEST_NAME}.params")  # fail early on a malformed base params file
 
-    out_root_rel = "output" + variant_suffix(extra_config_flags)   # relative to TEST_DIR
-    out_root = variant_output_dir(TEST_NAME, extra_config_flags)   # relative to repo root
+    extra_params = None
+    dir_key = extra_config_flags  # output directory identity
+    if ketju_radius is not None:
+        extra_params = {**KETJU_PARAMS, "KetjuRegionRadius": ketju_radius}
+        # KETJU variants that differ only in R share build flags: key their directories on R too
+        dir_key = extra_config_flags + (f"R{ketju_radius:g}",)
+    out_root_rel = "output" + variant_suffix(dir_key)   # relative to TEST_DIR
+    out_root = variant_output_dir(TEST_NAME, dir_key)   # relative to repo root
 
     skip_run = bool(os.environ.get("GIZMO_TEST_SKIP_BUILD_RUN"))
     if not skip_run:
-        clean_test_outputs(TEST_NAME, extra_config_flags)
+        clean_test_outputs(TEST_NAME, dir_key)
         # one build serves every problem in this variant
         build_gizmo_for_test(TEST_NAME, OMP_THREADS, extra_config_flags)
 
     jobs = []
     for p in problems:
         rel = path.join(out_root_rel, p["name"])
-        jobs.append((p, _write_problem_params(base_text, p, rel), path.join(out_root, p["name"])))
+        jobs.append((p, _write_problem_params(base_text, p, rel, extra_params),
+                     path.join(out_root, p["name"])))
 
-    failures = []
+    failures, walls = [], {}
     if not skip_run:
         n_par = _n_concurrent()
         print(f"\n[{TEST_NAME}/{variant_id}] {len(jobs)} problems, {RANKS_PER_PROBLEM} rank(s) each, "
               f"{n_par} at a time on {_available_cores()} cores")
         with ThreadPoolExecutor(max_workers=n_par) as ex:
-            for idx, rc, msg in ex.map(lambda j: _run_problem(j[0], path.relpath(j[1], TEST_DIR), j[2]), jobs):
+            for idx, rc, msg, wall in ex.map(lambda j: _run_problem(j[0], path.relpath(j[1], TEST_DIR), j[2]), jobs):
+                walls[idx] = wall
                 if rc != 0:
                     failures.append(f"problem {idx}: GIZMO {msg} (see {jobs[idx][2]}/run.log)")
 
@@ -443,6 +481,7 @@ def test_fewbody(extra_config_flags, request):
         reached = bool(len(t) and abs(t[-1] - expect_tmax) < 1e-6 * expect_tmax)
         records.append({**p, "worst": worst, "n_snaps": int(len(t)),
                         "t_final": (float(t[-1]) if len(t) else None), "reached_timemax": reached,
+                        "wall_s": walls.get(p["index"]),
                         "times": [float(x) for x in t], "rel": [float(x) for x in rel]})
         if not np.isfinite(worst):
             failures.append(f"problem {p['index']}: too few snapshots to measure energy "
@@ -460,6 +499,7 @@ def test_fewbody(extra_config_flags, request):
     with open(_results_path(variant_id), "w") as fh:
         json.dump({"variant_id": variant_id, "energy_tol": ENERGY_TOL,
                    "ranks_per_problem": RANKS_PER_PROBLEM, "n_tff": N_TFF,
+                   "ketju_params": extra_params,
                    "problems": records}, fh, indent=1)
     _plot_summary()
     _plot_per_problem()
