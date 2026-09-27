@@ -511,9 +511,10 @@ integertime get_timestep(int p,		/*!< particle index */
     if(P[p].Type == 5)
     {
         double dt_2body = sqrt(2*All.ErrTolIntAccuracy) * SINK_TIMESTEP_SAFETY_FACTOR / (1./P[p].Min_Sink_Approach_Time + 1./P[p].Min_Sink_Freefall_time); // timestep is harmonic mean of freefall and approach time
-        /* with KETJU_REGULARIZATION the tree walk leaves same-chain neighbours within the region radius
-           out of Min_Sink_Approach_Time/Freefall_time (gravity/forcetree.cc), so for a chain member
-           this is the approach to stars outside its chain */
+        /* with KETJU_REGULARIZATION the tree walk and the direct star sum leave same-chain neighbours
+           within the region radius out of Min_Sink_Approach_Time/Freefall_time (gravity/forcetree.cc,
+           gravity/star_direct_gravity.cc), so for a chain member this is the approach to stars outside
+           its chain */
 #ifdef HERMITE_INTEGRATION
         if(eligible_for_hermite(p)) dt_2body /= SINK_TIMESTEP_SAFETY_FACTOR;
 #endif

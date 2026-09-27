@@ -278,7 +278,7 @@ extern ALIGN(32) struct particle_data
 #ifdef KETJU_REGULARIZATION
     MyDouble KetjuFinalVel[3];  /* true physical velocity from KETJU, swapped in after drift */
     short int KetjuIntegrated;  /* 1 if this particle was KETJU-integrated this step */
-    MyIDType KetjuChainID;      /* shared ID of the KETJU chain this particle is in (= smallest member ID); 0 if not in a chain. Used by the tree walk to skip same-chain Type-5 neighbors when accumulating Min_Sink_Approach_Time / Min_Sink_Freefall_time, so dt_2body reflects only non-chain encounters. */
+    MyIDType KetjuChainID;      /* shared ID of the KETJU chain this particle is in (= smallest member ID); 0 if not in a chain. Used by the tree walk and the direct star sum to skip same-chain Type-5 neighbors when accumulating Min_Sink_Approach_Time / Min_Sink_Freefall_time, so dt_2body reflects only non-chain encounters. */
 #ifdef SINGLE_STAR_SINK_DYNAMICS
     MyDouble KetjuSpin[3];     /* BH spin angular momentum vector S [length*mass*velocity units] */
 #endif

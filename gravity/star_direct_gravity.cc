@@ -92,6 +92,9 @@ void star_direct_gravity_build_table(void)
         sendbuf[k].Mass = P[i].Mass;
         sendbuf[k].Soft = ForceSoftening_KernelRadius(i);
         sendbuf[k].ID = P[i].ID;
+#ifdef KETJU_REGULARIZATION
+        sendbuf[k].KetjuChainID = P[i].KetjuChainID;
+#endif
         k++;
     }
 
@@ -138,6 +141,9 @@ void star_direct_gravity_compute(void)
         Vec3<double> pos = P[i].Pos, acc = {};
         double h_i = ForceSoftening_KernelRadius(i);
         MyIDType id_i = P[i].ID;
+#ifdef KETJU_REGULARIZATION
+        MyIDType chain_i = P[i].KetjuChainID;
+#endif
 #if defined(COMPUTE_JERK_IN_GRAVTREE) || defined(SINK_CALC_DISTANCES)
         Vec3<double> vel = P[i].Vel;
 #endif
@@ -217,8 +223,15 @@ void star_direct_gravity_compute(void)
             r2soft = r2 + r2soft*r2soft;
             double vSqr = dv.norm_sq(), M_total = mass + P[i].Mass;
             double tSqr = r2soft/(vSqr + MIN_REAL_NUMBER), tff4 = r2soft*r2soft*r2soft/(M_total*M_total);
+#ifdef KETJU_REGULARIZATION
+            /* the tree walk's rule (forcetree.cc): MSTAR integrates a same-chain pair closer than the
+               region radius, so it does not set the host step */
+            if((chain_i == 0) || (StarDirect[j].KetjuChainID != chain_i) || (r2 >= All.KetjuRegionRadius * All.KetjuRegionRadius))
+#endif
+            {
             if(tSqr < Min_Sink_Approach_Time) {Min_Sink_Approach_Time = tSqr;}
             if(tff4 < Min_Sink_Freefall_time) {Min_Sink_Freefall_time = tff4;}
+            }
 #endif
         }
 

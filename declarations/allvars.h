@@ -1606,6 +1606,9 @@ extern struct star_direct_data
     MyFloat Mass;
     MyFloat Soft;
     MyIDType ID;
+#ifdef KETJU_REGULARIZATION
+    MyIDType KetjuChainID; /* same-chain pairs within the region radius do not set dt_2body, as in the tree walk */
+#endif
 }
  *StarDirect;
 extern int N_StarDirect;
