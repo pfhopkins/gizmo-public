@@ -2221,16 +2221,15 @@ void ketju_set_final_velocities(void)
  * The host tree's GravAccel and tidal_tensorps include the chain members' pull on each other, so
  * the standard criteria would step a member at its internal orbital cadence -- the dynamics MSTAR
  * integrates -- rather than at the cadence of the field external to the chain. This subtracts the
- * point-mass contribution of the other members of the same chain,
- *   F_a  = G m_k dr_a / r^3,   T_ab = G m_k (3 dr_a dr_b / r^5 - delta_ab / r^3),
+ * other members' pair field as the tree computed it, softened with the Type-5 pair softening
+ * (ForceSoftening[5]; an unsoftened term diverges inside the kernel, where the tree's does not),
  * leaving COM_GravAccel and COM_dt_tidal = |T_external|_F^(-1/2) for find_timesteps (timestep.cc).
  * Only members within KetjuRegionRadius are subtracted: those stay in the chain for the next step.
  * Runs in finish_step, after compute_grav_accelerations has refreshed GravAccel/tidal_tensorps (which
  * are already multiplied by G there, gravity/gravtree.cc) at the members' end-of-step positions.
  * Every member of a chain shares its bin, so all of them end together and are found here; the
  * chain is identified by KetjuChainID, which persists over the member's step, not by ActiveRegions,
- * which only holds the regions started this step. The tree's pair field is softened and the
- * subtraction is not, so for a pair inside the softening kernel part of its own field remains. */
+ * which only holds the regions started this step. */
 void ketju_compute_com_quantities(void)
 {
     struct ChainMemberData {
@@ -2263,6 +2262,7 @@ void ketju_compute_com_quantities(void)
                    all_data.data(), byte_counts.data(), byte_displs.data(), MPI_BYTE, MPI_COMM_WORLD);
     std::sort(all_data.begin(), all_data.end(), [](const ChainMemberData &a, const ChainMemberData &b) {return a.chain < b.chain;});
 
+    double h = All.ForceSoftening[5]; /* comoving, like P[].Pos and the tree's pair softening */
     for(int n = 0; n < n_local; n++) {
         int idx = local_index[n];
         auto lo = std::lower_bound(all_data.begin(), all_data.end(), local_data[n],
@@ -2278,9 +2278,15 @@ void ketju_compute_com_quantities(void)
             double r2 = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
             if(r2 <= 0) continue; /* self */
             if(r2 >= All.KetjuRegionRadius * All.KetjuRegionRadius) continue; /* may leave the chain next step: keep it, as the tree walk does for dt_2body */
-            double r = sqrt(r2), r3 = r * r2, r5 = r3 * r2;
-            double fac  = All.G * it->mass / r3;
-            double fac2 = 3.0 * All.G * it->mass / r5;
+            double r = sqrt(r2), r3 = r * r2, r5 = r3 * r2, fac, fac2;
+            if(r >= h) {
+                fac  = All.G * it->mass / r3;
+                fac2 = 3.0 * All.G * it->mass / r5;
+            } else { /* inside the kernel: the tree's kernel_gravity() force and tidal factors */
+                double h_inv = 1.0 / h, h3_inv = h_inv * h_inv * h_inv, u = r * h_inv;
+                fac  = All.G * it->mass * kernel_gravity(u, h_inv, h3_inv, 1);
+                fac2 = All.G * it->mass * kernel_gravity(u, h_inv, h3_inv, 2);
+            }
             for(int j = 0; j < 3; j++) chain_grav[j] += fac * dr[j];
             chain_tidal.data[0] += fac2 * dr[0]*dr[0] - fac;  /* xx */
             chain_tidal.data[1] += fac2 * dr[1]*dr[1] - fac;  /* yy */
