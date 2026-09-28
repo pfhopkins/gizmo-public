@@ -281,6 +281,13 @@ double kernel_radius_drift_factor(double divv_times_dt)
     return exp(kernel_radius_drift_log_change(divv_times_dt) / ((double)NUMDIMS));
 }
 
+/* The most one drift can grow a kernel radius by (before the radius floors are applied). */
+KOKKOS_INLINE_FUNCTION
+double kernel_radius_drift_max_growth_factor(void)
+{
+    return exp(KERNEL_RADIUS_DRIFT_MAX_LOG_CHANGE / ((double)NUMDIMS));
+}
+
 
 /* --- 4th-order Hermite integration -----------------------------------------
  * Which particles the Hermite integrator advances, and how a source that is not

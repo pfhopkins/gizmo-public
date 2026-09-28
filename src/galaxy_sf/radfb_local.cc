@@ -377,8 +377,8 @@ static void hii_gpu_path(const std::vector<HIISourcePrep>& src,
 /* Tiny-N path: per-source tree walk on the existing Nodes[] (valid + h-refreshed
  * at this call site — see invariant note above). Touches NO globals beyond the
  * tree itself: no gizmo_density_prep_ghosts, no gpu_particles_arena_acquire,
- * no gpu_ngb_list_build. Honors the GPU NGL drift contract via
- * mode_b_lazy_drift_candidates so the helper reads drifted P[j]. */
+ * no gpu_ngb_list_build. The walk's candidates are drifted and reduced to the
+ * exact set by mode_b_drift_and_filter_candidates, so the helper reads drifted P[j]. */
 static void hii_local_path(const std::vector<HIISourcePrep>& src,
                            double uion,
                            HIIStats& s)
@@ -396,9 +396,8 @@ static void hii_local_path(const std::vector<HIISourcePrep>& src,
                                    MODE_B_SEARCH_ONEWAY,
                                    MODE_B_RADIUS_DEFAULT,
                                    candidates);
-        if(!candidates.empty()) {
-            mode_b_lazy_drift_candidates(candidates.data(), (int)candidates.size());
-        }
+        mode_b_drift_and_filter_candidates(pos_arr, R, 1u << 0, MODE_B_SEARCH_ONEWAY,
+                                           MODE_B_RADIUS_DEFAULT, 1.0, candidates);
         hii_greedy_ionize_source(src[a], candidates.data(), (int)candidates.size(),
                                  uion, ngb_scratch, s);
     }

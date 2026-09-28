@@ -12,7 +12,7 @@
  * Mode B (request-driven walker, local + cross-rank peer-to-peer) and the
  * host-side invocation with the
  * lazy-drift boundary structurally encoded as collect_candidates_pre_drift
- * -> lazy_drift_candidates -> evaluate_pairs_post_drift; it uses
+ * -> drift_and_filter_candidates -> evaluate_pairs_post_drift; it uses
  * the SAME drift epoch as Mode B.
  *
  * The Spec contract (hard-required members, hooks, invariants) is
@@ -350,14 +350,15 @@ static gpu_spatial_index_t* nlr_resolve_sidx_cache(SidxCacheKind k,
  * These three helpers STRUCTURALLY ENCODE the lazy-drift invariant from the
  * neighbor-loop binding contract:
  *
- *     collect_candidates_pre_drift<Spec>   — search backend (tree or brute)
- *                                            runs against possibly-stale P[j]
- *     lazy_drift_candidates<Spec>          — drift_particle on every j to
- *                                            All.Ti_Current (idempotent;
- *                                            duplicate j's between Mode B and
- *                                            are dedupe-free
- *                                            via drift_particle's
- *                                            time1==time0 early-return)
+ *     collect_candidates_pre_drift<Spec>   — the tree walk records every
+ *                                            eligible particle under the nodes
+ *                                            it opens, without reading P[j]'s
+ *                                            possibly-stale position
+ *     drift_and_filter_candidates<Spec>    — drift_particle on every j to
+ *                                            All.Ti_Current (a j already
+ *                                            current returns at once), then
+ *                                            keep exactly the neighbours at
+ *                                            current positions
  *     evaluate_pairs_post_drift<Spec>      — calls Spec::pair_kernel via the
  *                                            same KOKKOS_INLINE_FUNCTION
  *                                            Spec::load_active /
@@ -631,16 +632,28 @@ static void collect_candidates_for_remote_queries(
     }
 }
 
-/* SAME drift epoch contract. Idempotent: drift_particle's time1==time0
- * early-return makes calling this multiple times (e.g. once each on
- * self_tree, self_brute, peer_tree, peer_brute candidate sets) safe. */
-template <typename Spec>
-static void lazy_drift_candidates(std::vector<std::vector<int>>& per_active_cands)
+/* Drift each query's walk candidates to the current time and keep exactly its neighbours at their
+ * current positions (mode_b_drift_and_filter_candidates).  query_at(aa, pos, h_q) must give the query
+ * that list was walked with; every query is read before any candidate is drifted, since a query's own
+ * particle may be another query's candidate.  Serial, as drift_particle requires; drift_particle
+ * returns at once for a particle already current, so one reached by several queries is drifted once. */
+template <typename Spec, typename QueryAt>
+static void drift_and_filter_candidates(std::vector<std::vector<int>>& per_active_cands,
+                                        unsigned int neighbor_type_mask,
+                                        QueryAt query_at)
 {
-    for(auto& v : per_active_cands) {
-        if(!v.empty()) {
-            mode_b_lazy_drift_candidates(v.data(), (int)v.size());
-        }
+    const double jscale = nlr_spec_symmetric_j_radius_scale<Spec>();
+    const size_t n_queries = per_active_cands.size();
+    std::vector<double> queries(4 * n_queries);   /* pos[3], h_q per query */
+    for(size_t aa = 0; aa < n_queries; aa++) {
+        if(per_active_cands[aa].empty()) continue;
+        query_at((int)aa, &queries[4 * aa], queries[4 * aa + 3]);
+    }
+    for(size_t aa = 0; aa < n_queries; aa++) {
+        std::vector<int>& v = per_active_cands[aa];
+        if(v.empty()) continue;
+        mode_b_drift_and_filter_candidates(&queries[4 * aa], queries[4 * aa + 3], neighbor_type_mask,
+                                           Spec::search_mode, Spec::radius_policy, jscale, v);
     }
 }
 
@@ -816,13 +829,17 @@ static void run_mode_b_local(const neighbor_loop_args& args, const double *radii
 
     /* Helper layout: collect → drift → evaluate. */
     std::vector<std::vector<int>> cand_modeB;
+    const unsigned int modeb_type_mask = nlr_effective_neighbor_type_mask(args, Spec::neighbor_type_mask);
     {
-        collect_candidates_pre_drift<Spec>(args, radii,
-                                            nlr_effective_neighbor_type_mask(args, Spec::neighbor_type_mask),
+        collect_candidates_pre_drift<Spec>(args, radii, modeb_type_mask,
                                             DispatchPath::ModeB_HostWalker, cand_modeB);
     }
     {
-        lazy_drift_candidates<Spec>(cand_modeB);
+        drift_and_filter_candidates<Spec>(cand_modeB, modeb_type_mask, [&](int aa, double *pos, double &h_q) {
+            const int i = args.active_list[aa];
+            pos[0] = (double)args.P[i].Pos[0]; pos[1] = (double)args.P[i].Pos[1]; pos[2] = (double)args.P[i].Pos[2];
+            h_q = radii[aa];
+        });
     }
 
     std::vector<AccumData> accums(N);
@@ -954,7 +971,10 @@ struct NlrPeerAnswerHostWalk {
         /* Stage 7 (peer): drift THIS round's peer candidate sets (self candidates
          * were drifted once before the round loop). Idempotent to All.Ti_Current. */
         {
-            lazy_drift_candidates<Spec>(cand_peer_tree);
+            drift_and_filter_candidates<Spec>(cand_peer_tree, neighbor_type_mask, [&](int k, double *pos, double &h_q) {
+                pos[0] = (double)peer_actives[k].pos[0]; pos[1] = (double)peer_actives[k].pos[1]; pos[2] = (double)peer_actives[k].pos[2];
+                h_q = (double)peer_actives[k].h_search;
+            });
         }
 
         /* Stage 9: evaluate PEER queries post-drift -> peer_replies, shipped back
@@ -1382,7 +1402,18 @@ static void mode_b_remote_evaluate_into_buffer(
      * (constant across the helper), so a j that is both a self- and peer-
      * candidate drifts once — identical to the old combined union drift. */
     if constexpr (Backend == NlrEvalBackend::HostWalk) {
-        if (N > 0) lazy_drift_candidates<Spec>(cand_self_tree);
+        /* The same query the walk above used: the frozen actives[] on the multi-rank fused walk, the
+         * particle and its radius on the single-rank walk. */
+        if (N > 0) drift_and_filter_candidates<Spec>(cand_self_tree, neighbor_type_mask, [&](int aa, double *pos, double &h_q) {
+            if(nt > 1) {
+                pos[0] = (double)actives[aa].pos[0]; pos[1] = (double)actives[aa].pos[1]; pos[2] = (double)actives[aa].pos[2];
+                h_q = (double)actives[aa].h_search;
+            } else {
+                const int i = args.active_list[aa];
+                pos[0] = (double)args.P[i].Pos[0]; pos[1] = (double)args.P[i].Pos[1]; pos[2] = (double)args.P[i].Pos[2];
+                h_q = radii[aa];
+            }
+        });
     }
 
     /* Stage 8: answer THIS rank's own queries -> accums_out.
@@ -3697,7 +3728,7 @@ void NlrIterDriver<Spec>::rebuild_mode_a_arena_and_ctx_for_current_active_union(
  *
  * The Mode B local helper composes existing lower-level helpers
  * (build_self_actives_host_pre_drift / collect_candidates_pre_drift /
- * lazy_drift_candidates / evaluate_pairs_post_drift). SSOT preserved with
+ * drift_and_filter_candidates / evaluate_pairs_post_drift). SSOT preserved with
  * existing run_mode_b_local — same helper chain, just driver-owned output
  * buffer instead of stack vector.
  *
@@ -4723,7 +4754,11 @@ static void nlr_iter_dispatch_subgroup_mode_b_local(NlrIterDriver<Spec>& drv, in
     collect_candidates_pre_drift<Spec>(sub, radii_compacted.data(),
                                          (unsigned int)sgr.j_type_bitmask,
                                          DispatchPath::ModeB_HostWalker, cand_modeB);
-    lazy_drift_candidates<Spec>(cand_modeB);
+    drift_and_filter_candidates<Spec>(cand_modeB, (unsigned int)sgr.j_type_bitmask, [&](int aa, double *pos, double &h_q) {
+        const int i = sub.active_list[aa];
+        pos[0] = (double)sub.P[i].Pos[0]; pos[1] = (double)sub.P[i].Pos[1]; pos[2] = (double)sub.P[i].Pos[2];
+        h_q = radii_compacted[aa];
+    });
     evaluate_pairs_post_drift<Spec>(drv.ctx, actives_compacted.data(), n_compacted,
                                       cand_modeB, accums_compacted.data(), drv.cs, EvalOMPPolicy::AllowProduction);
 

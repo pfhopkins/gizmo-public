@@ -1578,7 +1578,7 @@ const char *nlr_path_label(NeighborLoopPlan::Path path);
  *
  *   These invariants protect the lazy-drift architecture: Mode B reads
  *   owner-local args.P[j] / args.CellP[j] freely during evaluation and
- *   drifts only touched candidates via mode_b_lazy_drift_candidates. The
+ *   drifts only touched candidates via mode_b_drift_and_filter_candidates. The
  *   invariant is NO GLOBAL MUTATION, not no read. A full global drift in
  *   the prep layer would defeat lazy drift; the corridor enforcement
  *   prevents that regression.
@@ -1599,10 +1599,11 @@ const char *nlr_path_label(NeighborLoopPlan::Path path);
  *                        touched candidates)
  *
  * Lazy-drift contract inside Mode B:
- *   collect candidates pre-drift -> mode_b_lazy_drift_candidates(touched)
- *   -> evaluate pairs post-drift. drift_particle is per-particle and
- *   short-circuits on time1 == time0. Repeat candidates between queries
- *   in the same call are a fast no-op.
+ *   collect candidates pre-drift (every eligible particle under the opened
+ *   nodes) -> mode_b_drift_and_filter_candidates (drift, then keep exactly the
+ *   neighbours at current positions) -> evaluate pairs post-drift.
+ *   drift_particle is per-particle and short-circuits on time1 == time0, so
+ *   repeat candidates between queries in the same call are a fast no-op.
  *
  * radii lifetime: the runner stages a std::vector<double> radii of size
  * args.num_active and passes radii.data() to path-specific functions and

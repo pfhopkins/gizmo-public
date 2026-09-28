@@ -1,7 +1,9 @@
 /* Mode B local neighbor walker — host-side range-walk.
  *
- * See header for design constraints. Returns LOCAL real P[]
- * indices in [0, ghost_get_num_local()) intersecting (pos, h_q).
+ * See header for design constraints. Returns LOCAL real P[] indices in
+ * [0, ghost_get_num_local()) that may be neighbours once drifted to the current
+ * time: a superset, since a particle's stored position may be stale.
+ * mode_b_drift_and_filter_candidates reduces it to the exact set.
  *
  * SYMMETRIC tree walk prunes internal nodes by the per-type hmax bands
  * (Extnodes[no].hmax_per_type via mode_b_node_symmetric_radius); ONEWAY
@@ -22,6 +24,10 @@
 
 #include "../declarations/allvars.h"
 #include "../core/proto.h"
+#include "../core/timestep_functions.h"   /* motion_bound_widening, particle_motion_speed_bound, drift growth */
+#ifdef AGS_KERNELRADIUS_CALCULATION_IS_ACTIVE
+#include "../gravity/ags_functions.h"     /* ags_density_isactive_P, ags_return_minsoft_P */
+#endif
 #include "../gravity/forcetree.h"
 #include "../gravity/force_node_drift_sync.h"  /* modeb_node_ti_current_acquire */
 #include "ghost_writeback.h"      /* ghost_get_num_local */
@@ -37,7 +43,14 @@ double mode_b_neighbor_symmetric_radius(int j, mode_b_radius_policy_t policy)
     return nlr_particle_symmetric_radius(P[j], policy);
 }
 
-/* Predicate: does P[j] satisfy the query (pos, h_q) under search_mode? */
+/* Whether P[j] can be a neighbour of this loop at all, whatever its position. */
+static inline int particle_is_eligible(int j, unsigned int type_mask)
+{
+    return (type_mask & (1u << P[j].Type)) && (P[j].Mass > 0);
+}
+
+/* Predicate: does P[j], at its current position and radius, satisfy the query (pos, h_q) under
+ * search_mode?  Applied only to particles already drifted to the current time. */
 /* j_reach_scale: SYMMETRIC-mode multiplier on the j-side kernel radius
  * (1.0 = legacy). TURB_DIFF_DYNAMIC wide-filter loops pass
  * All.TurbDynamicDiffFac so the Mode B reach matches the Mode A scaled-
@@ -53,8 +66,7 @@ static inline int particle_passes(int j,
                                   mode_b_radius_policy_t radius_policy,
                                   double j_reach_scale)
 {
-    if(!(type_mask & (1u << P[j].Type))) return 0;
-    if(P[j].Mass <= 0) return 0;
+    if(!particle_is_eligible(j, type_mask)) return 0;
     double dx = (double)P[j].Pos[0] - pos[0];
     double dy = (double)P[j].Pos[1] - pos[1];
     double dz = (double)P[j].Pos[2] - pos[2];
@@ -71,6 +83,66 @@ static inline int particle_passes(int j,
         if(hj > cutoff) cutoff = hj;
     }
     return r2 < cutoff * cutoff;
+}
+
+/* The largest symmetric radius P[j] can have under this policy once drifted to the current time.  A
+ * drift (drift_particle_impl) rescales KernelRadius and AGS_KernelRadius by at most
+ * kernel_radius_drift_max_growth_factor and then raises them to their floors; a particle that is not
+ * AGS-active gets its softening radius; ForceSoftening is not changed. */
+static inline double particle_symmetric_radius_after_drift(int j, mode_b_radius_policy_t radius_policy)
+{
+    const double growth = kernel_radius_drift_max_growth_factor();
+    double kr = (double)P[j].KernelRadius * growth;
+    if(kr < All.MinKernelRadius) {kr = All.MinKernelRadius;}
+    double ags_kr = 0.0;
+#ifdef AGS_KERNELRADIUS_CALCULATION_IS_ACTIVE
+    if(ags_density_isactive_P(j, P)) {
+        ags_kr = (double)P[j].AGS_KernelRadius * growth;
+        const double minsoft = ags_return_minsoft_P(j, P);
+        if(ags_kr < minsoft) {ags_kr = minsoft;}
+    } else {ags_kr = ForceSoftening_KernelRadius_P(j, P);}
+#if defined(ADAPTIVE_GRAVSOFT_FORALL)
+    if((1 & ADAPTIVE_GRAVSOFT_FORALL) && (P[j].Type == 0) && (kr > ags_kr)) {ags_kr = kr;}   /* the gas drift sets it to KernelRadius */
+#endif
+#endif
+    return nlr_symmetric_radius_from_fields((int)P[j].Type, kr, ags_kr, (double)P[j].ForceSoftening, radius_policy);
+}
+
+/* The leaf test: whether P[j] can satisfy the query once drifted to the current time.  A particle
+ * already current is tested exactly.  For one behind, its current position lies in the box its stored
+ * position grows into by how far it can have moved since (per axis, the rule the tree nodes use), and
+ * that box is tested against the sphere its radius can reach after the drift.  A particle whose motion
+ * cannot be bounded -- a clock that is negative or ahead of the current time, a non-finite widening --
+ * is kept: this test may only over-include, and the drift that follows either handles it or stops on
+ * the invalid clock, rather than discovery quietly narrowing around it. */
+static inline int particle_may_pass(int j,
+                                    const double pos[3],
+                                    double h_q,
+                                    unsigned int type_mask,
+                                    int search_mode,
+                                    mode_b_radius_policy_t radius_policy,
+                                    double j_reach_scale,
+                                    integertime ti_now,
+                                    const struct DriftKickTableView *drift_tables)
+{
+    if(!particle_is_eligible(j, type_mask)) return 0;
+    const integertime ti_j = P[j].Ti_current;
+    if(ti_j == ti_now) return particle_passes(j, pos, h_q, type_mask, search_mode, radius_policy, j_reach_scale);
+    if(ti_j < 0 || ti_j > ti_now) return 1;
+    const double dl = motion_bound_widening(particle_motion_speed_bound(j, P, CellP), ti_j, ti_now, drift_tables);
+    if(!motion_bound_widening_is_valid(dl)) return 1;
+    double reach = h_q;
+    if(search_mode == MODE_B_SEARCH_SYMMETRIC) {
+        const double hj = particle_symmetric_radius_after_drift(j, radius_policy) * j_reach_scale;
+        if(hj > reach) reach = hj;
+    }
+    /* The exact point-to-box distance: unlike a node, this box bounds one particle, so the circumsphere
+       slack of the node test would only admit more drifts. */
+    const double hw = 0.5 * dl;
+    return gx_boxpair_overlap_wrap_and_test((double)P[j].Pos[0] - pos[0],
+                                            (double)P[j].Pos[1] - pos[1],
+                                            (double)P[j].Pos[2] - pos[2],
+                                            hw, hw, hw, reach, reach * reach);
 }
 
 /* Sphere-vs-AABB pruning test. Returns 1 if the sphere of radius R
@@ -208,6 +280,8 @@ static void mode_b_walk_impl(const double pos[3],
     const int tree_slots = All.TreeParticleSlots;
     const int pseudo_start = tree_base + MaxNodes + MaxForeignNodes;
     const int oneway = (search_mode == MODE_B_SEARCH_ONEWAY);
+    const integertime ti_now = All.Ti_Current;
+    const struct DriftKickTableView drift_tables = drift_kick_table_view_host();
 
     int no = start_no;
 
@@ -217,9 +291,11 @@ static void mode_b_walk_impl(const double pos[3],
             endrun(90001024); no = -1; continue;}
         if(no < tree_slots) {
             /* Particle leaf. Only return domain-owned local particles (not a
-             * ghost import). cand_out==nullptr on a pure export-discovery walk. */
+             * ghost import). cand_out==nullptr on a pure export-discovery walk.
+             * Recorded if it may be a neighbour once drifted; the exact test
+             * waits for the drift. */
             if(cand_out && no < num_local &&
-               particle_passes(no, pos, h_q, type_mask, search_mode, radius_policy, j_reach_scale)) {
+               particle_may_pass(no, pos, h_q, type_mask, search_mode, radius_policy, j_reach_scale, ti_now, &drift_tables)) {
                 cand_out->push_back(no);
             }
             no = Nextnode[no];
@@ -385,25 +461,31 @@ void mode_b_walk_from_start_nodes(const double pos[3],
     }
 }
 
-/* Lazy-drift Mode B candidates to current Ti before the pair kernel reads
- * P[j] / CellP[j]. Mirrors gpu_ngb_list_build:1542-1580 contract. */
-void mode_b_lazy_drift_candidates(const int *indices, int n)
+/* Drift a walk's candidates to the current time, then keep exactly those that satisfy the query at
+ * their current position and radius, in walk order. */
+void mode_b_drift_and_filter_candidates(const double pos[3],
+                                        double h_q,
+                                        unsigned int type_mask,
+                                        int search_mode,
+                                        mode_b_radius_policy_t radius_policy,
+                                        double j_reach_scale,
+                                        std::vector<int>& cands)
 {
-    if(!indices || n <= 0) return;
+    if(cands.empty()) return;
     const int num_local = ghost_get_num_local();
-    integertime time1 = All.Ti_Current;
-    for(int k = 0; k < n; k++) {
-        int j = indices[k];
-        if(j >= 0 && j < num_local) {
-            /* drift_particle's early-return on time1==time0 makes repeat
-             * calls a fast no-op (e.g. j touched by an earlier query in
-             * this same evaluator call). */
-            drift_particle(j, time1);
-        }
+    const integertime time1 = All.Ti_Current;
+    for(size_t k = 0; k < cands.size(); k++) {
+        const int j = cands[k];
+        /* drift_particle returns at once for a particle already current, so a j that several
+         * queries reached is drifted once. */
+        if(j >= 0 && j < num_local) {drift_particle(j, time1);}
     }
-    /* drift_particle mutates Pos and KernelRadius (by kernel_radius_drift_factor).
-     * The next gpu_ngb_list_build call (for
-     * non-Mode-B callers) needs to refresh compact_h from these freshly
-     * drifted KernelRadius values. */
-    gizmo_mark_kernel_radius_dirty_indices(indices, n);
+    /* drift_particle moves Pos and KernelRadius, so the spatial index must refresh these rows. */
+    gizmo_mark_kernel_radius_dirty_indices(cands.data(), (int)cands.size());
+    size_t n_kept = 0;
+    for(size_t k = 0; k < cands.size(); k++) {
+        const int j = cands[k];
+        if(particle_passes(j, pos, h_q, type_mask, search_mode, radius_policy, j_reach_scale)) {cands[n_kept++] = j;}
+    }
+    cands.resize(n_kept);
 }
