@@ -2019,6 +2019,13 @@ int force_treeevaluate(int target, int mode, int *exportflag, int *exportnodecou
                         continue;
                     }
                 }
+#if defined(KETJU_REGULARIZATION) && !defined(SINGLE_STAR_DIRECT_GRAVITY)
+                /* A chain member takes every star exactly. The negative half-kicks remove its same-chain pairs as
+                   exact softened forces, so a partner left inside a node monopole leaves that node's error in the
+                   member's kick. Same-chain pairs can lie beyond SINGLE_STAR_DIRECT_GRAVITY_RADIUS, and the
+                   relative criterion stops opening once a close partner dominates |a|. */
+                if((ptype == 5) && (source_KetjuChainID != 0) && (nop->N_SINK > 0)) {no = nop->u.d.nextnode; continue;}
+#endif
                 if(nop->Ti_current != ti_Current) // add this so that threads arriving here after the the node has been drifted do not have to enter critical at all!
                 {
 #ifdef _OPENMP
