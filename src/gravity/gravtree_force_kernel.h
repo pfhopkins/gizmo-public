@@ -644,6 +644,21 @@ KOKKOS_INLINE_FUNCTION void grav_pair_acc_init(grav_pair_acc_t &out)
 #endif
 }
 
+/* Take another partial accumulation of the same target into `a`: every field here is a sum. */
+KOKKOS_INLINE_FUNCTION void grav_pair_acc_combine(grav_pair_acc_t &a, const grav_pair_acc_t &b)
+{
+    a.acc += b.acc; a.pot += b.pot; a.ninter += b.ninter;
+#ifdef COMPUTE_TIDAL_TENSOR_IN_GRAVTREE
+    for(int k = 0; k < 6; k++) {a.tidal_tensorps.data[k] += b.tidal_tensorps.data[k];}
+#endif
+#ifdef COMPUTE_JERK_IN_GRAVTREE
+    a.jerk += b.jerk;
+#endif
+#ifdef ADAPTIVE_GRAVSOFT_FROM_TIDAL_CRITERION
+    a.tidal_zeta += b.tidal_zeta;
+#endif
+}
+
 /* What the walker's payload blocks consume after the evaluation: the separation and the
  * acceleration prefactor as accumulated (PM-truncated when the source was in range of the
  * short-range table, raw otherwise -- the column-integral payloads have no PM completion). */
@@ -977,6 +992,44 @@ KOKKOS_INLINE_FUNCTION void grav_sink_prox_accum_init(grav_sink_prox_accum_t &pr
 #endif
 }
 
+/* Take another partial accumulation of the same target into `a`, by the rules the accumulate functions
+ * below apply: minima, and the fields describing what attained a minimum move with it.  Under
+ * SPECIAL_POINT_WEIGHTED_MOTION the special-point motion of a special-point target is a weighted sum,
+ * while for any other target it is the nearest sink's motion, so the target's type decides the rule.
+ * On equal minima `a` keeps its own. */
+KOKKOS_INLINE_FUNCTION void grav_sink_prox_accum_combine(grav_sink_prox_accum_t &a, const grav_sink_prox_accum_t &b, int target_ptype)
+{
+    (void) target_ptype;
+    if(b.Min_Distance_to_Sink2 < a.Min_Distance_to_Sink2) {
+        a.Min_Distance_to_Sink2 = b.Min_Distance_to_Sink2;
+        a.Min_xyz_to_Sink = b.Min_xyz_to_Sink;
+#ifdef SPECIAL_POINT_MOTION
+#ifdef SPECIAL_POINT_WEIGHTED_MOTION
+        if(target_ptype != SPECIAL_POINT_TYPE_FOR_NODE_DISTANCES)
+#endif
+        {a.vel_of_nearest_special = b.vel_of_nearest_special; a.acc_of_nearest_special = b.acc_of_nearest_special;}
+#endif
+    }
+#ifdef SPECIAL_POINT_WEIGHTED_MOTION
+    if(target_ptype == SPECIAL_POINT_TYPE_FOR_NODE_DISTANCES) {
+        a.vel_of_nearest_special += b.vel_of_nearest_special; a.acc_of_nearest_special += b.acc_of_nearest_special;
+    }
+    a.weight_sum_for_special_point_smoothing += b.weight_sum_for_special_point_smoothing;
+#endif
+#ifdef SINGLE_STAR_FIND_BINARIES
+    if(b.Min_Sink_OrbitalTime < a.Min_Sink_OrbitalTime) {
+        a.Min_Sink_OrbitalTime = b.Min_Sink_OrbitalTime; a.comp_Mass = b.comp_Mass; a.comp_dx = b.comp_dx; a.comp_dv = b.comp_dv;
+    }
+#endif
+#ifdef SINGLE_STAR_TIMESTEPPING
+    if(b.Min_Sink_Approach_Time < a.Min_Sink_Approach_Time) {a.Min_Sink_Approach_Time = b.Min_Sink_Approach_Time;}
+    if(b.Min_Sink_Freefall_time < a.Min_Sink_Freefall_time) {a.Min_Sink_Freefall_time = b.Min_Sink_Freefall_time;}
+#endif
+#ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
+    if(b.Min_Sink_FeedbackTime < a.Min_Sink_FeedbackTime) {a.Min_Sink_FeedbackTime = b.Min_Sink_FeedbackTime;}
+#endif
+}
+
 /* Target-side state shared by the leaf + node sink-proximity helpers (by value). */
 struct grav_sink_prox_target_t {
     int ptype; double pmass, soft;
@@ -1084,7 +1137,14 @@ KOKKOS_INLINE_FUNCTION void grav_sink_prox_leaf_accumulate(double r2, const Vec3
 
 #ifdef SPECIAL_POINT_WEIGHTED_MOTION
 /* Node-source weighted-motion accumulation for special-point primaries (runs for every
- * accepted node, before the sink-aggregate block). */
+ * accepted node, before the sink-aggregate block).
+ *
+ * SPECIAL_POINT_WEIGHTED_MOTION IS UNFINISHED AND HAS NEVER BEEN USED: a stub kept as the place to
+ * implement it properly, not a form to design other code around. The intent is a weighted average:
+ * every accepted source adds wt * velocity (and a matching wt * acceleration) to the sums that are
+ * divided by weight_sum_for_special_point_smoothing afterwards. The node branch below does not do that
+ * yet -- it overwrites the velocity with the node's and zeroes the acceleration, so the result depends
+ * on visit order. */
 template <typename NodeVsT>
 KOKKOS_INLINE_FUNCTION void grav_sink_prox_node_specialweighted(double r2, const NodeVsT &node_vs, int ptype,
                                                                 grav_sink_prox_accum_t &prox)

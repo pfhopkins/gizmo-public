@@ -398,7 +398,12 @@ struct gpu_grav_open_inputs_t {
     int alive;   /* 0 for a massless target, which takes part in nothing */
 };
 
-struct gpu_grav_member_t {
+/* A member is split in two.  The INPUTS are fixed for the walk: what the opening decision and the
+ * pair evaluation read about the target.  The SUMS are everything the walk accumulates for it.  A
+ * packet team holds one copy of a member's inputs and gives each of the lanes working on that member
+ * its own sums, folded together when the packet commits; every field of the sums is listed, with the
+ * rule that combines it, in gpu_grav_member_sums_combine below. */
+struct gpu_grav_member_inputs_t {
     int target;
     struct gpu_grav_open_inputs_t open;
     /* pair evaluation inputs */
@@ -420,12 +425,17 @@ struct gpu_grav_member_t {
     int cr_active_gate;
 #endif
 #ifdef SINK_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
-    double r_for_total_menclosed, m_enc_in_rcrit;
+    double r_for_total_menclosed;
 #endif
-    /* accumulators */
+};
+
+struct gpu_grav_member_sums_t {
     grav_pair_acc_t out;
 #ifdef COUNT_MASS_IN_GRAVTREE
     double tree_mass;
+#endif
+#ifdef SINK_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
+    double m_enc_in_rcrit;
 #endif
 #ifdef RT_USE_TREECOL_FOR_NH
     double treecol_angular_bins[RT_USE_TREECOL_FOR_NH];
@@ -456,9 +466,60 @@ struct gpu_grav_member_t {
 #endif
 };
 
+/* Every field of the sums, with the rule that combines two partial sums of the same member into one:
+ * `a` takes in `b`.  THE single list for this member: a field added to gpu_grav_member_sums_t is added
+ * here in the same edit, or the packet engine's fold silently drops it (the pair and sink-proximity
+ * accumulators carry their own rules beside their definitions).  Every rule is a sum, a minimum, or a
+ * minimum carrying the fields that describe what attained it; on equal minima `a` keeps its own.
+ * target_ptype is the member's type, which the sink-proximity rules need. */
+KOKKOS_INLINE_FUNCTION void gpu_grav_member_sums_combine(gpu_grav_member_sums_t &a, const gpu_grav_member_sums_t &b, int target_ptype)
+{
+    grav_pair_acc_combine(a.out, b.out);
+#ifdef COUNT_MASS_IN_GRAVTREE
+    a.tree_mass += b.tree_mass;
+#endif
+#ifdef SINK_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
+    a.m_enc_in_rcrit += b.m_enc_in_rcrit;
+#endif
+#ifdef RT_USE_TREECOL_FOR_NH
+    for(int k = 0; k < RT_USE_TREECOL_FOR_NH; k++) {a.treecol_angular_bins[k] += b.treecol_angular_bins[k];}
+#endif
+#ifdef SINK_COMPTON_HEATING
+    a.incident_flux_agn += b.incident_flux_agn;
+#endif
+#ifdef COSMIC_RAY_SUBGRID_LEBRON
+    a.SubGrid_CosmicRayEnergyDensity += b.SubGrid_CosmicRayEnergyDensity;
+#endif
+#ifdef CHIMES_STELLAR_FLUXES
+    for(int k = 0; k < CHIMES_LOCAL_UV_NBINS; k++) {a.chimes_flux_G0[k] += b.chimes_flux_G0[k]; a.chimes_flux_ion[k] += b.chimes_flux_ion[k];}
+#endif
+#ifdef RT_OTVET
+    for(int f = 0; f < N_RT_FREQ_BINS; f++) {for(int k = 0; k < 6; k++) {a.RT_ET[f].data[k] += b.RT_ET[f].data[k];}}
+#endif
+#ifdef GALSF_FB_FIRE_RT_LONGRANGE
+    a.incident_flux_uv += b.incident_flux_uv; a.incident_flux_euv += b.incident_flux_euv;
+#endif
+#if defined(RT_USE_GRAVTREE_SAVE_RAD_ENERGY)
+    for(int f = 0; f < N_RT_FREQ_BINS; f++) {a.Rad_E_gamma[f] += b.Rad_E_gamma[f];}
+#endif
+#if defined(RT_USE_GRAVTREE_SAVE_RAD_FLUX)
+    for(int f = 0; f < N_RT_FREQ_BINS; f++) {for(int k = 0; k < 3; k++) {a.Rad_Flux[f][k] += b.Rad_Flux[f][k];}}
+#endif
+#ifdef SINK_CALC_DISTANCES
+    grav_sink_prox_accum_combine(a.sink_prox, b.sink_prox, target_ptype);
+#endif
+    (void) target_ptype;
+}
+
+/* The single-target walk holds both halves itself. */
+struct gpu_grav_member_t {
+    gpu_grav_member_inputs_t in;
+    gpu_grav_member_sums_t sums;
+};
+
 /* The member state of a flavour that decides without evaluating: it judges nodes from the
  * opening inputs published in team scratch and accumulates nothing, so it holds nothing. */
-struct gpu_grav_no_member_t { gpu_grav_open_inputs_t open; };
+struct gpu_grav_no_member_t {};
 
 /* What an accepted element carries from its load to the shared evaluation, beyond
  * the pair inputs in grav_pair_src_t: the payload values the walker-local blocks
@@ -538,93 +599,105 @@ gpu_grav_open_inputs_init(const gpu_grav_walk_ctx_t &ctx, int target,
     return 1;
 }
 
-/* Set up one target's member for the walk (the CPU walk's target prologue).
+/* Zero one member's sums: every field starts at the identity of the rule that folds it
+ * (gpu_grav_member_sums_combine), so a partial that never evaluates anything folds in as nothing. */
+static KOKKOS_INLINE_FUNCTION void
+gpu_grav_member_sums_init(gpu_grav_member_sums_t &sums)
+{
+    grav_pair_acc_init(sums.out);
+#ifdef COUNT_MASS_IN_GRAVTREE
+    /* Diagnostic: total mass seen by this target during the walk, summed only
+     * over accepted interactions (mirrors forcetree.cc). The walk excludes the
+     * target's own leaf (r2==0); the post-loop +=P[i].Mass in gravtree.cc
+     * finalizes the sum. */
+    sums.tree_mass = 0.0;
+#endif
+#ifdef SINK_COMPTON_HEATING
+    sums.incident_flux_agn = 0.0;
+#endif
+#ifdef COSMIC_RAY_SUBGRID_LEBRON
+    sums.SubGrid_CosmicRayEnergyDensity = 0.0;
+#endif
+#ifdef SINK_CALC_DISTANCES
+    grav_sink_prox_accum_init(sums.sink_prox);
+#endif
+#ifdef RT_USE_TREECOL_FOR_NH
+    {int kb; for(kb=0; kb<RT_USE_TREECOL_FOR_NH; kb++) {sums.treecol_angular_bins[kb]=0.0;}}
+#endif
+#ifdef SINK_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
+    sums.m_enc_in_rcrit = 0.0;
+#endif
+#ifdef CHIMES_STELLAR_FLUXES
+    {int kc; for(kc=0; kc<CHIMES_LOCAL_UV_NBINS; kc++) {sums.chimes_flux_G0[kc]=0; sums.chimes_flux_ion[kc]=0;}}
+#endif
+#ifdef RT_OTVET
+    {int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {sums.RT_ET[kf] = {};}}
+#endif
+#ifdef GALSF_FB_FIRE_RT_LONGRANGE
+    sums.incident_flux_uv = 0.0; sums.incident_flux_euv = 0.0;
+#endif
+#if defined(RT_USE_GRAVTREE_SAVE_RAD_ENERGY)
+    {int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {sums.Rad_E_gamma[kf]=0.0;}}
+#endif
+#if defined(RT_USE_GRAVTREE_SAVE_RAD_FLUX)
+    {int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {sums.Rad_Flux[kf]={};}}
+#endif
+}
+
+/* Set up one target's inputs for the walk (the CPU walk's target prologue).
  * Returns 0 for a massless target, which takes part in nothing and writes zeros. */
 static KOKKOS_INLINE_FUNCTION int
-gpu_grav_member_init(const gpu_grav_walk_ctx_t &ctx, int target, gpu_grav_member_t &mem)
+gpu_grav_member_inputs_init(const gpu_grav_walk_ctx_t &ctx, int target, gpu_grav_member_inputs_t &in)
 {
     struct particle_data *P_dev = ctx.P_dev;
-    mem.target = target;
-    grav_pair_acc_init(mem.out);
+    in.target = target;
     double zeta = 0.0; grav_pm_shortrange_t pm;
-    if(!gpu_grav_open_inputs_init(ctx, target, mem.open, mem.pmass, zeta, pm)) {return 0;}
-    mem.zeta = zeta;
-    const int ptype = mem.open.ptype; const double pmass = mem.pmass;
-    const double soft = mem.open.soft;
+    if(!gpu_grav_open_inputs_init(ctx, target, in.open, in.pmass, zeta, pm)) {return 0;}
+    in.zeta = zeta;
+    const int ptype = in.open.ptype; const double pmass = in.pmass;
+    const double soft = in.open.soft;
 
     /* fed unconditionally to the shared pair kernel (consumed there only under the
      * symmetrize-by-averaging #if); matches the CPU walk's unconditional precompute. */
     const int ags_bitflag_primary = gravtree_ags_kernel_shared_bitflag(ptype);
 
 #if defined(SINGLE_STAR_TIMESTEPPING) || defined(SINK_DYNFRICTION_FROMTREE) || defined(COMPUTE_JERK_IN_GRAVTREE)
-    mem.vel = P_dev[target].Vel;
-#endif
-#ifdef COUNT_MASS_IN_GRAVTREE
-    /* Diagnostic: total mass seen by this target during the walk, summed only
-     * over accepted interactions (mirrors forcetree.cc). The walk excludes the
-     * target's own leaf (r2==0); the post-loop +=P[i].Mass in gravtree.cc
-     * finalizes the sum. */
-    mem.tree_mass = 0.0;
+    in.vel = P_dev[target].Vel;
 #endif
 #ifdef GRAVITY_SPHERICAL_SYMMETRY
     /* Shell-theorem gravity: forces from any source at r_source > r_target
      * vanish; forces from r_source < r_target use a 1/r^3 enclosed-mass formula
      * pointed toward the box center. Mirrors forcetree.cc. */
-    mem.sph_center[0] = 0.0; mem.sph_center[1] = 0.0; mem.sph_center[2] = 0.0;
+    in.sph_center[0] = 0.0; in.sph_center[1] = 0.0; in.sph_center[2] = 0.0;
 #ifdef BOX_PERIODIC
-    mem.sph_center[0] = 0.5 * boxSize_X;
-    mem.sph_center[1] = 0.5 * boxSize_Y;
-    mem.sph_center[2] = 0.5 * boxSize_Z;
+    in.sph_center[0] = 0.5 * boxSize_X;
+    in.sph_center[1] = 0.5 * boxSize_Y;
+    in.sph_center[2] = 0.5 * boxSize_Z;
 #endif
-#endif
-#ifdef SINK_COMPTON_HEATING
-    mem.incident_flux_agn = 0.0;
 #endif
 #ifdef COSMIC_RAY_SUBGRID_LEBRON
-    mem.SubGrid_CosmicRayEnergyDensity = 0.0;
     /* per-target CR gate (the host precompute leaves t_max_cr=0 unless All.Time>All.TimeBegin,
      * mirroring the CPU walk's gate) */
-    mem.cr_active_gate = (ctx.cr_data.t_max_cr > 0) ? 1 : 0;
-#endif
-#ifdef SINK_CALC_DISTANCES
-    grav_sink_prox_accum_init(mem.sink_prox);
-#endif
-#ifdef RT_USE_TREECOL_FOR_NH
-    {int kb; for(kb=0; kb<RT_USE_TREECOL_FOR_NH; kb++) {mem.treecol_angular_bins[kb]=0.0;}}
+    in.cr_active_gate = (ctx.cr_data.t_max_cr > 0) ? 1 : 0;
 #endif
 #ifdef SINK_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
-    mem.m_enc_in_rcrit = 0.0; mem.r_for_total_menclosed = grav_target_menc_radius(soft); /* baseline Rcrit_min applied in the helper */
+    in.r_for_total_menclosed = grav_target_menc_radius(soft); /* baseline Rcrit_min applied in the helper */
 #endif
 #ifdef RT_USE_GRAVTREE
-#ifdef CHIMES_STELLAR_FLUXES
-    {int kc; for(kc=0; kc<CHIMES_LOCAL_UV_NBINS; kc++) {mem.chimes_flux_G0[kc]=0; mem.chimes_flux_ion[kc]=0;}}
-#endif
     /* valid-gas RT gate via the shared helper */
-    mem.valid_gas_particle_for_rt = grav_target_valid_gas_for_rt(ptype, soft, pmass);
-#ifdef RT_OTVET
-    {int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {mem.RT_ET[kf] = {};}}
-#endif
+    in.valid_gas_particle_for_rt = grav_target_valid_gas_for_rt(ptype, soft, pmass);
 #endif /* RT_USE_GRAVTREE */
-#ifdef GALSF_FB_FIRE_RT_LONGRANGE
-    mem.incident_flux_uv = 0.0; mem.incident_flux_euv = 0.0;
-#endif
-#if defined(RT_USE_GRAVTREE_SAVE_RAD_ENERGY)
-    {int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {mem.Rad_E_gamma[kf]=0.0;}}
-#endif
-#if defined(RT_USE_GRAVTREE_SAVE_RAD_FLUX)
-    {int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {mem.Rad_Flux[kf]={};}}
-#endif
 
     /* RT_LEBRON radiation-pressure coupling factor (forcetree.cc). Once per target, before
      * the walk, because it only depends on the target's properties. Skipped when save-flux
      * mode is active (flux is stored and converted to RP after the walk by the caller). */
 #if defined(RT_USE_GRAVTREE) && defined(RT_LEBRON) && !defined(RT_USE_GRAVTREE_SAVE_RAD_FLUX)
-    {int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {mem.fac_stellum[kf]=0.0;}}
+    {int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {in.fac_stellum[kf]=0.0;}}
     {
-        volatile int valid_gas_particle_for_rt = mem.valid_gas_particle_for_rt;
+        volatile int valid_gas_particle_for_rt = in.valid_gas_particle_for_rt;
         if(valid_gas_particle_for_rt) {
             double kappa_eff[N_RT_FREQ_BINS]; int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {kappa_eff[kf] = rt_kappa(-1, kf, P_dev, ctx.CellP_dev);}
-            grav_target_rt_fac_stellum(soft, pmass, kappa_eff, mem.fac_stellum);
+            grav_target_rt_fac_stellum(soft, pmass, kappa_eff, in.fac_stellum);
         }
     }
 #endif
@@ -641,10 +714,18 @@ gpu_grav_member_init(const gpu_grav_walk_ctx_t &ctx, int target, gpu_grav_member
     }
 #endif
 #ifdef GRAVITY_SPHERICAL_SYMMETRY
-    tgt.pos = mem.open.pos; tgt.center[0] = mem.sph_center[0]; tgt.center[1] = mem.sph_center[1]; tgt.center[2] = mem.sph_center[2];
+    tgt.pos = in.open.pos; tgt.center[0] = in.sph_center[0]; tgt.center[1] = in.sph_center[1]; tgt.center[2] = in.sph_center[2];
 #endif
-    mem.tgt = tgt;
+    in.tgt = tgt;
     return 1;
+}
+
+/* Set up one target's member for the single-target walk: its inputs and its zeroed sums. */
+static KOKKOS_INLINE_FUNCTION int
+gpu_grav_member_init(const gpu_grav_walk_ctx_t &ctx, int target, gpu_grav_member_t &mem)
+{
+    gpu_grav_member_sums_init(mem.sums);
+    return gpu_grav_member_inputs_init(ctx, target, mem.in);
 }
 
 /* The member-independent view of a tree node: its moments and geometry as stored,
@@ -827,13 +908,13 @@ gpu_grav_leaf_member_accepts(const gpu_grav_walk_ctx_t &ctx, int no, const gpu_g
  * r2, mass, secondary softening/type/zeta and the gated per-pair terms); its payload
  * values are in pl. */
 static KOKKOS_INLINE_FUNCTION void
-gpu_grav_evaluate_pair(const gpu_grav_walk_ctx_t &ctx, gpu_grav_member_t &mem, grav_pair_src_t &src, const gpu_grav_src_payload_t &pl)
+gpu_grav_evaluate_pair(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_member_inputs_t &in, gpu_grav_member_sums_t &sums, grav_pair_src_t &src, const gpu_grav_src_payload_t &pl)
 {
     if(!((src.r2 > 0.0) && (src.mass > 0.0))) {return;}
     /* pair-wise gravity, PM truncation, and the accumulations inside the PM short-range
      * gate, via the shared evaluation (gravtree_force_kernel.h), the single home for the
      * pair physics on both walks */
-    grav_pair_result_t res = grav_pair_evaluate_core(mem.tgt, src, mem.out);
+    grav_pair_result_t res = grav_pair_evaluate_core(in.tgt, src, sums.out);
     const double r = res.r, fac_accel = res.fac_accel;
     (void) r; (void) fac_accel;
 #ifdef GIZMO_GPU_EWALD_POT_CORRECTION
@@ -843,13 +924,13 @@ gpu_grav_evaluate_pair(const gpu_grav_walk_ctx_t &ctx, gpu_grav_member_t &mem, g
      * the caller); the guard only covers the post-endrun drain. */
     if(ctx.ewald_pot.active) {
         grav_ewald_interp_weights ew = grav_ewald_interp_setup(src.dr[0], src.dr[1], src.dr[2], ctx.ewald_pot.fac_intp);
-        mem.out.pot += src.mass * grav_ewald_interp_apply(ctx.ewald_pot.potcorr, ew);
+        sums.out.pot += src.mass * grav_ewald_interp_apply(ctx.ewald_pot.potcorr, ew);
     }
 #endif
 #ifdef COUNT_MASS_IN_GRAVTREE
     /* counted only for accepted interactions (r2>0, mass>0), mirroring forcetree.cc -- the
      * walk excludes the target's own (r2==0) leaf; gravtree.cc adds it back exactly once. */
-    mem.tree_mass += src.mass;
+    sums.tree_mass += src.mass;
 #endif
 
     /* RT cluster payloads.  Structure mirrors forcetree.cc: OUTSIDE the PM short-range
@@ -859,24 +940,24 @@ gpu_grav_evaluate_pair(const gpu_grav_walk_ctx_t &ctx, gpu_grav_member_t &mem, g
 #ifdef RT_USE_TREECOL_FOR_NH
     {
         const double angular_bin_size = 4.0 * M_PI / RT_USE_TREECOL_FOR_NH;
-        grav_treecol_accumulate(src.dr, r, fac_accel, pl.gasmass, src.mass, angular_bin_size, mem.treecol_angular_bins);
+        grav_treecol_accumulate(src.dr, r, fac_accel, pl.gasmass, src.mass, angular_bin_size, sums.treecol_angular_bins);
     }
 #endif
 #ifdef SINK_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
     /* per-interaction mass accumulation: each visited node contributes its multipole mass when within Rcrit */
-    if(r < mem.r_for_total_menclosed) {mem.m_enc_in_rcrit += src.mass;}
+    if(r < in.r_for_total_menclosed) {sums.m_enc_in_rcrit += src.mass;}
 #endif
 #ifdef COSMIC_RAY_SUBGRID_LEBRON
-    grav_cr_lebron_accumulate(mem.open.ptype, r, mem.open.soft, pl.cr_injection, mem.cr_active_gate, ctx.cr_data.t_max_cr, mem.tgt.pm, mem.SubGrid_CosmicRayEnergyDensity);
+    grav_cr_lebron_accumulate(in.open.ptype, r, in.open.soft, pl.cr_injection, in.cr_active_gate, ctx.cr_data.t_max_cr, in.tgt.pm, sums.SubGrid_CosmicRayEnergyDensity);
 #endif
 #ifdef RT_USE_GRAVTREE
     {
-        volatile int valid_gas_particle_for_rt = mem.valid_gas_particle_for_rt;
+        volatile int valid_gas_particle_for_rt = in.valid_gas_particle_for_rt;
         if(valid_gas_particle_for_rt)
         {
             /* payload formulas in the shared helper; fac_rt computed there from d_stellarlum
              * (may differ from dr when RT_SEPARATELY_TRACK_LUMPOS; otherwise d_stellarlum == dr) */
-            grav_rt_src_t rt_src = {}; rt_src.d_stellarlum = pl.d_stellarlum; rt_src.soft = mem.open.soft; rt_src.mass_stellarlum = pl.mass_stellarlum;
+            grav_rt_src_t rt_src = {}; rt_src.d_stellarlum = pl.d_stellarlum; rt_src.soft = in.open.soft; rt_src.mass_stellarlum = pl.mass_stellarlum;
 #ifdef CHIMES_STELLAR_FLUXES
             rt_src.chimes_mass_stellarlum_G0 = pl.chimes_mass_stellarlum_G0; rt_src.chimes_mass_stellarlum_ion = pl.chimes_mass_stellarlum_ion;
 #endif
@@ -884,38 +965,38 @@ gpu_grav_evaluate_pair(const gpu_grav_walk_ctx_t &ctx, gpu_grav_member_t &mem, g
             rt_src.mass_sinklumwt_forradfb = pl.mass_sinklumwt_forradfb;
 #endif
 #if defined(RT_LEBRON) && !defined(RT_USE_GRAVTREE_SAVE_RAD_FLUX)
-            rt_src.fac_stellum = mem.fac_stellum;
+            rt_src.fac_stellum = in.fac_stellum;
 #endif
             grav_rt_accum_t rt_accum = {};
 #if defined(RT_USE_GRAVTREE_SAVE_RAD_ENERGY)
-            rt_accum.Rad_E_gamma = mem.Rad_E_gamma;
+            rt_accum.Rad_E_gamma = sums.Rad_E_gamma;
 #endif
 #ifdef CHIMES_STELLAR_FLUXES
-            rt_accum.chimes_flux_G0 = mem.chimes_flux_G0; rt_accum.chimes_flux_ion = mem.chimes_flux_ion;
+            rt_accum.chimes_flux_G0 = sums.chimes_flux_G0; rt_accum.chimes_flux_ion = sums.chimes_flux_ion;
 #endif
 #ifdef GALSF_FB_FIRE_RT_LONGRANGE
-            rt_accum.incident_flux_uv = &mem.incident_flux_uv; rt_accum.incident_flux_euv = &mem.incident_flux_euv;
+            rt_accum.incident_flux_uv = &sums.incident_flux_uv; rt_accum.incident_flux_euv = &sums.incident_flux_euv;
 #endif
 #ifdef SINK_COMPTON_HEATING
-            rt_accum.incident_flux_agn = &mem.incident_flux_agn;
+            rt_accum.incident_flux_agn = &sums.incident_flux_agn;
 #endif
 #ifdef RT_OTVET
-            rt_accum.RT_ET = mem.RT_ET;
+            rt_accum.RT_ET = sums.RT_ET;
 #endif
 #if defined(RT_USE_GRAVTREE_SAVE_RAD_FLUX)
-            rt_accum.Rad_Flux = mem.Rad_Flux;
+            rt_accum.Rad_Flux = sums.Rad_Flux;
 #endif
-            grav_rt_payload_accumulate(rt_src, rt_accum, mem.out.acc);
+            grav_rt_payload_accumulate(rt_src, rt_accum, sums.out.acc);
         }
     }
 #endif /* RT_USE_GRAVTREE */
 #ifdef DM_SCALARFIELD_SCREENING
     /* Yukawa-screened scalar-field force on non-gas targets (shared helper;
      * own table gate keyed on the dm-center distance, outside the main PM gate) */
-    if(mem.open.ptype != 0)
+    if(in.open.ptype != 0)
     {
         Vec3<double> d_dm = pl.d_dm;   /* the helper takes the displacement by non-const reference */
-        grav_dm_scalarfield_accumulate(d_dm, pl.mass_dm_local, mem.open.soft, mem.tgt.pm, mem.out.acc);
+        grav_dm_scalarfield_accumulate(d_dm, pl.mass_dm_local, in.open.soft, in.tgt.pm, sums.out.acc);
     }
 #endif
 }
@@ -923,7 +1004,7 @@ gpu_grav_evaluate_pair(const gpu_grav_walk_ctx_t &ctx, gpu_grav_member_t &mem, g
 /* Load a particle leaf for a member through the P_dev adapter and evaluate it. The
  * source state is the drifted state, except where the Hermite predictor replaces it. */
 static KOKKOS_INLINE_FUNCTION void
-gpu_grav_evaluate_leaf(const gpu_grav_walk_ctx_t &ctx, int no, gpu_grav_member_t &mem)
+gpu_grav_evaluate_leaf(const gpu_grav_walk_ctx_t &ctx, int no, const gpu_grav_member_inputs_t &in, gpu_grav_member_sums_t &sums)
 {
     struct particle_data *P_dev = ctx.P_dev;
     grav_pair_src_t src;
@@ -950,7 +1031,7 @@ gpu_grav_evaluate_leaf(const gpu_grav_walk_ctx_t &ctx, int no, gpu_grav_member_t
         hermite_predict_source_state(no, P_dev, ctx.hermite.state, &ctx.hermite.tables, src_pos, src_vel);
     }
 #endif
-    src.dr = src_pos - mem.open.pos;
+    src.dr = src_pos - in.open.pos;
     gravity_box_nearest_image(src.dr[0], src.dr[1], src.dr[2], -1);
     src.r2 = src.dr.norm_sq();
     src.mass = P_dev[no].Mass;
@@ -964,11 +1045,11 @@ gpu_grav_evaluate_leaf(const gpu_grav_walk_ctx_t &ctx, int no, gpu_grav_member_t
 #endif
 #ifdef DM_SCALARFIELD_SCREENING
     /* per-interaction DM state for this leaf particle (mirrors forcetree.cc) */
-    if(mem.open.ptype != 0 && P_dev[no].Type == 1) { pl.d_dm = src.dr; pl.mass_dm_local = src.mass; }
+    if(in.open.ptype != 0 && P_dev[no].Type == 1) { pl.d_dm = src.dr; pl.mass_dm_local = src.mass; }
     else { pl.d_dm = Vec3<double>{0,0,0}; pl.mass_dm_local = 0; }
 #endif
 #ifdef GRAVITY_SPHERICAL_SYMMETRY
-    src.r_source = grav_spherical_symmetry_r_from_center(src_pos[0],src_pos[1],src_pos[2],mem.sph_center[0],mem.sph_center[1],mem.sph_center[2]);
+    src.r_source = grav_spherical_symmetry_r_from_center(src_pos[0],src_pos[1],src_pos[2],in.sph_center[0],in.sph_center[1],in.sph_center[2]);
 #endif
 #ifdef ADAPTIVE_GRAVSOFT_FROM_TIDAL_CRITERION
     /* the secondary's previous-step tidal tensor (mirrors forcetree.cc) */
@@ -978,7 +1059,7 @@ gpu_grav_evaluate_leaf(const gpu_grav_walk_ctx_t &ctx, int no, gpu_grav_member_t
     }
 #endif
 #if defined(SINK_DYNFRICTION_FROMTREE) || defined(COMPUTE_JERK_IN_GRAVTREE)
-    src.dv = src_vel - mem.vel;
+    src.dv = src_vel - in.vel;
 #endif
 #ifdef SINK_DYNFRICTION_FROMTREE
     src.m_j_eff_for_df = src.mass;
@@ -1014,7 +1095,7 @@ gpu_grav_evaluate_leaf(const gpu_grav_walk_ctx_t &ctx, int no, gpu_grav_member_t
     pl.mass_sinklumwt_forradfb = 0.0;
 #endif
     {
-        volatile int valid_gas_particle_for_rt = mem.valid_gas_particle_for_rt;
+        volatile int valid_gas_particle_for_rt = in.valid_gas_particle_for_rt;
         if(valid_gas_particle_for_rt)
         {
             pl.d_stellarlum = src.dr;
@@ -1072,9 +1153,9 @@ gpu_grav_evaluate_leaf(const gpu_grav_walk_ctx_t &ctx, int no, gpu_grav_member_t
 #ifdef SINK_CALC_DISTANCES
     if((src.r2 > 0) && (src.mass > 0))
     {
-        grav_sink_prox_target_t prox_target = {}; prox_target.ptype = mem.open.ptype; prox_target.pmass = mem.pmass; prox_target.soft = mem.open.soft;
+        grav_sink_prox_target_t prox_target = {}; prox_target.ptype = in.open.ptype; prox_target.pmass = in.pmass; prox_target.soft = in.open.soft;
 #if defined(SINGLE_STAR_TIMESTEPPING)
-        prox_target.vel = mem.vel;
+        prox_target.vel = in.vel;
 #endif
         grav_sink_prox_leaf_src_t prox_src = {}; prox_src.src_type = P_dev[no].Type; prox_src.src_mass = P_dev[no].Mass; prox_src.motion.vel = src_vel;   /* the state this interaction was evaluated at, mirroring forcetree.cc, so (dr, vel) stays a consistent pair on a Hermite pass */
 #if defined(SPECIAL_POINT_MOTION) || defined(SPECIAL_POINT_WEIGHTED_MOTION)
@@ -1083,11 +1164,11 @@ gpu_grav_evaluate_leaf(const gpu_grav_walk_ctx_t &ctx, int no, gpu_grav_member_t
 #if defined(SINGLE_STAR_TIMESTEPPING) && defined(SINGLE_STAR_FB_TIMESTEPLIMIT)
         prox_src.motion.max_feedback_vel = P_dev[no].MaxFeedbackVel;
 #endif
-        grav_sink_prox_leaf_accumulate(src.r2, src.dr, prox_target, prox_src, mem.sink_prox);
+        grav_sink_prox_leaf_accumulate(src.r2, src.dr, prox_target, prox_src, sums.sink_prox);
     }
 #endif /* SINK_CALC_DISTANCES */
 
-    gpu_grav_evaluate_pair(ctx, mem, src, pl);
+    gpu_grav_evaluate_pair(ctx, in, sums, src, pl);
 }
 
 /* Load an accepted node for a member through the SoA adapter and evaluate it, given
@@ -1098,7 +1179,7 @@ gpu_grav_evaluate_leaf(const gpu_grav_walk_ctx_t &ctx, int no, gpu_grav_member_t
  * moment cannot carry (Type + AGS_zeta) are restored via the shared seam so
  * grav_force_pair applies AGS symmetrization/zeta exactly as on the source's home rank. */
 static KOKKOS_INLINE_FUNCTION void
-gpu_grav_evaluate_node(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_node_prelude_t &nd, gpu_grav_member_t &mem,
+gpu_grav_evaluate_node(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_node_prelude_t &nd, const gpu_grav_member_inputs_t &in, gpu_grav_member_sums_t &sums,
                        const Vec3<MyFloat> &s_node, MyFloat mass_node, const Vec3<double> &dr, double r2)
 {
     const struct gpu_gravity_tree_soa_t *tree_soa = &ctx.tree_soa;
@@ -1122,15 +1203,15 @@ gpu_grav_evaluate_node(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_node_prelu
 #ifdef DM_SCALARFIELD_SCREENING
     /* per-interaction DM state for this accepted node (mirrors forcetree.cc): d_dm uses the
      * DM CoM s_dm, NOT the total CoM (s_node). */
-    if(mem.open.ptype != 0) {
-        pl.d_dm[0] = (double)tree_soa->s_dm[idx][0] - mem.open.pos[0];
-        pl.d_dm[1] = (double)tree_soa->s_dm[idx][1] - mem.open.pos[1];
-        pl.d_dm[2] = (double)tree_soa->s_dm[idx][2] - mem.open.pos[2];
+    if(in.open.ptype != 0) {
+        pl.d_dm[0] = (double)tree_soa->s_dm[idx][0] - in.open.pos[0];
+        pl.d_dm[1] = (double)tree_soa->s_dm[idx][1] - in.open.pos[1];
+        pl.d_dm[2] = (double)tree_soa->s_dm[idx][2] - in.open.pos[2];
         pl.mass_dm_local = (double)tree_soa->mass_dm[idx];
     } else { pl.d_dm = Vec3<double>{0,0,0}; pl.mass_dm_local = 0; }
 #endif
 #ifdef GRAVITY_SPHERICAL_SYMMETRY
-    src.r_source = grav_spherical_symmetry_r_from_center(s_node[0],s_node[1],s_node[2],mem.sph_center[0],mem.sph_center[1],mem.sph_center[2]);
+    src.r_source = grav_spherical_symmetry_r_from_center(s_node[0],s_node[1],s_node[2],in.sph_center[0],in.sph_center[1],in.sph_center[2]);
 #else
     (void) s_node;
 #endif
@@ -1141,9 +1222,9 @@ gpu_grav_evaluate_node(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_node_prelu
     }
 #endif
 #if defined(SINK_DYNFRICTION_FROMTREE) || defined(COMPUTE_JERK_IN_GRAVTREE)
-    src.dv[0] = (double) tree_soa->node_vs[idx][0] - mem.vel[0];
-    src.dv[1] = (double) tree_soa->node_vs[idx][1] - mem.vel[1];
-    src.dv[2] = (double) tree_soa->node_vs[idx][2] - mem.vel[2];
+    src.dv[0] = (double) tree_soa->node_vs[idx][0] - in.vel[0];
+    src.dv[1] = (double) tree_soa->node_vs[idx][1] - in.vel[1];
+    src.dv[2] = (double) tree_soa->node_vs[idx][2] - in.vel[2];
 #endif
 #ifdef SINK_DYNFRICTION_FROMTREE
     {
@@ -1166,7 +1247,7 @@ gpu_grav_evaluate_node(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_node_prelu
     pl.mass_sinklumwt_forradfb = 0.0;
 #endif
     {
-        volatile int valid_gas_particle_for_rt = mem.valid_gas_particle_for_rt;
+        volatile int valid_gas_particle_for_rt = in.valid_gas_particle_for_rt;
         if(valid_gas_particle_for_rt)
         {
             int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {
@@ -1179,9 +1260,9 @@ gpu_grav_evaluate_node(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_node_prelu
             }
 #endif
 #ifdef RT_SEPARATELY_TRACK_LUMPOS
-            pl.d_stellarlum[0] = tree_soa->rt_source_lum_s[idx][0] - mem.open.pos[0];
-            pl.d_stellarlum[1] = tree_soa->rt_source_lum_s[idx][1] - mem.open.pos[1];
-            pl.d_stellarlum[2] = tree_soa->rt_source_lum_s[idx][2] - mem.open.pos[2];
+            pl.d_stellarlum[0] = tree_soa->rt_source_lum_s[idx][0] - in.open.pos[0];
+            pl.d_stellarlum[1] = tree_soa->rt_source_lum_s[idx][1] - in.open.pos[1];
+            pl.d_stellarlum[2] = tree_soa->rt_source_lum_s[idx][2] - in.open.pos[2];
             gravity_box_nearest_image(pl.d_stellarlum[0], pl.d_stellarlum[1], pl.d_stellarlum[2], -1);
 #else
             pl.d_stellarlum = src.dr;
@@ -1206,19 +1287,19 @@ gpu_grav_evaluate_node(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_node_prelu
 #ifdef SPECIAL_POINT_WEIGHTED_MOTION
     {
         Vec3<double> node_vs = Vec3<double>{(double)tree_soa->node_vs[idx][0], (double)tree_soa->node_vs[idx][1], (double)tree_soa->node_vs[idx][2]};
-        grav_sink_prox_node_specialweighted(src.r2, node_vs, mem.open.ptype, mem.sink_prox);
+        grav_sink_prox_node_specialweighted(src.r2, node_vs, in.open.ptype, sums.sink_prox);
     }
 #endif
     if(tree_soa->sink_mass[idx] > 0)
     {
         Vec3<double> sink_dr;
-        sink_dr[0] = tree_soa->sink_pos[idx][0] - mem.open.pos[0];
-        sink_dr[1] = tree_soa->sink_pos[idx][1] - mem.open.pos[1];
-        sink_dr[2] = tree_soa->sink_pos[idx][2] - mem.open.pos[2];
+        sink_dr[0] = tree_soa->sink_pos[idx][0] - in.open.pos[0];
+        sink_dr[1] = tree_soa->sink_pos[idx][1] - in.open.pos[1];
+        sink_dr[2] = tree_soa->sink_pos[idx][2] - in.open.pos[2];
         gravity_box_nearest_image(sink_dr[0], sink_dr[1], sink_dr[2], -1);
-        grav_sink_prox_target_t prox_target = {}; prox_target.ptype = mem.open.ptype; prox_target.pmass = mem.pmass; prox_target.soft = mem.open.soft;
+        grav_sink_prox_target_t prox_target = {}; prox_target.ptype = in.open.ptype; prox_target.pmass = in.pmass; prox_target.soft = in.open.soft;
 #if defined(SINGLE_STAR_TIMESTEPPING)
-        prox_target.vel = mem.vel;
+        prox_target.vel = in.vel;
 #endif
         grav_sink_prox_node_src_t prox_src = {}; prox_src.sink_mass = (double) tree_soa->sink_mass[idx];
 #if defined(SINGLE_STAR_FIND_BINARIES)
@@ -1233,118 +1314,118 @@ gpu_grav_evaluate_node(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_node_prelu
 #if defined(SINGLE_STAR_TIMESTEPPING) && defined(SINGLE_STAR_FB_TIMESTEPLIMIT)
         prox_src.motion.max_feedback_vel = tree_soa->MaxFeedbackVel[idx];
 #endif
-        grav_sink_prox_node_accumulate(src.r2, sink_dr, prox_src, prox_target, mem.sink_prox);
+        grav_sink_prox_node_accumulate(src.r2, sink_dr, prox_src, prox_target, sums.sink_prox);
     }
 #endif /* SINK_CALC_DISTANCES */
 
-    gpu_grav_evaluate_pair(ctx, mem, src, pl);
+    gpu_grav_evaluate_pair(ctx, in, sums, src, pl);
 }
 
 /* Write a completed member's outputs to P_dev / CellP_dev (the host scatter loop in
  * gpu_gravtree_walk_primary copies them to P[] / CellP[]) and return the three the
  * caller collects directly. Mirrors forcetree.cc (mode=0). */
 static KOKKOS_INLINE_FUNCTION void
-gpu_grav_member_finish(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_member_t &mem, Vec3<double> &acc_out, int &ninter_out, double &pot_out)
+gpu_grav_member_finish(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_member_inputs_t &in, const gpu_grav_member_sums_t &sums, Vec3<double> &acc_out, int &ninter_out, double &pot_out)
 {
-    struct particle_data *P_dev = ctx.P_dev; const int target = mem.target;
+    struct particle_data *P_dev = ctx.P_dev; const int target = in.target;
 #ifdef RT_USE_GRAVTREE
     struct gas_cell_data *CellP_dev = ctx.CellP_dev;
-    volatile int valid_gas_particle_for_rt = mem.valid_gas_particle_for_rt;   /* nvc++ miscompiles raw boolean gates in device code */
+    volatile int valid_gas_particle_for_rt = in.valid_gas_particle_for_rt;   /* nvc++ miscompiles raw boolean gates in device code */
 #endif
 #ifdef RT_USE_TREECOL_FOR_NH
-    {int k; for(k=0; k<RT_USE_TREECOL_FOR_NH; k++) {P_dev[target].ColumnDensityBins[k] = mem.treecol_angular_bins[k];}}
+    {int k; for(k=0; k<RT_USE_TREECOL_FOR_NH; k++) {P_dev[target].ColumnDensityBins[k] = sums.treecol_angular_bins[k];}}
 #endif
 #ifdef SINK_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
-    P_dev[target].MencInRcrit = mem.m_enc_in_rcrit;
+    P_dev[target].MencInRcrit = sums.m_enc_in_rcrit;
 #endif
 #ifdef RT_USE_GRAVTREE
 #ifdef RT_OTVET
     if(valid_gas_particle_for_rt) {
-        int k; for(k=0; k<N_RT_FREQ_BINS; k++) {CellP_dev[target].ET[k] = mem.RT_ET[k];}
-    } else if(mem.open.ptype == 0) {
+        int k; for(k=0; k<N_RT_FREQ_BINS; k++) {CellP_dev[target].ET[k] = sums.RT_ET[k];}
+    } else if(in.open.ptype == 0) {
         int k; for(k=0; k<N_RT_FREQ_BINS; k++) {CellP_dev[target].ET[k] = {};}
     }
 #endif
 #ifdef GALSF_FB_FIRE_RT_LONGRANGE
     if(valid_gas_particle_for_rt) {
-        CellP_dev[target].Rad_Flux_UV  = mem.incident_flux_uv;
-        CellP_dev[target].Rad_Flux_EUV = mem.incident_flux_euv;
+        CellP_dev[target].Rad_Flux_UV  = sums.incident_flux_uv;
+        CellP_dev[target].Rad_Flux_EUV = sums.incident_flux_euv;
     }
 #endif
 #ifdef CHIMES_STELLAR_FLUXES
     if(valid_gas_particle_for_rt) {
         int kc; for(kc=0; kc<CHIMES_LOCAL_UV_NBINS; kc++) {
-            CellP_dev[target].Chimes_G0[kc]          = mem.chimes_flux_G0[kc];
-            CellP_dev[target].Chimes_fluxPhotIon[kc] = mem.chimes_flux_ion[kc];
+            CellP_dev[target].Chimes_G0[kc]          = sums.chimes_flux_G0[kc];
+            CellP_dev[target].Chimes_fluxPhotIon[kc] = sums.chimes_flux_ion[kc];
         }
     }
 #endif
 #if defined(RT_USE_GRAVTREE_SAVE_RAD_ENERGY)
     if(valid_gas_particle_for_rt) {
-        int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {CellP_dev[target].Rad_E_gamma[kf] = mem.Rad_E_gamma[kf];}
+        int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {CellP_dev[target].Rad_E_gamma[kf] = sums.Rad_E_gamma[kf];}
     }
 #endif
 #ifdef SINK_COMPTON_HEATING
     if(valid_gas_particle_for_rt) {
-        CellP_dev[target].Rad_Flux_AGN = mem.incident_flux_agn;
+        CellP_dev[target].Rad_Flux_AGN = sums.incident_flux_agn;
     }
 #endif
 #if defined(RT_USE_GRAVTREE_SAVE_RAD_FLUX)
     if(valid_gas_particle_for_rt) {
-        int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {CellP_dev[target].Rad_Flux[kf] = mem.Rad_Flux[kf];}
+        int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {CellP_dev[target].Rad_Flux[kf] = sums.Rad_Flux[kf];}
     }
 #endif
 #endif /* RT_USE_GRAVTREE */
 #ifdef COSMIC_RAY_SUBGRID_LEBRON
-    if(mem.open.ptype == 0) {ctx.CellP_dev[target].SubGrid_CosmicRayEnergyDensity = mem.SubGrid_CosmicRayEnergyDensity;}
+    if(in.open.ptype == 0) {ctx.CellP_dev[target].SubGrid_CosmicRayEnergyDensity = sums.SubGrid_CosmicRayEnergyDensity;}
 #endif
 #ifdef SINK_CALC_DISTANCES
-    P_dev[target].Min_Distance_to_Sink = sqrt(mem.sink_prox.Min_Distance_to_Sink2);
-    P_dev[target].Min_xyz_to_Sink = mem.sink_prox.Min_xyz_to_Sink;
+    P_dev[target].Min_Distance_to_Sink = sqrt(sums.sink_prox.Min_Distance_to_Sink2);
+    P_dev[target].Min_xyz_to_Sink = sums.sink_prox.Min_xyz_to_Sink;
 #ifdef SINGLE_STAR_FIND_BINARIES
     P_dev[target].is_in_a_binary = 0;
-    P_dev[target].Min_Sink_OrbitalTime = mem.sink_prox.Min_Sink_OrbitalTime;
-    if(mem.sink_prox.Min_Sink_OrbitalTime < MAX_REAL_NUMBER) {
+    P_dev[target].Min_Sink_OrbitalTime = sums.sink_prox.Min_Sink_OrbitalTime;
+    if(sums.sink_prox.Min_Sink_OrbitalTime < MAX_REAL_NUMBER) {
         P_dev[target].is_in_a_binary = 1;
-        P_dev[target].comp_Mass = mem.sink_prox.comp_Mass;
-        P_dev[target].comp_dx = mem.sink_prox.comp_dx;
-        P_dev[target].comp_dv = mem.sink_prox.comp_dv;
+        P_dev[target].comp_Mass = sums.sink_prox.comp_Mass;
+        P_dev[target].comp_dx = sums.sink_prox.comp_dx;
+        P_dev[target].comp_dv = sums.sink_prox.comp_dv;
     }
 #endif
 #ifdef SINGLE_STAR_TIMESTEPPING
-    P_dev[target].Min_Sink_Approach_Time = sqrt(mem.sink_prox.Min_Sink_Approach_Time);
-    P_dev[target].Min_Sink_Freefall_time = sqrt(sqrt(mem.sink_prox.Min_Sink_Freefall_time) / All.G);
+    P_dev[target].Min_Sink_Approach_Time = sqrt(sums.sink_prox.Min_Sink_Approach_Time);
+    P_dev[target].Min_Sink_Freefall_time = sqrt(sqrt(sums.sink_prox.Min_Sink_Freefall_time) / All.G);
 #ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
-    P_dev[target].Min_Sink_FeedbackTime = sqrt(mem.sink_prox.Min_Sink_FeedbackTime);
+    P_dev[target].Min_Sink_FeedbackTime = sqrt(sums.sink_prox.Min_Sink_FeedbackTime);
 #endif
 #endif
 #endif /* SINK_CALC_DISTANCES */
 #ifdef COMPUTE_TIDAL_TENSOR_IN_GRAVTREE
-    P_dev[target].tidal_tensorps = mem.out.tidal_tensorps;
+    P_dev[target].tidal_tensorps = sums.out.tidal_tensorps;
 #endif
 #ifdef COMPUTE_JERK_IN_GRAVTREE
-    P_dev[target].GravJerk = mem.out.jerk;
+    P_dev[target].GravJerk = sums.out.jerk;
 #endif
 #ifdef COUNT_MASS_IN_GRAVTREE
-    P_dev[target].TreeMass = mem.tree_mass;
+    P_dev[target].TreeMass = sums.tree_mass;
 #endif
 #ifdef ADAPTIVE_GRAVSOFT_FROM_TIDAL_CRITERION
-    P_dev[target].tidal_zeta = (MyFloat) mem.out.tidal_zeta;
+    P_dev[target].tidal_zeta = (MyFloat) sums.out.tidal_zeta;
 #endif
 #ifdef SPECIAL_POINT_MOTION
-    P_dev[target].vel_of_nearest_special = Vec3<MyFloat>{(MyFloat)mem.sink_prox.vel_of_nearest_special[0],
-                                                         (MyFloat)mem.sink_prox.vel_of_nearest_special[1],
-                                                         (MyFloat)mem.sink_prox.vel_of_nearest_special[2]};
-    P_dev[target].acc_of_nearest_special = Vec3<MyFloat>{(MyFloat)mem.sink_prox.acc_of_nearest_special[0],
-                                                         (MyFloat)mem.sink_prox.acc_of_nearest_special[1],
-                                                         (MyFloat)mem.sink_prox.acc_of_nearest_special[2]};
+    P_dev[target].vel_of_nearest_special = Vec3<MyFloat>{(MyFloat)sums.sink_prox.vel_of_nearest_special[0],
+                                                         (MyFloat)sums.sink_prox.vel_of_nearest_special[1],
+                                                         (MyFloat)sums.sink_prox.vel_of_nearest_special[2]};
+    P_dev[target].acc_of_nearest_special = Vec3<MyFloat>{(MyFloat)sums.sink_prox.acc_of_nearest_special[0],
+                                                         (MyFloat)sums.sink_prox.acc_of_nearest_special[1],
+                                                         (MyFloat)sums.sink_prox.acc_of_nearest_special[2]};
 #ifdef SPECIAL_POINT_WEIGHTED_MOTION
-    P_dev[target].weight_sum_for_special_point_smoothing = (MyFloat) mem.sink_prox.weight_sum_for_special_point_smoothing;
+    P_dev[target].weight_sum_for_special_point_smoothing = (MyFloat) sums.sink_prox.weight_sum_for_special_point_smoothing;
 #endif
 #endif
-    acc_out = mem.out.acc;
-    ninter_out = mem.out.ninter;
-    pot_out = mem.out.pot;
+    acc_out = sums.out.acc;
+    ninter_out = sums.out.ninter;
+    pot_out = sums.out.pot;
 }
 
 /* -------------------------------------------------------------------------
@@ -1370,12 +1451,12 @@ gpu_gravtree_walk_one(const gpu_grav_walk_ctx_t &ctx, int target, Vec3<double> &
         if(no >= treeParticleSlots && no < treeBase) {return 0;} /* gap: malformed tree -- defer; the CPU walk's guard stops loudly */
         if(no < treeParticleSlots) /* particle leaf */
         {
-            if(gpu_grav_leaf_member_accepts(ctx, no, mem.open)) {
+            if(gpu_grav_leaf_member_accepts(ctx, no, mem.in.open)) {
                 /* The same invariant the host walk asserts on every accepted particle: a source is
                    evaluated only at the walk time. Nothing drifts here, so a stale source hands the
                    target to the host walk instead of producing a force from a stale position. */
                 if(ctx.P_dev[no].Ti_current != ctx.ti) {return -1;}
-                gpu_grav_evaluate_leaf(ctx, no, mem);
+                gpu_grav_evaluate_leaf(ctx, no, mem.in, mem.sums);
             }
             no = tree_soa->nextnode_aux[no];
             continue;
@@ -1387,17 +1468,17 @@ gpu_gravtree_walk_one(const gpu_grav_walk_ctx_t &ctx, int target, Vec3<double> &
         if(step == GPU_GRAV_NODE_SKIP_TO_SIBLING) {no = nd.sibling; continue;}
         if(step == GPU_GRAV_NODE_DESCEND) {no = nd.nextnode; continue;}
         Vec3<MyFloat> s_node; MyFloat mass_node; Vec3<double> dr; double r2;
-        if(!gpu_grav_node_member_geometry(ctx, nd, mem.open, s_node, mass_node, dr, r2)) {no = nd.sibling; continue;} /* pure-star node, star target */
+        if(!gpu_grav_node_member_geometry(ctx, nd, mem.in.open, s_node, mass_node, dr, r2)) {no = nd.sibling; continue;} /* pure-star node, star target */
         int note;
-        const gravtree_open_t pred = gpu_grav_node_member_decide(ctx, nd, mem.open, mass_node, r2, note);
+        const gravtree_open_t pred = gpu_grav_node_member_decide(ctx, nd, mem.in.open, mass_node, r2, note);
         if(note != GPU_GRAV_NOTE_NONE) {gpu_grav_note_commit(1, (note == GPU_GRAV_NOTE_UNSHIPPABLE) ? 1 : 0);}
         if(pred == GRAV_SKIP_NODE) {no = nd.sibling; continue;}
         if(pred == GRAV_OPEN_NODE) {no = nd.nextnode; continue;}
-        gpu_grav_evaluate_node(ctx, nd, mem, s_node, mass_node, dr, r2);
+        gpu_grav_evaluate_node(ctx, nd, mem.in, mem.sums, s_node, mass_node, dr, r2);
         no = nd.sibling;
     }
 
-    gpu_grav_member_finish(ctx, mem, acc_out, ninter_out, pot_out);
+    gpu_grav_member_finish(ctx, mem.in, mem.sums, acc_out, ninter_out, pot_out);
     return 1;
 }
 
@@ -1444,7 +1525,7 @@ struct gpu_grav_walk_item_t { int no, exit; };   /* a work item's indices; its m
 struct gpu_grav_packet_scratch_plan_t {
     int mask_words;
     int local_stack;   /* continuations per walker; zero for a flavour that never splits an item */
-    size_t open_inputs, frontier, frontier_masks, records, record_masks, local, local_masks, walker_masks, counters, bytes;
+    size_t open_inputs, member_inputs, member_fold, frontier, frontier_masks, records, record_masks, local, local_masks, walker_masks, counters, bytes;
 };
 
 /* The scratch a team needs for one launch shape: q_dev members, team_size threads,
@@ -1458,7 +1539,7 @@ struct gpu_grav_packet_scratch_plan_t {
  * empty rather than merely unused -- the scratch request is what team_size_max is asked
  * about, so an unused region is a real cost in occupancy, not just in bytes. */
 static struct gpu_grav_packet_scratch_plan_t
-gpu_grav_packet_scratch_plan(int q_dev, int team_size, int frontier_cap, int chunk_cap, int local_stack)
+gpu_grav_packet_scratch_plan(int q_dev, int team_size, int frontier_cap, int chunk_cap, int local_stack, int team_evaluates)
 {
     struct gpu_grav_packet_scratch_plan_t p;
     p.mask_words = (q_dev + GRAV_PACKET_MASK_BITS - 1) / GRAV_PACKET_MASK_BITS;
@@ -1466,6 +1547,11 @@ gpu_grav_packet_scratch_plan(int q_dev, int team_size, int frontier_cap, int chu
     size_t off = 0;
     auto take = [&off](size_t bytes, size_t align) {off = ((off + align - 1) / align) * align; size_t here = off; off += bytes; return here;};
     p.open_inputs    = take((size_t) q_dev * sizeof(gpu_grav_open_inputs_t), alignof(gpu_grav_open_inputs_t));
+    /* a flavour whose whole team evaluates also publishes each member's full inputs, which every lane
+       working on that member reads, and one partial sum per thread, through which the lanes of a member
+       are folded when the packet commits */
+    p.member_inputs  = take(team_evaluates ? (size_t) q_dev * sizeof(gpu_grav_member_inputs_t) : 0, alignof(gpu_grav_member_inputs_t));
+    p.member_fold    = take(team_evaluates ? (size_t) team_size * sizeof(gpu_grav_member_sums_t) : 0, alignof(gpu_grav_member_sums_t));
     p.frontier       = take((size_t) frontier_cap * sizeof(gpu_grav_walk_item_t), alignof(gpu_grav_walk_item_t));
     p.frontier_masks = take((size_t) frontier_cap * p.mask_words * sizeof(grav_packet_mask_word_t), alignof(grav_packet_mask_word_t));
     p.records        = take((size_t) chunk_cap * sizeof(grav_walk_record_t), alignof(grav_walk_record_t));
@@ -1558,6 +1644,9 @@ struct GravPacketMaskedPolicy {
     static constexpr bool records_elements = true;    /* accepted elements go to the chunk, and members flush it */
     static constexpr bool splits_items     = true;    /* members diverge, so a descent leaves a continuation behind */
     static constexpr bool evaluates        = true;    /* members carry accumulators and write per-target outputs */
+    /* One thread per member evaluates that member's records; see GravPacketMaskedTeamPolicy for the
+       flavour that spreads them over a team wider than the packet. */
+    static constexpr bool team_evaluates   = false;
     /* Compile-time so the walker's ring index stays a mask rather than a division. */
     static constexpr int  local_stack      = GRAV_PACKET_LOCAL_STACK;
     /* Members share one traversal and then evaluate its records in parallel, so the packet is
@@ -1624,6 +1713,19 @@ struct GravPacketMaskedPolicy {
     }
 };
 
+/* The same decisions and records, for a team WIDER than its packet (the cooperative schedule):
+ * once the chunk is full every thread evaluates, the team divided into one group of lanes per
+ * member, each lane holding a partial sum that is folded into the member's first lane when the
+ * packet commits.
+ *
+ * It is a separate flavour, not a runtime switch, so that each schedule is compiled for the work it
+ * actually does: a team of one thread per member needs neither the published inputs nor the fold,
+ * and their code changes how the compiler lays out the member state for the WHOLE kernel (one kernel
+ * serving both schedules ran a quarter slower per call at large N under the FIRE physics). */
+struct GravPacketMaskedTeamPolicy : GravPacketMaskedPolicy {
+    static constexpr bool team_evaluates = true;
+};
+
 /* The DISCOVERY flavour: it takes ONE conservative decision for the whole packet and writes
  * down what the exact walk will need brought current, instead of evaluating anything.
  *
@@ -1664,6 +1766,7 @@ struct GravPacketCoverPolicy {
     static constexpr bool records_elements = false;   /* it evaluates nothing, so there is nothing to record */
     static constexpr bool splits_items     = false;   /* one decision for the packet: members never diverge (see below) */
     static constexpr bool evaluates        = false;
+    static constexpr bool team_evaluates   = false;
     static constexpr int  local_stack      = 0;       /* never splits, so it keeps no continuations */
     /* ONE TARGET PER PACKET, and this is the whole reason the flavour states its own size.
      *
@@ -1963,15 +2066,15 @@ struct GpuGravPacketWalk {
      * the walker, and the cost of it being wrong is not a skipped contribution but an evaluation
      * on uninitialised geometry. Declining hands the whole packet to the replay chain that
      * already exists for every other reason a packet cannot be completed on the device. */
-    KOKKOS_INLINE_FUNCTION int evaluate_record(int no, gpu_grav_member_t &mem) const
+    KOKKOS_INLINE_FUNCTION int evaluate_record(int no, const gpu_grav_member_inputs_t &in, gpu_grav_member_sums_t &sums) const
     {
-        if(no < ctx.treeParticleSlots) {gpu_grav_evaluate_leaf(ctx, no, mem); return 1;}
+        if(no < ctx.treeParticleSlots) {gpu_grav_evaluate_leaf(ctx, no, in, sums); return 1;}
         gpu_grav_node_prelude_t nd;
         const gpu_grav_node_step_t step = gpu_grav_node_prelude(ctx, no, nd);
         if(step != GPU_GRAV_NODE_DECIDE) {return 0;}   /* an accepted node is one the prelude handed to the decision */
         Vec3<MyFloat> s_node; MyFloat mass_node; Vec3<double> dr; double r2;
-        if(!gpu_grav_node_member_geometry(ctx, nd, mem.open, s_node, mass_node, dr, r2)) {return 0;}   /* a member with the bit set is never a star seeing a pure-star node */
-        gpu_grav_evaluate_node(ctx, nd, mem, s_node, mass_node, dr, r2);
+        if(!gpu_grav_node_member_geometry(ctx, nd, in.open, s_node, mass_node, dr, r2)) {return 0;}   /* a member with the bit set is never a star seeing a pure-star node */
+        gpu_grav_evaluate_node(ctx, nd, in, sums, s_node, mass_node, dr, r2);
         return 1;
     }
 
@@ -2121,12 +2224,28 @@ struct GpuGravPacketWalk {
            A flavour that decides without evaluating needs the opening inputs and nothing else,
            so it holds no member state at all -- the accumulators are the bulk of a member, and
            carrying them unused would cost the registers the traversal wants. */
-        typename std::conditional<Policy::evaluates, gpu_grav_member_t, gpu_grav_no_member_t>::type mem;
+        typename std::conditional<Policy::evaluates, gpu_grav_member_inputs_t, gpu_grav_no_member_t>::type in;
+        typename std::conditional<Policy::evaluates, gpu_grav_member_sums_t, gpu_grav_no_member_t>::type sums;
         const int have_member = (t < q_eff);
+        /* The lanes that EVALUATE a member are not the lanes that traverse.  In the flavour whose team
+         * evaluates, every thread walks and, once the chunk is full, every thread also evaluates, the
+         * team being divided into one group of `lanes` threads per member, so a single target's
+         * records are spread over the team instead of queuing on one thread while the rest wait at
+         * the barrier.  Otherwise lanes == 1: one thread per member. */
+        const int lanes    = (Policy::team_evaluates && q_eff > 0) ? (team.team_size() / q_eff) : 1;
+        const int serves   = (Policy::evaluates && q_eff > 0 && t < lanes * q_eff) ? 1 : 0;
+        const int member   = serves ? (t / lanes) : 0;   /* which member this thread evaluates for */
+        const int sub_lane = serves ? (t % lanes) : 0;
         if(have_member) {
             if constexpr (Policy::evaluates) {
-                (void) gpu_grav_member_init(ctx, d_idx[first + t], mem);
-                open[t] = mem.open;
+                if constexpr (Policy::team_evaluates) {   /* published, for every lane working on this member */
+                    gpu_grav_member_inputs_t *member_inputs = (gpu_grav_member_inputs_t *) (scratch + plan.member_inputs);
+                    (void) gpu_grav_member_inputs_init(ctx, d_idx[first + t], member_inputs[t]);
+                    open[t] = member_inputs[t].open;
+                } else {               /* this thread is the member's only lane */
+                    (void) gpu_grav_member_inputs_init(ctx, d_idx[first + t], in);
+                    open[t] = in.open;
+                }
             } else {
                 double pmass_unused = 0.0, zeta_unused = 0.0; grav_pm_shortrange_t pm_unused;
                 (void) gpu_grav_open_inputs_init(ctx, d_idx[first + t], open[t], pmass_unused, zeta_unused, pm_unused);
@@ -2136,6 +2255,14 @@ struct GpuGravPacketWalk {
         }
         if(t == 0) {for(int c = 0; c < GRAV_PACKET_CTR_COUNT; c++) {ctr[c] = 0;}}
         team.team_barrier();
+        if constexpr (Policy::evaluates) {
+            /* every thread holds a partial sum, at the identity until it evaluates something, and a
+               thread that evaluates holds its member's inputs */
+            gpu_grav_member_sums_init(sums);
+            if constexpr (Policy::team_evaluates) {
+                if(serves) {in = ((const gpu_grav_member_inputs_t *) (scratch + plan.member_inputs))[member];}
+            }
+        }
 
         /* Every thread below n_walkers traverses; the root item starts with one of them and the
          * rest join as subtrees are offered. Members are threads below q_eff, so a team wider than
@@ -2216,14 +2343,16 @@ struct GpuGravPacketWalk {
             /* the chunk is full, or the traversal has finished: every member evaluates its records */
             if constexpr (Policy::records_elements) {
                 if(ctr[GRAV_PACKET_CTR_RECORDS] > 0 && (chunk_full || ctr[GRAV_PACKET_CTR_DONE])) {
-                    if(have_member && mem.open.alive) {
+                    /* the member's lanes take its records in turn: lane k of the member takes
+                       records k, k + lanes, k + 2*lanes, ... that carry the member's bit */
+                    if(serves && in.open.alive) {
                         const int n_rec = ctr[GRAV_PACKET_CTR_RECORDS];
-                        for(int r = 0; r < n_rec; r++) {
-                            if(!mask_test(rmasks + (size_t) r * W, t)) {continue;}
+                        for(int r = sub_lane; r < n_rec; r += lanes) {
+                            if(!mask_test(rmasks + (size_t) r * W, member)) {continue;}
                             /* A record this member cannot reproduce fails the whole packet, exactly as a
                                pseudo-particle or a stale source does: nothing this team computed is
                                committed, and the replay walks every member again. */
-                            if(!evaluate_record(records[r].no, mem)) {fail(ctr, GRAV_PACKET_FAIL_RECORD_UNUSABLE); break;}
+                            if(!evaluate_record(records[r].no, in, sums)) {fail(ctr, GRAV_PACKET_FAIL_RECORD_UNUSABLE); break;}
                         }
                     }
                     team.team_barrier();
@@ -2253,11 +2382,23 @@ struct GpuGravPacketWalk {
         /* A flavour that only records writes NOTHING but its recorders -- not the import-note
            ledger, not a target output -- so the commit below belongs to the evaluating one. */
         if constexpr (Policy::evaluates) {
+            /* Fold each member's partial sums into its first lane: every thread leaves its whole partial
+               in team scratch, and the first lane of each member takes in the others in lane order.  A
+               thread working on no member leaves the identity it was initialised to.  `lanes` is the same
+               on every thread of the team, so the whole team takes this branch together or not at all. */
+            if constexpr (Policy::team_evaluates) {
+                if(lanes > 1) {
+                    gpu_grav_member_sums_t *partials = (gpu_grav_member_sums_t *) (scratch + plan.member_fold);
+                    partials[t] = sums;
+                    team.team_barrier();
+                    if(serves && sub_lane == 0) {for(int j = 1; j < lanes; j++) {gpu_grav_member_sums_combine(sums, partials[t + j], in.open.ptype);}}
+                }
+            }
             if(t == 0) {gpu_grav_note_commit(ctr[GRAV_PACKET_CTR_NOTE_INCOMPLETE], ctr[GRAV_PACKET_CTR_NOTE_UNSHIPPABLE]);}
-            if(have_member) {
+            if(serves && sub_lane == 0) {
                 Vec3<double> acc = Vec3<double>{0,0,0}; int ninter = 0; double pot = 0.0;
-                if(mem.open.alive) {gpu_grav_member_finish(ctx, mem, acc, ninter, pot);}
-                d_acc[first + t] = acc; d_ninter[first + t] = ninter; d_pot[first + t] = pot; d_failed[first + t] = 0;
+                if(in.open.alive) {gpu_grav_member_finish(ctx, in, sums, acc, ninter, pot);}
+                d_acc[first + member] = acc; d_ninter[first + member] = ninter; d_pot[first + member] = pot; d_failed[first + member] = 0;
             }
         }
     }
@@ -2453,7 +2594,7 @@ static int gpu_grav_packet_launch_row(GpuGravPacketWalk<Policy> &f, const struct
         f.frontier_cap = (Policy::splits_items && f.n_walkers > 1)
                              ? ((r.frontier_mul * team > 16) ? r.frontier_mul * team : 16) : 0;
         f.chunk_cap    = Policy::records_elements ? r.chunk : 0;
-        f.plan = gpu_grav_packet_scratch_plan(f.q_dev, team, f.frontier_cap, f.chunk_cap, Policy::local_stack);
+        f.plan = gpu_grav_packet_scratch_plan(f.q_dev, team, f.frontier_cap, f.chunk_cap, Policy::local_stack, Policy::team_evaluates);
         /* the legality bound is asked of a probe policy carrying the same scratch request: a
            policy constructed at an illegal team size throws before it can be asked anything */
         Kokkos::TeamPolicy<> probe(1, 1, 1);
@@ -2494,40 +2635,58 @@ static int gpu_grav_packet_launch(GpuGravPacketWalk<Policy> &f, const char *kern
     if constexpr (!Policy::splits_items) {
         const struct gpu_grav_sched_row_t solo = {GRAV_SCHED_PACKET, 1, 1, 0, 256, 64};
         return gpu_grav_packet_launch_row(f, solo, -1, -1, kernel_name, shape_out);
-    } else {
+    } else if constexpr (Policy::team_evaluates) {
+        /* The flavour for a team wider than its packet is taken only where the criterion gives
+         * every target a whole team, so this is the cooperative row.  ONE attempt, at the row the
+         * criterion chose. There is deliberately no step-down to a narrower cooperative team: a
+         * partial team is the shape that was measured to lose, so a backend that cannot launch
+         * the full one takes the ordinary device schedule instead. */
         const int first_row = gpu_grav_coop_first_row(f.n_cand);
-        if(first_row < 0) {
-            /* Not enough lanes for a whole team per target: MASKED PACKETS, where
-             * TREE_QUERY_PACKET_SIZE targets adjacent in the active list, and therefore adjacent
-             * in space, share ONE traversal while each still judges every node for itself.  One
-             * independent traversal per lane instead has every lane chasing its own pointer chain,
-             * so a wavefront's lanes diverge across unrelated paths and the node loads they have in
-             * common are never shared. */
-            if(Policy::packet_size > 1) {
-                const int t = (Policy::packet_size < GRAV_PACKET_Q_DEV_MAX) ? Policy::packet_size
-                                                                            : GRAV_PACKET_Q_DEV_MAX;
-                const struct gpu_grav_sched_row_t dense = {GRAV_SCHED_PACKET, t, 1, 0, 256, 64};
-                return gpu_grav_packet_launch_row(f, dense, -1, -1, kernel_name, shape_out);
-            }
-            return 1;
-        }
-        /* ONE attempt, at the row the criterion chose. There is deliberately no step-down to a
-         * narrower cooperative team: a partial team is the shape that was measured to lose, so a
-         * backend that cannot launch the full one takes the ordinary device schedule instead. */
+        if(first_row < 0) {return 1;}
         return gpu_grav_packet_launch_row(f, g_grav_coop_rows[first_row], first_row, first_row,
                                           kernel_name, shape_out);
+    } else {
+        /* Not enough lanes for a whole team per target: MASKED PACKETS, where
+         * TREE_QUERY_PACKET_SIZE targets adjacent in the active list, and therefore adjacent
+         * in space, share ONE traversal while each still judges every node for itself.  One
+         * independent traversal per lane instead has every lane chasing its own pointer chain,
+         * so a wavefront's lanes diverge across unrelated paths and the node loads they have in
+         * common are never shared. */
+        if(Policy::packet_size > 1) {
+            const int t = (Policy::packet_size < GRAV_PACKET_Q_DEV_MAX) ? Policy::packet_size
+                                                                        : GRAV_PACKET_Q_DEV_MAX;
+            const struct gpu_grav_sched_row_t dense = {GRAV_SCHED_PACKET, t, 1, 0, 256, 64};
+            return gpu_grav_packet_launch_row(f, dense, -1, -1, kernel_name, shape_out);
+        }
+        return 1;
     }
 }
 
+template <class Policy>
+static int gpu_gravtree_walk_packets_as(const gpu_grav_walk_ctx_t &ctx, const int *d_idx, int n_cand,
+                                        Vec3<double> *d_acc, int *d_ninter, double *d_pot, int *d_failed,
+                                        int *d_fail_by_reason, const char *kernel_name)
+{
+    GpuGravPacketWalk<Policy> f;
+    f.ctx = ctx; f.d_idx = d_idx; f.n_cand = n_cand;
+    f.d_acc = d_acc; f.d_ninter = d_ninter; f.d_pot = d_pot; f.d_failed = d_failed;
+    f.d_fail_by_reason = d_fail_by_reason;
+    return gpu_grav_packet_launch(f, kernel_name, &g_packet_shape);
+}
+
+/* Where every target can be given a whole team, the team evaluates each member's records over
+ * several lanes; elsewhere each member has one thread.  The two are separate kernels so that each
+ * is compiled for the evaluation it does (GravPacketMaskedTeamPolicy says why). */
 static int gpu_gravtree_walk_packets(const gpu_grav_walk_ctx_t &ctx, const int *d_idx, int n_cand,
                                      Vec3<double> *d_acc, int *d_ninter, double *d_pot, int *d_failed,
                                      int *d_fail_by_reason)
 {
-    GpuGravPacketWalk<GravPacketMaskedPolicy> f;
-    f.ctx = ctx; f.d_idx = d_idx; f.n_cand = n_cand;
-    f.d_acc = d_acc; f.d_ninter = d_ninter; f.d_pot = d_pot; f.d_failed = d_failed;
-    f.d_fail_by_reason = d_fail_by_reason;
-    return gpu_grav_packet_launch(f, "gravtree_walk_packets", &g_packet_shape);
+    if(gpu_grav_coop_first_row(n_cand) >= 0) {
+        return gpu_gravtree_walk_packets_as<GravPacketMaskedTeamPolicy>(ctx, d_idx, n_cand, d_acc, d_ninter, d_pot, d_failed,
+                                                                        d_fail_by_reason, "gravtree_walk_packets_team");
+    }
+    return gpu_gravtree_walk_packets_as<GravPacketMaskedPolicy>(ctx, d_idx, n_cand, d_acc, d_ninter, d_pot, d_failed,
+                                                                d_fail_by_reason, "gravtree_walk_packets");
 }
 
 /* Run the discovery traversal over this call's candidates: the engine with the cover flavour,
