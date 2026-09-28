@@ -24,6 +24,7 @@
 #include "../system/gpu_particles_arena.h"
 #include "../core/timestep_functions.h"   /* DriftKickTableView for the walk widening */
 
+
 /* The drift-factor interpolator the walk's widening uses.
  *
  * Refreshed once per call rather than per node: it is the same table the node
@@ -1501,9 +1502,10 @@ void gpu_build_cross_type_neighbor_list(struct particle_data *P_host, int num_to
 /* ===================================================================== */
 /* The supply-rank half: each received envelope carries a peer's query plus the
  * start nodes that peer's walk reached in THIS rank's tree, and the answer is
- * the set of local particles the query admits.  The host does the same work in
- * mode_b_walk_from_start_nodes + the accept loop that follows it; this is the
- * device form of exactly that, and the two are required to produce the same set.
+ * the set of local particles the query admits.  This is the device form of
+ * mode_b_walk_from_start_nodes: it finds the particles that may be neighbours once
+ * drifted, and both backends hand those to the same accept
+ * (gx_send_set_accept_rows), which drifts them and keeps the exact set.
  *
  * Node geometry comes from the SoA mirror, never the managed Nodes[]/Extnodes[]
  * arrays: streaming those from a kernel is memory-bound to the point of erasing
@@ -1520,43 +1522,28 @@ void gpu_build_cross_type_neighbor_list(struct particle_data *P_host, int num_to
  * the same exchange can withdraw device legality.  Ordering violations therefore
  * make the test fail and route to the host, never corrupt a result. */
 
-/* Per-leaf staged record.  `type` folds in the host's Mass > 0 test (negative =
- * the host would have rejected this particle) and `pool` folds in both the
- * NumPart-when-built bound and the pool-membership lookup (negative = not a
- * supply candidate), so the kernel tests two integers where the host tests four
- * conditions across two arrays. */
+/* Per-leaf staged record.  `type` is negative for a particle the receiver can never
+ * send -- no mass, or not in the supply pool -- so the kernel tests one integer where
+ * the host tests three conditions across two arrays.  `pos` is where the particle is
+ * once drifted to the current time, and `half_width` how far from there it can be
+ * along any axis (particle_motion_envelope), negative when its motion cannot be
+ * bounded.  The leaf test adds its own rounding allowance (motion_envelope_test_slack),
+ * so the device's candidates are a superset of what the host's exact test accepts. */
 struct gx_recv_leaf_t {
     double pos[3];
+    double half_width;
     int    type;
-    int    pool;
 };
 
-/* One envelope's traversal.  Returns the number of accepted pool slots, writing
- * the first `cap` of them to `out` (the caller re-runs with the true count when
- * a row overflows its scratch slot).  Mirrors mode_b_walk_impl's three index
- * classes exactly; see mesh/mode_b_local_walker.cc for the host original.
+/* The leaf half of the receiver walk: record a locally-owned particle that may be a
+ * neighbour of the query once drifted to the current time: kept if the box round the
+ * position the drift will give it reaches the query sphere; one whose motion cannot be bounded is kept.  This is
+ * discovery only -- the candidates go to gx_send_set_accept_rows, which drifts them
+ * and makes the exact decision -- so the walk may over-include but never decides.
  *
- * `anomaly` reports the one state the host treats as fatal: an index in the gap
- * between the particle slots and the node base, which belongs to neither and
- * means the tree is malformed.  The host stops the run there, so the device
- * cannot simply stop walking -- that would silently truncate an envelope.  It
- * records the state and the caller reproduces the host's stop. */
-/* The leaf half of the receiver walk: decide whether a locally-owned particle
- * is a supply candidate this query admits, and record its pool slot.
- *
- * The host filters a leaf twice -- once while walking, with NEAREST_XYZ, and
- * again in the accept pass, with NGB_PERIODIC_BOX_LONG_*.  The two macro
- * families differ only in that the first keeps the sign of the wrapped
- * separation and the second takes its magnitude, so for any separation the
- * search can actually admit they give the same squared distance and the accept
- * form alone reproduces the pair.  The equivalence gate is what establishes
- * that, per pair: it expects the candidate sets to match exactly, and any
- * disagreement has to be shown to be a boundary case rather than assumed to be
- * one.
- *
- * Accepted slots past `cap` are counted but not written, so the caller can
- * re-run the row against a buffer sized to the true count. */
-struct GxRecvEmitPairs {
+ * Candidates past `cap` are counted but not written, so the caller can re-run the
+ * row against a buffer sized to the true count. */
+struct GxRecvCandidates {
     const struct gx_recv_leaf_t *leaves;
     unsigned int supply_mask;
     int         *out;
@@ -1567,16 +1554,32 @@ struct GxRecvEmitPairs {
     void visit(int j, double qx, double qy, double qz, double reach)
     {
         const struct gx_recv_leaf_t &lf = leaves[j];
-        if(lf.type < 0 || lf.pool < 0) {return;}
+        if(lf.type < 0) {return;}
         if(!(supply_mask & (1u << lf.type))) {return;}
-        if(gx_pair_accept_wrap_and_test(qx - lf.pos[0], qy - lf.pos[1], qz - lf.pos[2],
-                                        reach, 0.0, NGB_SEARCH_ONEWAY)) {
-            if(n_found < cap) {out[n_found] = lf.pool;}
+        int keep = 1;
+        if(lf.half_width >= 0.0) {
+            const double q[3] = {qx, qy, qz};
+            const double hw = lf.half_width + motion_envelope_test_slack(lf.pos, q, reach);
+            keep = gx_boxpair_overlap_wrap_and_test(lf.pos[0] - qx, lf.pos[1] - qy, lf.pos[2] - qz,
+                                                    hw, hw, hw, reach, reach * reach);
+        }
+        if(keep) {
+            if(n_found < cap) {out[n_found] = j;}
             n_found++;
         }
     }
 };
 
+/* One envelope's traversal.  Returns the number of candidates, writing the first
+ * `cap` of them to `out` (the caller re-runs with the true count when a row
+ * overflows its scratch slot).  Mirrors mode_b_walk_impl's three index classes
+ * exactly; see mesh/mode_b_local_walker.cc for the host original.
+ *
+ * `anomaly` reports the one state the host treats as fatal: an index in the gap
+ * between the particle slots and the node base, which belongs to neither and
+ * means the tree is malformed.  The host stops the run there, so the device
+ * cannot simply stop walking -- that would silently truncate an envelope.  It
+ * records the state and the caller reproduces the host's stop. */
 KOKKOS_INLINE_FUNCTION
 static int gx_recv_walk_one(const struct gx_export_envelope_t &env,
                             unsigned int supply_mask,
@@ -1608,7 +1611,7 @@ static int gx_recv_walk_one(const struct gx_export_envelope_t &env,
     tree.foreign_base   = foreign_base;
     tree.pseudo_start   = pseudo_start;
 
-    GxRecvEmitPairs emit;
+    GxRecvCandidates emit;
     emit.leaves      = leaves;
     emit.supply_mask = supply_mask;
     emit.out         = out;
@@ -2137,12 +2140,12 @@ int gx_device_fused_walk_prepare(struct GxDeviceTreeView *out, const char *calle
 int gx_device_receiver_walk(const struct gx_export_envelope_t *envelopes, long n_env,
                             const int *envelope_peer,
                             unsigned int supply_mask, int search_mode,
-                            mode_b_radius_policy_t radius_policy, double j_reach_scale,
+                            mode_b_radius_policy_t radius_policy,
+                            double j_radius_scale, double safety_factor,
                             const int *j_to_pool, int npart_bound,
                             int num_pool, struct ghost_send_set *send_set)
 {
     GIZMO_GPU_ENSURE_ALL_FRESH();
-    (void)radius_policy; (void)j_reach_scale;
 
     /* ONEWAY only.  A symmetric search accepts a pair on the NEIGHBOUR's radius as
      * well as the query's, so it has to bound, per node, how far the particles of
@@ -2235,12 +2238,14 @@ int gx_device_receiver_walk(const struct gx_export_envelope_t *envelopes, long n
     std::vector<int>     counts_h;
     std::vector<int64_t> offsets_h;
     std::vector<int>     pairs_h;
+    std::vector<struct gx_candidate_row> rows_h;
     try {
         leaf_h.resize((size_t)num_local);
         env_h.resize((size_t)GX_RECV_BATCH);
         counts_h.resize((size_t)GX_RECV_BATCH);
         offsets_h.resize((size_t)GX_RECV_BATCH);
         pairs_h.resize((size_t)pair_cap);
+        rows_h.resize((size_t)GX_RECV_BATCH);
     } catch(const std::bad_alloc &) {
         printf("gx_device_receiver_walk: task %d could not reserve host staging for %d local leaves; answering on the host\n",
                ThisTask, num_local);
@@ -2275,23 +2280,43 @@ int gx_device_receiver_walk(const struct gx_export_envelope_t *envelopes, long n
     using UmDevI    = Kokkos::View<int*,     DevSp, Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
     using UmDevI64  = Kokkos::View<int64_t*, DevSp, Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
 
+    int status_staging_failed = 0;
     /* Stage the leaf fields the walk reads.  One pass over the local particles,
-     * host-side, into a compact record; the AoS is never touched from device. */
+     * host-side, into a compact record; the AoS is never touched from device.  The
+     * position a particle that is behind will be drifted to is taken here, from the host
+     * tables, so the kernel reads the record instead of the particle state and the tables. */
     {
-#pragma omp parallel for schedule(static)
+        const integertime ti_now = All.Ti_Current;
+        const struct DriftKickTableView drift_tables = drift_kick_table_view_host();
+        long n_unmapped = 0;
+#pragma omp parallel for schedule(static) reduction(+:n_unmapped)
         for(int j = 0; j < num_local; j++) {
             struct gx_recv_leaf_t rec;
-            rec.pos[0] = (double)P[j].Pos[0];
-            rec.pos[1] = (double)P[j].Pos[1];
-            rec.pos[2] = (double)P[j].Pos[2];
-            rec.type   = (P[j].Mass > 0) ? (int)P[j].Type : -1;
-            int pool = -1;
+            int in_pool = 0;
             if(j_to_pool && j < npart_bound) {
                 const int pp = j_to_pool[j];
-                if(pp >= 0 && pp < num_pool) {pool = pp;}
+                in_pool = (pp >= 0 && pp < num_pool);
             }
-            rec.pool = pool;
+            /* The pool holds every particle of positive mass (gx_send_set_accept_rows), so one
+               missing from it is a stale or corrupt map, stopped below rather than hidden. */
+            if(P[j].Mass > 0 && !in_pool) {n_unmapped++;}
+            rec.type = (P[j].Mass > 0 && in_pool) ? (int)P[j].Type : -1;
+            rec.pos[0] = (double)P[j].Pos[0]; rec.pos[1] = (double)P[j].Pos[1]; rec.pos[2] = (double)P[j].Pos[2];
+            rec.half_width = 0.0;
+            if(rec.type >= 0) {
+                double hw = 0.0;
+                const int motion = particle_motion_envelope(j, P, CellP, ti_now, &drift_tables, rec.pos, &hw);
+                rec.half_width = (motion == PARTICLE_MOTION_UNBOUNDED) ? -1.0 : hw;
+            }
             leaf_h[(size_t)j] = rec;
+        }
+        if(n_unmapped > 0) {
+            printf("gx_device_receiver_walk: task %d has %ld particles of positive mass with no supply-pool slot\n",
+                   ThisTask, n_unmapped);
+            fflush(stdout);
+            gizmo_request_controlled_stop(7738, "gx_device_receiver_walk: supply map missing particles of positive mass",
+                                          __FILE__, __LINE__, __FUNCTION__);
+            status_staging_failed = 1;
         }
         Kokkos::View<struct gx_recv_leaf_t*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
             lh(leaf_h.data(), (size_t)num_local);
@@ -2314,7 +2339,7 @@ int gx_device_receiver_walk(const struct gx_export_envelope_t *envelopes, long n
     const unsigned int   *node_bitflags = tree_view.node_bitflags;
     const int            *nextnode_aux  = tree_view.nextnode_aux;
 
-    int status = GX_RECEIVER_COMPLETED;
+    int status = status_staging_failed ? GX_RECEIVER_FAILED : GX_RECEIVER_COMPLETED;
 
     for(long base = 0; base < n_env && status == GX_RECEIVER_COMPLETED; base += GX_RECV_BATCH) {
         const int nb = (int)((n_env - base < GX_RECV_BATCH) ? (n_env - base) : GX_RECV_BATCH);
@@ -2427,18 +2452,16 @@ int gx_device_receiver_walk(const struct gx_export_envelope_t *envelopes, long n
 
             Kokkos::deep_copy(UmHostI(pairs_h.data(), (size_t)sub_total),
                               UmDevI(pairs_d, (size_t)sub_total));
-
-            /* Hand the pairs to the send set, one call per run of rows from the
-             * same peer: those rows' pairs are contiguous here.  Envelopes arrive
-             * grouped by peer in ascending order, so a peer that spans a pass or
-             * a batch boundary simply carries on in the next call. */
-            for(int b = r0; b < r1 && status == GX_RECEIVER_COMPLETED; ) {
+            /* Hand each row's candidates to the shared accept, which drifts them and
+             * keeps the exact set.  Envelopes arrive grouped by peer in ascending
+             * order, so a peer that spans a pass or a batch boundary simply carries
+             * on in the next call. */
+            long n_rows = 0;
+            for(int b = r0; b < r1; b++) {
                 const int t = envelope_peer[base + b];
-                int e = b + 1;
-                while(e < r1 && envelope_peer[base + e] == t) {e++;}
                 if(t < 0 || t >= NTask) {
                     /* Every envelope's sender is known; one that is not would have
-                     * its pairs silently dropped, so stop rather than under-include. */
+                     * its candidates silently dropped, so stop rather than under-include. */
                     printf("gx_device_receiver_walk: task %d envelope %ld names sender %d, outside 0..%d\n",
                            ThisTask, base + b, t, NTask - 1);
                     fflush(stdout);
@@ -2447,15 +2470,15 @@ int gx_device_receiver_walk(const struct gx_export_envelope_t *envelopes, long n
                     status = GX_RECEIVER_FAILED;
                     break;
                 }
-                if(t != ThisTask) {
-                    const int64_t off = offsets_h[(size_t)b] - sub_base;
-                    const int64_t n = offsets_h[(size_t)(e - 1)] + (int64_t)counts_h[(size_t)(e - 1)]
-                                    - offsets_h[(size_t)b];
-                    if(n > 0 && gx_send_set_emit(send_set, t, &pairs_h[(size_t)off], (int)n) != 0) {
-                        status = GX_RECEIVER_FAILED;
-                    }
-                }
-                b = e;
+                if(t == ThisTask) {continue;}
+                const int64_t off = offsets_h[(size_t)b] - sub_base;
+                struct gx_candidate_row row = {&env_h[(size_t)b], t, &pairs_h[(size_t)off], counts_h[(size_t)b]};
+                rows_h[(size_t)n_rows++] = row;
+            }
+            if(status == GX_RECEIVER_COMPLETED &&
+               gx_send_set_accept_rows(send_set, rows_h.data(), n_rows, search_mode,
+                                       radius_policy, j_radius_scale, safety_factor) != 0) {
+                status = GX_RECEIVER_FAILED;
             }
             r0 = r1;
         }

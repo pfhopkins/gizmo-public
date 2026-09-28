@@ -353,6 +353,26 @@ void gpu_build_cross_type_neighbor_list(struct particle_data *P_host, int num_to
 struct ghost_send_set;
 int gx_send_set_emit(struct ghost_send_set *send_set, int peer, const int *pool_slots, int n);
 
+/* One received envelope's candidates: the local particles (P[] indices) its walk
+   found may be neighbours once drifted to the current time. */
+struct gx_export_envelope_t;
+struct gx_candidate_row {
+    const struct gx_export_envelope_t *envelope;
+    int  peer;           /* the task that sent the envelope */
+    int *local_index;    /* candidates; overwritten in place with accepted pool slots */
+    int  count;
+};
+
+/* The receiver backends' shared accept: drifts the distinct candidates of all rows
+   to the current time, keeps exactly those each envelope's query accepts at their
+   current position and radius, and hands their pool slots to the send set.  Rows
+   must be in ascending peer order.  Returns 0, or nonzero with the send set failed
+   (nothing emitted if the drift or its storage failed); the caller then reports the
+   failure rather than trying another backend. */
+int gx_send_set_accept_rows(struct ghost_send_set *send_set, struct gx_candidate_row *rows, long n_rows,
+                            int search_mode, mode_b_radius_policy_t radius_policy,
+                            double j_radius_scale, double safety_factor);
+
 /* What a receiver backend did with the envelopes it was handed. */
 enum {
     GX_RECEIVER_COMPLETED = 0,   /* every accepted pair is in the send set */
@@ -362,9 +382,10 @@ enum {
 
 /* Device traversal of received export envelopes (the supply-rank half of
    request-driven ghost discovery).  Resumes a bounded subtree walk from each
-   envelope's start nodes, applies the shared accept predicate at every local
-   leaf, and hands the pool slots it admits to the send set -- the same pairs the
-   host walk would hand it, so the two are interchangeable.
+   envelope's start nodes, records at every local leaf the particles that may be
+   neighbours once drifted, and hands those candidates to gx_send_set_accept_rows --
+   the same accept the host walk's candidates go through, so the two backends are
+   interchangeable.
 
    Returns GX_RECEIVER_DECLINED when it declined, in which case the caller must run
    the host walk instead.  Every decline is decided before anything is emitted, so
@@ -385,12 +406,14 @@ enum {
 
    envelope_peer[k] is the task that sent envelope k, non-decreasing in k.
    j_to_pool / npart_bound map a local particle index to its slot in the supply
-   pool (negative = not in the pool).  radius_policy and j_reach_scale are the
-   caller's symmetric-search reach; ONEWAY ignores both. */
+   pool (negative = not in the pool).  radius_policy, j_radius_scale and
+   safety_factor are the caller's symmetric-search reach, passed unchanged to the
+   shared accept; ONEWAY ignores them. */
 int gx_device_receiver_walk(const struct gx_export_envelope_t *envelopes, long n_env,
                             const int *envelope_peer,
                             unsigned int supply_mask, int search_mode,
-                            mode_b_radius_policy_t radius_policy, double j_reach_scale,
+                            mode_b_radius_policy_t radius_policy,
+                            double j_radius_scale, double safety_factor,
                             const int *j_to_pool, int npart_bound,
                             int num_pool, struct ghost_send_set *send_set);
 

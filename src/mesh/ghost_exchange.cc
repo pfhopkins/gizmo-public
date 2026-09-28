@@ -239,8 +239,10 @@ struct ghost_send_set {
     int   peer;               /* peer being filled, -1 when none is */
     int   last_peer;          /* highest peer begun this call, -1 before the first */
     int   failed;
+    const int *j_to_pool;     /* [npart_bound] local particle -> pool slot, negative when not in the pool */
+    int   npart_bound;
 };
-static struct ghost_send_set g_send_set = {NULL, 0, 0, NULL, NULL, 0, NULL, 0, 0, -1, -1, 0};
+static struct ghost_send_set g_send_set = {NULL, 0, 0, NULL, NULL, 0, NULL, 0, 0, -1, -1, 0, NULL, 0};
 
 /* Sort the finished peer's run into pool order and clear its marks. */
 static void gx_send_set_finish_peer(struct ghost_send_set *s)
@@ -271,7 +273,8 @@ static void gx_send_set_abandon(struct ghost_send_set *s)
 }
 
 /* Returns 0, or nonzero with the set failed and nothing to abandon but its output. */
-static int gx_send_set_begin(struct ghost_send_set *s, unsigned char *mark, int num_pool)
+static int gx_send_set_begin(struct ghost_send_set *s, unsigned char *mark, int num_pool,
+                             const int *j_to_pool, int npart_bound)
 {
     s->failed = 1;
     s->peer = -1;
@@ -304,6 +307,8 @@ static int gx_send_set_begin(struct ghost_send_set *s, unsigned char *mark, int 
     if(!s->slots) {s->capacity = 0; return 1;}
     s->mark = mark;
     s->num_pool = num_pool;
+    s->j_to_pool = j_to_pool;
+    s->npart_bound = (j_to_pool != NULL) ? npart_bound : 0;
     s->failed = 0;
     return 0;
 }
@@ -514,37 +519,164 @@ integertime ghost_pool_current_ti(void) { return g_ghost_pool_current_ti; }
  * stamp the callers publish rests on this having succeeded on EVERY rank, so a
  * caller that stamps regardless would assert a currency the pool does not have,
  * and the scan that would notice is the one the stamp suppresses. */
+/* The distinct particles behind a time, gathered from one or more index lists and
+ * then drifted together: begin, add each list, drift.  The batch drift threads over
+ * the particles it is handed, so each must appear once -- two threads advancing the
+ * same particle would drift it twice.  The stamp is generation-counted, so it never
+ * needs clearing between calls, and it is sized once to the particle count.
+ *
+ * The work list holds only the particles actually behind, so it is both the drift
+ * list and the h-dirty list.  drift_particle rescales KernelRadius, so a mark is owed
+ * for a particle that moved -- but marking every listed particle would drive the
+ * dirty tracker toward a full-pool refresh on the many steps where nothing was
+ * behind.
+ *
+ * begin and add return nonzero when their storage cannot grow; nothing has been
+ * drifted then, and a controlled stop is requested, because the particles these
+ * lists hold would otherwise be used behind the current time. */
+static std::vector<unsigned int> gx_behind_seen;
+static unsigned int gx_behind_seen_gen = 0;
+static std::vector<int> gx_behind_list;
+
+static int gx_drift_distinct_storage_failed(void)
+{
+    printf("ghost_exchange: task %d could not grow the list of particles to drift\n", ThisTask);
+    fflush(stdout);
+    gizmo_request_controlled_stop(7739, "ghost_exchange: could not allocate the drift work list",
+                                  __FILE__, __LINE__, __FUNCTION__);
+    return 1;
+}
+
+static int gx_drift_distinct_begin(void)
+{
+    try {
+        if(gx_behind_seen.size() < (size_t)NumPart) {gx_behind_seen.assign((size_t)NumPart, 0u);}
+    } catch(const std::bad_alloc &) {return gx_drift_distinct_storage_failed();}
+    if(++gx_behind_seen_gen == 0u) {std::fill(gx_behind_seen.begin(), gx_behind_seen.end(), 0u); gx_behind_seen_gen = 1u;}
+    gx_behind_list.clear();
+    return 0;
+}
+
+static int gx_drift_distinct_add(const int *idx, int n, integertime t_now)
+{
+    try {
+        for(int k = 0; k < n; k++) {
+            const int j = idx[k];
+            if(j < 0 || j >= NumPart) {continue;}
+            if(gx_behind_seen[(size_t)j] == gx_behind_seen_gen) {continue;}
+            gx_behind_seen[(size_t)j] = gx_behind_seen_gen;
+            if(P[j].Ti_current != t_now) {gx_behind_list.push_back(j);}
+        }
+    } catch(const std::bad_alloc &) {return gx_drift_distinct_storage_failed();}
+    return 0;
+}
+
+/* Returns 0 when every gathered particle stands at t_now, nonzero when the drift that
+ * would have advanced them did not complete -- see drift_particles_batch. */
+static int gx_drift_distinct_to_time(integertime t_now)
+{
+    if(gx_behind_list.empty()) {return 0;}
+    const int n_behind = (int)gx_behind_list.size();
+    const int *behind_idx = gx_behind_list.data();
+    const int drift_status = drift_particles_batch(behind_idx, n_behind, t_now);
+    gizmo_mark_kernel_radius_dirty_indices(behind_idx, n_behind);
+    return drift_status;
+}
+
 static int gx_certify_send_list_current(const int *home_idx, int n_slots, integertime t_now)
 {
     if(!home_idx || n_slots <= 0) {return 0;}
+    if(gx_drift_distinct_begin() != 0 || gx_drift_distinct_add(home_idx, n_slots, t_now) != 0) {return 1;}
+    return gx_drift_distinct_to_time(t_now);
+}
 
-    static std::vector<unsigned int> seen;
-    static unsigned int seen_gen = 0;
-    if((int)seen.size() < NumPart) {seen.assign((size_t)NumPart, 0u);}
-    if(++seen_gen == 0u) {std::fill(seen.begin(), seen.end(), 0u); seen_gen = 1u;}
-
-    /* Holds only the particles actually behind, so it is both the work list and
-     * the h-dirty list. drift_particle rescales KernelRadius, so a mark is owed
-     * for a particle that moved -- but marking every exported slot would drive
-     * the dirty tracker toward a full-pool refresh on the many steps where
-     * nothing was behind. */
-    static std::vector<int> behind;
-    behind.clear();
-    for(int k = 0; k < n_slots; k++) {
-        const int j = home_idx[k];
-        if(j < 0 || j >= NumPart) {continue;}
-        if(seen[(size_t)j] == seen_gen) {continue;}
-        seen[(size_t)j] = seen_gen;
-        if(P[j].Ti_current != t_now) {behind.push_back(j);}
+/* The receiver's half of discovery, shared by both backends.  A backend walks its
+ * envelopes and records, per envelope, the local particles that may be neighbours
+ * once drifted to the current time -- a superset, because a particle it did not
+ * drift may have moved since its position was stored.  This settles each row:
+ * drift the distinct candidates of the whole batch to the current time, keep
+ * exactly those the query accepts at their current position and radius, and hand
+ * their pool slots to the send set.  Accepting on stored positions instead would
+ * both miss particles that moved into reach and send ones that moved out of it.
+ *
+ * Nothing is emitted unless every candidate was drifted: storage that cannot grow,
+ * or a drift that did not complete, fails the batch before its first emission.
+ * Rows must arrive with peers in ascending order (the send set's contract); a row's
+ * candidates are compacted in place, so no second buffer is needed.  The accept
+ * pass and the emission pass are separate loops, so the first can be threaded on
+ * its own if it ever costs enough to matter. */
+int gx_send_set_accept_rows(struct ghost_send_set *s, struct gx_candidate_row *rows, long n_rows,
+                            int search_mode, mode_b_radius_policy_t radius_policy,
+                            double j_radius_scale, double safety_factor)
+{
+    if(s->failed) {return 1;}
+    const integertime t_now = All.Ti_Current;
+    /* The pool is reused only while it was built over exactly this particle set, and holds every
+       particle of positive mass; a candidate the walks could return is therefore always in it.  One
+       that is not, or a map of another size, means the cache is stale or the walk is malformed, and
+       dropping the candidate would silently narrow the answer -- so the run stops instead. */
+    if(!s->j_to_pool || s->npart_bound != NumPart) {
+        printf("ghost_exchange: task %d supply map covers %d particles, the rank holds %d\n", ThisTask, s->npart_bound, NumPart);
+        fflush(stdout);
+        gizmo_request_controlled_stop(7738, "ghost_exchange: receiver supply map does not match the particle set",
+                                      __FILE__, __LINE__, __FUNCTION__);
+        s->failed = 1;
+        return 1;
     }
-    if(behind.empty()) {return 0;}
 
-    const int n_behind = (int)behind.size();
-    const int *behind_idx = behind.data();
-    const int drift_status = drift_particles_batch(behind_idx, n_behind, t_now);
+    /* Every candidate must be a particle of this set with a supply-pool slot (above). */
+    for(long r = 0; r < n_rows; r++) {
+        const struct gx_candidate_row *row = &rows[r];
+        for(int c = 0; c < row->count; c++) {
+            const int j = row->local_index[c];
+            const int pp = (j >= 0 && j < NumPart) ? s->j_to_pool[j] : -1;
+            if(pp < 0 || pp >= s->num_pool) {
+                printf("ghost_exchange: task %d receiver candidate %d (of 0..%d) has no supply-pool slot\n", ThisTask, j, NumPart - 1);
+                fflush(stdout);
+                gizmo_request_controlled_stop(7738, "ghost_exchange: receiver candidate outside the supply pool",
+                                              __FILE__, __LINE__, __FUNCTION__);
+                s->failed = 1;
+                return 1;
+            }
+        }
+    }
 
-    gizmo_mark_kernel_radius_dirty_indices(behind_idx, n_behind);
-    return drift_status;
+    if(gx_drift_distinct_begin() != 0) {s->failed = 1; return 1;}
+    for(long r = 0; r < n_rows; r++) {
+        if(gx_drift_distinct_add(rows[r].local_index, rows[r].count, t_now) != 0) {s->failed = 1; return 1;}
+    }
+    if(gx_drift_distinct_to_time(t_now) != 0) {s->failed = 1; return 1;}
+
+    /* Exact acceptance at current positions; accepted pool slots replace the
+     * candidates at the front of each row.  Mass is tested again because the drift
+     * can remove a particle (an outflow boundary zeroes it).  Reach comes from THIS caller's spec, not
+     * from whatever policy the cached pool happened to be built under: pool
+     * membership is reused across differing radius policies, and only the tile/BVH/
+     * compact geometry may use the build-time policy, because its leaf h was baked
+     * with it. */
+    for(long r = 0; r < n_rows; r++) {
+        struct gx_candidate_row *row = &rows[r];
+        const struct gx_export_envelope_t *e = row->envelope;
+        int n_accepted = 0;
+        for(int c = 0; c < row->count; c++) {
+            const int j = row->local_index[c];
+            if(!(P[j].Mass > 0)) {continue;}
+            const double hj = gx_policy_scaled_h(j, radius_policy, j_radius_scale, safety_factor);
+            if(gx_pair_accept_wrap_and_test(e->pos[0] - (double)P[j].Pos[0],
+                                            e->pos[1] - (double)P[j].Pos[1],
+                                            e->pos[2] - (double)P[j].Pos[2],
+                                            e->h, hj, search_mode)) {
+                row->local_index[n_accepted++] = s->j_to_pool[j];
+            }
+        }
+        row->count = n_accepted;
+    }
+
+    for(long r = 0; r < n_rows; r++) {
+        if(rows[r].count > 0 &&
+           gx_send_set_emit(s, rows[r].peer, rows[r].local_index, rows[r].count) != 0) {return 1;}
+    }
+    return 0;
 }
 
 /* SSOT for the forward particle+cell transport: pack the exported slots and carry
@@ -797,7 +929,8 @@ struct gx_query_t {
  * `omp parallel for` — per-thread export sink and per-thread send buffers on the sender,
  * pre-sized per-envelope candidate slots on the receiver, so each thread writes only its own
  * index.  The walker's lazy node drift is the one shared mutation and is serialized under
- * critical(_modebdrift_).  Merge, accept and send-set emission run serially afterwards, which keeps
+ * critical(_modebdrift_).  The candidates' drift is threaded over distinct particles
+ * (gx_send_set_accept_rows); merge, accept and send-set emission run serially, which keeps
  * the resulting SET order-independent and therefore deterministic across thread counts.
  *
  * MEMORY SHAPE: the threaded receiver materializes one candidate list per received envelope
@@ -971,7 +1104,8 @@ static void gx_walk_export_discover(
      * to fix rather than to route around.  A decline happens before the device has
      * emitted anything; a failure after it has emitted is not a decline, because the
      * host walk cannot run over a half-filled set, so it fails this rank instead. */
-    int receiver_ok = (gx_send_set_begin(send_set, g_glt_cache.mark, num_pool) == 0);
+    int receiver_ok = (gx_send_set_begin(send_set, g_glt_cache.mark, num_pool,
+                                         g_glt_cache.j_to_pool, g_glt_cache.NumPart_when_built) == 0);
     int receiver_done_on_device = 0;
     if(receiver_ok && tot_r > 0) {
         std::vector<int> envelope_peer((size_t)tot_r, -1);
@@ -981,7 +1115,7 @@ static void gx_walk_export_discover(
         const int device_outcome =
             gx_device_receiver_walk(recv, tot_r, envelope_peer.data(),
                                     supply_mask, search_mode,
-                                    spec->radius_policy, walker_j_reach_scale,
+                                    spec->radius_policy, spec->j_radius_scale, spec->safety_factor,
                                     g_glt_cache.j_to_pool, g_glt_cache.NumPart_when_built,
                                     num_pool, send_set);
         if(device_outcome == GX_RECEIVER_COMPLETED) {
@@ -992,7 +1126,8 @@ static void gx_walk_export_discover(
     }
     /* Host backend.  THREADED: the WALK (dominant cost) runs per received envelope into a pre-sized
      * per-envelope cand slot — each thread writes ONLY its own index (no shared write), walker
-     * race-safe.  The ACCEPT and send-set emission run SERIALLY afterward (cheap), peer by
+     * race-safe.  The walk records what may be a neighbour once drifted; the shared accept
+     * then drifts those candidates (threaded) and accepts and emits SERIALLY (cheap), peer by
      * peer in ascending order, which is the order the send set requires. */
     if(receiver_ok && !receiver_done_on_device) {
         std::vector<std::vector<int>> per_recv_cands((size_t)(tot_r > 0 ? tot_r : 0));
@@ -1007,43 +1142,23 @@ static void gx_walk_export_discover(
                                          spec->radius_policy, e->nodes, e->n_nodes,
                                          cvk, walker_j_reach_scale);
         }
-        /* One emission per envelope.  Accepted pool slots are compacted in place
-         * into the front of the envelope's own candidate list -- each is written
-         * no later than the candidate it came from is read -- so accepting needs
-         * no second buffer and has no allocation that could fail on one rank
-         * between the envelope exchange and the agreement below. */
-        for(int t = 0; t < NTask && receiver_ok; t++) {
-            if(t == ThisTask) continue;
-            for(int r = 0; r < rc[t] && receiver_ok; r++) {
-                const long k = (long)rd[t] + r;
-                const struct gx_export_envelope_t *e = &recv[k];
-                std::vector<int> &cvk = per_recv_cands[k];
-                size_t n_accepted = 0;
-                for(size_t c = 0; c < cvk.size(); c++) {
-                    int j = cvk[c];
-                    if(j < 0 || j >= g_glt_cache.NumPart_when_built) continue;
-                    int pp = g_glt_cache.j_to_pool ? g_glt_cache.j_to_pool[j] : -1;
-                    if(pp < 0 || pp >= num_pool) continue;
-                    /* Reach comes from THIS caller's spec, not from whatever policy
-                     * the cached pool happened to be built under.  The sender walk
-                     * above already uses the spec, so taking it from the cache here
-                     * would let a caller inherit another caller's j-side reach now
-                     * that pool membership is reused across differing radius
-                     * policies.  Only the tile/BVH/compact geometry may use the
-                     * build-time policy, because its leaf h was baked with it. */
-                    double hj_dbl = gx_policy_scaled_h(j, spec->radius_policy,
-                                                       spec->j_radius_scale,
-                                                       spec->safety_factor);
-                    if(gx_pair_accept_wrap_and_test(e->pos[0] - (double)P[j].Pos[0],
-                                                    e->pos[1] - (double)P[j].Pos[1],
-                                                    e->pos[2] - (double)P[j].Pos[2],
-                                                    e->h, hj_dbl, search_mode)) {
-                        cvk[n_accepted++] = pp;   /* the send set drops repeats */
-                    }
+        /* One row per envelope, pointing into its own candidate list, in ascending
+         * peer order.  The shared accept drifts the distinct candidates of every row
+         * together, then accepts at current positions. */
+        std::vector<struct gx_candidate_row> rows;
+        try {rows.reserve((size_t)tot_r);} catch(const std::bad_alloc &) {receiver_ok = 0;}
+        if(receiver_ok) {
+            for(int t = 0; t < NTask; t++) {
+                if(t == ThisTask) continue;
+                for(int r = 0; r < rc[t]; r++) {
+                    const long k = (long)rd[t] + r;
+                    std::vector<int> &cvk = per_recv_cands[k];
+                    struct gx_candidate_row row = {&recv[k], t, cvk.data(), (int)cvk.size()};
+                    rows.push_back(row);
                 }
-                if(n_accepted > 0 &&
-                   gx_send_set_emit(send_set, t, cvk.data(), (int)n_accepted) != 0) {receiver_ok = 0;}
             }
+            if(gx_send_set_accept_rows(send_set, rows.data(), (long)rows.size(), search_mode,
+                                       spec->radius_policy, spec->j_radius_scale, spec->safety_factor) != 0) {receiver_ok = 0;}
         }
     }
     free(recv); free(rc); free(rd);
