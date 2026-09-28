@@ -320,6 +320,15 @@ void drift_particle(int i, integertime time1)
             DriftTable_logTimeBegin, DriftTable_logTimeMax, All.Timebase_interval, All.ComovingIntegrationOn);
     struct EosTableView eos_tables = eos_tables_view();
     drift_particle_impl(i, time1, P, CellP, &tables, &eos_tables);
+    /* A particle drifted outside the domain extent would get a wrong Peano key from any tree build or
+       repartition that reuses this domain; ask for a full decomposition, which re-measures the extent. */
+    if(position_outside_domain_extent(P[i].Pos[0], P[i].Pos[1], P[i].Pos[2], DomainCorner[0], DomainCorner[1], DomainCorner[2], DomainLen))
+    {
+#ifdef _OPENMP
+#pragma omp atomic write
+#endif
+        DomainExtentOutgrownLocal = 1;
+    }
 }
 
 

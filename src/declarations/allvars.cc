@@ -136,6 +136,7 @@ int Flag_FullStep;		/*!< Flag used to signal that the current step involves all 
 
 int TreeReconstructFlag;
 int DomainReconstructFlag;
+int DomainExtentOutgrownLocal;
 int TreeMomentsStaleFlag;
 int TypePresenceMaskTrusted = 0;
 long long ForceAddElementToTree_CallsSinceBuild = 0;

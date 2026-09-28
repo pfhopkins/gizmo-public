@@ -153,7 +153,18 @@ void run(void)
          * drifted to the sync point. */
         set_softenings();
         gizmo_full_drift_to(All.Ti_Current);
-        if(force_treebuild(NumPart, NULL) == FORCE_TREE_NEEDS_OWNERSHIP_RESTORE)
+        int build_status = force_treebuild(NumPart, NULL);
+        if(build_status == FORCE_TREE_NEEDS_DOMAIN_REBUILD)
+        {
+            /* A particle lies outside the extent the restored domain was built on: re-measure it with a
+             * full decomposition, without a refinement pass, and build on that. */
+            if(ThisTask == 0) {printf("Restart tree build: a particle lies outside the restored domain extent; doing a full domain decomposition first.\n"); fflush(stdout);}
+            domain_Decomposition(0, 0, 0, 1);
+            gravity_clear_pending_motion_bounds();   /* noted against the top tree just replaced */
+            build_status = force_treebuild(NumPart, NULL);
+            if(build_status == FORCE_TREE_NEEDS_DOMAIN_REBUILD) {endrun(91574);}
+        }
+        if(build_status == FORCE_TREE_NEEDS_OWNERSHIP_RESTORE)
         {
             /* The restart restored the domain assignment but not the tree, so there is no usable
              * attachment record for any particle that has since crossed a top-leaf boundary.  Hand
@@ -161,7 +172,7 @@ void run(void)
              * and rebuild. */
             if(ThisTask == 0) {printf("Restart tree build: restoring geometric particle ownership first.\n"); fflush(stdout);}
             domain_Decomposition_light(0, 0);
-            if(force_treebuild(NumPart, NULL) == FORCE_TREE_NEEDS_OWNERSHIP_RESTORE) {endrun(91568);}
+            if(force_treebuild(NumPart, NULL) < 0) {endrun(91568);}
         }
         /* Same proof as the main-step build in gravtree.cc: a full drift ran
          * immediately above, so this tree's node geometry describes this time and
@@ -290,7 +301,12 @@ void run(void)
            no longer there. */
         if(TreeReconstructFlag) {TreeReconstructFlag_local = 1;}
         MPI_Allreduce(&TreeReconstructFlag_local, &TreeReconstructFlag, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD); // if one process reconstructs the tree then everbody has to
+        /* A particle drifted outside the domain extent needs the full decomposition, which re-measures it.
+           Raised as 2 rather than 1 so the MAX reduction below also says whether this was the reason;
+           every reader of the flag only tests it for nonzero. */
+        if(DomainExtentOutgrownLocal) {DomainReconstructFlag = 2;}
         MPI_Allreduce(MPI_IN_PLACE, &DomainReconstructFlag, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+        if(DomainReconstructFlag == 2 && ThisTask == 0) {printf("Domain: a particle has drifted outside the extent the domain was built on; doing a full decomposition.\n"); fflush(stdout);}
         const int domain_cadence_reached = (GlobNumForceUpdate > All.DomainBuild_ActiveFraction * All.TotNumPart);
 #ifdef RANDOMIZE_GRAVTREE
         /* The randomization is a change of the domain frame: it moves DomainCorner and DomainLen,

@@ -219,6 +219,7 @@ extern size_t HighMark_turbpower;
 #endif
 extern int TreeReconstructFlag;
 extern int DomainReconstructFlag;   /*!< set when the domain decomposition itself must be redone, not merely the tree rebuilt */
+extern int DomainExtentOutgrownLocal;   /*!< set on this rank when a drift moves a particle outside the extent the domain was built on; folded into DomainReconstructFlag at the next step, cleared only by a full decomposition */
 extern int TreeMomentsStaleFlag; /*!< flag to refresh tree node moments without a full tree rebuild, e.g. after star formation or sink mass changes */
 extern int TypePresenceMaskTrusted;   /*!< whether the per-node type-presence bits may be used to prune a walk.  Set by every build and moment refresh, which recompute them exactly; cleared only when force_tree_note_type_presence cannot reach the ancestors of a particle whose type just changed, so a walk falls back to opening nodes it might have skipped -- slower, never wrong. */
 extern long long ForceAddElementToTree_CallsSinceBuild; /*!< diagnostic: force_add_element_to_tree calls accumulated since last full tree build.  Insertions stale the LET / pseudo-particle moments; auto-rebuild when this exceeds 1% of TotNumPart. */

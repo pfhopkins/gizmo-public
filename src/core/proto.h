@@ -130,6 +130,19 @@ GIZMO_GPU_FUNCTION static inline double MINMOD(double a, double b) {return (a>0)
 /* special version of MINMOD below: a is always the "preferred" choice, b the stability-required one. here we allow overshoot, just not opposite signage */
 GIZMO_GPU_FUNCTION static inline double MINMOD_G(double a, double b) {return a;}
 
+/* Whether a position lies outside the extent the domain was built on (DomainCorner, DomainLen). A Peano
+   key is the mantissa of (Pos-DomainCorner)/DomainLen + 1, which encodes the position only while that
+   sum is in [1,2) on every axis; outside it the key names some other cell. The test is put to the sum
+   the key is read from, not to the fraction, because rounding can carry a fraction just below 1 up to 2.
+   A non-finite coordinate, or no extent yet (DomainLen 0), counts as outside. */
+GIZMO_GPU_FUNCTION static inline int position_outside_domain_extent(double x, double y, double z,
+    double corner_x, double corner_y, double corner_z, double domain_len)
+{
+    if(!(domain_len > 0)) {return 1;}
+    const double key_x = (x - corner_x) / domain_len + 1.0, key_y = (y - corner_y) / domain_len + 1.0, key_z = (z - corner_z) / domain_len + 1.0;
+    return !(key_x >= 1.0 && key_x < 2.0 && key_y >= 1.0 && key_y < 2.0 && key_z >= 1.0 && key_z < 2.0);
+}
+
 /* Thermal soundspeed squared, and temperature, for a specific internal energy carried by something
    that is NOT a gas cell: a grain moving through gas, or a sink reporting on the gas around it.
    These callers hold an energy but have no cell of their own, so there is no composition to read,

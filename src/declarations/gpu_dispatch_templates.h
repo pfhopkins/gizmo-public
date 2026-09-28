@@ -34,6 +34,19 @@ inline void gizmo_gpu_kernel_launch(const char *tag, int N, F&& f, int batch_sta
 }
 
 
+/* Sibling of gizmo_gpu_kernel_launch for a kernel that also counts something: the functor takes
+ * (i, int &count) and increments count; the total over all items is returned. */
+template<typename F>
+inline int gizmo_gpu_kernel_launch_count(const char *tag, int N, F&& f, int batch_start = -1)
+{
+    int total = 0;
+    Kokkos::parallel_reduce(tag, N, std::forward<F>(f), total);
+    Kokkos::fence();
+    gizmo_gpu_check_last_error(tag, N, batch_start);
+    return total;
+}
+
+
 /* Team-policy sibling of gizmo_gpu_kernel_launch, for kernels whose per-item
  * work is itself parallel (a neighbor-list row, a node's children, a frequency
  * bin sweep). `league` teams of `team_size` lanes each; the functor receives the

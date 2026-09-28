@@ -452,10 +452,12 @@ extern "C" int gpu_topology_build_data_path(int npart, const struct unbind_data 
  * Leaves the keys and leaves prepared for the following gpu_topology_build_data_path().  Returns 0 on
  * success; *n_crossed_out and *n_unrecovered_out are this rank's counts. */
 extern "C" int gpu_topology_prepare_retained_attachment(int npart, int topology_valid,
-                                                        long *n_crossed_out, long *n_unrecovered_out)
+                                                        long *n_crossed_out, long *n_unrecovered_out,
+                                                        long *n_outside_extent_out)
 {
     if(n_crossed_out)     {*n_crossed_out = 0;}
     if(n_unrecovered_out) {*n_unrecovered_out = 0;}
+    if(n_outside_extent_out) {*n_outside_extent_out = 0;}
     g_prepared_npart = -1;
     g_retained_n     = 0;
     if(npart <= 0) {return 0;}
@@ -484,11 +486,14 @@ extern "C" int gpu_topology_prepare_retained_attachment(int npart, int topology_
     struct NODE *Nodes_uvm = Nodes;
     const int   *father    = Father;
 
-    int *ctr = (int *) gizmo_gpu_alloc_shared(2 * sizeof(int), "treescratch_build_ctr");
+    int *ctr = (int *) gizmo_gpu_alloc_shared(3 * sizeof(int), "treescratch_build_ctr");
     if(!ctr) {printf("gpu_topology_build: retained counter alloc failed\n"); return 1;}
-    ctr[0] = 0; ctr[1] = 0;
+    ctr[0] = 0; ctr[1] = 0; ctr[2] = 0;
 
     Kokkos::parallel_for("topo_keys_and_assign", npart, KOKKOS_LAMBDA(int i) {
+        /* Tested before the key is formed: outside the extent the key would name another cell. */
+        if(position_outside_domain_extent(P_dev[i].Pos[0], P_dev[i].Pos[1], P_dev[i].Pos[2], dc0, dc1, dc2, dlen))
+            {Kokkos::atomic_fetch_add(&ctr[2], 1); return;}
         Morton128 m;
         peanokey pkey = topo_key_of_position_(P_dev[i].Pos[0], P_dev[i].Pos[1], P_dev[i].Pos[2],
                                               dc0, dc1, dc2, dlen, bits, &m);
@@ -518,10 +523,11 @@ extern "C" int gpu_topology_prepare_retained_attachment(int npart, int topology_
     Kokkos::fence();
     gizmo_gpu_check_last_error("topo_keys_and_assign", npart);
 
-    int n_crossed = ctr[0], n_unrecovered = ctr[1];
+    int n_crossed = ctr[0], n_unrecovered = ctr[1], n_outside_extent = ctr[2];
     Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(ctr);
     if(n_crossed_out)     {*n_crossed_out = (long) n_crossed;}
     if(n_unrecovered_out) {*n_unrecovered_out = (long) n_unrecovered;}
+    if(n_outside_extent_out) {*n_outside_extent_out = (long) n_outside_extent;}
 
     if(n_crossed > 0 && use_standing_tree && n_unrecovered == 0) {
         if(g_retained_cap < n_crossed) {

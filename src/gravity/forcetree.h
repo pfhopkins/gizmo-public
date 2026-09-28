@@ -170,6 +170,11 @@ void   force_bump_hmax_refresh_generation(void);   /* called by force_update_hma
    leaves every particle in a top-leaf its own rank owns and so needs nothing retained.  Raised only
    for whole-tree builds. */
 #define FORCE_TREE_NEEDS_OWNERSHIP_RESTORE (-2)
+/* Returned instead of a node count when a particle lies outside the extent the domain was built on, so
+   its Peano key would name another cell.  Checked before any key is formed and before anything is freed;
+   the caller does a full decomposition, which re-measures the extent, and asks again.  Raised only for
+   whole-tree builds; takes precedence over FORCE_TREE_NEEDS_OWNERSHIP_RESTORE. */
+#define FORCE_TREE_NEEDS_DOMAIN_REBUILD (-4)
 
 int    force_treebuild(int npart, struct unbind_data *mp);
 

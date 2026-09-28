@@ -684,6 +684,7 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
   wakeup_sidecar_invalidate();      /* P[] reindexed across ranks → rebuild WakeupDirty from P[] next scan */
   domain_particle_layout_changed("domain_Decomposition");
   report_memory_ledger_on_growth("post-domain");  /* memory peak (persistent + tree); collective; prints only on growth */
+  DomainExtentOutgrownLocal = 0;   /* the extent was just re-measured around every particle */
 }
 
 
@@ -756,19 +757,12 @@ void domain_Decomposition_light(int UseAllTimeBins, int do_particle_mergesplit_k
        downstream can notice.  Only a full decomposition re-measures the extent, so check it here,
        after this step's drift and wrapping have settled the positions the keys will be built from,
        and before anything has been freed or rebuilt.  The test is the exact validity condition
-       rather than a padded one, so it fires only when a key would actually be wrong; a NaN
-       coordinate fails both comparisons and escalates too.  It is put to the sum the key is read
-       from and not to the fraction, because a fraction below 1 can still carry that sum up to 2
-       when it is rounded, and 2 has the mantissa of the first cell rather than the last. */
+       rather than a padded one, so it fires only when a key would actually be wrong. */
     int extent_outgrown_local = 0;
     for(i = 0; i < NumPart; i++)
     {
-        for(int k = 0; k < 3; k++)
-        {
-            double key_input = ((P[i].Pos[k] - DomainCorner[k]) / DomainLen) + 1.0;
-            if(!(key_input >= 1.0 && key_input < 2.0)) {extent_outgrown_local = 1;}
-        }
-        if(extent_outgrown_local) {break;}
+        if(position_outside_domain_extent(P[i].Pos[0], P[i].Pos[1], P[i].Pos[2], DomainCorner[0], DomainCorner[1], DomainCorner[2], DomainLen))
+            {extent_outgrown_local = 1; break;}
     }
     int extent_outgrown = 0;
     MPI_Allreduce(&extent_outgrown_local, &extent_outgrown, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
@@ -3224,6 +3218,12 @@ peano1D domain_double_to_int(double d)
 }
 
 
+/* Margin domain_findExtent() puts around the particles, as a factor on the measured length.  Between two
+   full decompositions a particle may drift up to about half of it past the outermost particle -- in a
+   periodic box also past the box face, since positions are wrapped only at decompositions -- and keep a
+   valid Peano key.  One that goes further raises DomainExtentOutgrownLocal, and the next step decomposes. */
+static const double DOMAIN_EXTENT_PADDING_FACTOR = 1.01;
+
 /*! This routine finds the extent of the global domain grid.
  */
 void domain_findExtent(void)
@@ -3257,7 +3257,7 @@ void domain_findExtent(void)
   len = 0;
   for(j = 0; j < 3; j++) {if(xmax_glob[j] - xmin_glob[j] > len) {len = xmax_glob[j] - xmin_glob[j];}}
 
-  len *= 1.001;
+  len *= DOMAIN_EXTENT_PADDING_FACTOR;
 
   for(j = 0; j < 3; j++)
     {

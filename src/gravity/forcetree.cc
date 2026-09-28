@@ -383,7 +383,7 @@ int force_treebuild(int npart, struct unbind_data *mp)
      * exists: a retry frees the tree, taking Father[] and DomainNodeIndex with it.  Its result is
      * reused by every attempt -- positions, the top tree and the retained attachment do not change
      * while the build retries for a larger arena. */
-    long crossed_local = 0, unrecovered_local = 0;
+    long crossed_local = 0, unrecovered_local = 0, outside_extent_local = 0;
     /* Whether THIS rank is building its whole local tree.  The test is rank-local -- a group tree the
        halo finder builds can happen to hold as many members as a rank has particles -- so the
        reduction below carries it too, and a build that is not the whole tree everywhere keeps nothing
@@ -392,7 +392,7 @@ int force_treebuild(int npart, struct unbind_data *mp)
     if(whole_tree_local)
     {
         if(gpu_topology_prepare_retained_attachment(npart, force_tree_global_topology_valid(),
-                                                    &crossed_local, &unrecovered_local) != 0)
+                                                    &crossed_local, &unrecovered_local, &outside_extent_local) != 0)
         {
             printf("force_treebuild: task %d could not prepare retained top-leaf attachments\n", ThisTask);
             endrun(91564);
@@ -406,14 +406,24 @@ int force_treebuild(int npart, struct unbind_data *mp)
        build after a decomposition is unaffected.  "Unrecovered" is a valid standing tree that
        nevertheless cannot place a particle -- the tree and the particles disagree, and there is nothing
        to fall back to. */
-    long counts_local[3], counts_any[3];
+    long counts_local[4], counts_any[4];
     counts_local[0] = (crossed_local > 0 && !force_tree_global_topology_valid()) ? 1 : 0;
     counts_local[1] = unrecovered_local;
     counts_local[2] = whole_tree_local ? 0 : 1;
-    MPI_Allreduce(counts_local, counts_any, 3, MPI_LONG, MPI_MAX, MPI_COMM_WORLD);
+    counts_local[3] = outside_extent_local;
+    MPI_Allreduce(counts_local, counts_any, 4, MPI_LONG, MPI_MAX, MPI_COMM_WORLD);
     if(counts_any[2] > 0)
     {
         gpu_topology_forget_prepared();   /* not the whole tree somewhere: this build keeps nothing */
+    }
+    else if(counts_any[3] > 0)
+    {
+        /* A particle has left the extent the domain was built on, so no key this build could form for it
+           is right, and neither restoring ownership nor retaining attachments can fix that. */
+        if(ThisTask == 0)
+            {printf("Tree build: up to %ld particles per rank lie outside the extent the domain was built on; doing a full domain decomposition before building.\n", counts_any[3]); fflush(stdout);}
+        gpu_topology_forget_prepared();
+        return FORCE_TREE_NEEDS_DOMAIN_REBUILD;
     }
     else
     {

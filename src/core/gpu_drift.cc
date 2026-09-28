@@ -196,9 +196,15 @@ int drift_particles_batch(const int *idx, int n_idx, integertime time1,
         struct particle_data *kp = P;
         struct gas_cell_data *kc = CellP;
         const int *kidx = idx_dev;
-        gizmo_gpu_kernel_launch("drift_particles_inplace", n_need, KOKKOS_LAMBDA(int k) {
+        const double dc0 = DomainCorner[0], dc1 = DomainCorner[1], dc2 = DomainCorner[2], dlen = DomainLen;
+        /* Counts the particles this drift moved outside the domain extent, the same test the host
+           drift makes; returned by the reduction, so no device flag has to be read back. */
+        const int n_outside_extent = gizmo_gpu_kernel_launch_count("drift_particles_inplace", n_need, KOKKOS_LAMBDA(int k, int &n_outside) {
             drift_particle_impl(kidx[k], time1, kp, kc, &tables, &eos_tables);
+            const int i = kidx[k];
+            if(position_outside_domain_extent(kp[i].Pos[0], kp[i].Pos[1], kp[i].Pos[2], dc0, dc1, dc2, dlen)) {n_outside++;}
         });
+        if(n_outside_extent > 0) {DomainExtentOutgrownLocal = 1;}
         Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(idx_dev);
         gpu_particles_arena_invalidate();   /* P/CellP mutated in place; arena stale */
         return drift_batch_status_();
@@ -229,9 +235,12 @@ int drift_particles_batch(const int *idx, int n_idx, integertime time1,
            so the kernel needs no extra gating for the non-gas slots. */
         struct particle_data *kp = batch.dev_P;
         struct gas_cell_data *kc = batch.dev_Cell;
-        gizmo_gpu_kernel_launch("drift_particles", batch.count, KOKKOS_LAMBDA(int j) {
+        const double dc0 = DomainCorner[0], dc1 = DomainCorner[1], dc2 = DomainCorner[2], dlen = DomainLen;
+        const int n_outside_extent = gizmo_gpu_kernel_launch_count("drift_particles", batch.count, KOKKOS_LAMBDA(int j, int &n_outside) {
             drift_particle_impl(j, time1, kp, kc, &tables, &eos_tables);
+            if(position_outside_domain_extent(kp[j].Pos[0], kp[j].Pos[1], kp[j].Pos[2], dc0, dc1, dc2, dlen)) {n_outside++;}
         }, batch_start);
+        if(n_outside_extent > 0) {DomainExtentOutgrownLocal = 1;}
 
         /* Synchronous by construction: the results are home before this returns, so
            the lazy-drift sites that early-return on Ti_current can never observe a
