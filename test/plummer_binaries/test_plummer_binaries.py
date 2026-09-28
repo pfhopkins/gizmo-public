@@ -394,12 +394,10 @@ def _plot_variant_density_evolution(variant_id, snaps):
 def test_plummer_binaries(num_mpi_ranks, num_omp_threads, extra_config_flags, request):
     _ensure_ic()
 
-    # KETJU variant: shorter TimeMax (1 crossing time instead of 10) because
-    # the tree→KETJU negative-half-kick force subtraction introduces an O(dt)
-    # residual that accumulates at ~1%/crossing — acceptable for 1 crossing,
-    # but grows too large over 10. This is a fundamental property of the
-    # coupling (tree forces and direct KETJU pairwise don't cancel to machine
-    # precision at each step), not a bug.
+    # KETJU variant: one crossing time (3.24) rather than ten, for run time. The coupling
+    # conserves energy as well as Hermite here (|dE|/KE0 ~3e-5 at t=3.24, 5.7e-4 at 32.4 vs
+    # Hermite's 1.4e-3); the "~1%/crossing residual" the variant was first written around was
+    # the coupling bugs fixed on this branch, not a property of the method.
     is_ketju = "KETJU_REGULARIZATION" in extra_config_flags
     ketju_timemax_override = 3.24 if is_ketju else None
 
@@ -461,9 +459,9 @@ def test_plummer_binaries(num_mpi_ranks, num_omp_threads, extra_config_flags, re
     e0, ke0, pe0 = _total_energy(vel0, mass0, pot0)
     ef, _, _ = _total_energy(velf, massf, potf)
     rel_e_err = abs(ef - e0) / abs(ke0)
-    # KETJU coupling has O(dt) tree→direct force residual at each negative half
-    # kick → energy drift ~1%/crossing. Use 2% threshold (over 1 crossing) vs
-    # the 1% for native Hermite (over 10 crossings).
+    # 2% for the KETJU variant is the threshold it was written with; the measured error is
+    # ~3e-5, so this catches only gross breakage. Tighten once the chain-member snapshot state
+    # (chord positions/velocities mid-step) is written exactly and the metric can use it.
     energy_tol = 0.02 if is_ketju else 0.01
     assert rel_e_err < energy_tol, (
         f"Energy not conserved: |dE|/KE_0 = {rel_e_err:.4f} (>{energy_tol*100:.0f}%)  "
