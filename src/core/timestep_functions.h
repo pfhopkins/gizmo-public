@@ -474,3 +474,148 @@ double particle_motion_speed_bound(int i, const struct particle_data *pp, const 
 #endif
     return bound;
 }
+
+/* Where particle i will be once drifted to ti_now, for a search that reads particles which may not
+   have been.  Returns the centre of that position and a half-width around it, per axis:
+     CURRENT   -- drifted to ti_now already: the centre is its position, the half-width zero.
+     BOUNDED   -- behind: the centre is where the drift will put it and the half-width how far it
+                  can be from there, including MOTION_ENVELOPE_ROUNDING.
+     UNBOUNDED -- a clock that is negative or ahead of ti_now, a result that is not finite, or a
+                  centre past a special boundary the drift would move it back across: a search
+                  must keep it as a candidate and leave the drift to handle or reject that state,
+                  never narrow around it.
+   Over a drift a particle moves in a straight line at the level the code treats it: its own velocity
+   (the mesh velocity for a finite-volume cell), a super-timestepped sink's binary centre of mass,
+   and under dilation the nearest special particle's motion over the undilated remainder.  These are
+   the terms of the position update in drift_particle_impl, computed by the same helpers above, so an
+   ordinary particle's centre is exactly where the drift puts it and a search testing it needs no
+   allowance beyond rounding -- in particular none for bulk motion, which a bound built from the
+   particle's speed would charge to every particle of a moving flow.  What is left carries a residual:
+   a sink's orbit about its binary's centre of mass, bounded by the softened two-body speed; and a
+   curvilinear mesh cell, which advect_mesh_point_P turns along an arc.  That arc ends within
+   r_new |exp(i theta) - 1 - i theta| <= 2 r_new theta = 2 v_t dt of the straight line (theta = v_t dt /
+   r_new), and the branches that advance straight differ from it by nothing, so 2 |v| dt covers it. */
+/* The straight-line parts of how a drift over dt_drift moves particle i, shared by drift_particle_impl
+   and particle_motion_envelope so that the position a search predicts and the one the drift produces
+   come from the same arithmetic.  The displacement of a particle moving with its own velocity (the
+   mesh velocity for a finite-volume cell; a super-timestepped sink's binary uses its centre-of-mass
+   velocity below): */
+KOKKOS_INLINE_FUNCTION
+Vec3<double> drift_straight_displacement(int i, const struct particle_data *pp, const struct gas_cell_data *cell, double dt_drift)
+{
+    return particle_drift_velocity(i, pp, cell) * dt_drift;
+}
+
+#if (SINGLE_STAR_TIMESTEPPING > 0)
+/* A super-timestepped sink drifts with its binary's centre of mass; its orbit about it is added apart. */
+KOKKOS_INLINE_FUNCTION
+Vec3<double> super_timestepped_sink_com_velocity(int i, const struct particle_data *pp)
+{
+    return pp[i].Vel + pp[i].comp_dv * (pp[i].comp_Mass/(pp[i].Mass+pp[i].comp_Mass));
+}
+#endif
+
+/* What every drift does to a position after moving it: zero the unused dimensions, and under dilation
+   add back the nearest special particle's motion over the undilated remainder of the interval (dt_drift
+   carries the dilation, so only the motion relative to the surroundings is dilated). */
+KOKKOS_INLINE_FUNCTION
+void drift_position_finish(int i, const struct particle_data *pp, double dt_drift, Vec3<MyDouble> &pos)
+{
+#if (NUMDIMS==1)
+    pos[1] = pos[2] = 0;
+#endif
+#if (NUMDIMS==2)
+    pos[2] = 0;
+#endif
+#ifdef DILATION_FOR_STELLAR_KINEMATICS_ONLY
+    const double dilation = timestep_dilation_factor(i, pp); /* f = 1/a <= 1 */
+    if(dilation < 1.) {pos += pp[i].vel_of_nearest_special * (dt_drift * (1./dilation - 1.));}
+#else
+    (void)i; (void)pp; (void)dt_drift;
+#endif
+}
+
+/* Discovery tests a position the drift has not yet produced, possibly in different arithmetic from the
+   drift and from the exact test that follows it (a device kernel may fuse a multiply and an add into one
+   rounding where the host rounds twice).  Each of those few operations can move a coordinate by one
+   rounding of the largest magnitude involved, so every half-width carries this many roundings of that
+   scale -- outward only: it can add a candidate the exact test then rejects, never lose one. */
+static constexpr double MOTION_ENVELOPE_ROUNDINGS = 16.0;
+
+KOKKOS_INLINE_FUNCTION
+double motion_envelope_rounding_floor(const double center[3], double scale)
+{
+    double m = fabs(scale);
+    for(int k = 0; k < 3; k++) {if(fabs(center[k]) > m) {m = fabs(center[k]);}}
+    return MOTION_ENVELOPE_ROUNDINGS * 2.220446049250313e-16 * m;   /* DBL_EPSILON */
+}
+
+/* The allowance a leaf test adds to a half-width for its own comparison: the separation of the query
+   from the particle and its comparison with the reach are rounded at the scale of all three, which the
+   exact test that decides the pair may do differently (on another device, or in another form). */
+KOKKOS_INLINE_FUNCTION
+double motion_envelope_test_slack(const double center[3], const double query[3], double reach)
+{
+    double m = fabs(reach);
+    for(int k = 0; k < 3; k++) {if(fabs(query[k]) > m) {m = fabs(query[k]);}}
+    return motion_envelope_rounding_floor(center, m);
+}
+
+enum particle_motion_bound_state {
+    PARTICLE_MOTION_CURRENT   = 0,
+    PARTICLE_MOTION_BOUNDED   = 1,
+    PARTICLE_MOTION_UNBOUNDED = 2
+};
+
+KOKKOS_INLINE_FUNCTION
+int particle_motion_envelope(int i, const struct particle_data *pp, const struct gas_cell_data *cell,
+                             integertime ti_now, const struct DriftKickTableView *view,
+                             double center[3], double *half_width)
+{
+    center[0] = (double)pp[i].Pos[0]; center[1] = (double)pp[i].Pos[1]; center[2] = (double)pp[i].Pos[2];
+    *half_width = 0.0;
+    const integertime ti_i = pp[i].Ti_current;
+    if(ti_i == ti_now) {return PARTICLE_MOTION_CURRENT;}
+    if(ti_i < 0 || ti_i > ti_now) {return PARTICLE_MOTION_UNBOUNDED;}
+    const double dt_drift = get_drift_factor_impl(ti_i, ti_now, timestep_dilation_factor(i, pp), view);
+    const Vec3<MyDouble> pos0 = pp[i].Pos;
+    Vec3<MyDouble> pos = pos0;
+    double residual = 0.0;
+#if !defined(FREEZE_HYDRO)
+#if (SINGLE_STAR_TIMESTEPPING > 0)
+    if((pp[i].Type == 5) && (pp[i].SuperTimestepFlag >= 2))
+    {
+        pos += super_timestepped_sink_com_velocity(i, pp) * dt_drift;
+        residual = (pp[i].comp_Mass/(pp[i].Mass+pp[i].comp_Mass)) * binary_relative_speed_bound(i, pp) * fabs(dt_drift);
+    }
+    else
+#endif
+    {
+        pos += drift_straight_displacement(i, pp, cell, dt_drift);
+#if defined(HYDRO_MESHLESS_FINITE_VOLUME) && ((HYDRO_FIX_MESH_MOTION == 2) || (HYDRO_FIX_MESH_MOTION == 3))
+        if(pp[i].Type == 0) {residual = 2.0 * particle_drift_velocity(i, pp, cell).norm() * fabs(dt_drift);}
+#endif
+    }
+#endif
+    drift_position_finish(i, pp, dt_drift, pos);
+    for(int k = 0; k < 3; k++) {
+        center[k] = (double)pos[k];
+        if(!(center[k] - center[k] == 0.0)) {return PARTICLE_MOTION_UNBOUNDED;}   /* NaN or Inf, fast-math safe */
+    }
+    if(!(residual >= 0.0 && residual < 1.0e30)) {return PARTICLE_MOTION_UNBOUNDED;}
+    double moved = 0.0;
+    for(int k = 0; k < 3; k++) {const double d = fabs(center[k] - (double)pos0[k]); if(d > moved) {moved = d;}}
+    const double width = residual + motion_envelope_rounding_floor(center, moved);
+#if BOX_DEFINED_SPECIAL_XYZ_BOUNDARY_CONDITIONS_ARE_ACTIVE
+    {   /* the sides the drift acts on: reflect or outflow, lower (code 0 or -1) and upper (0 or 1) */
+        const double box_upper[3] = {boxSize_X, boxSize_Y, boxSize_Z};
+        for(int k = 0; k < NUMDIMS; k++) {
+            const int rf = special_boundary_condition_xyz_def_reflect[k], of = special_boundary_condition_xyz_def_outflow[k];
+            const int lower = (rf == 0 || rf == -1 || of == 0 || of == -1), upper = (rf == 0 || rf == 1 || of == 0 || of == 1);
+            if((lower && center[k] <= width) || (upper && center[k] >= box_upper[k] - width)) {return PARTICLE_MOTION_UNBOUNDED;}
+        }
+    }
+#endif
+    *half_width = width;
+    return PARTICLE_MOTION_BOUNDED;
+}

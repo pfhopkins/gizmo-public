@@ -103,7 +103,7 @@ void drift_particle_impl(int i, integertime time1, struct particle_data *pp,
 #if (SINGLE_STAR_TIMESTEPPING > 0)
     if(super_timestepped_sink)
     {
-        Vec3<double> COM_Vel = pp[i].Vel + pp[i].comp_dv * (pp[i].comp_Mass/(pp[i].Mass+pp[i].comp_Mass)); //center of mass velocity
+        const Vec3<double> COM_Vel = super_timestepped_sink_com_velocity(i, pp); //center of mass velocity
         pp[i].Pos += COM_Vel * dt_drift; //center of mass drift
         odeint_super_timestep(i, dt_drift, fewbody_kick_dv, fewbody_drift_dx, 1, pp); // do_fewbody_drift
         pp[i].GravAccel = pp[i].COM_GravAccel; //Overwrite the acceleration with center of mass value
@@ -116,25 +116,9 @@ void drift_particle_impl(int i, integertime time1, struct particle_data *pp,
     if(pp[i].Type==0) {advect_mesh_point_P(i,dt_drift,pp,cell);}
     else
 #endif
-    {pp[i].Pos += pp[i].Vel * dt_drift;}
+    {pp[i].Pos += drift_straight_displacement(i, pp, cell, dt_drift);}
 #endif // FREEZE_HYDRO clause
-#if (NUMDIMS==1)
-    pp[i].Pos[1]=pp[i].Pos[2]=0; // force zero-ing
-#endif
-#if (NUMDIMS==2)
-    pp[i].Pos[2]=0; // force zero-ing
-#endif
-
-#ifdef DILATION_FOR_STELLAR_KINEMATICS_ONLY
-    double dilation = timestep_dilation_factor(i, pp); /* f = 1/a <= 1 */
-    if(dilation < 1.) {
-        /* the drift above advanced the particle over only the fraction f of the raw interval, since
-           dt_drift already carries the f. add back the bulk motion over the remaining (1-f) of the
-           raw interval, so that only the motion relative to the surroundings is dilated */
-        double cfac = dt_drift * (1./dilation - 1.);
-        pp[i].Pos += pp[i].vel_of_nearest_special * cfac;
-    }
-#endif
+    drift_position_finish(i, pp, dt_drift, pp[i].Pos);   /* unused dimensions, dilation add-back */
 
     /* Predicted compression over this drift, capped by the rule the tree-node drift also
        uses: divv_fac moves the predicted density, h_drift_fac every predicted radius. */

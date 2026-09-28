@@ -109,12 +109,11 @@ static inline double particle_symmetric_radius_after_drift(int j, mode_b_radius_
 }
 
 /* The leaf test: whether P[j] can satisfy the query once drifted to the current time.  A particle
- * already current is tested exactly.  For one behind, its current position lies in the box its stored
- * position grows into by how far it can have moved since (per axis, the rule the tree nodes use), and
- * that box is tested against the sphere its radius can reach after the drift.  A particle whose motion
- * cannot be bounded -- a clock that is negative or ahead of the current time, a non-finite widening --
- * is kept: this test may only over-include, and the drift that follows either handles it or stops on
- * the invalid clock, rather than discovery quietly narrowing around it. */
+ * already current is tested exactly.  For one behind, the position the drift will give it is known
+ * up to a small residual (particle_motion_envelope): that box is tested against the sphere its radius
+ * can reach after the drift.  A particle whose motion cannot be bounded is kept: this test may only
+ * over-include, and the drift that follows either handles it or stops on the invalid clock, rather
+ * than discovery quietly narrowing around it. */
 static inline int particle_may_pass(int j,
                                     const double pos[3],
                                     double h_q,
@@ -126,11 +125,10 @@ static inline int particle_may_pass(int j,
                                     const struct DriftKickTableView *drift_tables)
 {
     if(!particle_is_eligible(j, type_mask)) return 0;
-    const integertime ti_j = P[j].Ti_current;
-    if(ti_j == ti_now) return particle_passes(j, pos, h_q, type_mask, search_mode, radius_policy, j_reach_scale);
-    if(ti_j < 0 || ti_j > ti_now) return 1;
-    const double dl = motion_bound_widening(particle_motion_speed_bound(j, P, CellP), ti_j, ti_now, drift_tables);
-    if(!motion_bound_widening_is_valid(dl)) return 1;
+    double center[3], hw = 0.0;
+    const int motion = particle_motion_envelope(j, P, CellP, ti_now, drift_tables, center, &hw);
+    if(motion == PARTICLE_MOTION_CURRENT) return particle_passes(j, pos, h_q, type_mask, search_mode, radius_policy, j_reach_scale);
+    if(motion == PARTICLE_MOTION_UNBOUNDED) return 1;
     double reach = h_q;
     if(search_mode == MODE_B_SEARCH_SYMMETRIC) {
         const double hj = particle_symmetric_radius_after_drift(j, radius_policy) * j_reach_scale;
@@ -138,11 +136,9 @@ static inline int particle_may_pass(int j,
     }
     /* The exact point-to-box distance: unlike a node, this box bounds one particle, so the circumsphere
        slack of the node test would only admit more drifts. */
-    const double hw = 0.5 * dl;
-    return gx_boxpair_overlap_wrap_and_test((double)P[j].Pos[0] - pos[0],
-                                            (double)P[j].Pos[1] - pos[1],
-                                            (double)P[j].Pos[2] - pos[2],
-                                            hw, hw, hw, reach, reach * reach);
+    const double w = hw + motion_envelope_test_slack(center, pos, reach);
+    return gx_boxpair_overlap_wrap_and_test(center[0] - pos[0], center[1] - pos[1], center[2] - pos[2],
+                                            w, w, w, reach, reach * reach);
 }
 
 /* Sphere-vs-AABB pruning test. Returns 1 if the sphere of radius R
