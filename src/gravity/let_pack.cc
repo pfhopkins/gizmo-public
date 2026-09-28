@@ -49,8 +49,6 @@
 #include "../system/mpi_alltoallv_typed.h"   /* int-overflow-safe MPI_Alltoallv wrapper */
 #include "let_data.h"
 #include "../core/timestep_functions.h"   /* dilation, for the motion bound */
-#include "binary_functions.h"             /* the binary speed cap, for the motion bound */
-#include "../core/predict_functions.h"    /* particle_motion_speed_bound */
 
 #include "gravtree_opening.h"   /* shared opening predicate (cell/AABB variant) */
 #include "gravtree_moment_kernel.h"  /* shared node-moment CONSTRUCTION SSOT (add_particle/finalize) */

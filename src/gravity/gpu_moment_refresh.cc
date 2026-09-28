@@ -68,8 +68,6 @@
 #include "gpu_gravity_tree.h"
 #include "forcetree.h"
 #include "../core/timestep_functions.h"   /* dilation, for the motion bound */
-#include "binary_functions.h"             /* the binary speed cap, for the motion bound */
-#include "../core/predict_functions.h"    /* particle_motion_speed_bound */
 #include "gravtree_moment_kernel.h"
 #include "gravtree_moment_sources.h" /* shared host-only per-particle source-input physics gates (SSOT) */
 

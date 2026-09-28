@@ -10,8 +10,6 @@
 #include "../mesh/kernel.h"
 #include "forcetree.h"               /* GIZMO_EWALD_EN + Ewald-table accessor decls */
 #include "gravtree_force_kernel.h"   /* shared CPU/GPU accepted-source contribution physics (SSOT) */
-#include "binary_functions.h"          /* the binary speed cap, for the motion bound */
-#include "../core/predict_functions.h" /* particle_motion_speed_bound */
 #include "gravtree_moment_kernel.h"  /* shared node moment/payload construction physics (SSOT); plain primitives only here */
 #include "gravtree_moment_sources.h" /* shared per-particle RT/sink/CR source-input gates (SSOT) */
 #include "gravtree_ewald.h"          /* shared CPU/GPU Ewald image-correction trilinear interp (SSOT) */

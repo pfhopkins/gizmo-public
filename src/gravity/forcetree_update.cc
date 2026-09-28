@@ -10,8 +10,6 @@
 #include "../declarations/allvars.h"
 #include "../core/proto.h"
 #include "../core/timestep_functions.h"   /* dilation, for the motion bound */
-#include "binary_functions.h"             /* the binary speed cap, for the motion bound */
-#include "../core/predict_functions.h"    /* particle_motion_speed_bound */
 #include "force_node_drift_sync.h"
 #include "gpu_gravity_tree.h"        /* SoA mirror: vmax coherence for widen-on-open */
 

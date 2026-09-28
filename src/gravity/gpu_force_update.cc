@@ -47,8 +47,6 @@
 #include "gpu_gravity_tree.h"
 #include "forcetree.h"
 #include "../core/timestep_functions.h"   /* dilation, for the motion bound */
-#include "binary_functions.h"             /* the binary speed cap, for the motion bound */
-#include "../core/predict_functions.h"    /* particle_motion_speed_bound */
 
 
 /* Atomic max for MyFloat via 64-bit CAS (MyFloat = double in GIZMO typedefs). */

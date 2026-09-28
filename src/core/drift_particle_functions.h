@@ -22,8 +22,8 @@
 #endif
 
 #include "timestep_functions.h"      /* DriftKickTableView, get_{drift,gravkick}_factor_impl, dilation */
-#include "../gravity/binary_functions.h" /* odeint_super_timestep, binary_relative_speed_bound (before predict_functions.h, which uses it) */
-#include "predict_functions.h"       /* advect_mesh_point_P, apply_special_boundary_conditions_P, particle_motion_speed_bound */
+#include "../gravity/binary_functions.h" /* odeint_super_timestep */
+#include "predict_functions.h"       /* advect_mesh_point_P, apply_special_boundary_conditions_P */
 #include "../gravity/ags_functions.h"    /* ags_density_isactive_P, ags_return_{min,max}soft_P, dm_fuzzy */
 #include "../eos/eos_functions.h"        /* set_eos_pressure_impl */
 #ifdef COSMIC_RAY_FLUID

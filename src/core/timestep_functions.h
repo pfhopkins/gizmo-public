@@ -12,6 +12,9 @@
 #ifndef KOKKOS_INLINE_FUNCTION
 #define KOKKOS_INLINE_FUNCTION inline
 #endif
+#if (SINGLE_STAR_TIMESTEPPING > 0)
+#include "../gravity/binary_functions.h"   /* binary_relative_speed_bound, for the motion bound below */
+#endif
 
 KOKKOS_INLINE_FUNCTION
 double timestep_dilation_factor(int i, const struct particle_data *pp)
@@ -335,3 +338,62 @@ void hermite_predict_source_state(int no, struct particle_data *pp, struct Hermi
 }
 
 #endif /* HERMITE_INTEGRATION */
+
+/* The fastest a particle can move along any one coordinate axis, per unit of the UNDILATED drift
+   interval.  A box measured when the particle was last drifted still contains it after it has
+   grown by this speed times the interval since, which is what the gravity tree and the spatial
+   index rely on to search among particles that have not been brought current.  Follows the
+   position update in drift_particle_impl term by term -- the mesh velocity moves a finite-volume
+   cell, a super-timestepped sink adds its orbital motion about the binary's centre of mass, and
+   under dilation the drift covers only the dilated fraction of the interval while the nearest
+   special particle's motion is added back over the rest -- so a change to how a particle moves
+   belongs there and here together.  Reported per unit undilated interval so that one clock
+   serves every box whatever dilation its members carry: the node's own drift may run on a
+   dilated clock, but the widening that bounds its members must not. */
+KOKKOS_INLINE_FUNCTION
+double particle_motion_speed_bound(int i, const struct particle_data *pp, const struct gas_cell_data *cell)
+{
+    double vx = 0, vy = 0, vz = 0;
+#if !defined(FREEZE_HYDRO)
+    vx = (double)pp[i].Vel[0]; vy = (double)pp[i].Vel[1]; vz = (double)pp[i].Vel[2];
+#if defined(HYDRO_MESHLESS_FINITE_VOLUME)
+    if(pp[i].Type == 0) {vx = (double)cell[i].ParticleVel[0]; vy = (double)cell[i].ParticleVel[1]; vz = (double)cell[i].ParticleVel[2];}
+#else
+    (void)cell;
+#endif
+#else
+    (void)cell;
+#endif
+    double ax = fabs(vx), ay = fabs(vy), az = fabs(vz);
+    double bound = ax; if(ay > bound) {bound = ay;} if(az > bound) {bound = az;}
+#if defined(HYDRO_MESHLESS_FINITE_VOLUME) && ((HYDRO_FIX_MESH_MOTION == 2) || (HYDRO_FIX_MESH_MOTION == 3))
+    /* The curvilinear mesh motion (advect_mesh_point_P) advances the radius by |v_r| dt and turns
+       the point through a chord no longer than |v_t| dt; the two are not orthogonal, so the step is
+       within (|v_r| + |v_t|) dt <= sqrt(2) |v| dt along every axis. */
+    if(pp[i].Type == 0) {bound = 1.4142135623730951 * sqrt(vx*vx + vy*vy + vz*vz);}
+#endif
+#if (SINGLE_STAR_TIMESTEPPING > 0) && !defined(FREEZE_HYDRO)
+    if((pp[i].Type == 5) && (pp[i].SuperTimestepFlag >= 2))
+    {
+        /* The binary's centre of mass drifts at its own velocity, and the sink moves about it by
+           its companion's mass share of the relative motion, whose speed can only rise as far as
+           the softened two-body problem allows (binary_relative_speed_bound).  The instantaneous
+           relative speed would not do: the box may be left ungrown across a close passage. */
+        const double Mtot = pp[i].Mass + pp[i].comp_Mass, share = pp[i].comp_Mass / Mtot;
+        double cx = fabs(vx + (double)pp[i].comp_dv[0] * share), cy = fabs(vy + (double)pp[i].comp_dv[1] * share), cz = fabs(vz + (double)pp[i].comp_dv[2] * share);
+        bound = cx; if(cy > bound) {bound = cy;} if(cz > bound) {bound = cz;}
+        bound += share * binary_relative_speed_bound(i, pp);
+    }
+#endif
+    const double dilation = timestep_dilation_factor(i, pp);   /* 1 unless zoom dilation is active */
+    bound *= dilation;
+#ifdef DILATION_FOR_STELLAR_KINEMATICS_ONLY
+    if(dilation < 1.)
+    {
+        double ux = fabs((double)pp[i].vel_of_nearest_special[0]), uy = fabs((double)pp[i].vel_of_nearest_special[1]), uz = fabs((double)pp[i].vel_of_nearest_special[2]);
+        double u = ux; if(uy > u) {u = uy;} if(uz > u) {u = uz;}
+        bound += (1. - dilation) * u;
+    }
+#endif
+    return bound;
+}
