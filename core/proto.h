@@ -70,7 +70,7 @@ double matrix_invert_ndims(double T[3][3], double Tinv[3][3]);
 #ifdef HERMITE_INTEGRATION
 int eligible_for_hermite(int i);
 void do_hermite_prediction(void);
-void do_hermite_correction(void);
+void do_hermite_correction(int final_pass);
 #endif
 #ifdef KETJU_REGULARIZATION
 void ketju_limit_timesteps(void);

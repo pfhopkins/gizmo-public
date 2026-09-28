@@ -276,10 +276,13 @@ void run(void)
 
 #ifdef HERMITE_INTEGRATION // we do a prediction step using the saved "old" pos, accel and jerk from the beginning of the timestep. Then we recompute accel and jerk and do the correction
         do_hermite_prediction();
-        HermiteOnlyFlag = 2;
-        gravity_tree();	/* re-compute gravitational accelerations for synchronous particles */
-        HermiteOnlyFlag = 0;
-        do_hermite_correction();
+        for(int hermite_pass = 0; hermite_pass < HERMITE_CORRECTOR_ITERATIONS; hermite_pass++) /* P(EC)^n: each pass evaluates at the latest (predicted, then corrected) state */
+        {
+            HermiteOnlyFlag = 2;
+            gravity_tree();	/* re-compute gravitational accelerations for synchronous particles */
+            HermiteOnlyFlag = 0;
+            do_hermite_correction(hermite_pass == HERMITE_CORRECTOR_ITERATIONS - 1);
+        }
 #endif
 #ifdef KETJU_REGULARIZATION
         ketju_finish_step();        /* clean up KETJU region data (flags persist for next step's guards) */

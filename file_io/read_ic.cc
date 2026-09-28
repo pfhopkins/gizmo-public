@@ -734,6 +734,7 @@ void read_file(char *fname, int readTask, int lastTask)
 
 
     int rank, pcsum;
+    int n_blocks_zerofilled = 0; /* datasets the code asked for but the file did not have */
     hid_t hdf5_file = 0, hdf5_grp[6], hdf5_dataspace_in_file;
     hid_t hdf5_datatype = 0, hdf5_dataspace_in_memory, hdf5_dataset;
     hsize_t dims[2], count[2], start[2];
@@ -1139,6 +1140,29 @@ void read_file(char *fname, int readTask, int lastTask)
                     }
                     else
                     {
+                        /* Report a dataset this block wants that the file does not have; the read
+                           below zero-fills it without comment. That is right for a fresh IC, which
+                           carries a few fields and takes the rest from the parameter file. On a
+                           snapshot restart it is not: blockpresent() governs both write and read,
+                           so a snapshot from the same build has no absences, and one here means a
+                           config change, a field added since, or a renamed dataset -- with the
+                           zeros reaching the physics. Probed once per (block, type); the read loop
+                           below repeats per communication chunk. */
+                        if(ThisTask == readTask && All.ICFormat == 3 && n_in_file > 0)
+                        {
+                            get_dataset_name(blocknr, buf);
+                            H5E_auto_t old_func; void *old_client_data;
+                            H5Eget_auto(&old_func, &old_client_data); H5Eset_auto(NULL, NULL);
+                            hid_t probe = H5Dopen(hdf5_grp[type], buf);
+                            H5Eset_auto(old_func, old_client_data);
+                            if(probe < 0)
+                            {
+                                n_blocks_zerofilled++;
+                                if(RestartFlag >= 2)
+                                    {printf("WARNING: PartType%d/%s not in %s: %lld values zero-filled\n", type, buf, fname, n_in_file); fflush(stdout);}
+                            }
+                            else {H5Dclose(probe);}
+                        }
                         for(task = readTask; task <= lastTask; task++)
                         {
                             n_for_this_task = n_in_file / ntask;
@@ -1304,6 +1328,11 @@ void read_file(char *fname, int readTask, int lastTask)
 
         if(All.ICFormat == 3)
         {
+            /* Repeated after the per-block lines, which scroll past on a big read. At RestartFlag 0
+               the count is the whole report: a fresh IC is expected to be missing most blocks. */
+            if(n_blocks_zerofilled > 0)
+                {printf("%s: %d block(s) absent and zero-filled%s\n", fname, n_blocks_zerofilled,
+                        (RestartFlag >= 2) ? " -- see the WARNING lines above" : " (normal for a fresh IC)"); fflush(stdout);}
             for(type = 5; type >= 0; type--) {if(header.npart[type] > 0) {H5Gclose(hdf5_grp[type]);}}
             H5Fclose(hdf5_file);
         }
