@@ -1,7 +1,8 @@
 #ifndef GRAVTREE_MOMENT_KERNEL_H
 #define GRAVTREE_MOMENT_KERNEL_H
 
-/* Node multipole/payload CONSTRUCTION physics — the single home for the per-node moment
+/* Node multipole/payload CONSTRUCTION physics, and node MOTION between builds (the drift arithmetic,
+ * node_motion_fold_kick / node_motion_advance near the end of this file) — the single home for the per-node moment
  * accumulation formulas shared by the live GPU construction venues: the local-tree refresh
  * (gpu_moment_refresh.cc, atomic into shared scratch) and the topnode re-sum
  * (gpu_pseudo_update.cc::topnode_resum_node_, plain into a local accumulator). Companion to
@@ -49,6 +50,10 @@
  *   4. apply it in moment_accum_apply with the correct op (Ops::add / Ops::fmax).
  *   5. finalize it in moment_finalize (the normalize/divide), if it has a normalized form.
  *   6. wire venue storage: scratch View / SoA / AoS load+store at each caller.
+ *
+ * A node field that DRIFTS between builds (a centre moved by a velocity, with a pending momentum folded
+ * into that velocity) is added to the node-motion accessor(s), node_motion_fold_kick and
+ * node_motion_advance, and nowhere else: both drift venues run those.
  *
  * The four LOCKSTEP sites for a payload field are moment_node_accum (values), moment_node_ref
  * (pointer mirror), moment_accum_zero, and moment_accum_apply: each must carry the same fields
@@ -672,6 +677,125 @@ KOKKOS_INLINE_FUNCTION static void moment_finalize(const moment_node_ref<AccT>& 
         *r.vs_dm = Vec3<AccT>{};
     }
 #endif
+}
+
+
+/* ==========================================================================================
+ * Node MOTION between tree builds: the one home of a node's drift arithmetic.
+ *
+ * Between builds a node carries its centre of mass (and, under their flags, its luminosity-weighted,
+ * dark-matter and special-particle centres) with a velocity, plus the momentum its members were
+ * kicked by since it last moved. Drifting it folds that pending momentum into the velocities, then
+ * advances every centre, and widens its length by how far any member can have moved (on the
+ * undilated clock, which the caller supplies as dt_widen). WHETHER to fold is the caller's decision:
+ * the host lazy drift folds only when it moves a node forward (a kicked node that is already current
+ * keeps its velocity and pending momentum until its next drift), while the device sweep's full mirror
+ * refresh also folds a current node at dt = 0. Both reach the same state at the next real drift; the
+ * node velocity read in between differs.
+ *
+ * The host lazy drift (force_drift_node) and the device sweep (gpu_node_drift_apply) both run
+ * exactly this; each keeps its own bookkeeping (drift factors, time stamps, flags, locking). The
+ * arithmetic reaches the node through an accessor that reads and writes each field where it lives
+ * (node_motion_in_arrays below, for the node arrays), one field at a time, as the moment helpers
+ * above reach their storage through moment_node_ref.
+ * ========================================================================================== */
+struct node_motion_in_arrays {
+    struct NODE *nodes; struct extNODE *ext; int no;
+    KOKKOS_INLINE_FUNCTION MyFloat  &s(int j)    const {return nodes[no].u.d.s[j];}
+    KOKKOS_INLINE_FUNCTION MyFloat  &vs(int j)   const {return ext[no].vs[j];}
+    KOKKOS_INLINE_FUNCTION MyDouble &dp(int j)   const {return ext[no].dp[j];}
+    KOKKOS_INLINE_FUNCTION MyFloat  &len()       const {return nodes[no].len;}
+    KOKKOS_INLINE_FUNCTION double    mass()      const {return (double) nodes[no].u.d.mass;}
+    KOKKOS_INLINE_FUNCTION double    vmax()      const {return (double) ext[no].vmax;}
+#ifdef RT_SEPARATELY_TRACK_LUMPOS
+    KOKKOS_INLINE_FUNCTION MyFloat  &rt_s(int j)  const {return nodes[no].rt_source_lum_s[j];}
+    KOKKOS_INLINE_FUNCTION MyFloat  &rt_vs(int j) const {return ext[no].rt_source_lum_vs[j];}
+    KOKKOS_INLINE_FUNCTION MyDouble &rt_dp(int j) const {return ext[no].rt_source_lum_dp[j];}
+    KOKKOS_INLINE_FUNCTION double    lum_tot()    const {double l = 0; for(int b = 0; b < N_RT_FREQ_BINS; b++) {l += (double) nodes[no].stellar_lum[b];} return l;}
+#endif
+#ifdef DM_SCALARFIELD_SCREENING
+    KOKKOS_INLINE_FUNCTION MyFloat  &s_dm(int j)  const {return nodes[no].s_dm[j];}
+    KOKKOS_INLINE_FUNCTION MyFloat  &vs_dm(int j) const {return ext[no].vs_dm[j];}
+    KOKKOS_INLINE_FUNCTION MyDouble &dp_dm(int j) const {return ext[no].dp_dm[j];}
+    KOKKOS_INLINE_FUNCTION double    mass_dm()    const {return (double) nodes[no].mass_dm;}
+#endif
+#ifdef SINK_NODE_MOTION_TRACKED
+    KOKKOS_INLINE_FUNCTION MyFloat  &sink_pos(int j) const {return nodes[no].sink_pos[j];}
+    KOKKOS_INLINE_FUNCTION MyFloat  &sink_vel(int j) const {return nodes[no].sink_vel[j];}
+    KOKKOS_INLINE_FUNCTION MyDouble &sink_dp(int j)  const {return ext[no].sink_dp[j];}
+    KOKKOS_INLINE_FUNCTION double    sink_mass()     const {return (double) nodes[no].sink_mass;}
+#endif
+};
+
+/* Turn the pending momentum into velocity: each velocity is a mean over the particles it describes,
+ * so its momentum is divided by their mass (luminosity for the luminosity-weighted centre, the
+ * special-type mass for the sink centre). The momentum is then spent. Node masses and luminosities
+ * are finite and non-negative; a zero weight means no particles of that kind, so there is no velocity
+ * to change and the momentum is dropped. */
+template <class Node>
+KOKKOS_INLINE_FUNCTION static void node_motion_fold_kick(const Node &n)
+{
+    const double mass = n.mass();
+    const double fac  = (mass > 0) ? (1.0 / mass) : 0.0;
+    for(int j = 0; j < 3; j++) {n.vs(j) = (MyFloat)((double) n.vs(j) + fac * (double) n.dp(j)); n.dp(j) = 0;}
+#ifdef RT_SEPARATELY_TRACK_LUMPOS
+    {
+        const double l_tot = n.lum_tot(), fac_lum = (l_tot > 0) ? (1.0 / l_tot) : 0.0;
+        for(int j = 0; j < 3; j++) {n.rt_vs(j) = (MyFloat)((double) n.rt_vs(j) + fac_lum * (double) n.rt_dp(j)); n.rt_dp(j) = 0;}
+    }
+#endif
+#ifdef DM_SCALARFIELD_SCREENING
+    {
+        const double mass_dm = n.mass_dm(), fac_dm = (mass_dm > 0) ? (1.0 / mass_dm) : 0.0;
+        for(int j = 0; j < 3; j++) {n.vs_dm(j) = (MyFloat)((double) n.vs_dm(j) + fac_dm * (double) n.dp_dm(j)); n.dp_dm(j) = 0;}
+    }
+#endif
+#ifdef SINK_NODE_MOTION_TRACKED
+    {
+        const double sink_mass = n.sink_mass(), fac_sink = (sink_mass > 0) ? (1.0 / sink_mass) : 0.0;
+        for(int j = 0; j < 3; j++) {n.sink_vel(j) = (MyFloat)((double) n.sink_vel(j) + fac_sink * (double) n.sink_dp(j)); n.sink_dp(j) = 0;}
+    }
+#endif
+}
+
+/* Advance every centre with its velocity over dt_drift, and widen the length by how far any member
+ * can have moved over dt_widen. Every centre moves on the same clock as s: a sink centre left behind
+ * would give the nearest-sink distance, the sink timestep criteria and the direct-gravity monopole
+ * subtraction a position from a different time. */
+template <class Node>
+KOKKOS_INLINE_FUNCTION static void node_motion_advance(const Node &n, double dt_drift, double dt_widen)
+{
+    for(int j = 0; j < 3; j++) {
+        n.s(j) = (MyFloat)((double) n.s(j) + (double) n.vs(j) * dt_drift);
+#ifdef RT_SEPARATELY_TRACK_LUMPOS
+        n.rt_s(j) = (MyFloat)((double) n.rt_s(j) + (double) n.rt_vs(j) * dt_drift);
+#endif
+#ifdef DM_SCALARFIELD_SCREENING
+        n.s_dm(j) = (MyFloat)((double) n.s_dm(j) + (double) n.vs_dm(j) * dt_drift);
+#endif
+#ifdef SINK_NODE_MOTION_TRACKED
+        n.sink_pos(j) = (MyFloat)((double) n.sink_pos(j) + (double) n.sink_vel(j) * dt_drift);
+#endif
+    }
+    n.len() = (MyFloat)((double) n.len() + TREE_DRIFT_VELOCITY_PREFAC * n.vmax() * dt_widen);
+}
+
+/* The gas kernel lengths a node bounds follow the flow's divergence over the drift. The scalar hmax
+ * decays or grows with it (its legacy semantics); the per-type bands only ever grow here, because
+ * they include sources that do not shrink under drift (e.g. a particle's force softening), so decaying
+ * them could under-bound a node prune -- force_update_hmax re-grows them per particle each call. */
+KOKKOS_INLINE_FUNCTION static void node_hmax_drift(struct extNODE &ext, double dt_drift_hmax)
+{
+    double exp_arg = (double) ext.divVmax * dt_drift_hmax / (double) NUMDIMS;
+    if(exp_arg < -1.0) {exp_arg = -1.0;}
+    if(exp_arg >  1.0) {exp_arg =  1.0;}
+    const double decay_fac = exp(exp_arg);
+    if(ext.hmax > 0) {ext.hmax = (MyFloat)((double) ext.hmax * decay_fac);}
+    if(decay_fac > 1.0) {
+        for(int t = 0; t < 6; t++) {
+            if(ext.hmax_per_type[t] > 0) {ext.hmax_per_type[t] = (MyFloat)((double) ext.hmax_per_type[t] * decay_fac);}
+        }
+    }
 }
 
 #endif /* GRAVTREE_MOMENT_KERNEL_H */

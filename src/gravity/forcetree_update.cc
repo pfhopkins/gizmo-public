@@ -12,6 +12,7 @@
 #include "../core/timestep_functions.h"   /* dilation, for the motion bound */
 #include "force_node_drift_sync.h"
 #include "gpu_gravity_tree.h"        /* SoA mirror: vmax coherence for widen-on-open */
+#include "gravtree_moment_kernel.h"   /* the shared node-motion arithmetic */
 
 /* GPU replacement for force_update_tree. */
 extern "C" void gpu_force_update_tree(void);
@@ -444,103 +445,39 @@ void force_finish_kick_nodes(void)
 
 void force_drift_node(int no, integertime time1)
 {
-  int j;
-  integertime time0;
-  double dt_drift, dt_drift_hmax, fac;
-
   /* Acquire-load: if another thread already drifted this node to time1, we both
    * skip AND observe its published geometry (paired with the release store below). */
   if(time1 == modeb_node_ti_current_acquire(no))
     return;
 
-  time0 = Extnodes[no].Ti_lastkicked;
-
-  if(Nodes[no].u.d.bitflags & (1 << BITFLAG_NODEHASBEENKICKED))
+  /* A kicked node was brought current when its kick was added, so its pending momentum
+     describes motion from exactly its own time onward. */
+  const int kicked = (Nodes[no].u.d.bitflags & (1 << BITFLAG_NODEHASBEENKICKED)) ? 1 : 0;
+  if(kicked && Extnodes[no].Ti_lastkicked != Nodes[no].Ti_current)
     {
-      if(Extnodes[no].Ti_lastkicked != Nodes[no].Ti_current)
-	{
-	  printf("Task=%d Extnodes[no].Ti_lastkicked=%lld  Nodes[no].Ti_current=%lld\n",ThisTask, (long long)Extnodes[no].Ti_lastkicked, (long long)Nodes[no].Ti_current);
-	  printf("inconsistency in drift node\n"); fflush(stdout); endrun(90001007); return;   /* graceful: skip node drift; bad-stop drains at the next gravity-walk poll */
-	}
+      printf("Task=%d Extnodes[no].Ti_lastkicked=%lld  Nodes[no].Ti_current=%lld\n",ThisTask, (long long)Extnodes[no].Ti_lastkicked, (long long)Nodes[no].Ti_current);
+      printf("inconsistency in drift node\n"); fflush(stdout); endrun(90001007); return;   /* graceful: skip node drift; bad-stop drains at the next gravity-walk poll */
+    }
 
-      if(Nodes[no].u.d.mass) {fac = 1 / Nodes[no].u.d.mass;} else {fac = 0;}
-
-#ifdef RT_SEPARATELY_TRACK_LUMPOS
-        double fac_stellar_lum;
-        double l_tot=0; for(j=0;j<N_RT_FREQ_BINS;j++) {l_tot += (Nodes[no].stellar_lum[j]);}
-        if(l_tot>0) {fac_stellar_lum = 1 / l_tot;} else {fac_stellar_lum = 0;}
-#endif
-
-#ifdef DM_SCALARFIELD_SCREENING
-      double fac_dm;
-      if(Nodes[no].mass_dm) {fac_dm = 1 / Nodes[no].mass_dm;} else {fac_dm = 0;}
-#endif
-
-      Extnodes[no].vs += fac * Extnodes[no].dp;
-      Extnodes[no].dp = {};
-#ifdef RT_SEPARATELY_TRACK_LUMPOS
-      Extnodes[no].rt_source_lum_vs += fac_stellar_lum * Extnodes[no].rt_source_lum_dp;
-      Extnodes[no].rt_source_lum_dp = {};
-#endif
-#ifdef DM_SCALARFIELD_SCREENING
-      Extnodes[no].vs_dm += fac_dm * Extnodes[no].dp_dm;
-      Extnodes[no].dp_dm = {};
-#endif
-#ifdef SINK_NODE_MOTION_TRACKED
-      /* sink_vel lives in Nodes, not Extnodes, but is updated exactly as vs is. Normalised by
-         sink_mass rather than mass: it is the mean velocity of the special-type particles alone. */
-      {
-          double fac_sink = (Nodes[no].sink_mass > 0) ? (1.0 / Nodes[no].sink_mass) : 0.0;
-          Nodes[no].sink_vel += fac_sink * Extnodes[no].sink_dp;
-          Extnodes[no].sink_dp = {};
-      }
-#endif
+  /* The arithmetic is the shared node-motion unit (gravtree_moment_kernel.h), the same one the
+     device sweep runs. */
+  const node_motion_in_arrays node = {Nodes, Extnodes, no};
+  if(kicked)
+    {
+      node_motion_fold_kick(node);
       Nodes[no].u.d.bitflags &= (~(1 << BITFLAG_NODEHASBEENKICKED));
     }
 
-    dt_drift = dt_drift_hmax = get_drift_factor(Nodes[no].Ti_current, time1, no, 1);
+    const double dt_drift = get_drift_factor(Nodes[no].Ti_current, time1, no, 1);
     /* The widening runs on the undilated clock: vmax bounds each member's motion per unit
        undilated interval, carrying that member's own dilation, so the node's dilated clock
        (right for its centre of mass) would under-grow it for a member less dilated than the
        node.  The same interval when no dilation is active. */
     const double dt_widen = get_drift_factor_undilated(Nodes[no].Ti_current, time1);
-    
 
-    Nodes[no].u.d.s += Extnodes[no].vs * dt_drift;
-#ifdef SINK_NODE_MOTION_TRACKED
-    /* Keep sink_pos on the same clock as u.d.s, exactly once. Left undrifted it stays at its
-       last-build value while the sinks move, and the nearest-sink distance, the sink timestep
-       criteria and (under SINGLE_STAR_DIRECT_GRAVITY) the monopole subtraction all read a stale
-       position on a different clock from u.d.s. The device drift kernel does the same. */
-    Nodes[no].sink_pos += Nodes[no].sink_vel * dt_drift;
-#endif
-  Nodes[no].len += TREE_DRIFT_VELOCITY_PREFAC * Extnodes[no].vmax * dt_widen;
+    node_motion_advance(node, dt_drift, dt_widen);
+    node_hmax_drift(Extnodes[no], dt_drift);
 
-#ifdef DM_SCALARFIELD_SCREENING
-    Nodes[no].s_dm += Extnodes[no].vs_dm * dt_drift;
-#endif
-#ifdef RT_SEPARATELY_TRACK_LUMPOS
-    Nodes[no].rt_source_lum_s += Extnodes[no].rt_source_lum_vs * dt_drift;
-#endif
-
-    if(Extnodes[no].hmax > 0) {Extnodes[no].hmax *= exp(DMAX(-1.,DMIN(1.,Extnodes[no].divVmax * dt_drift_hmax / NUMDIMS)));}
-    /* Mode B per-type bands: upward-only inflate. The bands
-     * include static-ish sources like P[j].ForceSoftening (per
-     * force_hmax_per_type_particle_radius), so decaying the band below the
-     * actual FS value would under-bound the node-prune. force_update_hmax()
-     * re-grows the bands per-particle each call; we just must not shrink
-     * them under drift. (Scalar `hmax` retains its legacy bidirectional decay
-     * — its semantics are unchanged.) */
-    {
-        double decay_fac = exp(DMAX(-1., DMIN(1., Extnodes[no].divVmax * dt_drift_hmax / NUMDIMS)));
-        if(decay_fac > 1.0) {
-            for(int t = 0; t < 6; t++) {
-                if(Extnodes[no].hmax_per_type[t] > 0) {
-                    Extnodes[no].hmax_per_type[t] *= (MyFloat)decay_fac;
-                }
-            }
-        }
-    }
     /* Record that this rank has now drifted at least one node to time1 without
      * updating that node's device SoA mirror. Relaxed: every caller passes
      * All.Ti_Current, so concurrent writers store the same value, and the only reader

@@ -39,6 +39,7 @@
 #include "gpu_gravity_tree.h"
 #include "../declarations/gpu_recorder_claim.h"   /* the node dirty set's view, shared with its device claim */
 #include "forcetree.h"
+#include "gravtree_moment_kernel.h"   /* the shared node-motion arithmetic */
 
 
 /* USE_TIMESTEP_DILATION_FOR_ZOOMS: node-indexed dilation is supported via a
@@ -116,90 +117,16 @@ gpu_node_drift_apply(struct NODE *Nodes_uvm, struct extNODE *Extnodes_uvm, int n
                      integertime ti_target, double dt_drift, double dt_drift_hmax, double dt_widen,
                      int fold_kick)
 {
-    /* Fold a pending kick into vs and clear dp -- only when the caller asks (see above). */
-    if(fold_kick && (Nodes_uvm[no].u.d.bitflags & (1u << BITFLAG_NODEHASBEENKICKED))) {
-        double mass = (double) Nodes_uvm[no].u.d.mass;
-        double fac  = (mass > 0) ? (1.0 / mass) : 0.0;
-
-#ifdef RT_SEPARATELY_TRACK_LUMPOS
-        double l_tot = 0.0;
-        for(int b = 0; b < N_RT_FREQ_BINS; b++) {l_tot += (double)Nodes_uvm[no].stellar_lum[b];}
-        double fac_lum = (l_tot > 0) ? (1.0 / l_tot) : 0.0;
-#endif
-#ifdef DM_SCALARFIELD_SCREENING
-        double mass_dm = (double) Nodes_uvm[no].mass_dm;
-        double fac_dm  = (mass_dm > 0) ? (1.0 / mass_dm) : 0.0;
-#endif
-
-        for(int j = 0; j < 3; j++) {
-            Extnodes_uvm[no].vs[j] = (MyFloat)((double)Extnodes_uvm[no].vs[j] + fac * (double)Extnodes_uvm[no].dp[j]);
-            Extnodes_uvm[no].dp[j] = 0;
-#ifdef RT_SEPARATELY_TRACK_LUMPOS
-            Extnodes_uvm[no].rt_source_lum_vs[j] = (MyFloat)((double)Extnodes_uvm[no].rt_source_lum_vs[j]
-                                                   + fac_lum * (double)Extnodes_uvm[no].rt_source_lum_dp[j]);
-            Extnodes_uvm[no].rt_source_lum_dp[j] = 0;
-#endif
-#ifdef DM_SCALARFIELD_SCREENING
-            Extnodes_uvm[no].vs_dm[j] = (MyFloat)((double)Extnodes_uvm[no].vs_dm[j] + fac_dm * (double)Extnodes_uvm[no].dp_dm[j]);
-            Extnodes_uvm[no].dp_dm[j] = 0;
-#endif
-        }
-#ifdef SINK_NODE_MOTION_TRACKED
-        /* Mirrors the host fold (forcetree_update.cc): normalised by sink_mass, not mass, and
-           consumed before the kicked bitflag is cleared below. */
-        {
-            double sink_mass = (double) Nodes_uvm[no].sink_mass;
-            double fac_sink  = (sink_mass > 0) ? (1.0 / sink_mass) : 0.0;
-            for(int j = 0; j < 3; j++) {
-                Nodes_uvm[no].sink_vel[j] = (MyFloat)((double)Nodes_uvm[no].sink_vel[j] + fac_sink * (double)Extnodes_uvm[no].sink_dp[j]);
-                Extnodes_uvm[no].sink_dp[j] = 0;
-            }
-        }
-#endif
+    /* The arithmetic is the shared node-motion unit (gravtree_moment_kernel.h), the same one the host
+       lazy drift runs; the kick is folded only when the caller asks (see above). */
+    const int fold = fold_kick && (Nodes_uvm[no].u.d.bitflags & (1u << BITFLAG_NODEHASBEENKICKED));
+    const node_motion_in_arrays node = {Nodes_uvm, Extnodes_uvm, no};
+    if(fold) {
+        node_motion_fold_kick(node);
         Nodes_uvm[no].u.d.bitflags &= (~(1u << BITFLAG_NODEHASBEENKICKED));
     }
-
-    /* Apply drift to s, len, hmax. */
-    for(int j = 0; j < 3; j++) {
-        Nodes_uvm[no].u.d.s[j] = (MyFloat)((double)Nodes_uvm[no].u.d.s[j] + (double)Extnodes_uvm[no].vs[j] * dt_drift);
-#ifdef SINK_NODE_MOTION_TRACKED
-        Nodes_uvm[no].sink_pos[j] = (MyFloat)((double)Nodes_uvm[no].sink_pos[j] + (double)Nodes_uvm[no].sink_vel[j] * dt_drift);
-#endif
-#ifdef DM_SCALARFIELD_SCREENING
-        Nodes_uvm[no].s_dm[j]  = (MyFloat)((double)Nodes_uvm[no].s_dm[j]  + (double)Extnodes_uvm[no].vs_dm[j] * dt_drift);
-#endif
-#ifdef RT_SEPARATELY_TRACK_LUMPOS
-        Nodes_uvm[no].rt_source_lum_s[j] = (MyFloat)((double)Nodes_uvm[no].rt_source_lum_s[j]
-                                            + (double)Extnodes_uvm[no].rt_source_lum_vs[j] * dt_drift);
-#endif
-    }
-    Nodes_uvm[no].len = (MyFloat)((double)Nodes_uvm[no].len
-                                  + TREE_DRIFT_VELOCITY_PREFAC * (double)Extnodes_uvm[no].vmax * dt_widen);
-
-    {
-        double exp_arg = (double)Extnodes_uvm[no].divVmax * dt_drift_hmax / (double)NUMDIMS;
-        if(exp_arg < -1.0) {exp_arg = -1.0;}
-        if(exp_arg >  1.0) {exp_arg =  1.0;}
-        double decay_fac = exp(exp_arg);
-        if(Extnodes_uvm[no].hmax > 0) {
-            Extnodes_uvm[no].hmax = (MyFloat)((double)Extnodes_uvm[no].hmax * decay_fac);
-        }
-        /* Mode B per-type bands: upward-only inflate.
-         * Bands include static-ish sources (P[j].ForceSoftening) that
-         * don't shrink under drift, so decaying below the actual FS value
-         * would under-bound the node-prune. force_update_hmax() re-grows
-         * bands per-particle each call; we just must not shrink them
-         * here. Scalar `hmax` keeps its legacy bidirectional decay above.
-         * Without this guard, expansion regions (positive divVmax) would
-         * fail to track via the upward branch. */
-        if(decay_fac > 1.0) {
-            for(int t = 0; t < 6; t++) {
-                if(Extnodes_uvm[no].hmax_per_type[t] > 0) {
-                    Extnodes_uvm[no].hmax_per_type[t] = (MyFloat)((double)Extnodes_uvm[no].hmax_per_type[t] * decay_fac);
-                }
-            }
-        }
-    }
+    node_motion_advance(node, dt_drift, dt_widen);
+    node_hmax_drift(Extnodes_uvm[no], dt_drift_hmax);
 
     Nodes_uvm[no].Ti_current = ti_target;
 }
