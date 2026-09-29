@@ -197,6 +197,10 @@ void gpu_gravity_tree_release(void);
 struct gpu_gravity_tree_soa_t *gpu_gravity_tree_soa(void);
 int gpu_gravity_tree_capacity(void);
 int gpu_gravity_tree_valid(void);
+/* The mirror slot of tree node `no`, or -1 when the mirror has none.  The node index range
+ * (MaxNodes + AllocatedForeignNodes) can be larger than the mirror, so every host write into
+ * the mirror is bounded by the mirror's own capacity through this one test. */
+int gpu_gravity_tree_mirror_slot(int no);
 
 /* GPU pre-walk drift kernel — replaces the host loop in
  * gpu_gravtree_walk_primary that called force_drift_node + mark_dirty per

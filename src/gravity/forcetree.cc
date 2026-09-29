@@ -1708,9 +1708,8 @@ void force_tree_note_type_presence(int particle)
         /* Test each storage separately.  Short-circuiting on the AoS bit alone would turn a single
          * skipped mirror write into a permanent one: the AoS bit is set, so every later raise stops
          * here while the mirror the walks actually read still says the type is absent. */
-        const int k_soa = no - All.TreeNodeIndexBase;
-        const int has_mirror = (soa && soa->bitflags && k_soa >= 0
-                                && k_soa < MaxNodes + AllocatedForeignNodes);
+        const int k_soa = gpu_gravity_tree_mirror_slot(no);
+        const int has_mirror = (soa && soa->bitflags && k_soa >= 0);
         if(!(Nodes[no].u.d.bitflags & bit)) {Nodes[no].u.d.bitflags |= bit;}
         if(has_mirror && !(soa->bitflags[k_soa] & bit)) {soa->bitflags[k_soa] |= bit;}
         no = Nodes[no].u.d.father;
@@ -1783,8 +1782,8 @@ void force_add_element_to_tree(int iparent, int ichild)
      * that exists, not by the index range it sits in. */
     {
         struct gpu_gravity_tree_soa_t *soa = gpu_gravity_tree_soa();
-        int k_soa = father - All.TreeNodeIndexBase;
-        if(soa && k_soa >= 0 && k_soa < MaxNodes + AllocatedForeignNodes) {
+        const int k_soa = gpu_gravity_tree_mirror_slot(father);
+        if(soa && k_soa >= 0) {
             if(soa->hmax) {soa->hmax[k_soa] = (MyGravFloat) new_hmax;}
             if(soa->vmax) {soa->vmax[k_soa] = (MyGravFloat) new_vmax;}
             /* ⛔ node_ti is deliberately NOT written here. It must pair with the

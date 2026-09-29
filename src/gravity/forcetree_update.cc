@@ -127,14 +127,13 @@ static inline void force_soa_raise_vmax(int no, MyFloat vmax_aos)
 {
     struct gpu_gravity_tree_soa_t *soa = gpu_gravity_tree_soa();
     if(!soa || !soa->vmax) {return;}
-    const int k = no - All.TreeNodeIndexBase;
     /* ⛔ Bound by the mirror that EXISTS. MaxNodes + AllocatedForeignNodes is the
        INDEX range; the allocation can be smaller (gpu_neighbor_list.cc declines a
        walk precisely when capacity < that sum), and writing past it corrupts the
        neighbouring SoA arrays -- which surfaces as the LET walk resolving
        structure the import does not carry, nowhere near this line. */
-    const int cap = gpu_gravity_tree_capacity();
-    if(k < 0 || k >= cap) {return;}
+    const int k = gpu_gravity_tree_mirror_slot(no);
+    if(k < 0) {return;}
     const MyGravFloat v = (MyGravFloat) vmax_aos;
     if(soa->vmax[k] < v) {soa->vmax[k] = v;}
 }
