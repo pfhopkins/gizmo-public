@@ -79,7 +79,20 @@ struct gravtree_source_inputs_t {
  * cheap validity scalars are initialised unconditionally; array payloads are
  * written only inside an active section, and the caller mirrors that by using
  * them only when the flag is set.  No physics change relative to the legacy
- * per-venue loops. */
+ * per-venue loops.
+ *
+ * These payloads are computed from each source's stored state as it stands when this
+ * is called: nothing here predicts a drifted field forward.  A node aggregate is filled
+ * at a tree build or moment refresh and then stays fixed until the next one, as in
+ * legacy (the node drift moves centres, never payloads), while a leaf opened later
+ * evaluates this afresh -- so time-dependent payloads such as a star's age-dependent
+ * luminosity can differ between a node and its own leaves by the interval since the
+ * build.  The payloads that depend on drift-changed gas state are the gas emission
+ * terms under RADTRANSFER (e.g. free-free, from the gas energy, density and mass).
+ * They are read stale for an inactive gas source by contract: they feed only the
+ * approximate long-range transport methods (OTVET, LEBRON), which accept somewhat
+ * stale luminosities by construction.  A use that needs them current must predict
+ * them itself rather than read them from here. */
 GRAVTREE_FILL_DECOR void
 gravtree_fill_particle_source_inputs(int p, struct particle_data *P_arr,
                                      struct gas_cell_data *CellP_arr,

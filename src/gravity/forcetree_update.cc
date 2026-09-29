@@ -115,7 +115,7 @@ void force_update_tree(void)
 /* Raise the SoA mirror of a node's vmax to match the AoS.
  *
  * vmax is a RUNNING MAX, and the ONEWAY device walk widens its opening bound by
- * `PREFAC * vmax * dt`.  A mirror left behind the AoS is therefore SMALLER, the
+ * TREE_NODE_WIDENING_DELTA(vmax, dt).  A mirror left behind the AoS is therefore SMALLER, the
  * bound is UNDER-widened, and the walk silently under-includes neighbours -- the
  * one failure this contract exists to prevent.  Raising (never lowering) keeps the
  * mirror conservative even if a writer is missed: too large only over-widens, and

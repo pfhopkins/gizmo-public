@@ -1739,7 +1739,7 @@ struct GravPacketMaskedTeamPolicy : GravPacketMaskedPolicy {
  * THE CONTAINMENT BOUND, and both of its terms are required.  For a node standing behind the
  * walk time, define ONE quantity from the same velocity bound the drift itself widens by:
  *
- *     R = TREE_DRIFT_VELOCITY_PREFAC * vmax * dt_widen        (the undilated clock)
+ *     R = TREE_NODE_WIDENING_DELTA(vmax, dt_widen)        (the undilated clock)
  *
  *   TERM 1 -- the node's length is taken as len + R, which is exactly what the drift will add
  *             to it (gpu_force_drift.cc, the widen-on-open convention).
@@ -1797,7 +1797,7 @@ struct GravPacketCoverPolicy {
         if(node_ti >= e.ctx.ti) {return 0.0;}
         const double vmax = e.ctx.tree_soa.vmax ? (double) e.ctx.tree_soa.vmax[idx] : 0.0;
         const double dt_widen = get_drift_factor_impl(node_ti, e.ctx.ti, 1.0, &tables);
-        const double r = TREE_DRIFT_VELOCITY_PREFAC * vmax * dt_widen;
+        const double r = TREE_NODE_WIDENING_DELTA(vmax, dt_widen);
         return (r > 0.0) ? r : 0.0;
     }
 

@@ -110,14 +110,14 @@ static void let_compute_tree_lifetime(void)
 }
 
 /* The node size the walk may reach before this tree is rebuilt.  The growth rule is the walk's own
- * (TREE_DRIFT_VELOCITY_PREFAC * vmax * undilated drift factor), evaluated over the tree's expected
+ * (TREE_NODE_WIDENING_DELTA over the undilated drift factor), evaluated over the tree's expected
  * lifetime; vmax already carries each member's own dilation.  Used ONLY to decide essentiality: the
  * node itself ships at its true build-time size, and the receiver widens it the ordinary way. */
 static double let_node_len_over_tree_lifetime(int no, double len)
 {
     if(g_let_tree_lifetime_dti <= 0) {return len;}
     double dt_lifetime = get_drift_factor_undilated(All.Ti_Current, All.Ti_Current + g_let_tree_lifetime_dti);
-    return len + TREE_DRIFT_VELOCITY_PREFAC * (double) Extnodes[no].vmax * dt_lifetime;
+    return len + TREE_NODE_WIDENING_DELTA((double) Extnodes[no].vmax, dt_lifetime);
 }
 
 
@@ -1176,7 +1176,7 @@ static double let_aggregate_len_over_tree_lifetime(const struct LETNodeWire *w, 
 {
     if(g_let_tree_lifetime_dti <= 0) {return len;}
     const double dt_lifetime = get_drift_factor_undilated(All.Ti_Current, All.Ti_Current + g_let_tree_lifetime_dti);
-    return len + TREE_DRIFT_VELOCITY_PREFAC * (double) w->extnode.vmax * dt_lifetime;
+    return len + TREE_NODE_WIDENING_DELTA((double) w->extnode.vmax, dt_lifetime);
 }
 
 /* Build the leaf's aggregate wire from the members already gathered in the worker's scratch.

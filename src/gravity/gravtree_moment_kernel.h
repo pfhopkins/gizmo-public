@@ -777,7 +777,7 @@ KOKKOS_INLINE_FUNCTION static void node_motion_advance(const Node &n, double dt_
         n.sink_pos(j) = (MyFloat)((double) n.sink_pos(j) + (double) n.sink_vel(j) * dt_drift);
 #endif
     }
-    n.len() = (MyFloat)((double) n.len() + TREE_DRIFT_VELOCITY_PREFAC * n.vmax() * dt_widen);
+    n.len() = (MyFloat)((double) n.len() + TREE_NODE_WIDENING_DELTA(n.vmax(), dt_widen));
 }
 
 /* The gas kernel lengths a node bounds follow the flow's divergence over the drift. The scalar hmax

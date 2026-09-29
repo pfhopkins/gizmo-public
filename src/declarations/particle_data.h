@@ -109,7 +109,8 @@ extern ALIGN(32) struct particle_data
     MyFloat KernelRadius;           /*!< search radius around particle for neighbors/interactions */
     MyFloat ForceSoftening;         /*!< host-cached value of ForceSoftening_KernelRadius(p): single source of
                                          truth for both CPU and GPU walks. Recomputed for active particles each
-                                         gravity_tree() call by compute_all_force_softening() in forcetree.cc */
+                                         gravity_tree() call by compute_all_force_softening() in forcetree.cc;
+                                         an inactive particle keeps its last active step's value by design */
     MyFloat NumNgb;                 /*!< neighbor number around particle */
     MyFloat DrkernNgbFactor;        /*!< correction factor needed for varying kernel lengths */
 #ifdef DO_DENSITY_AROUND_NONGAS_PARTICLES

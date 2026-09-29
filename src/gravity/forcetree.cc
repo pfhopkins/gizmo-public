@@ -59,10 +59,14 @@
  * routine is the only place that performs the actual computation.
  *
  * The cache is refreshed once per gravity_tree() call by compute_all_force_softening()
- * (active-particle loop) and seeded over all particles at startup in init.c.  Inputs
- * (KernelRadius, AGS_KernelRadius, tidal_tensor_mag_prev, StarParticleEffectiveSize)
- * only mutate when the particle is active, so cached values for inactive particles
- * remain correct between active steps. */
+ * (active-particle loop) and seeded over all particles at startup in init.c.  For an
+ * inactive particle the cached value is deliberately the softening of its last active
+ * step (a force-epoch snapshot), not a value recomputed from drifted inputs: it stays
+ * paired with that step's AGS zeta and tidal correction, and node maxsoft and LET leaf
+ * softening are built from the same cache, so every piece of one source's force law
+ * refers to one epoch.  Some inputs (e.g. a drifted KernelRadius) do change between
+ * active steps; softening that follows them would be a different numerical method,
+ * not a refresh of this cache. */
 
 double compute_force_softening_kernel_radius(int p)
 {
@@ -113,9 +117,9 @@ double ForceSoftening_KernelRadius(int p)
 
 /* Refresh the per-particle ForceSoftening cache.  Called from gravity_tree() at
  * the start of every walk dispatch (active particles only) and from init.c during
- * startup (all particles).  Inputs to compute_force_softening_kernel_radius() only
- * change for active particles within a timestep, so an active-particle pass is
- * sufficient for steady-state operation; the init pass seeds inactive particles
+ * startup (all particles).  Refreshing only the active particles is the contract, not
+ * a shortcut: an inactive particle keeps the softening of its last active step (see
+ * compute_force_softening_kernel_radius above); the init pass seeds inactive particles
  * loaded from the IC file or spawned mid-run. */
 void compute_all_force_softening(int mode)
 {

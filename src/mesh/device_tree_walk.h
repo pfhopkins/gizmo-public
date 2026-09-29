@@ -191,8 +191,7 @@ void gx_device_tree_walk_impl(double qx, double qy, double qz, double reach,
                          * centre of mass. */
                         const double dtw = get_drift_factor_impl(ti_node, tree.ti_now, 1.0,
                                                                  &tree.drift_tables);
-                        const double dl = TREE_DRIFT_VELOCITY_PREFAC
-                                          * (double)tree.node_vmax[kn] * dtw;
+                        const double dl = TREE_NODE_WIDENING_DELTA((double)tree.node_vmax[kn], dtw);
                         /* A non-finite or absurd widening is a DEFECT, not a big
                          * number -- and falling back to the NARROW bound would be
                          * silent under-inclusion, so say so through the channel the

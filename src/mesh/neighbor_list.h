@@ -97,7 +97,7 @@ struct GxDeviceTreeView {
     /* WIDEN-ON-OPEN (landing 4).  A device walk cannot take a lock, so it cannot
      * drift a node it reaches.  Instead it widens the node's own opening bound by
      * how far that node could have moved since the mirror was written:
-     *     len_effective = len + TREE_DRIFT_VELOCITY_PREFAC * vmax * dt(node_ti -> now)
+     *     len_effective = len + TREE_NODE_WIDENING_DELTA(vmax, dt(node_ti -> now))
      * which is the SAME expression the sweep and force_drift_node apply -- the walk
      * just evaluates it lazily, for the ~4k nodes it visits, instead of eagerly for
      * ~1.4M.  Over-widening is harmless (over-inclusion, re-gated by the pair
