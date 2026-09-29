@@ -2736,7 +2736,9 @@ static void cbe_apply_moment_rate_framecorrect(
  *
  * *dT_out (nullable) receives the sum-over-bases trace-delta from PSD
  * projections inside the repair helper; caller passes nullptr to skip
- * diagnostic bookkeeping. dP is identically 0 from this kernel. */
+ * diagnostic bookkeeping. The relative basis momenta sum to zero after the
+ * kick; the particle's own momentum changes by Mass*(V_new-V_old), which is
+ * added to pi.dp. */
 KOKKOS_INLINE_FUNCTION
 static void do_cbe_drift_kick_kernel(struct particle_data& pi, double dt,
                                      double *dT_out)
@@ -2770,8 +2772,9 @@ static void do_cbe_drift_kick_kernel(struct particle_data& pi, double dt,
      *
      * dT_out (nullable) accumulates the sum-over-bases trace-delta from
      * PSD projections inside the Step 7 repair helper (for
-     * cbe_diagnostics.txt col-8). dP from this kernel is identically zero
-     * (repair preserves Σ p_rel and projection only touches stress slots). */
+     * cbe_diagnostics.txt col-8). The repair preserves Σ p_rel (projection
+     * only touches stress slots), so the relative basis momenta still sum to
+     * zero; the bulk momentum change is recorded in step 6. */
 
     /* Aggregate outflow-budget limiter.
      * Runs BEFORE nfac so subsequent steps operate on the capped rates.
@@ -2829,8 +2832,10 @@ static void do_cbe_drift_kick_kernel(struct particle_data& pi, double dt,
 
     /* Step 6: pi.Vel <- V_new (CBE-induced bulk velocity, derived not
      * GravAccel-injected). Gravity kicks against pi.GravAccel remain
-     * independent and apply only EXTERNAL gravitational acceleration. */
-    for(int a=0;a<NUMDIMS;a++) pi.Vel[a] = V_new[a];
+     * independent and apply only EXTERNAL gravitational acceleration.
+     * The momentum change goes into pi.dp, as every kick records it, so the
+     * tree nodes' mean velocities follow this particle. */
+    for(int a=0;a<NUMDIMS;a++) {pi.dp[a] += pi.Mass * (V_new[a] - V_old[a]); pi.Vel[a] = V_new[a];}
 
     /* Step 7: conservative cell-state realizability repair via the single
      * SSOT helper defined above. Operates on the now-frame-consistent

@@ -152,7 +152,8 @@ void cbe_drift_kick_evaluate_gpu(struct particle_data *P_host,
      * below already relies on this); host reads of dT_scratch[a] follow. */
 
     /* Narrow scatter: kernel writes CBE_basis_moments AND pi.Vel (the latter
-     * from the absolute-update round-trip's V_new = MMV derivation), AND
+     * from the absolute-update round-trip's V_new = MMV derivation) with its
+     * momentum change in pi.dp, AND
      * the predictor reset writes CBE_basis_moments_pred /
      * CBE_VelPred (pred = post-kick conserved state). All must be scattered
      * back to P_host — the OMP path updates in place, but the GPU path runs on
@@ -167,6 +168,7 @@ void cbe_drift_kick_evaluate_gpu(struct particle_data *P_host,
             }
         for(int k = 0; k < 3; k++) {
             P_host[ii].Vel[k]         = compact_P[a].Vel[k];
+            P_host[ii].dp[k]          = compact_P[a].dp[k];
             P_host[ii].CBE_VelPred[k] = compact_P[a].CBE_VelPred[k];
         }
     }
