@@ -98,25 +98,42 @@ double nuclear_zoom_dilation_amplitude(double r)
    through the tree moments. The weighted-motion module is still in development; this needs
    resolving before it is relied on. */
 KOKKOS_INLINE_FUNCTION
+double node_timestep_dilation_factor_at(const Vec3<double> &pos_node)
+{
+#if !defined(USE_TIMESTEP_DILATION_FOR_ZOOMS) || defined(DILATION_FOR_STELLAR_KINEMATICS_ONLY)
+    (void)pos_node; return 1;
+#else
+
+    if(All.Time <= All.TimeBegin) {return 1;}
+
+    double a = 1;
+
+#if defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
+    a = nuclear_zoom_dilation_amplitude(distance_to_nearest_refinement_center(pos_node));
+#else
+    (void)pos_node;
+#endif
+
+    return 1. / a;
+#endif
+}
+
+/* The same, at the node's centre of mass as the tree array holds it.  A walk reading its own
+   copy of a node evaluates node_timestep_dilation_factor_at on that copy's centre instead. */
+KOKKOS_INLINE_FUNCTION
 double return_node_timestep_dilation_factor_P(int no, const struct NODE *nodes)
 {
 #if !defined(USE_TIMESTEP_DILATION_FOR_ZOOMS) || defined(DILATION_FOR_STELLAR_KINEMATICS_ONLY)
     (void)no; (void)nodes; return 1;
 #else
-
-    if(All.Time <= All.TimeBegin) {return 1;}
     if(no < 0) {return 1;}
-
-    double a = 1;
-
+    Vec3<double> pos_node = {};
 #if defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
-    Vec3<double> pos_node; pos_node = nodes[no].u.d.s;
-    a = nuclear_zoom_dilation_amplitude(distance_to_nearest_refinement_center(pos_node));
+    pos_node = nodes[no].u.d.s;
 #else
     (void)nodes;
 #endif
-
-    return 1. / a;
+    return node_timestep_dilation_factor_at(pos_node);
 #endif
 }
 
