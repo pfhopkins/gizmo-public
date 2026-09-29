@@ -153,7 +153,7 @@ void advect_mesh_point_P(int i, double dt, struct particle_data *pp, struct gas_
        span, through the angle that velocity sweeps in dt, and its velocity is turned with it. */
     Vec3<double> dp = pp[i].Pos; Vec3<double> dp_offset = {}; // location relative to the centre; the centre is the coordinate origin ...
 #if defined(GRAVITY_ANALYTIC_ANCHOR_TO_PARTICLE) // ... unless a special anchor defines it
-    dp_offset = pp[i].Pos - pp[i].Min_xyz_to_Sink;
+    dp_offset = -(pp[i].Pos + pp[i].Min_xyz_to_Sink);   /* Min_xyz_to_Sink = x_sink - x, so dp = x - x_sink */
 #elif defined(BOX_PERIODIC) // ... or the box is periodic, when it is the box mid-point
 #if (NUMDIMS==1)
     dp_offset[0] = -boxHalf_X;
