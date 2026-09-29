@@ -7,6 +7,7 @@
 #include "../core/proto.h"
 #include "predict_functions.h" /* apply_special_boundary_conditions_P */
 #include "../system/gpu_particles_arena.h"
+#include "../mesh/gpu_neighbor_list.h" /* gpu_sidx_notify_pool_changed */
 #ifdef CBE_INTEGRATOR
 #include "../sidm/sidm_gpu_decls.h"
 #endif
@@ -193,13 +194,15 @@ void do_hermite_prediction(void)
 void do_hermite_correction(void) // corrector step
 {
     int i; integertime ti_step, tstart=0, tend=0;
+    int gas_corrected = 0; /* the corrector writes positions, which the kept gas neighbour index must see */
 #ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic) private(ti_step, tstart, tend)
+#pragma omp parallel for schedule(dynamic) private(ti_step, tstart, tend) reduction(+:gas_corrected)
 #endif
     for (int _apl = 0; _apl < (int)ActiveParticleList.size(); _apl++) {
         int i = ActiveParticleList[_apl];
 	if(eligible_for_hermite(i, P)){
                 if(P[i].Mass > 0) {
+                    if(P[i].Type == 0) {gas_corrected++;}
                     ti_step = P[i].integertime_step();
                     tstart = P[i].Ti_begstep;    /* beginning of step */
                     tend = P[i].Ti_begstep + ti_step;    /* end of step */
@@ -215,6 +218,7 @@ void do_hermite_correction(void) // corrector step
                     }
 #endif
 		}}} //     for (int _apl : ActiveParticleList)
+    if(gas_corrected > 0) {gpu_sidx_notify_pool_changed();}
 }
 #endif // HERMITE_INTEGRATION
 

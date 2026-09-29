@@ -257,6 +257,15 @@ void run(void)
         HermiteOnlyFlag = 0;
 #endif
         do_first_halfstep_kick();	/* half-step kick at beginning of timestep for synchronous particles */
+        /* The kept neighbour index follows the kicked velocities before anything drifts on them. Every
+           velocity change since the last kick -- the second half-kick and the end-of-step writers (winds,
+           cooling back-reaction, sink drag) -- was to these same synchronous particles. */
+        gpu_step_sidx_raise_motion(ActiveParticleList.data(), (int)ActiveParticleList.size());
+        {   /* and the particles a wake-up set moving differently (the gravity tree's bounds as well) */
+            const int *woken = NULL;
+            const int n_woken = particles_woken_last(&woken);
+            gizmo_motion_bound_raise(woken, n_woken);
+        }
         CPU_Step[CPU_KICKS] += measure_time();
 
         find_next_sync_point_and_drift();	/* find next synchronization point and drift particles to this time.
@@ -264,10 +273,10 @@ void run(void)
                                              * at the desired time.
                                              */
         CPU_Step[CPU_DRIFT] += measure_time();
-        {   /* drift-time refresh: incremental tile-bbox + BVH update, no SFC
-             * re-sort (gas SIDX persists across drifts; alltypes SIDX is
-             * full-freed since it's less hot). domain_decomp boundary below
-             * triggers the full rebuild via gpu_step_sidx_invalidate_full().
+        {   /* new sync point: the gas SIDX is kept across the drift (every walk
+             * reads it at the time of the search); the all-types SIDX is
+             * released. domain_decomp boundary below triggers the full rebuild
+             * via gpu_step_sidx_invalidate_full().
              *
              * Charged to its own bucket rather than left inside the enclosing
              * residual interval: its cost keys on the particle count, not on

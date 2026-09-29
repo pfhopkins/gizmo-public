@@ -7,7 +7,7 @@
  *
  * Design (locked in plan v5):
  *  - Each cache registers a dense range [base, base+count) (segment-keyed
- *    by particle index, matching d_compact_xyzh's particle-index layout).
+ *    by particle index, as the marks are).
  *    Bitset sized count bits, indexed by (j - base).
  *  - mark_indices(j[], n) walks every registered cache, range-routes per-j,
  *    sets bits in ALL caches whose range covers j. Same for mark_range.

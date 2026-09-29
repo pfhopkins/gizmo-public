@@ -20,9 +20,9 @@
  *
  *   nlr_symmetric_radius_from_fields(type, kr, ags_kr, fs, policy)
  *     KOKKOS_INLINE_FUNCTION (device-callable via the macro fallback pattern
- *     below).  Takes the relevant per-particle fields by value, so the
- *     compact_xyzh population kernel in gpu_neighbor_list.cc can call it
- *     inside a Kokkos lambda without dereferencing host structs from device.
+ *     below).  Takes the relevant per-particle fields by value, so a device
+ *     kernel can call it inside a Kokkos lambda without dereferencing host
+ *     structs from device.
  *     Callers MUST pass 0 for ags_kernel_radius when
  *     AGS_KERNELRADIUS_CALCULATION_IS_ACTIVE is undefined (the field doesn't
  *     exist on P[]); pass (double)P[j].AGS_KernelRadius otherwise.
@@ -180,5 +180,14 @@ double nlr_particle_symmetric_radius_capped(const struct particle_data &p,
                                             (double)p.ForceSoftening,
                                             policy);
 }
+
+/* The largest symmetric radius particle j can have under this policy once drifted to the current time,
+ * however far behind it is.  A drift (drift_particle_impl) rescales KernelRadius and AGS_KernelRadius by
+ * at most kernel_radius_drift_max_growth_factor and then raises them to their floors; a particle that is
+ * not AGS-active gets its softening radius; ForceSoftening is not changed.  The Mode-B leaf and the
+ * spatial index both bound a lagging particle's reach with this.  Host only (defined in
+ * mode_b_local_walker.cc, it reads All); reads only. */
+double nlr_particle_symmetric_radius_after_drift(int j, struct particle_data *P_arr,
+                                                 mode_b_radius_policy_t radius_policy);
 
 #endif /* NLR_RADIUS_POLICY_H */

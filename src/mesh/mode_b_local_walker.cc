@@ -85,27 +85,31 @@ static inline int particle_passes(int j,
     return r2 < cutoff * cutoff;
 }
 
-/* The largest symmetric radius P[j] can have under this policy once drifted to the current time.  A
- * drift (drift_particle_impl) rescales KernelRadius and AGS_KernelRadius by at most
- * kernel_radius_drift_max_growth_factor and then raises them to their floors; a particle that is not
- * AGS-active gets its softening radius; ForceSoftening is not changed. */
-static inline double particle_symmetric_radius_after_drift(int j, mode_b_radius_policy_t radius_policy)
+/* The largest symmetric radius particle j can have under this policy once drifted to the current time,
+ * however far behind it is.  A drift (drift_particle_impl) rescales KernelRadius and AGS_KernelRadius by
+ * at most kernel_radius_drift_max_growth_factor and then raises them to their floors; a particle that is
+ * not AGS-active gets its softening radius; ForceSoftening is not changed.  Reads only.  Declared in
+ * nlr_radius_policy.h; the Mode-B leaf and the spatial index both bound a lagging particle's reach with it. */
+double nlr_particle_symmetric_radius_after_drift(int j, struct particle_data *P_arr,
+                                                 mode_b_radius_policy_t radius_policy)
 {
     const double growth = kernel_radius_drift_max_growth_factor();
-    double kr = (double)P[j].KernelRadius * growth;
+    double kr = (double)P_arr[j].KernelRadius * growth;
     if(kr < All.MinKernelRadius) {kr = All.MinKernelRadius;}
     double ags_kr = 0.0;
 #ifdef AGS_KERNELRADIUS_CALCULATION_IS_ACTIVE
-    if(ags_density_isactive_P(j, P)) {
-        ags_kr = (double)P[j].AGS_KernelRadius * growth;
-        const double minsoft = ags_return_minsoft_P(j, P);
-        if(ags_kr < minsoft) {ags_kr = minsoft;}
-    } else {ags_kr = ForceSoftening_KernelRadius_P(j, P);}
+    if(radius_policy & (MODE_B_RADIUS_GAS_AGS | MODE_B_RADIUS_NONGAS_AGS)) {
+        if(ags_density_solves_for_P(j, P_arr)) {
+            ags_kr = (double)P_arr[j].AGS_KernelRadius * growth;
+            const double minsoft = ags_return_minsoft_P(j, P_arr);
+            if(ags_kr < minsoft) {ags_kr = minsoft;}
+        } else {ags_kr = ForceSoftening_KernelRadius_P(j, P_arr);}
 #if defined(ADAPTIVE_GRAVSOFT_FORALL)
-    if((1 & ADAPTIVE_GRAVSOFT_FORALL) && (P[j].Type == 0) && (kr > ags_kr)) {ags_kr = kr;}   /* the gas drift sets it to KernelRadius */
+        if((1 & ADAPTIVE_GRAVSOFT_FORALL) && (P_arr[j].Type == 0) && (kr > ags_kr)) {ags_kr = kr;}   /* the gas drift sets it to KernelRadius */
 #endif
+    }
 #endif
-    return nlr_symmetric_radius_from_fields((int)P[j].Type, kr, ags_kr, (double)P[j].ForceSoftening, radius_policy);
+    return nlr_symmetric_radius_from_fields((int)P_arr[j].Type, kr, ags_kr, (double)P_arr[j].ForceSoftening, radius_policy);
 }
 
 /* The leaf test: whether P[j] can satisfy the query once drifted to the current time.  A particle
@@ -131,7 +135,7 @@ static inline int particle_may_pass(int j,
     if(motion == PARTICLE_MOTION_UNBOUNDED) return 1;
     double reach = h_q;
     if(search_mode == MODE_B_SEARCH_SYMMETRIC) {
-        const double hj = particle_symmetric_radius_after_drift(j, radius_policy) * j_reach_scale;
+        const double hj = nlr_particle_symmetric_radius_after_drift(j, P, radius_policy) * j_reach_scale;
         if(hj > reach) reach = hj;
     }
     /* The exact point-to-box distance: unlike a node, this box bounds one particle, so the circumsphere

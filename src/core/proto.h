@@ -751,6 +751,7 @@ void ghost_exchange_supply_identity_changed(const char *reason);
 void find_next_sync_point_and_drift(void);
 void find_dt_displacement_constraint(double hfac);
 void process_wake_ups(void);
+int particles_woken_last(const int **idx);
 void set_units_sfr(void);
 int allocate_memory(int do_collective_preflight);   /* Never holds on OOM: requests a soft controlled-stop and returns nonzero; caller drains at its poll. do_collective_preflight selects the arena preflight's fit-check: =1 all-rank (read_ic, one Allreduce); =0 LOCAL only (restart subset/turn, no MPI). Returns 0 ok / 812 arena-OOM / 1 UVM-STL-OOM. */
 /* Move the persistent particle-storage arrays owned by allocate_memory() to new_maxpart, carrying the

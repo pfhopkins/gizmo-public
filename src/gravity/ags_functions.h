@@ -60,26 +60,21 @@ double get_particle_volume_ags_P(int j, const struct particle_data *P_arr)
 #endif
 }
 
-/* Whether ags_density must solve for this particle's KernelRadius.
- * Also sets AGS_KernelRadius and AGS_zeta for particles that do not iterate --
- * a safety default, idempotent, and touching only this particle's own fields. */
+/* Whether ags_density must solve for this particle's KernelRadius.  Reads only. */
 KOKKOS_INLINE_FUNCTION
-int ags_density_isactive_P(int i, struct particle_data *P_arr)
+int ags_density_solves_for_P(int i, const struct particle_data *P_arr)
 {
     int default_to_return = 0; // default to not being active - needs to be pro-actively 'activated' by some physics
 #ifdef ADAPTIVE_GRAVSOFT_FORALL
     default_to_return = 1;
     if(!((1 << P_arr[i].Type) & (ADAPTIVE_GRAVSOFT_FORALL))) /* particle is NOT one of the designated 'adaptive' types */
     {
-        P_arr[i].AGS_KernelRadius = All.ForceSoftening[P_arr[i].Type];
-        P_arr[i].AGS_zeta = 0;
         default_to_return = 0;
     } else {default_to_return = 1;} /* particle is AGS-active */
 #endif
 #if defined(ADAPTIVE_GRAVSOFT_FORGAS) || (ADAPTIVE_GRAVSOFT_FORALL & 1)
     if(P_arr[i].Type==0)
     {
-        P_arr[i].AGS_KernelRadius = P_arr[i].KernelRadius; // gas sees gas, these are identical
         default_to_return = 0; // don't actually need to do the loop //
     }
 #endif
@@ -93,6 +88,24 @@ int ags_density_isactive_P(int i, struct particle_data *P_arr)
 #endif
     if(P_arr[i].TimeBin < 0) {default_to_return = 0;} /* check our 'marker' for particles which have finished iterating to an KernelRadius solution (if they have, dont do them again) */
     return default_to_return;
+}
+
+/* ags_density_solves_for_P, which also sets AGS_KernelRadius and AGS_zeta for particles that do not
+ * iterate -- a safety default, idempotent, and touching only this particle's own fields. */
+KOKKOS_INLINE_FUNCTION
+int ags_density_isactive_P(int i, struct particle_data *P_arr)
+{
+#ifdef ADAPTIVE_GRAVSOFT_FORALL
+    if(!((1 << P_arr[i].Type) & (ADAPTIVE_GRAVSOFT_FORALL))) /* particle is NOT one of the designated 'adaptive' types */
+    {
+        P_arr[i].AGS_KernelRadius = All.ForceSoftening[P_arr[i].Type];
+        P_arr[i].AGS_zeta = 0;
+    }
+#endif
+#if defined(ADAPTIVE_GRAVSOFT_FORGAS) || (ADAPTIVE_GRAVSOFT_FORALL & 1)
+    if(P_arr[i].Type==0) {P_arr[i].AGS_KernelRadius = P_arr[i].KernelRadius;} // gas sees gas, these are identical
+#endif
+    return ags_density_solves_for_P(i, P_arr);
 }
 
 

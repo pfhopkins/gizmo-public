@@ -311,10 +311,8 @@ static void hii_gpu_path(const std::vector<HIISourcePrep>& src,
     /* Build flat index + radius arrays for the GPU NL builder. */
     std::vector<int>    src_idx_flat;     src_idx_flat.reserve(num_src);
     std::vector<double> src_radii_flat;   src_radii_flat.reserve(num_src);
-    /* Active-source-in-pool contract (see neighbor_loop_runner.h): hii_fb sources are
-     * non-gas (Type 4/5/...) but the cached SIDX (gpu_step_sidx_ptr) is gas-only, so
-     * compact_xyzh[source_index] is stale/unrefreshed for them. Pass explicit current
-     * source positions; radii are already passed explicitly. */
+    /* hii_fb sources are non-gas (Type 4/5/...) searching the gas-only cached SIDX
+     * (gpu_step_sidx_ptr): pass their current positions explicitly, as the radii are. */
     std::vector<double> src_pos_flat;     src_pos_flat.reserve((size_t)num_src * 3);
     for(int aa = 0; aa < num_src; aa++) {
         src_idx_flat.push_back(src[aa].i);

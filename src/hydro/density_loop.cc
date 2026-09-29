@@ -22,6 +22,7 @@
 #include "../mesh/ghost_symlist_lifecycle.h" /* gizmo_ghost_safety_factor + hydro_density_redo (post-finalize downstream refresh) */
 #include "../system/gpu_particles_arena.h"   /* gpu_particles_arena_invalidate — pre-runner prepass mirrors legacy density.cc:183 */
 #include "density_loop.h"
+#include "../mesh/gpu_neighbor_list.h"      /* gizmo_mark_kernel_radius_dirty_indices */
 
 /* ====================================================================
  * density_isactive — hydro density active-particle predicate.
@@ -1315,6 +1316,9 @@ void density(void)
     /* (6) Post-runner finalize: per-active normalization + NV_T inversion
      *     + scatter accum -> P/CellP + legacy 620-795 post-loop physics. */
     density_finalize_post_runner(active_list_concat, aux, host_all);
+    /* The finalize wrote each active's converged KernelRadius: a kept neighbour index takes the new
+     * reaches before its next walk. */
+    gizmo_mark_kernel_radius_dirty_indices(active_list_concat.data(), (int)active_list_concat.size());
 
     /* (7) NO downstream ghost-pool handoff here. Every downstream consumer owns
      *     its own ghost lifecycle and cleans up any prior pool before importing,

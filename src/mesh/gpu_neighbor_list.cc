@@ -66,23 +66,6 @@ static void gx_walk_drift_tables_refresh(void)
 static gpu_spatial_index_t g_step_sidx{};
 static gpu_spatial_index_t g_step_sidx_alltypes{};
 
-/* Lazy-drift h-slack: under lazy drift, neighbor j's KernelRadius in P[] may
- * be at j's old Ti_current, not at time1. drift_particle's gas-extras block
- * grows h via exp(divv_fac/NDIMS) per drift (capped at exp(divv_fac_max=±0.3
- * /NDIMS) ≈ ±10% per drift), accumulating over multiple deferred drifts.
- * compact_xyzh[j*4+3] inherits the same staleness when populated from P[].
- *
- * The BVH walk reads compact_xyzh[j*4+3] for tile-overlap decisions in
- * symmetric mode. Stale-small h_j → BVH overlap test underestimates →
- * legitimate neighbors missed.
- *
- * Mitigation: at compact_xyzh population time, multiply h by (1 + slack) so
- * the BVH over-includes tiles, absorbing accumulated h-growth from
- * undrifted particles. Per-pair r² acceptance inside kernels reads the
- * REAL P[j].KernelRadius (UVM) — over-inclusion is wasted work, never a
- * silent miss. 0.5 (50% inflation) covers the per-decomp-interval h-growth
- * with margin. */
-static constexpr double SIDX_H_SLACK = 0.5;
 
 gpu_spatial_index_t *gpu_step_sidx_ptr(void) { return &g_step_sidx; }
 gpu_spatial_index_t *gpu_step_sidx_alltypes_ptr(void) { return &g_step_sidx_alltypes; }
@@ -175,281 +158,13 @@ void gpu_sidx_notify_pool_changed(void)
 }
 
 
-/* Drift-time SIDX refresh (incremental rebuild).
- *
- * The unconditional full rebuild post-drift in the prior code cost
- * ~1.3s/step on fire_m11i tiny-N (the dominant tiny-N bucket post-
- * UVM-canonical). Of that, ~1s is build_sfc_tiles streaming 12.4M
- * particles to re-derive pool membership and re-tile it — work that's
- * only needed when particle layout actually changes (i.e.,
- * domain_decomp). There is no sort to skip: P[] arrives Peano-Hilbert
- * ordered from the domain decomposition and tiles are consecutive runs
- * of it, so the cost is the passes over P[], not any ordering step.
- *
- * Between domain decomps, particles drift but their pool/tile
- * assignments are still meaningful: each tile still references the
- * same particles. Their positions just changed slightly. So the
- * refresh path is:
- *
- *   1. For each tile, recompute lo/hi/hmax from the current particle
- *      positions in its pool slice (host OMP — random P[].Pos reads
- *      go to host memory directly under UVM-canonical, no device
- *      page-fault storm).
- *   2. Re-fit the BVH from the updated tile bboxes via build_tile_bvh
- *      (CPU, O(ntiles) ≈ ms for ~70k tiles; structurally identical
- *      to the original BVH because ntiles and tile order are unchanged).
- *   3. Stage updated tiles + BVH to device (deep_copy, ms-scale).
- *   4. Refresh compact_xyzh[i*4+0..2] device-side (existing parallel_for,
- *      ms-scale). NOTE: drift_particle DOES change KernelRadius (predict.cc
- *      lines ~160 and ~229: P[i].KernelRadius *= exp(divv_fac/NUMDIMS)).
- *      The drift-time refresh here updates positions only; the h component
- *      is refreshed separately via mark_h_dirty machinery, which the lazy-
- *      drift path inside gpu_ngb_list_build populates with the j's it
- *      drifted (so compact_xyzh[j*4+3] gets re-read from P_shared on the
- *      next build).
- *
- * Correctness invariant: each tile's bbox covers all current positions
- * of the particles in its pool. Tile assignments are frozen, so as
- * particles "wander" spatially they accumulate into multiple tiles'
- * bbox regions — BVH queries may visit a couple extra tiles per query
- * (inefficiency, never a missed neighbor; each tile still iterates its
- * pool, particles' actual positions are checked).
- *
- * Reset boundary: gpu_step_sidx_invalidate_full() at every domain_decomp
- * frees the SIDX, forcing a fresh rebuild of pool and tiles. Domain
- * decomp is already a heavy step, so the marginal cost is small. This
- * naturally bounds bbox dispersion within a decomp interval and resets
- * tile assignments to current spatial layout.
- *
- */
-
-/* Recomputes tile bboxes from each pool member's "virtual at-time1 position"
- * AND fills the host-side position-staging buffer (idx->h_pos_buf) with the
- * same values.
- *
- * "Virtual at-time1 position" = P[j].Pos + particle_drift_velocity(j) *
- *     get_drift_factor(P[j].Ti_current, All.Ti_Current, j, 0). The velocity
- * is the one that moves THAT particle's position -- a finite-volume gas cell
- * moves with its mesh-generating point, not with its fluid velocity -- so this
- * matches what drift_particle's Pos update would produce IF / WHEN the particle
- * is lazily drifted by a downstream consumer. Under the current full-drift
- * regime (move_particles iterates every NumPart particle), Ti_current ==
- * All.Ti_Current for all j, dt = 0, virt_pos == P[j].Pos — i.e. this code
- * is a no-op in absolute value, just exercising the threadsafe drift-factor
- * code path so it's already wired for a future active-only iteration mode
- * in move_particles.
- *
- * Correctness invariant: the bbox covers each particle's actual location
- * at time1, regardless of whether the particle has been drifted yet. BVH
- * queries against the bbox find every potentially-relevant pool member;
- * the consumer then drifts the particle on first read. */
-static void sidx_refresh_tile_bboxes_host(gpu_spatial_index_t *idx,
-                                             struct particle_data *P_shared)
-{
-    sfc_tile_t *h_tiles = idx->h_tiles;
-    int *h_pool = idx->h_pool;
-    int ntiles = idx->ntiles;
-    double *pos_buf = idx->h_pos_buf;
-    /* SSOT per-particle reach under the cached policy (LEGACY for non-runner
-     * callers → byte-equivalent to legacy P[j].KernelRadius aggregation). */
-    const mode_b_radius_policy_t policy_capture = idx->cache_radius_policy;
-    /* Out-of-line host accessor for the host-side drift-factor input. */
-    integertime time1 = gizmo_host_ti_current();
-    const struct gas_cell_data *cells = gpu_particles_arena_CellP();
-
-    #pragma omp parallel for schedule(static)
-    for(int t = 0; t < ntiles; t++) {
-        sfc_tile_t *tile = &h_tiles[t];
-        if(tile->count <= 0) continue;
-        int j0 = h_pool[tile->first];
-        double dt0 = get_drift_factor(P_shared[j0].Ti_current, time1, j0, 0);
-        const Vec3<double> v0 = particle_drift_velocity(j0, P_shared, cells);
-        double x0 = P_shared[j0].Pos[0] + v0[0] * dt0;
-        double y0 = P_shared[j0].Pos[1] + v0[1] * dt0;
-        double z0 = P_shared[j0].Pos[2] + v0[2] * dt0;
-        double lo0 = x0, hi0 = x0;
-        double lo1 = y0, hi1 = y0;
-        double lo2 = z0, hi2 = z0;
-        double hmax = nlr_particle_symmetric_radius(P_shared[j0], policy_capture);
-        /* The box below is written at the predicted positions for time1, so the
-         * motion bound restarts from that clock; the speed bound is re-read
-         * because a kick since the build can have raised it. */
-        double vmax_tile = particle_motion_speed_bound(j0, P_shared, cells);
-        /* Per-type bands recomputed alongside scalar hmax: under the new
-         * invariant the bands are policy-aware and would otherwise stay
-         * frozen at build-time values, contradicting the conservative-
-         * upper-bound rule.  Restart from 0 and aggregate from current
-         * particles. */
-        double hbt[TILE_NUM_PTYPES] = {0};
-        {
-            int t0 = (int)P_shared[j0].Type;
-            if(t0 >= 0 && t0 < TILE_NUM_PTYPES && hmax > hbt[t0]) hbt[t0] = hmax;
-        }
-        if(pos_buf) { pos_buf[j0*3+0] = x0; pos_buf[j0*3+1] = y0; pos_buf[j0*3+2] = z0; }
-        for(int s = 1; s < tile->count; s++) {
-            int j = h_pool[tile->first + s];
-            double dt = get_drift_factor(P_shared[j].Ti_current, time1, j, 0);
-            const Vec3<double> v = particle_drift_velocity(j, P_shared, cells);
-            double x = P_shared[j].Pos[0] + v[0] * dt;
-            double y = P_shared[j].Pos[1] + v[1] * dt;
-            double z = P_shared[j].Pos[2] + v[2] * dt;
-            if(x < lo0) lo0 = x; else if(x > hi0) hi0 = x;
-            if(y < lo1) lo1 = y; else if(y > hi1) hi1 = y;
-            if(z < lo2) lo2 = z; else if(z > hi2) hi2 = z;
-            double h = nlr_particle_symmetric_radius(P_shared[j], policy_capture);
-            if(h > hmax) hmax = h;
-            double vb = particle_motion_speed_bound(j, P_shared, cells);
-            if(vb > vmax_tile) vmax_tile = vb;
-            int tj = (int)P_shared[j].Type;
-            if(tj >= 0 && tj < TILE_NUM_PTYPES && h > hbt[tj]) hbt[tj] = h;
-            if(pos_buf) { pos_buf[j*3+0] = x; pos_buf[j*3+1] = y; pos_buf[j*3+2] = z; }
-        }
-        tile->lo[0] = lo0; tile->hi[0] = hi0;
-        tile->lo[1] = lo1; tile->hi[1] = hi1;
-        tile->lo[2] = lo2; tile->hi[2] = hi2;
-        tile->hmax = hmax;
-        for(int tt = 0; tt < TILE_NUM_PTYPES; tt++) tile->hmax_by_type[tt] = hbt[tt];
-        tile->vmax  = vmax_tile;
-        tile->t_ref = time1;
-
-    }
-}
-
-/* Refresh compact_xyzh positions on device via host-staged buffer.
- *
- * Avoids the UVM-fault-storm cost of a parallel_for that reads P_shared.Pos
- * directly on device (which costs ~1.25s/step on fire_m11i 12.4M after host
- * drift just wrote those pages — every page faults migration to GPU on first
- * access). Instead: positions were already filled into idx->h_pos_buf by the
- * host bbox-recompute loop; bulk deep_copy to d_pos_buf (~200MB at NVLink
- * ~600GB/s = sub-ms), then a small device kernel scatters into the
- * interleaved d_compact_xyzh array. h field intentionally untouched here —
- * NOTE: drift_particle DOES change KernelRadius (predict.cc:160,229), but
- * THIS function is the position-only fast path used at drift-time; the h
- * component is refreshed via the mark_h_dirty machinery on the next
- * gpu_ngb_list_build, which consumes the dirty list populated by every
- * h-writer (lazy drift, density iter, etc.). Splitting pos and h refresh
- * lets us amortize the position update across the whole step while only
- * the touched h slots get refreshed per-build. */
-static void sidx_refresh_compact_positions_device(gpu_spatial_index_t *idx)
-{
-    int num_total = idx->num_total;
-    if(!idx->h_pos_buf || !idx->d_pos_buf) return;
-    /* Bulk host->device copy of the staged position buffer. Single linear
-     * cudaMemcpy under the hood; pages are migrated as one transfer rather
-     * than fault-by-fault on first device read. */
-    using UV = Kokkos::MemoryTraits<Kokkos::Unmanaged>;
-    Kokkos::View<double*, Kokkos::HostSpace, UV>            h_v(idx->h_pos_buf, 3 * num_total);
-    Kokkos::View<double*, GIZMO_KOKKOS_DEVICE_SPACE, UV>    d_v(idx->d_pos_buf, 3 * num_total);
-    Kokkos::deep_copy(d_v, h_v);
-
-    double *compact = idx->d_compact_xyzh;
-    double *pos_buf = idx->d_pos_buf;
-    Kokkos::parallel_for("compact_xyzh_pos_scatter", num_total, KOKKOS_LAMBDA(int i) {
-        compact[i*4+0] = pos_buf[i*3+0];
-        compact[i*4+1] = pos_buf[i*3+1];
-        compact[i*4+2] = pos_buf[i*3+2];
-    });
-    Kokkos::fence();
-    gizmo_gpu_check_last_error("compact_xyzh_pos_scatter", num_total);
-}
-
-/* Re-fit BVH from updated tile bboxes (structural rebuild — left/right links
- * are recomputed identically since tile order is unchanged, but bboxes/hmax
- * propagate from the refreshed tiles). Calls build_tile_bvh (which mymalloc's
- * a fresh BVH), copies into the persistent HostSpace h_bvh buffer, then frees
- * the mymalloc'd transient. The HostSpace buffer was allocated to size
- * 2*ntiles-1 at build time; ntiles is unchanged across drifts, so the buffer
- * always has room. */
-static void sidx_rebuild_bvh_inplace(gpu_spatial_index_t *idx)
-{
-    tile_bvh_node_t *h_bvh_tmp = NULL;
-    int new_nnodes = build_tile_bvh(idx->h_tiles, idx->ntiles, &h_bvh_tmp);
-    if(new_nnodes > 0 && h_bvh_tmp && idx->h_bvh) {
-        memcpy(idx->h_bvh, h_bvh_tmp, new_nnodes * sizeof(tile_bvh_node_t));
-    }
-    if(h_bvh_tmp) myfree(h_bvh_tmp);
-    idx->h_bvh_nnodes = new_nnodes;
-    idx->bvh_root = new_nnodes - 1;
-}
-
-/* Stage updated host h_tiles + h_bvh to device d_tiles + d_bvh.
- * h_pool / d_pool unchanged across drifts (tile assignments frozen). */
-static void sidx_stage_to_device(gpu_spatial_index_t *idx)
-{
-    using UV = Kokkos::MemoryTraits<Kokkos::Unmanaged>;
-    Kokkos::View<sfc_tile_t*,      Kokkos::HostSpace, UV>            h_tiles_v(idx->h_tiles, idx->ntiles);
-    Kokkos::View<sfc_tile_t*,      GIZMO_KOKKOS_DEVICE_SPACE, UV>    d_tiles_v(idx->d_tiles, idx->ntiles);
-    Kokkos::View<tile_bvh_node_t*, Kokkos::HostSpace, UV>            h_bvh_v(idx->h_bvh, idx->h_bvh_nnodes);
-    Kokkos::View<tile_bvh_node_t*, GIZMO_KOKKOS_DEVICE_SPACE, UV>    d_bvh_v(idx->d_bvh, idx->h_bvh_nnodes);
-    Kokkos::deep_copy(d_tiles_v, h_tiles_v);
-    Kokkos::deep_copy(d_bvh_v,   h_bvh_v);
-}
-
-/* Forward decl */
-void gpu_step_sidx_invalidate_full(void);
-
-/* Drift-time refresh: reuse pool/tile membership, recompute bboxes/BVH, refresh compact_xyzh. */
-static void sidx_refresh_after_drift(gpu_spatial_index_t *idx,
-                                      struct particle_data *P_shared)
-{
-    sidx_refresh_tile_bboxes_host(idx, P_shared);
-    sidx_rebuild_bvh_inplace(idx);
-    sidx_stage_to_device(idx);
-    sidx_refresh_compact_positions_device(idx);
-    idx->positions_stale_after_drift = 0;
-}
-
+/* A new sync point.  The gas index is KEPT: it describes its members as of its reference time, and
+ * every walk reads it at the time of the search (sfc_tiles.h), so a drift needs nothing here.  The
+ * all-types index is not kept -- only the gas index has its bounds raised when its members are kicked
+ * or their motion is written -- so it is released, and the first sink call of the sync point rebuilds it. */
 void gpu_step_sidx_invalidate(void)
 {
-    /* No All-mirror belt here. Since the position refresh moved to the point of
-     * reuse, no path in this function launches a device kernel: the common path
-     * only sets a flag, and the rest free buffers. The kernels this file owns
-     * are reached through gpu_spatial_index_build and gpu_ngb_list_build, which
-     * carry their own belts, and the refresh now runs inside the
-     * latter. The leading fence the belt also provided before frees now lives
-     * inside gpu_spatial_index_free, with the release it protects. */
-    struct particle_data *P_shared = gpu_particles_arena_P();
-    if(!P_shared) {
-        /* No arena -> no canonical particle storage; fall back to full free. */
-        gpu_step_sidx_invalidate_full();
-        return;
-    }
-
-    /* Current scope: refresh the gas SIDX (the hot-path 1.3s/step bucket
-     * from density_sidx_prebuild); alltypes goes through full-free since it
-     * only builds on sink-active steps and isn't on the dominant tiny-N
-     * path. The refresh path could be extended to alltypes once gas is
-     * validated. */
     if(g_step_sidx_alltypes.valid) gpu_spatial_index_free(&g_step_sidx_alltypes);
-
-    gpu_spatial_index_t *idx = &g_step_sidx;
-    if(idx->valid) {
-        if(!idx->h_tiles || !idx->h_pool || !idx->d_compact_xyzh || idx->ntiles <= 0) {
-            /* Defensive: incomplete state -> free, fall back to full rebuild. */
-            gpu_spatial_index_free(idx);
-            gpu_compact_xyzh_mark_h_dirty_all();
-        } else {
-            /* Mark the positions stale rather than refreshing them here. The
-             * refresh happens at the point of reuse, in gpu_ngb_list_build, so
-             * a consumer that invalidates the index on count or epoch — and so
-             * rebuilds from current positions regardless — never pays for a
-             * refresh whose result it discards. Correctness is unchanged: the
-             * only paths that walk this index go through that build, which
-             * refreshes first and hard-aborts if it ever sees a stale one.
-             * The h component was already handled exactly this way. */
-            idx->positions_stale_after_drift = 1;
-            /* h-dirty state intentionally left intact. drift_particle DOES
-             * change KernelRadius (predict.cc:160,229) — those h updates are
-             * marked into the per-cache dirty tracker (gpu_dirty_tracker) by
-             * the lazy-drift loop in the previous step's gpu_ngb_list_build,
-             * by move_particles/gizmo_full_drift_to (predict.cc:307,351), and by other
-             * h-writers like density iter. The next gpu_ngb_list_build
-             * consume()s this cache's bits and refreshes compact_xyzh[*4+3]
-             * from current P_shared.KernelRadius before walking. */
-        }
-    }
-
 }
 
 void gpu_step_sidx_invalidate_full(void)
@@ -462,17 +177,18 @@ void gpu_step_sidx_invalidate_full(void)
 
 
 /* An index that could not be built must not be left looking usable: the walk reads
- * its tiles, BVH and compact positions directly. Release what was built and leave
- * the index marked invalid, which is the signal every consumer already tests, so
- * the caller can hand back an empty neighbour list. gpu_spatial_index_free fences
- * before releasing device memory, so nothing is released under a running kernel.
- * The three host build buffers are arena allocations, released in reverse order
+ * its tiles, BVH and rows directly. Release what was built and leave the index
+ * marked invalid, which is the signal every consumer already tests, so the caller
+ * can hand back an empty neighbour list. gpu_spatial_index_free fences before
+ * releasing device memory, so nothing is released under a running kernel. The
+ * four host build buffers are arena allocations, released in reverse order
  * exactly as the success path does. */
 static void sidx_build_leave_invalid(gpu_spatial_index_t *idx, int num_total,
-                                     tile_bvh_node_t *h_bvh, sfc_tile_t *h_tiles, int *h_pool,
+                                     tile_bvh_node_t *h_bvh, double *h_rows, sfc_tile_t *h_tiles, int *h_pool,
                                      const char *what, size_t bytes)
 {
     myfree(h_bvh);
+    myfree(h_rows);
     myfree(h_tiles);
     myfree(h_pool);
     gpu_spatial_index_free(idx);
@@ -482,6 +198,27 @@ static void sidx_build_leave_invalid(gpu_spatial_index_t *idx, int num_total,
              "spatial index left unbuilt",
              what, (double) bytes / (1024.0 * 1024.0), num_total);
     gizmo_request_controlled_stop(7712, msg, __FILE__, __LINE__, __FUNCTION__);
+}
+
+/* How far a tile's box can grow per unit drift interval, relative to its own size or reach.  Once that
+ * growth times the interval since the index was built passes SIDX_MAX_BOX_GROWTH, searching the kept
+ * index costs more than rebuilding it.  Performance only: a value that lags a raise delays a rebuild and
+ * never admits a wrong answer. */
+static constexpr double SIDX_MAX_BOX_GROWTH = 1.0;
+
+KOKKOS_INLINE_FUNCTION
+double sidx_tile_looseness(const sfc_tile_t &tile)
+{
+    double w = 0;
+    for(int k = 0; k < 3; k++) {
+        const double growth = (tile.u_max[k] - tile.u_min[k]) + 2.0 * tile.rho;
+        if(!(growth > 0)) {continue;}
+        double size = tile.hi[k] - tile.lo[k];
+        if(tile.hmax > size) {size = tile.hmax;}
+        const double r = (size > 0) ? growth / size : MAX_REAL_NUMBER;
+        if(r > w) {w = r;}
+    }
+    return w;
 }
 
 void gpu_spatial_index_build(struct particle_data *P_shared, int num_total,
@@ -518,28 +255,60 @@ void gpu_spatial_index_build(struct particle_data *P_shared, int num_total,
     }
 #endif
 
-    /* Build SFC tiles + BVH on CPU */
+    /* Build SFC tiles + BVH on CPU.  Every member is described as of now, the index's reference time,
+     * where the drift puts it then (sfc_tiles.h); the build drifts nothing. */
+    const integertime ti_ref = gizmo_host_ti_current();
+    const struct DriftKickTableView host_tables = drift_kick_table_view_host();
     sfc_tile_t *h_tiles;
     int *h_pool;
     int num_pool;
+    double *h_rows;
+    int all_current = 1;
     int ntiles = build_sfc_tiles(P_shared, num_total, type_bitmask, TILE_TARGET_SIZE,
-                                 &h_tiles, &h_pool, &num_pool, radius_policy);
+                                 &h_tiles, &h_pool, &num_pool, &h_rows,
+                                 ti_ref, &host_tables, &all_current, radius_policy);
+    if(ntiles < 0) {
+        gpu_spatial_index_free(idx);
+        char msg[256];
+        snprintf(msg, sizeof(msg),
+                 "gpu_spatial_index_build (caller '%s'): a member's clock is outside [0, now] or its position "
+                 "or velocity is not finite, so no search can bound where it is; spatial index left unbuilt",
+                 caller_label ? caller_label : "?");
+        gizmo_request_controlled_stop(7740, msg, __FILE__, __LINE__, __FUNCTION__);
+        return;
+    }
     idx->ntiles = ntiles;
 
     tile_bvh_node_t *h_bvh;
     int bvh_nnodes = build_tile_bvh(h_tiles, ntiles, &h_bvh);
     idx->bvh_root = bvh_nnodes - 1;
 
+    /* The order a raise that touches most of the index widens it in: nodes by height, leaves first.
+     * Every node's index is above its children's, so one forward pass sets the heights. */
+    std::vector<int> height((size_t)(bvh_nnodes > 0 ? bvh_nnodes : 1), 0);
+    int nlevels = 0;
+    for(int nd = 0; nd < bvh_nnodes; nd++) {
+        height[nd] = (h_bvh[nd].left < 0) ? 0 : 1 + std::max(height[h_bvh[nd].left], height[h_bvh[nd].right]);
+        if(height[nd] + 1 > nlevels) {nlevels = height[nd] + 1;}
+    }
+    std::vector<int> level_offsets((size_t)nlevels + 1, 0), level_nodes((size_t)(bvh_nnodes > 0 ? bvh_nnodes : 1), 0);
+    for(int nd = 0; nd < bvh_nnodes; nd++) {level_offsets[height[nd] + 1]++;}
+    for(int L = 0; L < nlevels; L++) {level_offsets[L + 1] += level_offsets[L];}
+    {
+        std::vector<int> cursor(level_offsets.begin(), level_offsets.end() - 1);
+        for(int nd = 0; nd < bvh_nnodes; nd++) {level_nodes[cursor[height[nd]]++] = nd;}
+    }
+    double looseness = 0;
+    for(int t = 0; t < ntiles; t++) {const double w = sidx_tile_looseness(h_tiles[t]); if(w > looseness) {looseness = w;}}
+
     /* Allocate kernel-read-path arrays in DEVICE_SPACE (CudaSpace HBM on GPU
      * builds, falls back to SharedSpace elsewhere).  This eliminates HMM/TLB-
      * miss overhead on the small-N kernel hot path where one thread does
-     * ~1000s of scattered reads through bvh/tiles/pool/compact_xyzh — that
+     * ~1000s of scattered reads through bvh/tiles/pool/rows — that
      * scattered-UVM-access pattern is the suspected source of the residual
-     * 1.4s "fused_fnc" floor on 1-active-particle calls.  CPU host arrays
-     * h_tiles/h_bvh/h_pool are transferred via Kokkos::deep_copy through
-     * unmanaged-View wrappers (cudaMemcpy under the hood on CUDA builds);
-     * compact_xyzh is built directly on-device by a parallel_for that reads
-     * from UVM-backed P_shared and writes to DEVICE_SPACE compact_xyzh. */
+     * 1.4s "fused_fnc" floor on 1-active-particle calls.  The host build arrays
+     * are transferred via Kokkos::deep_copy through unmanaged-View wrappers
+     * (cudaMemcpy under the hood on CUDA builds). */
     int bvh_size = (2 * ntiles - 1);
     if(bvh_size < 1) bvh_size = 1;
     int pool_size = (num_pool > 0) ? num_pool : 1;
@@ -549,12 +318,28 @@ void gpu_spatial_index_build(struct particle_data *P_shared, int num_total,
     size_t sidx_tiles_bytes = (size_t)((ntiles > 0) ? ntiles : 1) * sizeof(sfc_tile_t);
     size_t sidx_bvh_bytes   = (size_t) bvh_size * sizeof(tile_bvh_node_t);
     size_t sidx_pool_bytes  = (size_t) pool_size * sizeof(int);
+    /* Rows are DOUBLE (positions x,y,z; reach in slot 3): float ABSOLUTE positions are invalid for
+     * GIZMO's ~1e11 dynamic range and must NOT decide neighbour inclusion (see §37/§38). */
+    size_t sidx_rows_bytes  = (size_t) pool_size * SIDX_ROW_WIDTH * sizeof(double);
+    size_t sidx_slot_bytes  = (size_t)((num_total > 0) ? num_total : 1) * sizeof(int);
+    size_t sidx_level_bytes = (size_t) bvh_size * sizeof(int);
+    size_t sidx_offs_bytes  = (size_t)(nlevels + 1) * sizeof(int);
     idx->d_tiles = (sfc_tile_t *) gizmo_gpu_alloc_device(sidx_tiles_bytes, "ngl_sidx_dev_tiles");
-    if(!idx->d_tiles) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_tiles, h_pool, "the device tile array", sidx_tiles_bytes); return;}
+    if(!idx->d_tiles) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_rows, h_tiles, h_pool, "the device tile array", sidx_tiles_bytes); return;}
     idx->d_bvh = (tile_bvh_node_t *) gizmo_gpu_alloc_device(sidx_bvh_bytes, "ngl_sidx_dev_bvh");
-    if(!idx->d_bvh) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_tiles, h_pool, "the device tile BVH", sidx_bvh_bytes); return;}
+    if(!idx->d_bvh) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_rows, h_tiles, h_pool, "the device tile BVH", sidx_bvh_bytes); return;}
     idx->d_pool = (int *) gizmo_gpu_alloc_device(sidx_pool_bytes, "ngl_sidx_dev_pool");
-    if(!idx->d_pool) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_tiles, h_pool, "the device tile membership pool", sidx_pool_bytes); return;}
+    if(!idx->d_pool) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_rows, h_tiles, h_pool, "the device tile membership pool", sidx_pool_bytes); return;}
+    idx->d_compact_xyzh = (double *) gizmo_gpu_alloc_device(sidx_rows_bytes, "ngl_sidx_dev_rows");
+    if(!idx->d_compact_xyzh) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_rows, h_tiles, h_pool, "the device member rows", sidx_rows_bytes); return;}
+    idx->d_slot_of = (int *) gizmo_gpu_alloc_device(sidx_slot_bytes, "ngl_sidx_dev_slot_of");
+    if(!idx->d_slot_of) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_rows, h_tiles, h_pool, "the device particle-to-slot map", sidx_slot_bytes); return;}
+    idx->d_level_nodes = (int *) gizmo_gpu_alloc_device(sidx_level_bytes, "ngl_sidx_dev_level_nodes");
+    if(!idx->d_level_nodes) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_rows, h_tiles, h_pool, "the device BVH level schedule", sidx_level_bytes); return;}
+    idx->h_level_offsets = (int *) gizmo_gpu_alloc_host(sidx_offs_bytes, "ngl_sidx_host_level_offsets");
+    if(!idx->h_level_offsets) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_rows, h_tiles, h_pool, "the BVH level offsets", sidx_offs_bytes); return;}
+    idx->looseness = (double *) gizmo_gpu_alloc_shared(sizeof(double), "ngl_sidx_looseness");
+    if(!idx->looseness) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_rows, h_tiles, h_pool, "the looseness scalar", sizeof(double)); return;}
 
     /* Stage host buffers into device memory.  On non-CUDA builds DEVICE_SPACE
      * == SharedSpace and Kokkos::deep_copy reduces to a memcpy. */
@@ -566,98 +351,54 @@ void gpu_spatial_index_build(struct particle_data *P_shared, int num_total,
         Kokkos::View<tile_bvh_node_t*,   GIZMO_KOKKOS_DEVICE_SPACE, UV>    d_bvh_v(idx->d_bvh, bvh_nnodes);
         Kokkos::View<int*,               Kokkos::HostSpace, UV>            h_pool_v(h_pool, num_pool);
         Kokkos::View<int*,               GIZMO_KOKKOS_DEVICE_SPACE, UV>    d_pool_v(idx->d_pool, num_pool);
+        Kokkos::View<double*,            Kokkos::HostSpace, UV>            h_rows_v(h_rows, (size_t) num_pool * SIDX_ROW_WIDTH);
+        Kokkos::View<double*,            GIZMO_KOKKOS_DEVICE_SPACE, UV>    d_rows_v(idx->d_compact_xyzh, (size_t) num_pool * SIDX_ROW_WIDTH);
+        Kokkos::View<int*,               Kokkos::HostSpace, UV>            h_level_v(level_nodes.data(), bvh_nnodes);
+        Kokkos::View<int*,               GIZMO_KOKKOS_DEVICE_SPACE, UV>    d_level_v(idx->d_level_nodes, bvh_nnodes);
         Kokkos::deep_copy(d_tiles_v, h_tiles_v);
         Kokkos::deep_copy(d_bvh_v,   h_bvh_v);
         Kokkos::deep_copy(d_pool_v,  h_pool_v);
+        Kokkos::deep_copy(d_rows_v,  h_rows_v);
+        Kokkos::deep_copy(d_level_v, h_level_v);
     }
+    memcpy(idx->h_level_offsets, level_offsets.data(), (size_t)(nlevels + 1) * sizeof(int));
+    *idx->looseness = looseness;
 
-    /* Build compact double4 position+h array for cache-efficient GPU BVH traversal.
-       DOUBLE positions: float ABSOLUTE positions are invalid for GIZMO's ~1e11
-       dynamic range (see §37/§38) — they must NOT decide neighbour inclusion.
-       ~64MB for 2M particles vs 800MB for full P_shared. h (slot 3) is a relative
-       reach; kept double so the leaf accept stays consistent with the double opener.
-       In DEVICE_SPACE so the BVH-walk kernels read from HBM directly. */
-    size_t sidx_compact_bytes = (size_t)((num_total > 0) ? num_total : 1) * 4 * sizeof(double);
-    idx->d_compact_xyzh = (double *) gizmo_gpu_alloc_device(sidx_compact_bytes, "ngl_sidx_dev_compact_xyzh");
-    if(!idx->d_compact_xyzh) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_tiles, h_pool, "the device compact position array", sidx_compact_bytes); return;}
+    /* Each particle's pool slot, or -1: how a raise or a reach refresh handed particle indices finds the
+     * member's row and tile. */
     {
-        double *compact = idx->d_compact_xyzh;
-        double h_inflate = 1.0 + SIDX_H_SLACK; /* lazy-drift slack: see SIDX_H_SLACK comment */
-        const mode_b_radius_policy_t policy_capture = radius_policy;
-        Kokkos::parallel_for("compact_xyzh_build", num_total, KOKKOS_LAMBDA(int i) {
-            compact[i*4+0] = P_shared[i].Pos[0];
-            compact[i*4+1] = P_shared[i].Pos[1];
-            compact[i*4+2] = P_shared[i].Pos[2];
-            /* SSOT per-particle reach under policy_capture — see nlr_radius_policy.h.
-             * LEGACY default policy recovers raw P[j].KernelRadius for every type. */
-            double h_j = nlr_particle_symmetric_radius(P_shared[i], policy_capture);
-            compact[i*4+3] = h_j * h_inflate;
-        });
+        int *slot_of = idx->d_slot_of;
+        const int *pool = idx->d_pool;
+        Kokkos::parallel_for("sidx_slot_of_clear", num_total, KOKKOS_LAMBDA(int i) {slot_of[i] = -1;});
+        Kokkos::parallel_for("sidx_slot_of_fill", num_pool, KOKKOS_LAMBDA(int s) {slot_of[pool[s]] = s;});
         Kokkos::fence();
-        gizmo_gpu_check_last_error("compact_xyzh_build", num_total);
+        gizmo_gpu_check_last_error("sidx_slot_of", num_total);
     }
-
-    /* Keep host-side persistent copies of tiles/pool/BVH alive across drifts
-     * so the incremental refresh path (gpu_step_sidx_invalidate ->
-     * sidx_refresh_after_drift) can recompute tile bboxes from current
-     * particle positions on host without re-deriving pool membership or
-     * re-tiling it.
-     *
-     * MUST use Kokkos::HostSpace allocator (heap-based) NOT mymalloc — the
-     * latter is LIFO-stack-disciplined and persistent SIDX buffers would
-     * sit on top of any subsequent transient allocation (e.g. density's
-     * per-step mymalloc'd Left/Right arrays), preventing those transients
-     * from being freed in LIFO order. The transient mymalloc'd h_tiles /
-     * h_pool / h_bvh from build_sfc_tiles + build_tile_bvh are copied
-     * out then myfree'd in proper LIFO order below. */
-    idx->h_tiles = (sfc_tile_t *) gizmo_gpu_alloc_host(sidx_tiles_bytes, "ngl_sidx_host_tiles");
-    if(!idx->h_tiles) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_tiles, h_pool, "the retained host tile array", sidx_tiles_bytes); return;}
-    memcpy(idx->h_tiles, h_tiles, ntiles * sizeof(sfc_tile_t));
-    idx->h_pool = (int *) gizmo_gpu_alloc_host(sidx_pool_bytes, "ngl_sidx_host_pool");
-    if(!idx->h_pool) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_tiles, h_pool, "the retained host tile membership pool", sidx_pool_bytes); return;}
-    memcpy(idx->h_pool, h_pool, num_pool * sizeof(int));
-    idx->h_bvh = (tile_bvh_node_t *) gizmo_gpu_alloc_host(sidx_bvh_bytes, "ngl_sidx_host_bvh");
-    if(!idx->h_bvh) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_tiles, h_pool, "the retained host tile BVH", sidx_bvh_bytes); return;}
-    memcpy(idx->h_bvh, h_bvh, bvh_nnodes * sizeof(tile_bvh_node_t));
-    idx->h_bvh_nnodes = bvh_nnodes;
-    idx->num_pool = num_pool;
-
-    /* Drift-refresh staging buffers: h_pos_buf is filled per-pool-member by the
-     * host bbox-recompute loop; bulk deep_copy to d_pos_buf; device scatter
-     * into d_compact_xyzh. Sized 3*num_total doubles so each pool index can
-     * write directly to h_pos_buf[j*3+0..2] without remapping. Non-pool
-     * entries stay uninitialized in h_pos_buf and their stale d_compact_xyzh
-     * positions are never read by BVH queries (BVH only visits tiles, tiles
-     * only contain pool members). */
-    int pos_buf_count = (num_total > 0 ? num_total : 1);
-    size_t sidx_pos_buf_bytes = (size_t) 3 * pos_buf_count * sizeof(double);
-    idx->h_pos_buf = (double *) gizmo_gpu_alloc_host(sidx_pos_buf_bytes, "ngl_sidx_host_pos_buf");
-    if(!idx->h_pos_buf) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_tiles, h_pool, "the host position staging buffer", sidx_pos_buf_bytes); return;}
-    idx->d_pos_buf = (double *) gizmo_gpu_alloc_device(sidx_pos_buf_bytes, "ngl_sidx_dev_pos_buf");
-    if(!idx->d_pos_buf) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_tiles, h_pool, "the device position staging buffer", sidx_pos_buf_bytes); return;}
-
 
     /* Free the transient mymalloc'd build buffers in proper LIFO order
      * (build_tile_bvh allocated h_bvh last; build_sfc_tiles allocated
-     * h_pool then h_tiles). */
+     * h_pool, then h_tiles, then h_rows). */
     myfree(h_bvh);
+    myfree(h_rows);
     myfree(h_tiles);
     myfree(h_pool);
 
+    idx->bvh_nnodes = bvh_nnodes;
+    idx->nlevels = nlevels;
+    idx->num_pool = num_pool;
     idx->num_total = num_total;
     idx->cache_tbm = type_bitmask;
     idx->cache_radius_policy = radius_policy;
     idx->ghost_epoch_when_built = g_sidx_ghost_epoch;
     idx->pool_epoch_when_built  = g_sidx_pool_epoch;
+    idx->ti_ref = ti_ref;
+    idx->rows_are_positions = all_current;
+    idx->rebuild_needed = 0;
     idx->valid = 1;
-    /* Built from current positions, so no refresh is outstanding for this index.
-     * Explicit because the struct may be a cached one being rebuilt in place. */
-    idx->positions_stale_after_drift = 0;
-    /* Register this cache with the dirty tracker over [0, num_total). The
-     * compact_xyzh build above wrote every row's h from the live P[] under this
-     * cache's radius policy, and nothing between there and here can mutate it,
-     * so the range starts clean: the first refresh would recompute values it
-     * already holds, over the whole pool. */
+    /* Register this cache with the dirty tracker over [0, num_total). The rows
+     * were written from the live P[] under this cache's radius policy, and
+     * nothing between there and here can mutate it, so the range starts clean:
+     * the first refresh would recompute values it already holds. */
     if(idx->dirty_handle >= 0) gpu_dirty_tracker_unregister(idx->dirty_handle);
     idx->dirty_handle = gpu_dirty_tracker_register(0, num_total, 1);
 
@@ -672,34 +413,28 @@ void gpu_spatial_index_free(gpu_spatial_index_t *idx)
      * decomposition boundary and the cached-index staleness guard, and putting
      * the rule in any one of those leaves the next caller free to reintroduce
      * the hazard. Skipped when there is nothing device-side to release. */
-    if(idx->d_compact_xyzh || idx->d_pool || idx->d_bvh || idx->d_tiles || idx->d_pos_buf) {
+    if(idx->d_compact_xyzh || idx->d_pool || idx->d_bvh || idx->d_tiles || idx->d_slot_of || idx->d_level_nodes ||
+       idx->looseness) {
         Kokkos::fence();
     }
     if(idx->d_compact_xyzh) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(idx->d_compact_xyzh); idx->d_compact_xyzh = NULL;}
     if(idx->d_pool) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(idx->d_pool); idx->d_pool = NULL;}
     if(idx->d_bvh) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(idx->d_bvh); idx->d_bvh = NULL;}
     if(idx->d_tiles) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(idx->d_tiles); idx->d_tiles = NULL;}
-    /* Free host-side persistent buffers kept alive across drifts.
-     * mymalloc uses LIFO stack discipline; free in reverse-allocation order:
-     * h_pool -> h_tiles -> h_bvh
-     * (h_bvh allocated first by build_tile_bvh, but build_tile_bvh may have
-     * been re-called via sidx_rebuild_bvh_inplace which freed-then-allocated,
-     * so h_bvh is on top of the stack at this point in normal flow). */
-    /* Persistent host-side buffers live in Kokkos::HostSpace (heap-allocated,
-     * not mymalloc) so they don't pin the LIFO stack across other transient
-     * mymalloc'd state. Free order doesn't matter. */
-    if(idx->h_bvh)   { Kokkos::kokkos_free<Kokkos::HostSpace>(idx->h_bvh);   idx->h_bvh = NULL; }
-    if(idx->h_tiles) { Kokkos::kokkos_free<Kokkos::HostSpace>(idx->h_tiles); idx->h_tiles = NULL; }
-    if(idx->h_pool)  { Kokkos::kokkos_free<Kokkos::HostSpace>(idx->h_pool);  idx->h_pool = NULL; }
-    if(idx->h_pos_buf) { Kokkos::kokkos_free<Kokkos::HostSpace>(idx->h_pos_buf); idx->h_pos_buf = NULL; }
-    if(idx->d_pos_buf) { Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(idx->d_pos_buf); idx->d_pos_buf = NULL; }
-    idx->h_bvh_nnodes = 0;
+    if(idx->d_slot_of) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(idx->d_slot_of); idx->d_slot_of = NULL;}
+    if(idx->d_level_nodes) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(idx->d_level_nodes); idx->d_level_nodes = NULL;}
+    if(idx->h_level_offsets) {Kokkos::kokkos_free<Kokkos::HostSpace>(idx->h_level_offsets); idx->h_level_offsets = NULL;}
+    if(idx->looseness) {Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(idx->looseness); idx->looseness = NULL;}
+    idx->bvh_nnodes = 0;
+    idx->nlevels = 0;
     idx->num_pool = 0;
     idx->num_total = 0;
     idx->cache_tbm = -1;
     idx->cache_radius_policy = MODE_B_RADIUS_DEFAULT;
+    idx->ti_ref = 0;
+    idx->rows_are_positions = 0;
+    idx->rebuild_needed = 0;
     idx->valid = 0;
-    idx->positions_stale_after_drift = 0;  /* nothing left to refresh */
     if(idx->dirty_handle >= 0) {
         gpu_dirty_tracker_unregister(idx->dirty_handle);
         idx->dirty_handle = -1;
@@ -719,6 +454,173 @@ static void *ngl_alloc_device(size_t bytes, const char *label)
 {
     if(bytes == 0) {return NULL;}
     return gizmo_gpu_alloc_device(bytes, label);
+}
+
+
+/* ---- Keeping the kept index's bounds true (sfc_tiles.h) ----------------------------------------
+ * A member's velocity range is re-read when its velocity changes, and its reach when its radius does;
+ * the tile and the nodes above it are widened to cover the new value.  Bounds only ever widen.  A
+ * raise costs the members it is handed and the paths from their tiles to the root -- or, when those
+ * paths together cost more than one sweep of the index, one sweep of it, level by level. */
+
+/* What one member contributes to the bounds of its tile and of the nodes above it. */
+struct SidxRaise {
+    double u_min[3], u_max[3];
+    double rho;
+    double hmax;
+    double hmax_by_type[TILE_NUM_PTYPES];
+};
+
+/* Widen the bounds of a tile or node to cover `m` (a member, a tile or a node).  Called concurrently
+ * -- members of one tile, walks up shared ancestors -- so each field is raised atomically; the plain
+ * read first skips the atomic when the bound already covers the value.  Returns 1 if a bound moved. */
+template <class Box, class Src>
+KOKKOS_INLINE_FUNCTION
+int sidx_widen(Box *b, const Src &m)
+{
+    int moved = 0;
+    for(int k = 0; k < 3; k++) {
+        if(m.u_min[k] < b->u_min[k] && Kokkos::atomic_fetch_min(&b->u_min[k], m.u_min[k]) > m.u_min[k]) {moved = 1;}
+        if(m.u_max[k] > b->u_max[k] && Kokkos::atomic_fetch_max(&b->u_max[k], m.u_max[k]) < m.u_max[k]) {moved = 1;}
+    }
+    if(m.rho  > b->rho  && Kokkos::atomic_fetch_max(&b->rho,  m.rho)  < m.rho)  {moved = 1;}
+    if(m.hmax > b->hmax && Kokkos::atomic_fetch_max(&b->hmax, m.hmax) < m.hmax) {moved = 1;}
+    for(int t = 0; t < TILE_NUM_PTYPES; t++) {
+        if(m.hmax_by_type[t] > b->hmax_by_type[t] &&
+           Kokkos::atomic_fetch_max(&b->hmax_by_type[t], m.hmax_by_type[t]) < m.hmax_by_type[t]) {moved = 1;}
+    }
+    return moved;
+}
+
+/* Re-establish, level by level from the leaves, that every node covers its children. */
+static void sidx_widen_all_levels(gpu_spatial_index_t *idx)
+{
+    const sfc_tile_t *tiles = idx->d_tiles;
+    tile_bvh_node_t *bvh = idx->d_bvh;
+    const int *level_nodes = idx->d_level_nodes;
+    for(int L = 0; L < idx->nlevels; L++) {
+        /* each level reads the one below it, so it waits for it */
+        Kokkos::parallel_for("sidx_widen_level",
+                             Kokkos::RangePolicy<>(idx->h_level_offsets[L], idx->h_level_offsets[L + 1]),
+                             KOKKOS_LAMBDA(int q) {
+            tile_bvh_node_t *node = &bvh[level_nodes[q]];
+            if(node->left < 0) {sidx_widen(node, tiles[-(node->left + 1)]);}
+            else {sidx_widen(node, bvh[node->left]); sidx_widen(node, bvh[node->right]);}
+        });
+        Kokkos::fence();
+    }
+    gizmo_gpu_check_last_error("sidx_widen_level", idx->nlevels);
+}
+
+enum { SIDX_RAISE_MOTION = 1, SIDX_RAISE_REACH = 2 };
+
+/* The ratio of the two ways to widen the nodes above n touched members: walking each member's path, or
+ * one sweep of the index.  The walk is taken while it costs at most this times the sweep. */
+static constexpr double SIDX_PATH_WALK_FACTOR = 1.0;
+
+/* What one particle contributes to the index.  Computed on the host, which reads P[] and CellP[] where
+ * their pages live -- a device kernel reading them faults the pages across -- and applied on the device,
+ * which owns the bounds.  j < 0 marks a particle that contributes nothing; type < 0, no reach. */
+struct SidxRaiseRecord {
+    int j, type;
+    double r, r_drifted;
+    double u_min[3], u_max[3], rho;
+};
+
+/* Raise the kept index over particles list[0..n) (host indices; every particle 0..n-1 when list is null).
+ * MOTION re-reads each member's velocity range, after its velocity changed; REACH rewrites its row's reaches
+ * from its current radius and raises the reach bands, after its radius changed.  A particle that is not a
+ * member now -- another type (the index is then rebuilt), or no mass (no pair kernel takes it) -- is
+ * skipped.
+ * Returns 0; 1 when a member's motion is not finite, so nothing can bound it (the run is stopped); 2 when
+ * the raise could not be staged.  Either way the index no longer bounds its members and is marked to be
+ * rebuilt by the next list build -- never released here, since lists built from it may still be in use. */
+static int sidx_raise_members(gpu_spatial_index_t *idx, const int *list, int n, int what)
+{
+    if(n <= 0 || !idx->valid) {return 0;}
+    const int num_total = idx->num_total, type_bitmask = idx->cache_tbm;
+    const mode_b_radius_policy_t policy = idx->cache_radius_policy;
+    std::vector<SidxRaiseRecord> rec((size_t)n);
+    int fault = 0;
+#ifdef _OPENMP
+    #pragma omp parallel for schedule(static) reduction(|:fault)
+#endif
+    for(int k = 0; k < n; k++) {
+        SidxRaiseRecord &r = rec[(size_t)k];
+        const int j = list ? list[k] : k;
+        r.j = -1; r.type = -1; r.r = 0; r.r_drifted = 0; r.rho = 0;
+        for(int d = 0; d < 3; d++) {r.u_min[d] = MAX_REAL_NUMBER; r.u_max[d] = -MAX_REAL_NUMBER;}
+        if(j < 0 || j >= num_total) {continue;}
+        const int type = (int)P[j].Type;
+        if(type < 0 || type >= TILE_NUM_PTYPES || !((1 << type) & type_bitmask) || !(P[j].Mass > 0)) {continue;}
+        if((what & SIDX_RAISE_MOTION) && sfc_member_motion_range(j, P, CellP, r.u_min, r.u_max, &r.rho)) {fault |= 1; continue;}
+        if(what & SIDX_RAISE_REACH) {
+            r.r = nlr_particle_symmetric_radius(P[j], policy);
+            r.r_drifted = nlr_particle_symmetric_radius_after_drift(j, P, policy);
+            if(r.r_drifted < r.r) {r.r_drifted = r.r;}
+            r.type = type;
+        }
+        r.j = j;
+    }
+    if(fault) {
+        idx->rebuild_needed = 1;
+        gizmo_request_controlled_stop(7740, "a particle kept in the neighbour index has a velocity that is not finite, "
+                                      "so no search can bound where it is", __FILE__, __LINE__, __FUNCTION__);
+        return 1;
+    }
+    SidxRaiseRecord *d_rec = (SidxRaiseRecord *) ngl_alloc_device((size_t) n * sizeof(SidxRaiseRecord), "sidx_raise_records");
+    if(!d_rec) {idx->rebuild_needed = 1; return 2;}
+    {
+        Kokkos::View<const SidxRaiseRecord*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>> hv(rec.data(), (size_t) n);
+        Kokkos::View<SidxRaiseRecord*, GIZMO_KOKKOS_DEVICE_SPACE, Kokkos::MemoryTraits<Kokkos::Unmanaged>> dv(d_rec, (size_t) n);
+        Kokkos::deep_copy(dv, hv);
+    }
+    const double touched_tiles = (n < idx->ntiles) ? (double) n : (double) idx->ntiles;
+    const int walk_paths = (touched_tiles * idx->nlevels <= SIDX_PATH_WALK_FACTOR * (double)(idx->ntiles + idx->bvh_nnodes));
+    sfc_tile_t *tiles = idx->d_tiles;
+    tile_bvh_node_t *bvh = idx->d_bvh;
+    const int *slot_of = idx->d_slot_of;
+    double *rows = idx->d_compact_xyzh;
+    double *looseness = idx->looseness;
+    Kokkos::parallel_for("sidx_raise_members", n, KOKKOS_LAMBDA(int k) {
+        const SidxRaiseRecord &r = d_rec[k];
+        if(r.j < 0) {return;}
+        const int slot = slot_of[r.j];
+        if(slot < 0) {return;}
+        struct SidxRaise m;
+        for(int d = 0; d < 3; d++) {m.u_min[d] = r.u_min[d]; m.u_max[d] = r.u_max[d];}
+        m.rho = r.rho; m.hmax = 0;
+        for(int t = 0; t < TILE_NUM_PTYPES; t++) {m.hmax_by_type[t] = 0;}
+        if(r.type >= 0) {
+            /* the row holds the reaches themselves, which may fall; the bands only rise */
+            rows[(size_t)slot * SIDX_ROW_WIDTH + 3] = r.r;
+            rows[(size_t)slot * SIDX_ROW_WIDTH + 4] = r.r_drifted;
+            m.hmax = r.r_drifted; m.hmax_by_type[r.type] = r.r_drifted;
+        }
+        sfc_tile_t *tile = &tiles[slot / TILE_TARGET_SIZE];
+        /* A tile that already covers the member needs nothing above it either: whoever raised it is
+         * raising its ancestors too, or they were covering it already. */
+        if(!sidx_widen(tile, m)) {return;}
+        Kokkos::atomic_max(looseness, sidx_tile_looseness(*tile));
+        if(!walk_paths) {return;}
+        for(int node = tile->bvh_leaf; node >= 0 && sidx_widen(&bvh[node], m); node = bvh[node].parent) {}
+    });
+    Kokkos::fence();
+    gizmo_gpu_check_last_error("sidx_raise_members", n);
+    Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(d_rec);
+    if(!walk_paths) {sidx_widen_all_levels(idx);}
+    return 0;
+}
+
+/* The kept gas index follows the velocities of its members: particles idx_host[0..n) (host indices)
+ * just had their velocity changed.  Called after the kick of the active set, and by every other writer
+ * of a particle's velocity through gizmo_motion_bound_raise.  Costs the list and the paths above it. */
+void gpu_step_sidx_raise_motion(const int *idx_host, int n)
+{
+    gpu_spatial_index_t *idx = &g_step_sidx;
+    if(!idx->valid || n <= 0 || !idx_host) {return;}
+    GIZMO_GPU_ENSURE_ALL_FRESH();
+    sidx_raise_members(idx, idx_host, n, SIDX_RAISE_MOTION);
 }
 
 /* The per-active and per-pair arrays are the largest transients this loop asks for --
@@ -757,6 +659,53 @@ static void ngl_build_leave_empty(gpu_neighbor_list_t *gnl, int num_active,
              "neighbour list left empty",
              what, (double) bytes / (1024.0 * 1024.0), num_active);
     gizmo_request_controlled_stop(7711, msg, __FILE__, __LINE__, __FUNCTION__);
+}
+
+/* Keep, in each row, exactly the candidates the loop's pair test accepts: a member of the list's types
+ * within R_i of query aa for ONEWAY, within max(R_i, j_radius_scale * r_j) for
+ * SYMMETRIC, r_j being the member's reach under the loop's radius policy.  Every candidate must already
+ * be current.  Rows keep their order and their members' order.  The compaction runs in place in the host
+ * copy `ngb`: each row is trimmed on its own, then the kept prefixes move down in row order, which never
+ * overwrites a row that has not moved yet; the result replaces the front of the device list. */
+static void ngl_trim_rows_to_exact(gpu_neighbor_list_t *gnl, std::vector<int> &ngb, int num_active,
+                                   const double *q_pos, const double *q_radius, double radius_factor,
+                                   int search_mode, int type_bitmask, mode_b_radius_policy_t radius_policy,
+                                   double j_radius_scale, const struct particle_data *Pp)
+{
+    int64_t *off = gnl->offsets;
+    std::vector<int64_t> kept((size_t)num_active);
+#ifdef _OPENMP
+    #pragma omp parallel for schedule(dynamic, 64)
+#endif
+    for(int aa = 0; aa < num_active; aa++) {
+        const double R = q_radius[aa] * radius_factor;
+        int64_t w = off[aa];
+        for(int64_t n = off[aa]; n < off[aa + 1]; n++) {
+            const int j = ngb[(size_t)n];
+            const struct particle_data &pj = Pp[j];
+            if(!((1 << pj.Type) & type_bitmask)) {continue;}
+            const double h_j = (search_mode == NGB_SEARCH_ONEWAY) ? 0.0
+                             : nlr_particle_symmetric_radius(pj, radius_policy) * j_radius_scale;
+            if(!gx_pair_accept_wrap_and_test(q_pos[aa*3+0] - (double)pj.Pos[0], q_pos[aa*3+1] - (double)pj.Pos[1],
+                                             q_pos[aa*3+2] - (double)pj.Pos[2], R, h_j, search_mode)) {continue;}
+            ngb[(size_t)w++] = j;
+        }
+        kept[aa] = w - off[aa];
+    }
+    int64_t total = 0;
+    for(int aa = 0; aa < num_active; aa++) {
+        const int64_t start = off[aa];
+        off[aa] = total;
+        if(total != start && kept[aa] > 0) {memmove(&ngb[(size_t)total], &ngb[(size_t)start], (size_t)kept[aa] * sizeof(int));}
+        total += kept[aa];
+    }
+    off[num_active] = total;
+    gnl->total_pairs = total;
+    if(total > 0) {
+        Kokkos::View<const int*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>> h(ngb.data(), (size_t)total);
+        Kokkos::View<int*, GIZMO_KOKKOS_DEVICE_SPACE, Kokkos::MemoryTraits<Kokkos::Unmanaged>> d(gnl->neighbors, (size_t)total);
+        Kokkos::deep_copy(d, h);
+    }
 }
 
 void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
@@ -829,18 +778,6 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
         fflush(stderr);
         endrun(913006);
     }
-    /* A caller that reuses a cached index without supplying source geometry
-     * takes each active's position and radius from compact_xyzh[active_index],
-     * which holds POOL MEMBERS ONLY.  INVARIANT: that is correct exactly while
-     * every active is itself a pool member — on a reused cache the incremental
-     * refresh updates pool members, so a non-pool active would read an
-     * unrefreshed position and get a wrong neighbour set, silently.  A caller
-     * that cannot guarantee it passes explicit source positions instead.  The
-     * runner's compile-time check covers the Specs it dispatches; the symmetric
-     * list path below satisfies the invariant by being gas-only into a gas-only
-     * pool.  The call form is what should make the unsafe combination
-     * unrepresentable, rather than a scan looking for it after the fact. */
-
     /* Early-out: with no active particles there is nothing to search.
      * Skip the SIDX build/refresh AND all kernel launches.  Allocate 1-element
      * stubs so the caller's gpu_ngb_list_free path is well-defined (it always
@@ -892,37 +829,63 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
     gpu_spatial_index_t local_idx = {};
     gpu_spatial_index_t *idx;
     /* Invalidate the cached SIDX unless it still describes the same particles.
-     * num_total: the compact_xyzh and pool arrays were sized for the old count,
-     * so accessing beyond them is UB (ghost exchange redo, particle creation).
-     * Epochs: a cleanup-and-reimport can land the SAME ghost count with
-     * different ghost contents, which no count test can see. The index would
-     * then hold stale positions, tile bounds and BVH, because a ghost import
-     * marks h-dirty only and the refresh kernels rewrite compact_xyzh[i*4+3]
-     * alone. Drift does not bump either epoch -- membership is unchanged there,
-     * and the drift refresh path handles moved positions -- so this costs no
-     * rebuild on the common path. */
+     * num_total: the slot map was sized for the old count, so accessing beyond it
+     * is UB (ghost exchange redo, particle creation).  Epochs: a
+     * cleanup-and-reimport can land the SAME ghost count with different ghost
+     * contents, which no count test can see, and a change of pool membership or
+     * a position written outside a drift likewise leaves rows that no longer
+     * describe the members.  A drift bumps neither: the kept index is read at the
+     * time of the search (sfc_tiles.h), so reuse across a drift is the common path. */
+    const integertime t_now = gizmo_host_ti_current();
+    const struct DriftKickTableView host_tables = drift_kick_table_view_host();
+    /* Whether every pool member is already at the time of this search.  The local
+     * particles by the full-drift certificate (move_particles drifts only the
+     * active set, so it does not advance it, which is what makes it a proof rather
+     * than a convention); the imported segment by its owners having advanced it
+     * before packing.  A new timestep advances All.Ti_Current, so a certificate
+     * from an earlier time simply stops matching. */
+    const int ghost_segment_current = (ghost_get_num_ghosts() == 0) ||
+                                      (ghost_pool_current_ti() == t_now);
+    const int pool_current = (gizmo_full_drift_ti() == t_now) && ghost_segment_current;
     if(cached_idx && cached_idx->valid &&
        (cached_idx->num_total          != num_total          ||
         cached_idx->ghost_epoch_when_built != g_sidx_ghost_epoch ||
-        cached_idx->pool_epoch_when_built  != g_sidx_pool_epoch)) {
+        cached_idx->pool_epoch_when_built  != g_sidx_pool_epoch ||
+        cached_idx->ti_ref > t_now || cached_idx->rebuild_needed)) {
         gpu_spatial_index_free(cached_idx);
     }
-    if(cached_idx && cached_idx->valid) {
-        /* Reuse: settle the outstanding position refresh BEFORE the index becomes
-         * consumer-visible below. This is the only path on which a drift-time
-         * refresh is actually needed, which is why it waits until here. */
-        if(cached_idx->positions_stale_after_drift) {
-            /* Charged to the refresh bucket even though it runs here, so the
-             * bucket keeps naming the work it holds rather than the place the
-             * work happens; the enclosing list-build charge deducts it as a
-             * child. Without this a refresh running here would silently inflate the
-             * list-build row instead. */
-            const double t_refresh_start = my_second();
-            const double child0_refresh = CPU_ChildCharged;
-            sidx_refresh_after_drift(cached_idx, P_shared);
-            cpu_charge_child(CPU_SIDX_REFRESH,
-                             cpu_minus_children(timediff(t_refresh_start, my_second()), child0_refresh));
+    /* A kept index is rebuilt instead when a fresh one is the better search: every
+     * member is current, so a fresh index reads exactly and its list needs no trim;
+     * or its boxes can have grown by more than their own size. */
+    if(cached_idx && cached_idx->valid && cached_idx->ti_ref < t_now) {
+        const double D_kept = get_drift_factor_impl(cached_idx->ti_ref, t_now, 1.0, &host_tables);
+        if(pool_current || !(*cached_idx->looseness * D_kept <= SIDX_MAX_BOX_GROWTH)) {
+            gpu_spatial_index_free(cached_idx);
         }
+    }
+    /* Bring a kept index's reaches up to date.  Every particle whose radius changed
+     * since was marked dirty (gizmo_mark_kernel_radius_dirty_*); its row takes its
+     * current reach and the bands above it are raised to cover it.  All-dirty, or
+     * a refresh that cannot be staged, rebuilds the index instead: a fresh index
+     * starts current.  Per-cache state means consuming-and-clearing this cache's
+     * bits leaves the other registered caches' bitsets untouched. */
+    if(cached_idx && cached_idx->valid && cached_idx->dirty_handle >= 0) {
+        const int handle = cached_idx->dirty_handle;
+        if(gpu_dirty_tracker_is_all_dirty(handle)) {
+            gpu_spatial_index_free(cached_idx);
+        } else if(gpu_dirty_tracker_popcount(handle) > 0) {
+            /* Drain bitset -> host list -> raise. */
+            std::vector<int> dirty_host;
+            dirty_host.reserve(gpu_dirty_tracker_popcount(handle));
+            gpu_dirty_tracker_consume(handle,
+                [](int j, void *ud){ ((std::vector<int> *)ud)->push_back(j); },
+                &dirty_host);
+            if(sidx_raise_members(cached_idx, dirty_host.data(), (int)dirty_host.size(), SIDX_RAISE_REACH)) {
+                gpu_spatial_index_free(cached_idx);
+            }
+        }
+    }
+    if(cached_idx && cached_idx->valid) {
         idx = cached_idx;
     } else if(cached_idx) {
         gpu_spatial_index_build(P_shared, num_total, type_bitmask, cached_idx, caller_label, radius_policy);
@@ -931,30 +894,31 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
         gpu_spatial_index_build(P_shared, num_total, type_bitmask, &local_idx, caller_label, radius_policy);
         idx = &local_idx;
     }
-    /* A build that ran out of memory leaves the index invalid and has already asked
-     * for the stop, naming the buffer. There is nothing to walk, so hand back the
-     * same empty list any other exhausted allocation here produces. */
+    /* A build that ran out of memory, or met a member no search can bound, leaves
+     * the index invalid and has already asked for the stop, naming the cause.
+     * There is nothing to walk, so hand back the same empty list any other
+     * exhausted allocation here produces. */
     if(!idx->valid) {
         ngl_build_leave_empty(gnl, num_active, NULL, NULL, NULL, NULL, "the spatial index", 0);
         return;
     }
 
-    /* Coordinate-staleness invariant, same class as the cache_tbm and
-     * radius_policy guards above: a walk over an index whose tile bboxes, BVH
-     * and compact positions predate the last drift silently misses neighbours.
-     * Every path reaching here has either rebuilt the index from current
-     * positions or refreshed it, so this can only fire if a future caller
-     * introduces a third path. Fail loudly at the right layer. */
-    if(idx->positions_stale_after_drift) {
-        fprintf(stderr,
-            "gpu_ngb_list_build FATAL: caller='%s' is about to walk a spatial index "
-            "whose positions predate the last drift. The tile bounding boxes, BVH and "
-            "compact positions describe where particles WERE, so the walk would miss "
-            "genuine neighbours without any error. Every consumer must either rebuild "
-            "the index or refresh it before use; a path that does neither has been "
-            "added.\n", caller_label ? caller_label : "?");
-        fflush(stderr);
-        endrun(913007);
+    /* How this search reads the index (sfc_walk_frame).  Exact when nothing can
+     * have moved since the rows were written: the index was built at this time
+     * from members that were all current then, and every member is current now.
+     * Every member's reach is its stored one when the pool is current (the rows
+     * were brought up to date above); otherwise it is its drifted reach. */
+    struct sfc_walk_frame frame;
+    frame.D = (idx->ti_ref < t_now) ? get_drift_factor_impl(idx->ti_ref, t_now, 1.0, &host_tables) : 0.0;
+    frame.exact = (idx->ti_ref == t_now) && pool_current && idx->rows_are_positions;
+    frame.reach_current = pool_current;
+    if(!(frame.D >= 0.0 && frame.D < 1.0e30)) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "gpu_ngb_list_build (caller '%s'): the drift interval since the neighbour index "
+                 "was built is %g, which bounds nothing; neighbour list left empty", caller_label ? caller_label : "?", frame.D);
+        gizmo_request_controlled_stop(7740, msg, __FILE__, __LINE__, __FUNCTION__);
+        ngl_build_leave_empty(gnl, num_active, NULL, NULL, NULL, NULL, "the spatial index", 0);
+        return;
     }
 
     /* Copy spatial index pointers to gnl for use by free */
@@ -965,105 +929,40 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
     gnl->ntiles = idx->ntiles;
     gnl->bvh_root = idx->bvh_root;
 
-    /* Refresh the h component of the compact array. Two modes (driven by the
-     * per-cache gpu_dirty_tracker):
-     *  - all-dirty: full-pool parallel_for(num_total, ...) — pays ~1.1-1.2s
-     *    per call on fire_m11i 12.4M pool (UVM fault latency on P_shared
-     *    KernelRadius reads).
-     *  - bitset drain: parallel_for(n_dirty, ...) reading indices staged from
-     *    this cache's bitset to a device buffer. ~ms per call when n_dirty is
-     *    the active set. Per-cache state means consuming-and-clearing this
-     *    cache's bits leaves the other registered caches' bitsets untouched.
-     * Skipped entirely when this cache has neither all_dirty nor any set bits. */
-    /* Per-cache dirty tracker query: this cache's bitset is independent of
-     * other caches' state. consume() iterates set bits, populates d_dirty,
-     * then clears bitset+all_dirty for THIS cache only. */
-    int do_refresh = 0, refresh_all = 0;
-    int handle = cached_idx ? cached_idx->dirty_handle : -1;
-    if(cached_idx && cached_idx->valid && handle >= 0) {
-        if(gpu_dirty_tracker_is_all_dirty(handle)) { do_refresh = 1; refresh_all = 1; }
-        else if(gpu_dirty_tracker_popcount(handle) > 0) { do_refresh = 1; refresh_all = 0; }
-    }
-    if(do_refresh) {
-        double *compact = idx->d_compact_xyzh;
-        double h_inflate = 1.0 + SIDX_H_SLACK; /* see SIDX_H_SLACK — lazy-drift over-search slack */
-        /* SSOT per-j reach under the cached policy.  HARD-ABORT above guarantees
-         * cached_idx->cache_radius_policy == caller's radius_policy. */
-        const mode_b_radius_policy_t policy_capture = idx->cache_radius_policy;
-        if(refresh_all) {
-            Kokkos::parallel_for("compact_h_refresh_all", num_total, KOKKOS_LAMBDA(int i) {
-                double h_j = nlr_particle_symmetric_radius(P_shared[i], policy_capture);
-                compact[i*4+3] = h_j * h_inflate;
-            });
-            /* Drain the bitset (no kernel use; just clear it). */
-            struct {} dummy;
-            gpu_dirty_tracker_consume(handle,
-                [](int j, void *ud){ (void)j; (void)ud; },
-                &dummy);
-        } else {
-            /* Drain bitset → host vector → device buffer → kernel. */
-            std::vector<int> dirty_host;
-            dirty_host.reserve(gpu_dirty_tracker_popcount(handle));
-            gpu_dirty_tracker_consume(handle,
-                [](int j, void *ud){ ((std::vector<int> *)ud)->push_back(j); },
-                &dirty_host);
-            int n_dirty = (int)dirty_host.size();
-            size_t dirty_bytes = (size_t)((n_dirty > 0) ? n_dirty : 1) * sizeof(int);
-            int *d_dirty = (int *) ngl_alloc_device(dirty_bytes, "ngl_dirty");
-            /* The refresh cannot be skipped: the bits have already been consumed, so
-             * leaving them unwritten would let a later walk read stale reaches. Stop
-             * instead, and leave the list empty so nothing walks the index meanwhile. */
-            if(!d_dirty) {
-                ngl_build_leave_empty(gnl, num_active, NULL, NULL, NULL, NULL,
-                                      "the refreshed-particle index list", dirty_bytes);
-                cpu_charge_child(CPU_NGB_BUILD, cpu_minus_children(timediff(t_entry, my_second()), cpu_rows_child0));
-                return;
-            }
-            {
-                Kokkos::View<int*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
-                    hv(dirty_host.data(), n_dirty);
-                Kokkos::View<int*, GIZMO_KOKKOS_DEVICE_SPACE, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
-                    dv(d_dirty, n_dirty);
-                Kokkos::deep_copy(dv, hv);
-            }
-            Kokkos::parallel_for("compact_h_refresh_idx", n_dirty, KOKKOS_LAMBDA(int k) {
-                int i = d_dirty[k];
-                double h_j = nlr_particle_symmetric_radius(P_shared[i], policy_capture);
-                compact[i*4+3] = h_j * h_inflate;
-            });
-            Kokkos::fence();
-            gizmo_gpu_check_last_error("compact_h_refresh_idx", n_dirty);
-            Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(d_dirty);
-        }
-        Kokkos::fence();
-        gizmo_gpu_check_last_error("compact_h_refresh", num_total);
-    }
-
     /* Active indices: always re-uploaded (changes per call) */
     size_t active_bytes = (size_t)((num_active > 0) ? num_active : 1) * sizeof(int);
     gnl->d_active = (int *) ngl_alloc_shared(active_bytes, "ngl_pairs_active");
     if(!gnl->d_active) {ngl_build_leave_empty(gnl, num_active, NULL, NULL, NULL, NULL, "the active-index list", active_bytes); return;}
     memcpy(gnl->d_active, active_indices_host, num_active * sizeof(int));
 
-    /* Optional explicit per-active search radii (for loops with a different kernel
-       than P[i].KernelRadius, e.g. KernelRadiusDM or AGS_Hsml). NULL → use P[i].KernelRadius. */
-    double *d_radii = NULL;
-    if(search_radii_host) {
-        size_t radii_bytes = (size_t)((num_active > 0) ? num_active : 1) * sizeof(double);
-        d_radii = (double *) ngl_alloc_shared(radii_bytes, "ngl_pairs_radii");
-        if(!d_radii) {ngl_build_leave_empty(gnl, num_active, NULL, NULL, NULL, NULL, "the per-active search radii", radii_bytes); return;}
-        memcpy(d_radii, search_radii_host, num_active * sizeof(double));
-    }
-
-    /* Optional explicit per-active source positions (for sources not backed by
-       P[] entries, e.g. arbitrary grid cells). NULL → read pos from P[active[aa]].
-       Layout in caller's array: source_positions_host[aa*3 + k] for axis k. */
-    double *d_source_pos = NULL;
-    if(source_positions_host) {
-        size_t srcpos_bytes = (size_t)((num_active > 0) ? num_active : 1) * 3 * sizeof(double);
-        d_source_pos = (double *) ngl_alloc_shared(srcpos_bytes, "ngl_pairs_source_pos");
-        if(!d_source_pos) {ngl_build_leave_empty(gnl, num_active, d_radii, NULL, NULL, NULL, "the per-active source positions", srcpos_bytes); return;}
-        memcpy(d_source_pos, source_positions_host, num_active * 3 * sizeof(double));
+    /* Each query's radius and position.  A caller may supply either (a loop with a
+     * different kernel than the particle's own, e.g. KernelRadiusDM or AGS_Hsml; a
+     * source not backed by a P[] entry, e.g. a grid cell).  Otherwise they are the
+     * query particle's own at the time of the search -- its reach under the loop's
+     * policy, its position once drifted to now (a query is normally an active
+     * particle and current already) -- and never the index's rows, which describe
+     * members at the index's reference time.  Positions: [aa*3 + k] for axis k. */
+    size_t radii_bytes = (size_t)((num_active > 0) ? num_active : 1) * sizeof(double);
+    double *d_radii = (double *) ngl_alloc_shared(radii_bytes, "ngl_pairs_radii");
+    if(!d_radii) {ngl_build_leave_empty(gnl, num_active, NULL, NULL, NULL, NULL, "the per-active search radii", radii_bytes); return;}
+    size_t srcpos_bytes = (size_t)((num_active > 0) ? num_active : 1) * 3 * sizeof(double);
+    double *d_source_pos = (double *) ngl_alloc_shared(srcpos_bytes, "ngl_pairs_source_pos");
+    if(!d_source_pos) {ngl_build_leave_empty(gnl, num_active, d_radii, NULL, NULL, NULL, "the per-active source positions", srcpos_bytes); return;}
+#ifdef _OPENMP
+    #pragma omp parallel for schedule(static)
+#endif
+    for(int aa = 0; aa < num_active; aa++) {
+        const int i = active_indices_host[aa];
+        d_radii[aa] = search_radii_host ? search_radii_host[aa] : nlr_particle_symmetric_radius(P_shared[i], radius_policy);
+        if(source_positions_host) {
+            for(int k = 0; k < 3; k++) {d_source_pos[aa*3 + k] = source_positions_host[aa*3 + k];}
+        } else {
+            double c[3], hw = 0.0;
+            if(particle_motion_envelope(i, P_shared, CellP, t_now, &host_tables, c, &hw) == PARTICLE_MOTION_UNBOUNDED) {
+                for(int k = 0; k < 3; k++) {c[k] = (double)P_shared[i].Pos[k];}
+            }
+            for(int k = 0; k < 3; k++) {d_source_pos[aa*3 + k] = c[k];}
+        }
     }
 
     /* Allocate CSR offsets (64-bit row pointers) */
@@ -1094,7 +993,6 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
         sfc_tile_t *tiles = gnl->d_tiles;
         tile_bvh_node_t *bvh = gnl->d_bvh;
         int *pool = gnl->d_pool;
-        int *active = gnl->d_active;
         int *scratch = d_scratch;
         int *counts = d_counts;
         int ntiles = gnl->ntiles;
@@ -1105,16 +1003,14 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
         double j_rad_scale = j_kernel_radius_scale;
         const double *radii = d_radii;
         const double *src_pos = d_source_pos;
-        const double *compact_xyzh = gnl->d_compact_xyzh;
+        const double *rows = gnl->d_compact_xyzh;
+        const struct sfc_walk_frame walk_frame = frame;
         Kokkos::parallel_for("ngb_fused", num_active, KOKKOS_LAMBDA(int aa) {
-            int i = active[aa];
-            double h_i = (radii ? radii[aa] : (double)compact_xyzh[i*4+3]) * sr_fac;
-            double pos_i[3];
-            if(src_pos) { pos_i[0] = src_pos[aa*3+0]; pos_i[1] = src_pos[aa*3+1]; pos_i[2] = src_pos[aa*3+2]; }
-            else        { pos_i[0] = (double)compact_xyzh[i*4+0]; pos_i[1] = (double)compact_xyzh[i*4+1]; pos_i[2] = (double)compact_xyzh[i*4+2]; }
-            int cnt = search_neighbors_sfc_gpu(compact_xyzh, pos_i, h_i, j_rad_scale,
+            double h_i = radii[aa] * sr_fac;
+            double pos_i[3] = {src_pos[aa*3+0], src_pos[aa*3+1], src_pos[aa*3+2]};
+            int cnt = search_neighbors_sfc_gpu(rows, pos_i, h_i, j_rad_scale,
                                                tiles, ntiles, pool, smode,
-                                               bvh, bvh_root,
+                                               bvh, bvh_root, walk_frame,
                                                &scratch[(size_t)aa * NGL_SCRATCH_STRIDE],
                                                NGL_SCRATCH_STRIDE);
             counts[aa] = cnt;
@@ -1178,7 +1074,6 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
         sfc_tile_t *tiles = gnl->d_tiles;
         tile_bvh_node_t *bvh = gnl->d_bvh;
         int *pool = gnl->d_pool;
-        int *active = gnl->d_active;
         int *scratch = d_scratch;
         int *counts = d_counts;
         int64_t *offsets = gnl->offsets;
@@ -1190,7 +1085,8 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
         double j_rad_scale = j_kernel_radius_scale;
         const double *radii = d_radii;
         const double *src_pos = d_source_pos;
-        const double *compact_xyzh = gnl->d_compact_xyzh;
+        const double *rows = gnl->d_compact_xyzh;
+        const struct sfc_walk_frame walk_frame = frame;
         Kokkos::parallel_for("ngb_compact", num_active, KOKKOS_LAMBDA(int aa) {
             int n = counts[aa];
             int64_t dst = offsets[aa];
@@ -1199,14 +1095,11 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
                 for(int k = 0; k < n; k++) neighbors[dst + k] = scratch[src + k];
             } else {
                 /* Overflow path: re-walk BVH writing directly into neighbors[] */
-                int i = active[aa];
-                double h_i = (radii ? radii[aa] : (double)compact_xyzh[i*4+3]) * sr_fac;
-                double pos_i[3];
-                if(src_pos) { pos_i[0] = src_pos[aa*3+0]; pos_i[1] = src_pos[aa*3+1]; pos_i[2] = src_pos[aa*3+2]; }
-                else        { pos_i[0] = (double)compact_xyzh[i*4+0]; pos_i[1] = (double)compact_xyzh[i*4+1]; pos_i[2] = (double)compact_xyzh[i*4+2]; }
-                search_neighbors_sfc_gpu(compact_xyzh, pos_i, h_i, j_rad_scale,
+                double h_i = radii[aa] * sr_fac;
+                double pos_i[3] = {src_pos[aa*3+0], src_pos[aa*3+1], src_pos[aa*3+2]};
+                search_neighbors_sfc_gpu(rows, pos_i, h_i, j_rad_scale,
                                          tiles, ntiles, pool, smode,
-                                         bvh, bvh_root,
+                                         bvh, bvh_root, walk_frame,
                                          &neighbors[dst], 0x7fffffff);
             }
         });
@@ -1214,131 +1107,107 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
         gizmo_gpu_check_last_error("ngb_compact", num_active);
     }
 
-    /* Free temporaries */
+    /* Free temporaries.  The staged query radii and positions are kept for the trim below. */
     Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(d_scratch);
     Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(d_counts);
-    if(d_radii) Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(d_radii);
-    if(d_source_pos) Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(d_source_pos);
 
 
-    /* Lazy-drift hook (Attack C): drift each neighbor in the freshly-built
-     * CSR list to time1 on host. Active particle i is already drifted
-     * (move_particles iterated ActiveParticleList). Each pool member j touched
-     * by this kernel needs its predicted state (CellP[j].VelPred / Density /
-     * InternalEnergyPred / KernelRadius) at time1 before the kernel reads it;
-     * drift_particle(j, time1) handles all of that with a single call.
+    /* Two things may remain to be done to the walk's list, both on one host copy of it.
      *
-     * drift_particle's "if(time1 == time0) return" early-exit dedups: a j
-     * already drifted (e.g. it was in another active i's neighbor list
-     * earlier this step, or it IS an active particle) is a fast no-op.
+     * The members it found that are behind the time of this search are drifted to it
+     * (Attack C: lazy drift).  A kernel reads each neighbour's predicted state --
+     * CellP[j].VelPred / Density / InternalEnergyPred / KernelRadius -- at this time,
+     * and drift_particle(j, time1) provides all of it.  Not needed when the pool is
+     * already current (pool_current above): every drift would return at once.
+     * MEASURED on a production run: on fulldrift steps this sweep was 92.0 billion
+     * pool visits with zero members behind, at ~97 s per rank.
      *
-     * Marks h_dirty for the touched j's so that the NEXT gpu_ngb_list_build
-     * call's compact_h_refresh updates compact_xyzh[j*4+3] from the freshly-
-     * drifted KernelRadius. The CURRENT call's compact_xyzh h field is
-     * stale by up to one drift step; the SIDX_H_SLACK inflation in
-     * compact_xyzh write paths absorbs that staleness in the BVH tile-overlap
-     * test. Per-pair r² acceptance reads the actual P[j].KernelRadius (now
-     * freshly drifted), so correctness is preserved. */
-    /* The sweep below is dead work when the pool is already current: every
-     * drift_particle call returns immediately, and the device->host copy and the
-     * h-dirty marking exist only to serve those calls.
-     *
-     * Two proofs are needed, one per segment of the pool, and both are compared
-     * against the time THIS call needs, so anything short of a match falls
-     * through to the full sweep. gizmo_full_drift_ti() covers the local
-     * particles: move_particles deliberately does not advance it, because it
-     * drifts only the active set, which is what makes it a proof rather than a
-     * convention. ghost_pool_current_ti() covers the imported segment,
-     * established when the owners advanced their particles before packing them.
-     *
-     * It needs no separate invalidation. A new timestep advances All.Ti_Current,
-     * so a certificate from an earlier time simply stops matching.
-     *
-     * The h-dirty marking stays covered in exactly this case: a full-N drift
-     * marks the whole local range as it goes, and ghost slots are marked when
-     * they are installed. MEASURED on a production run: on fulldrift steps this
-     * is 92.0 billion pool visits with zero members behind, at ~97 s per rank. */
-    const integertime t_pool = gizmo_host_ti_current();
-    const int ghost_segment_current = (ghost_get_num_ghosts() == 0) ||
-                                      (ghost_pool_current_ti() == t_pool);
-    const int pool_already_current = (gizmo_full_drift_ti() == t_pool) && ghost_segment_current;
-    if(gnl->total_pairs > 0 && gnl->neighbors && !pool_already_current) {
+     * Then, unless the walk read the index exactly, its list is a superset -- every
+     * member the pair test can accept once drifted -- and each row is trimmed to the
+     * members that test accepts at their current positions and reaches. */
+    const integertime time1 = t_now;
+    const int need_drift = !pool_current;
+    const int need_trim = !frame.exact;
+    if(gnl->total_pairs > 0 && gnl->neighbors && (need_drift || need_trim)) {
         std::vector<int> ngb_host((size_t)gnl->total_pairs);
         gpu_ngb_copy_neighbors_to_host(gnl, ngb_host.data());
-        /* Out-of-line host accessor. Lazy-drift target for CSR
-         * neighbors — host-side drift_particle calls. */
-        integertime time1 = t_pool;
-        /* Ghosts imported for this step were advanced to the current time by
-         * their owners before being packed, so the whole imported segment is
-         * already current and there is nothing to confirm per ghost. The pool's
-         * stamp is compared against the time THIS call needs rather than trusted
-         * on its own, so a pool carried over from an earlier time still gets
-         * checked particle by particle. */
-        const int ghost_start = num_total - ghost_get_num_ghosts();
-        const int ghosts_certified = (ghost_pool_current_ti() == time1);
-        /* Collect the distinct members that are behind, then advance them in one
-         * threaded pass, rather than calling drift_particle once per visit.
-         *
-         * The drift is real per-particle work -- it runs the implicit
-         * thermochemistry solve through set_eos_pressure -- so it must not be
-         * strictly serial. A member appears once per PAIR, and two threads
-         * testing one particle's Ti_current before either writes would advance
-         * it twice, so the distinct set is established first. The stamp is
-         * generation-counted and never needs clearing between calls.
-         *
-         * MEASURED on a production run: this leaves the loop's own rank skew at
-         * a tenth of what the per-visit form generated, and that skew was being
-         * absorbed by the convergence barrier downstream. */
-        static std::vector<unsigned int> pool_seen;
-        static unsigned int pool_seen_gen = 0;
-        static std::vector<int> pool_behind;
-        if((int)pool_seen.size() < num_total) {pool_seen.assign((size_t)num_total, 0u);}
-        if(++pool_seen_gen == 0u) {std::fill(pool_seen.begin(), pool_seen.end(), 0u); pool_seen_gen = 1u;}
-        pool_behind.clear();
-        for(int64_t idx_n = 0; idx_n < gnl->total_pairs; idx_n++) {
-            int j = ngb_host[idx_n];
-            if(j < 0 || j >= num_total) continue;
-            if(ghosts_certified && j >= ghost_start) continue;
-            if(pool_seen[(size_t)j] == pool_seen_gen) continue;
-            pool_seen[(size_t)j] = pool_seen_gen;
-            if(P[j].Ti_current != time1) {pool_behind.push_back(j);}
+        if(need_drift) {
+            /* Ghosts imported for this step were advanced to the current time by
+             * their owners before being packed, so the whole imported segment is
+             * already current and there is nothing to confirm per ghost. The pool's
+             * stamp is compared against the time THIS call needs rather than trusted
+             * on its own, so a pool carried over from an earlier time still gets
+             * checked particle by particle. */
+            const int ghost_start = num_total - ghost_get_num_ghosts();
+            const int ghosts_certified = (ghost_pool_current_ti() == time1);
+            /* Collect the distinct members that are behind, then advance them in one
+             * threaded pass, rather than calling drift_particle once per visit.
+             *
+             * The drift is real per-particle work -- it runs the implicit
+             * thermochemistry solve through set_eos_pressure -- so it must not be
+             * strictly serial. A member appears once per PAIR, and two threads
+             * testing one particle's Ti_current before either writes would advance
+             * it twice, so the distinct set is established first. The stamp is
+             * generation-counted and never needs clearing between calls.
+             *
+             * MEASURED on a production run: this leaves the loop's own rank skew at
+             * a tenth of what the per-visit form generated, and that skew was being
+             * absorbed by the convergence barrier downstream. */
+            static std::vector<unsigned int> pool_seen;
+            static unsigned int pool_seen_gen = 0;
+            static std::vector<int> pool_behind;
+            if((int)pool_seen.size() < num_total) {pool_seen.assign((size_t)num_total, 0u);}
+            if(++pool_seen_gen == 0u) {std::fill(pool_seen.begin(), pool_seen.end(), 0u); pool_seen_gen = 1u;}
+            pool_behind.clear();
+            for(int64_t idx_n = 0; idx_n < gnl->total_pairs; idx_n++) {
+                int j = ngb_host[idx_n];
+                if(j < 0 || j >= num_total) continue;
+                if(ghosts_certified && j >= ghost_start) continue;
+                if(pool_seen[(size_t)j] == pool_seen_gen) continue;
+                pool_seen[(size_t)j] = pool_seen_gen;
+                if(P[j].Ti_current != time1) {pool_behind.push_back(j);}
+            }
+            {
+                const int n_behind = (int)pool_behind.size();
+                const int *behind_idx = pool_behind.data();
+                drift_particles_batch(behind_idx, n_behind, time1);
+            }
+            /* drift_particle mutates Ti_current, Pos, AND KernelRadius (the
+             * compression it predicts). Mark h-dirty for every cache via the SSOT
+             * helper, so the next build over a kept index takes the new reaches.
+             * Promote-to-all kicks in per cache if any cache's bitset popcount
+             * exceeds threshold. */
+            if(gnl->total_pairs <= (int64_t)INT_MAX) {
+                gizmo_mark_kernel_radius_dirty_indices(ngb_host.data(), (int)gnl->total_pairs);
+            } else {
+                /* >2^31 neighbor pairs: an index list this large is hugely
+                 * redundant (num_total < 2^31), so truncating n would mark a
+                 * wrong subset. Escalate to a full-pool mark across both caches. */
+                gizmo_mark_kernel_radius_dirty_range(0, num_total);
+            }
+            /* Move detector baseline past the lazy drift's Ti_current/Pos updates
+             * — those are predicted-state setup, not kernel writes that need
+             * writeback. Subsequent kernel-side writes to ghost particles will
+             * still be flagged by ghost_write_detector_end(). No-op when
+             * GIZMO_GPU_ARENA_DEBUG is undefined or detector is inactive. */
+            ghost_write_detector_resnapshot_after_lazy_drift();
         }
-        {
-            const int n_behind = (int)pool_behind.size();
-            const int *behind_idx = pool_behind.data();
-            drift_particles_batch(behind_idx, n_behind, time1);
+        if(need_trim) {
+            ngl_trim_rows_to_exact(gnl, ngb_host, num_active, d_source_pos, d_radii, search_radius_factor,
+                                   search_mode, type_bitmask, radius_policy, j_kernel_radius_scale, P_shared);
         }
-        /* Lazy drift just called drift_particle on each j in ngb_host.
-         * drift_particle mutates Ti_current, Pos, AND KernelRadius
-         * (predict.cc:160,229 — *= exp(divv_fac/N)). Mark h-dirty for both
-         * GPU SIDX tracker and host glt cache via the SSOT helper.
-         * Promote-to-all kicks in per cache if any cache's bitset popcount
-         * exceeds threshold. */
-        if(gnl->total_pairs <= (int64_t)INT_MAX) {
-            gizmo_mark_kernel_radius_dirty_indices(ngb_host.data(), (int)gnl->total_pairs);
-        } else {
-            /* >2^31 neighbor pairs: an index list this large is hugely
-             * redundant (num_total < 2^31), so truncating n would mark a
-             * wrong subset. Escalate to a full-pool mark across both caches. */
-            gizmo_mark_kernel_radius_dirty_range(0, num_total);
-        }
-        /* Move detector baseline past the lazy drift's Ti_current/Pos updates
-         * — those are predicted-state setup, not kernel writes that need
-         * writeback. Subsequent kernel-side writes to ghost particles will
-         * still be flagged by ghost_write_detector_end(). No-op when
-         * GIZMO_GPU_ARENA_DEBUG is undefined or detector is inactive. */
-        ghost_write_detector_resnapshot_after_lazy_drift();
     }
+    Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(d_radii);
+    Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(d_source_pos);
 
     /* An index built for this call alone is rebuilt from scratch on the next one, so
      * once the list holds its four device arrays nothing reads the rest of it again:
-     * the host tile/pool/BVH mirrors only stage the build, and the position buffers
-     * only ever serve the drift refresh of a CACHED index. Hand those four to the list
-     * by clearing them here, then release the remainder through the index's own free,
-     * so a buffer added to the index later is covered without anyone recalling this
-     * site. Without this the host mirrors and position buffers outlive every caller
-     * that passes no cached index, which is what made the neighbour-list pool climb
-     * without bound across a long run. */
+     * the slot map, level schedule and looseness serve only the raises of a KEPT
+     * index. Hand those four to the list by clearing them here, then release the
+     * remainder through the index's own free, so a buffer added to the index later is
+     * covered without anyone recalling this site. Without this the rest outlives every
+     * caller that passes no cached index, which is what made the neighbour-list pool
+     * climb without bound across a long run. */
     if(idx == &local_idx) {
         local_idx.d_tiles = NULL; local_idx.d_bvh = NULL;
         local_idx.d_pool  = NULL; local_idx.d_compact_xyzh = NULL;
@@ -1412,12 +1281,8 @@ void gpu_build_symmetric_neighbor_list(struct particle_data *P_host, int num_tot
      * wide filter under TURB_DIFF_DYNAMIC).
      *
      * RADIUS SEMANTICS: pass EXPLICIT raw per-active radii (P[i].KernelRadius)
-     * so search_radius_factor multiplies the RAW kernel radius. With NULL
-     * radii the builder would derive h_i from compact_xyzh[i*4+3], which is
-     * already slack-inflated (P.KernelRadius * (1+SIDX_H_SLACK)) — compounding
-     * the slack into the physics widening factor (e.g. fac=2 -> effective ~3h
-     * search, ~27x neighbor volume, CSR-overflow / kernel stall). The runner
-     * Spec path already passes explicit fac*raw radii; this matches it. */
+     * so search_radius_factor multiplies the RAW kernel radius, as the runner
+     * Spec path does with its explicit fac*raw radii. */
     std::vector<double> symlist_raw_radii((num_active > 0) ? (size_t)num_active : 1);
     for(int aa = 0; aa < num_active; aa++) {
         symlist_raw_radii[aa] = (double) P_shared[active_indices[aa]].KernelRadius;
@@ -1907,6 +1772,8 @@ void gizmo_motion_bound_raise(const int *idx, int n)
     /* The tree records which top-level nodes changed, for the exchange at the
      * next tree-update phase. */
     gravity_note_motion_bound(idx, n);
+    /* The kept gas neighbour index follows the same velocities. */
+    gpu_step_sidx_raise_motion(idx, n);
 }
 
 void gx_touched_set_drift_and_mark(integertime time1)

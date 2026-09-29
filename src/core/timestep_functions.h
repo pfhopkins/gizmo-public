@@ -643,3 +643,36 @@ int particle_motion_envelope(int i, const struct particle_data *pp, const struct
     *half_width = width;
     return PARTICLE_MOTION_BOUNDED;
 }
+
+/* How far a drift carries particle i per unit of the UNDILATED drift interval, so that one clock serves
+   every member of a spatial index whatever dilation each carries: over an undilated interval D the drift
+   moves it by u D in a straight line, to within residual_speed D.  These are particle_straight_line_motion's
+   terms put on the undilated clock -- the drift covers only the dilated fraction f of the interval, and
+   under DILATION_FOR_STELLAR_KINEMATICS_ONLY adds back the nearest special particle's motion over the rest
+   (drift_position_finish) -- so a position the drift produced at one time, moved by u D, is where the drift
+   puts the particle a drift interval D later.  u changes only when the particle is kicked or its motion is
+   written directly; a drift leaves it alone. */
+KOKKOS_INLINE_FUNCTION
+void particle_transport_velocity(int i, const struct particle_data *pp, const struct gas_cell_data *cell,
+                                 double u[3], double *residual_speed)
+{
+    const double f = timestep_dilation_factor(i, pp);
+    u[0] = u[1] = u[2] = 0.0;
+    *residual_speed = 0.0;
+#if !defined(FREEZE_HYDRO)
+    const struct particle_straight_motion m = particle_straight_line_motion(i, pp, cell);
+    for(int k = 0; k < 3; k++) {u[k] = f * m.velocity[k];}
+    *residual_speed = f * m.residual_speed;
+#else
+    (void)cell;
+#endif
+#ifdef DILATION_FOR_STELLAR_KINEMATICS_ONLY
+    if(f < 1.) {for(int k = 0; k < 3; k++) {u[k] += (1. - f) * (double)pp[i].vel_of_nearest_special[k];}}
+#endif
+#if (NUMDIMS == 1)
+    u[1] = u[2] = 0.0;
+#endif
+#if (NUMDIMS == 2)
+    u[2] = 0.0;
+#endif
+}

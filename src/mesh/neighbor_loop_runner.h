@@ -815,30 +815,21 @@ constexpr bool nlr_spec_mode_a_rebuild_csr_every_iter_v =
     nlr_spec_mode_a_rebuild_csr_every_iter<Spec>::value;
 
 /* ------------------------------------------------------------------------- *
- * Active-source-in-pool contract (NGL source position/radius correctness).
+ * Active-source-in-pool declaration.
  *
- * INVARIANT: the cached SIDX `compact_xyzh` holds neighbor-POOL state (positions
- * in [0..2], h in [3]). It is authoritative SOURCE position/radius for an active
- * particle ONLY if that particle is a member of the cached pool (its type is in
- * the pool's type_bitmask). The Mode-A NULL source_positions/radii fast-path reads
- * compact_xyzh[active_index]; for a NON-pool active (e.g. a Type-5 sink doing a
- * gas-neighbor search in a GasOnly density loop) that slot is stale/unrefreshed on
- * a reused cache (incremental drift-refresh only touches pool members), giving a
- * wrong/non-deterministic source. (Fresh-built or AllTypes caches do not have this
- * problem; only cached GasOnly + non-gas active does.)
+ * gpu_ngb_list_build takes a query's position and radius, when the caller
+ * supplies none, from the query particle's own current state -- never from the
+ * cached SIDX rows, which describe pool members at the index's reference time --
+ * so an active source that is not a pool member (e.g. a Type-5 sink doing a
+ * gas-neighbor search in a GasOnly density loop) is searched from where it is.
  *
- * CONTRACT: every cached-SIDX Spec (sidx_cache_kind != None) MUST declare
+ * Every cached-SIDX Spec (sidx_cache_kind != None) declares
  *   static constexpr bool mode_a_active_sources_in_sidx_pool = <bool>;
- *     true  -> every active source is a pool member (gas-gas, or AllTypes pool):
- *              keep the compact fast-path (no per-active position copy).
+ *     true  -> every active source is a pool member (gas-gas, or AllTypes pool).
  *     false -> active sources may be non-pool (e.g. sink/star in a GasOnly loop):
- *              the runner stages explicit P[active_i].Pos (radii are already passed
- *              explicitly by the runner). compact_xyzh stays an acceleration
- *              structure only; source coords come from current particle state.
- * The static_assert in the runner bodies makes omission a COMPILE ERROR
- * (safe-by-default; a future non-pool-active GasOnly loop cannot silently inherit
- * the stale-source bug). A complementary runtime guard in gpu_ngb_list_build
- * catches direct (non-runner) callers that pass NULL with non-pool actives.
+ *              the runner stages explicit P[active_i].Pos itself (radii are
+ *              already passed explicitly by the runner).
+ * The static_assert in the runner bodies makes omission a COMPILE ERROR.
  * ------------------------------------------------------------------------- */
 
 /* "declared": does the Spec declare mode_a_active_sources_in_sidx_pool at all? */
@@ -881,7 +872,8 @@ constexpr bool nlr_spec_needs_explicit_source_positions_v =
 
 /* Stage current P[active_i].Pos into `storage` and return it as a source_positions
  * array (layout pos[k*3+axis]) for specs that need explicit positions; returns
- * nullptr (keep the compact fast-path) otherwise. ~3 doubles/active, host-side. */
+ * nullptr (the list builder takes each source's own position) otherwise.
+ * ~3 doubles/active, host-side. */
 template <typename Spec>
 static inline const double* nlr_stage_explicit_source_positions(
     const struct particle_data* P_host, const int* active_indices, int num_active,

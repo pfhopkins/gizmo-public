@@ -1685,6 +1685,9 @@ void force_flag_localnodes(void)
 
 void force_tree_note_type_presence(int particle)
 {
+    /* A type change moves the particle into or out of a kept neighbour index's pool (gas becoming a star
+     * or a sink, a grain becoming gas): that index no longer describes its pool and is rebuilt on next use. */
+    gpu_sidx_notify_pool_changed();
     if(!force_tree_is_allocated() || particle < 0 || particle >= All.TreeParticleSlots) {return;}
 
     const int type = (int) P[particle].Type;
