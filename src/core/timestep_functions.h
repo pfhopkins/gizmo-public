@@ -515,6 +515,41 @@ Vec3<double> super_timestepped_sink_com_velocity(int i, const struct particle_da
 }
 #endif
 
+/* How a drift moves particle i, on the particle's own (possibly dilated) drift clock: the velocity its
+   position advances at in a straight line, and the speed of whatever part of the motion is not one -- a
+   super-timestepped sink's orbit about its binary's centre of mass, and a curvilinear mesh cell's turn
+   (bounded by 2|v|, see particle_motion_envelope).  The drift's position terms are these, so the
+   predicted position and the drifted one agree bit for bit. */
+struct particle_straight_motion {
+    Vec3<double> velocity;
+    double residual_speed;
+};
+
+KOKKOS_INLINE_FUNCTION
+struct particle_straight_motion particle_straight_line_motion(int i, const struct particle_data *pp, const struct gas_cell_data *cell)
+{
+    struct particle_straight_motion m;
+    m.velocity = Vec3<double>{0, 0, 0};
+    m.residual_speed = 0.0;
+#if !defined(FREEZE_HYDRO)
+#if (SINGLE_STAR_TIMESTEPPING > 0)
+    if((pp[i].Type == 5) && (pp[i].SuperTimestepFlag >= 2))
+    {
+        m.velocity = super_timestepped_sink_com_velocity(i, pp);
+        m.residual_speed = (pp[i].comp_Mass/(pp[i].Mass+pp[i].comp_Mass)) * binary_relative_speed_bound(i, pp);
+        return m;
+    }
+#endif
+    m.velocity = particle_drift_velocity(i, pp, cell);
+#if defined(HYDRO_MESHLESS_FINITE_VOLUME) && ((HYDRO_FIX_MESH_MOTION == 2) || (HYDRO_FIX_MESH_MOTION == 3))
+    if(pp[i].Type == 0) {m.residual_speed = 2.0 * m.velocity.norm();}
+#endif
+#else
+    (void)i; (void)pp; (void)cell;
+#endif
+    return m;
+}
+
 /* What every drift does to a position after moving it: zero the unused dimensions, and under dilation
    add back the nearest special particle's motion over the undilated remainder of the interval (dt_drift
    carries the dilation, so only the motion relative to the surroundings is dilated). */
@@ -582,20 +617,9 @@ int particle_motion_envelope(int i, const struct particle_data *pp, const struct
     Vec3<MyDouble> pos = pos0;
     double residual = 0.0;
 #if !defined(FREEZE_HYDRO)
-#if (SINGLE_STAR_TIMESTEPPING > 0)
-    if((pp[i].Type == 5) && (pp[i].SuperTimestepFlag >= 2))
-    {
-        pos += super_timestepped_sink_com_velocity(i, pp) * dt_drift;
-        residual = (pp[i].comp_Mass/(pp[i].Mass+pp[i].comp_Mass)) * binary_relative_speed_bound(i, pp) * fabs(dt_drift);
-    }
-    else
-#endif
-    {
-        pos += drift_straight_displacement(i, pp, cell, dt_drift);
-#if defined(HYDRO_MESHLESS_FINITE_VOLUME) && ((HYDRO_FIX_MESH_MOTION == 2) || (HYDRO_FIX_MESH_MOTION == 3))
-        if(pp[i].Type == 0) {residual = 2.0 * particle_drift_velocity(i, pp, cell).norm() * fabs(dt_drift);}
-#endif
-    }
+    const struct particle_straight_motion motion = particle_straight_line_motion(i, pp, cell);
+    pos += motion.velocity * dt_drift;
+    residual = motion.residual_speed * fabs(dt_drift);
 #endif
     drift_position_finish(i, pp, dt_drift, pos);
     for(int k = 0; k < 3; k++) {
