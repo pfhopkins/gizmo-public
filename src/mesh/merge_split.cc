@@ -22,6 +22,7 @@
 #include "../solids/ism_dust_chemistry_functions.h"
 #endif
 #include "../mesh/gpu_neighbor_list.h" /* gizmo_mark_kernel_radius_dirty_* */
+#include "../mesh/ghost_exchange_functions.h" /* gx_pair_accept_wrap_and_test: the canonical pair accept */
 #include "../system/gpu_particles_arena.h"
 
 #include <vector>
@@ -471,6 +472,12 @@ void merge_and_split_particles(void)
             if (ms_src_kind[aa] == 1) {
                 target_for_merger = -1;
                 threshold_val = MAX_REAL_NUMBER;
+                /* The list holds candidates, not only neighbours: the merge target and the ambient
+                   average are taken over the source's own kernel, the radius the list was built with. */
+                const double h_src = ms_src_radii[aa];
+                auto in_source_kernel = [&](int j_c) {
+                    return gx_pair_accept_wrap_and_test((double)P[i].Pos[0] - P[j_c].Pos[0], (double)P[i].Pos[1] - P[j_c].Pos[1],
+                                                        (double)P[i].Pos[2] - P[j_c].Pos[2], h_src, 0.0, NGB_SEARCH_ONEWAY);};
 #ifdef SINK_WIND_SPAWN
                 const int is_spawned_i = (P[i].ID==All.SpawnedWindCellID && P[i].Type==0);
 #ifdef SINK_SPAWN_MERGE_WHEN_AMBIENT
@@ -482,6 +489,7 @@ void merge_and_split_particles(void)
                     for (int64_t na = nl_start; na < nl_end; na++) {
                         int j_amb = gnl_neighbors[na];
                         if ((j_amb < 0) || (j_amb == i) || (j_amb >= local_count)) {continue;}
+                        if (!in_source_kernel(j_amb)) {continue;}
                         if ((P[j_amb].Type != 0) || (P[j_amb].Mass <= 0)) {continue;}
                         if (P[j_amb].ID == All.SpawnedWindCellID) {continue;} /* ambient means non-spawned gas */
                         double w = P[j_amb].Mass;
@@ -497,6 +505,7 @@ void merge_and_split_particles(void)
                 for (int64_t nn = nl_start; nn < nl_end; nn++) {
                     j = gnl_neighbors[nn];
                     if (j >= local_count) continue; /* skip ghosts (local-only merge) */
+                    if (!in_source_kernel(j)) continue;
                     if (P[j].Type != P[i].Type) continue;
                     double m_eff = P[j].Mass; int do_allow_merger = 0;
                     if ((P[j].Mass >= P[i].Mass) && (P[i].Mass+P[j].Mass < All.MaxMassForParticleSplit)) {do_allow_merger = 1;}

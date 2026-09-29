@@ -28,6 +28,7 @@
 
 #include "../mesh/neighbor_loop_runner.h"
 #include "../mesh/mode_b_local_walker.h"   /* MODE_B_SEARCH_*, MODE_B_RADIUS_* */
+#include "../mesh/ghost_exchange_functions.h" /* gx_pair_accept_wrap_and_test: the canonical pair accept */
 #include "sinks_gpu_decls.h"               /* struct sink_env_second_gpu_out */
 /* NOTE: caller TUs must include "../mesh/kernel.h" BEFORE this header
  * (NEAREST_XYZ etc. — same convention as sink_env1_loop.h). */
@@ -259,6 +260,12 @@ struct SinkEnv2Spec {
                              NoScatter& /*scatter*/,
                             const CallScalars& cs)
     {
+        /* The list holds candidates, not only neighbours: the environment sums over the pairs
+           inside the symmetric kernel, r < max(h_i, h_j), with h_j this loop's reach. */
+        const struct particle_data &pj = *neighbor.neighbor_particle;
+        if(!gx_pair_accept_wrap_and_test(active.pos[0] - (double)pj.Pos[0], active.pos[1] - (double)pj.Pos[1],
+                                         active.pos[2] - (double)pj.Pos[2], active.h_search,
+                                         nlr_particle_symmetric_radius(pj, radius_policy), NGB_SEARCH_SYMMETRIC)) {return;}
         sink_env2_pair_kernel(active, cs, *neighbor.neighbor_particle, accum);
     }
 
