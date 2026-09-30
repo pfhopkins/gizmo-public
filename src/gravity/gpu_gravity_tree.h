@@ -284,7 +284,6 @@ int  gpu_node_dirty_acquire_epoch(int owner);
 void gpu_node_dirty_retire(int owner);             /* hand back; on every exit path of the acquirer */
 void gpu_node_dirty_claim(int no);                  /* host claim; owner must be HOST */
 int  gpu_node_dirty_count(void);                    /* claims outstanding in this epoch */
-int  gpu_node_dirty_repair(integertime ti);   /* 0 = repaired; 1 = caller must sweep */
 /* Bring every listed node current at `ti` -- drifting the ones behind it and publishing every
  * mirror field the gravity walk reads -- instead of sweeping the whole tree.  Defined beside
  * the sweep (gpu_force_drift.cc) because it runs the sweep's own per-node units.

@@ -192,6 +192,8 @@ extern "C" void gpu_force_update_tree(void)
         MyGravFloat          *soa_vmax   = (soa_u ? soa_u->vmax : NULL);
         const int             tree_base_soa = All.TreeNodeIndexBase;
         const int             soa_vmax_n    = gpu_gravity_tree_capacity();   /* the ALLOCATION, not the index range */
+        unsigned int         *soa_bitflags  = (soa_u ? soa_u->bitflags : NULL);
+        const unsigned int    kicked_bit    = (1u << BITFLAG_NODEHASBEENKICKED);
         int                   gflag = GlobFlag;
         /* Out-of-line host accessor, called host-side here and captured
          * by value into the device lambda. */
@@ -268,6 +270,11 @@ extern "C" void gpu_force_update_tree(void)
                         const int kk_soa = no - tree_base_soa;
                         if(kk_soa >= 0 && kk_soa < soa_vmax_n) {
                             gpu_atomic_max_gravfloat(&soa_vmax[kk_soa], (MyGravFloat) vmax);
+                            /* and that the node holds a pending kick; the bit only rises in this
+                               phase, so a node already marked needs no atomic */
+                            if(soa_bitflags && !(soa_bitflags[kk_soa] & kicked_bit)) {
+                                Kokkos::atomic_fetch_or(&soa_bitflags[kk_soa], kicked_bit);
+                            }
                         }
                     }
                     Kokkos::atomic_fetch_or(&No[no].u.d.bitflags,

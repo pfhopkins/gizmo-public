@@ -2123,7 +2123,9 @@ int gx_device_fused_walk_prepare(struct GxDeviceTreeView *out, const char *calle
          *
          * Any doubt falls back to the old behaviour: an unsafe or overflowed
          * dirty epoch, or a mirror that cannot carry the widening inputs, makes
-         * gpu_node_dirty_repair() return nonzero and the full sweep runs. */
+         * gpu_node_dirty_bring_gravity_current() return nonzero and the full sweep runs.
+         * Its claims are nodes the host drifted, so bringing them current is publishing them:
+         * the same routine gravity uses, one consumer of the claim list. */
         int sweep_rc = 0;
         int _sweep_needed  = 1;
         /* ⛔ Widening needs its inputs. Without them the walk would open on the
@@ -2137,7 +2139,7 @@ int gx_device_fused_walk_prepare(struct GxDeviceTreeView *out, const char *calle
             _sweep_needed = 1;                       /* cannot widen -> must sweep */
         } else if(gpu_gravity_tree_oneway_safe_at(All.Ti_Current)) {
             _sweep_needed = 0;                       /* already safe to walk */
-        } else if(gpu_node_dirty_repair(All.Ti_Current) == 0) {
+        } else if(gpu_node_dirty_bring_gravity_current(All.Ti_Current) == 0) {
             _sweep_needed = 0;                       /* O(Ndirty) repair sufficed */
         }
         if(_sweep_needed) {

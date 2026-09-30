@@ -324,7 +324,8 @@ extern "C" size_t gpu_gravity_tree_bytes_per_node(void)
          + sizeof(long)                          /* N_part   */
          + 8 * sizeof(int)                       /* suns_backup */
          + sizeof(Vec3<MyGravFloat>)             /* node_vs  */
-         + 3 * sizeof(MyGravFloat);              /* hmax, vmax, divVmax */
+         + 3 * sizeof(MyGravFloat)               /* hmax, vmax, divVmax */
+         + sizeof(integertime);                  /* node_ti  */
 }
 
 /* seed_node_ / seed_dirty_ / dirty_[] / mark_dirty / dirty_count_
@@ -777,47 +778,6 @@ void gpu_node_dirty_claim(int no)
 }
 
 int gpu_node_dirty_count(void) {return nd_ctl_ ? Kokkos::atomic_load(&nd_ctl_->count) : 0;}
-
-int gpu_node_dirty_repair(integertime ti)
-{
-    /* ACQUIRE the phase boundary before consuming the claims: repair runs between
-     * phases, after every claimer has finished, and this makes that ordering
-     * explicit rather than assumed. Paired with the fence inside the claim. */
-    Kokkos::memory_fence();
-    if(nd_is_unsafe_() || !nd_list_ || !nd_seen_ || !nd_ctl_) {return 1;}   /* caller falls back to the sweep */
-    struct gpu_gravity_tree_soa_t *soa = gpu_gravity_tree_soa();
-    if(!soa || !soa->len || !soa->node_ti || !soa->center) {return 1;}
-    const int n = nd_ctl_->count;
-    for(int i = 0; i < n; i++) {
-        const int no = nd_list_[i];
-        const int k  = no - All.TreeNodeIndexBase;
-        if(k < 0 || k >= nd_cap_) {return 1;}
-        /* Class (a) is exactly a mirror rewrite: the AoS is already current, so
-           there is no arithmetic to redo -- copy the geometry the walk reads, and
-           the TIME it was written at, together. */
-        soa->len[k]     = Nodes[no].len;
-        soa->center[k]  = Nodes[no].center;
-        soa->node_ti[k] = Nodes[no].Ti_current;
-        if(soa->vmax) {
-            const MyGravFloat v = (MyGravFloat) Extnodes[no].vmax;
-            if(soa->vmax[k] < v) {soa->vmax[k] = v;}
-        }
-        if(soa->bitflags) {soa->bitflags[k] = Nodes[no].u.d.bitflags;}
-    }
-    /* Advance the generation rather than just resetting the cursor. Clearing the
-       cursor alone leaves every stamp at the CURRENT generation, so a node drifted
-       AGAIN after this repair would see its own stamp and never re-claim -- and
-       oneway_safe_at would then report "nothing outstanding" for a mirror a whole
-       drift interval behind. Bumping the generation invalidates every stamp in O(1)
-       without clearing the array, which is the whole point of stamping. */
-    nd_ctl_->count = 0;
-    if(++nd_ctl_->generation == 0u) {
-        for(int k = 0; k < nd_cap_; k++) {nd_seen_[k] = 0u;}
-        nd_ctl_->generation = 1u;
-    }
-    (void) ti;
-    return 0;
-}
 
 /* The foreign storage grows between phases whenever an import needs more room, and the
  * host walk then drifts -- and claims -- nodes in the new slots.  The set is sized when an

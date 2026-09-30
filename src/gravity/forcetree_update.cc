@@ -112,7 +112,8 @@ void force_update_tree(void)
  *  device version relies on the preceding all-node drift sweep and therefore uses atomics
  *  where this accumulates directly. */
 
-/* Raise the SoA mirror of a node's vmax to match the AoS.
+/* Raise the SoA mirror of a node's vmax to match the AoS, and mark it as holding a pending
+ * kick, so a walk predicting the node knows to read the impulse from the canonical node.
  *
  * vmax is a RUNNING MAX, and the ONEWAY device walk widens its opening bound by
  * TREE_NODE_WIDENING_DELTA(vmax, dt).  A mirror left behind the AoS is therefore SMALLER, the
@@ -124,7 +125,7 @@ void force_update_tree(void)
  * Indexing follows forcetree.cc:1441: slot k = no - All.TreeNodeIndexBase, valid
  * for local nodes (k < MaxNodes) and installed foreign ones, bounded by the mirror
  * that exists rather than by the index range it sits in. */
-static inline void force_soa_raise_vmax(int no, MyFloat vmax_aos)
+static inline void force_soa_mark_kick(int no, MyFloat vmax_aos)
 {
     struct gpu_gravity_tree_soa_t *soa = gpu_gravity_tree_soa();
     if(!soa || !soa->vmax) {return;}
@@ -138,6 +139,7 @@ static inline void force_soa_raise_vmax(int no, MyFloat vmax_aos)
     if(k < 0 || k >= cap) {return;}
     const MyGravFloat v = (MyGravFloat) vmax_aos;
     if(soa->vmax[k] < v) {soa->vmax[k] = v;}
+    if(soa->bitflags) {soa->bitflags[k] |= (1u << BITFLAG_NODEHASBEENKICKED);}
 }
 
 void force_kick_node(int i, Vec3<MyDouble>& dp)
@@ -173,7 +175,7 @@ void force_kick_node(int i, Vec3<MyDouble>& dp)
         Extnodes[no].sink_dp += sink_dp;
 #endif
         if(Extnodes[no].vmax < vmax) {Extnodes[no].vmax = vmax;}
-        force_soa_raise_vmax(no, Extnodes[no].vmax);   /* keep the walk's mirror conservative */
+        force_soa_mark_kick(no, Extnodes[no].vmax);   /* keep the walk's mirror conservative */
         Nodes[no].u.d.bitflags |= (1 << BITFLAG_NODEHASBEENKICKED);
         Extnodes[no].Ti_lastkicked = All.Ti_Current;
 
@@ -422,7 +424,7 @@ void force_finish_kick_nodes(void)
         /* The MERGED cross-rank value, not this rank's contribution: this site runs on
            BOTH kick routes (gpu_force_update.cc:279 calls it too), so it is where the
            top-level set gets its final answer. */
-        force_soa_raise_vmax(no, Extnodes[no].vmax);
+        force_soa_mark_kick(no, Extnodes[no].vmax);
         Nodes[no].u.d.bitflags |= (1 << BITFLAG_NODEHASBEENKICKED);
         Extnodes[no].Ti_lastkicked = All.Ti_Current;
 
