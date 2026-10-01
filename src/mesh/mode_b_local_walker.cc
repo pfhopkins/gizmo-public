@@ -85,31 +85,25 @@ static inline int particle_passes(int j,
     return r2 < cutoff * cutoff;
 }
 
-/* The largest symmetric radius particle j can have under this policy once drifted to the current time,
- * however far behind it is.  A drift (drift_particle_impl) rescales KernelRadius and AGS_KernelRadius by
- * at most kernel_radius_drift_max_growth_factor and then raises them to their floors; a particle that is
- * not AGS-active gets its softening radius; ForceSoftening is not changed.  Reads only.  Declared in
- * nlr_radius_policy.h; the Mode-B leaf and the spatial index both bound a lagging particle's reach with it. */
+/* The rule is nlr_symmetric_radius_after_drift_from_fields (nlr_radius_policy.h); this reads its inputs. */
 double nlr_particle_symmetric_radius_after_drift(int j, struct particle_data *P_arr,
                                                  mode_b_radius_policy_t radius_policy)
 {
-    const double growth = kernel_radius_drift_max_growth_factor();
-    double kr = (double)P_arr[j].KernelRadius * growth;
-    if(kr < All.MinKernelRadius) {kr = All.MinKernelRadius;}
-    double ags_kr = 0.0;
+    int ags_solves = 0;
+    double ags_kernel_radius = 0.0, ags_minsoft = 0.0, softening_kernel_radius = 0.0;
 #ifdef AGS_KERNELRADIUS_CALCULATION_IS_ACTIVE
     if(radius_policy & (MODE_B_RADIUS_GAS_AGS | MODE_B_RADIUS_NONGAS_AGS)) {
-        if(ags_density_solves_for_P(j, P_arr)) {
-            ags_kr = (double)P_arr[j].AGS_KernelRadius * growth;
-            const double minsoft = ags_return_minsoft_P(j, P_arr);
-            if(ags_kr < minsoft) {ags_kr = minsoft;}
-        } else {ags_kr = ForceSoftening_KernelRadius_P(j, P_arr);}
-#if defined(ADAPTIVE_GRAVSOFT_FORALL)
-        if((1 & ADAPTIVE_GRAVSOFT_FORALL) && (P_arr[j].Type == 0) && (kr > ags_kr)) {ags_kr = kr;}   /* the gas drift sets it to KernelRadius */
-#endif
+        ags_solves = ags_density_solves_for_P(j, P_arr);
+        ags_kernel_radius = (double)P_arr[j].AGS_KernelRadius;
+        ags_minsoft = ags_return_minsoft_P(j, P_arr);
+        softening_kernel_radius = ForceSoftening_KernelRadius_P(j, P_arr);
     }
 #endif
-    return nlr_symmetric_radius_from_fields((int)P_arr[j].Type, kr, ags_kr, (double)P_arr[j].ForceSoftening, radius_policy);
+    return nlr_symmetric_radius_after_drift_from_fields((int)P_arr[j].Type, (double)P_arr[j].KernelRadius,
+                                                        (double)P_arr[j].ForceSoftening, ags_solves, ags_kernel_radius,
+                                                        ags_minsoft, softening_kernel_radius,
+                                                        kernel_radius_drift_max_growth_factor(), All.MinKernelRadius,
+                                                        radius_policy);
 }
 
 /* The leaf test: whether P[j] can satisfy the query once drifted to the current time.  A particle
