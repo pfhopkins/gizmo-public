@@ -239,6 +239,7 @@ void sink_swallow_and_kick_loop(void)
 #ifdef SINK_WIND_SPAWN
 void spawn_sink_wind_feedback(void)
 {
+    if(ghost_require_no_live_pool_for_layout_change("spawn_sink_wind_feedback")) {return;}
     int i, n_particles_split = 0, MPI_n_particles_split, dummy_gas_tag=0;
     for(i = 0; i < NumPart; i++)
         if(P[i].Type==0)
@@ -503,6 +504,7 @@ void get_wind_spawn_magnetic_field(int j, int mode, Vec3<double>& ny, Vec3<doubl
 /*! this code copies what was used in merge_split.c for the gas particle split case */
 int sink_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int num_already_spawned )
 {
+    if(ghost_require_no_live_pool_for_layout_change("sink_spawn_particle_wind_shell")) {return 0;}
     double *unspawned_mass_ptr = active_unspawned_mass_ptr(i); // whichever reservoir currently holds the discrete-spawn channel for this particle
     double total_mass_in_winds = *unspawned_mass_ptr;
 

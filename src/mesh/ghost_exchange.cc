@@ -1752,6 +1752,18 @@ unsigned long long ghost_provenance_epoch(void) { return g_ghost_provenance_epoc
    Used by the neighbor-loop runner to enforce the caller-owned-pool contract
    for external-CSR consumers (see neighbor_loop_runner.h). */
 int ghost_pool_is_live(void) { return (NumPart_before_ghost >= 0) ? 1 : 0; }
+
+int ghost_require_no_live_pool_for_layout_change(const char *who)
+{
+    if(NumPart_before_ghost < 0) {return 0;}
+    char msg[256];
+    snprintf(msg, sizeof(msg), "%s would add, remove or reorder local particles while a ghost pool is live "
+             "(local %d, NumPart %d, ghosts %d): imported ghosts occupy the slots past the local particles",
+             who ? who : "?", NumPart_before_ghost, NumPart, NumGhostParticles);
+    printf("%s (task %d)\n", msg, ThisTask); fflush(stdout);
+    gizmo_request_controlled_stop(7314, msg, __FILE__, __LINE__, __FUNCTION__);
+    return 1;
+}
 int ghost_get_num_ghosts(void) { return NumGhostParticles; }
 int ghost_get_epoch_high_water(void)
 {

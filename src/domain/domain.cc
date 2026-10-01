@@ -394,6 +394,7 @@ int domain_segments_per_rank_for_particles(long long total_particles)
 
 void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_mergesplit_key, int allow_peano_order_cadence)
 {
+    if(ghost_require_no_live_pool_for_layout_change("domain_Decomposition")) {return;}
     int i, ret, retsum, diff, highest_bin_to_include; size_t bytes, all_bytes; double t0, t1;
     
     /* call first -before- a merge-split, to be sure particles are in the correct order in the tree */
@@ -699,6 +700,7 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
     same step. */
 void domain_Decomposition_light(int UseAllTimeBins, int do_particle_mergesplit_key)
 {
+    if(ghost_require_no_live_pool_for_layout_change("domain_Decomposition_light")) {return;}
     int i, no; size_t bytes; double t0, t1;
 
     /* fall back to full decomposition if persistent state is not available, or if
@@ -1437,6 +1439,7 @@ int domain_check_memory_bound(int multipledomains)
 
 void domain_exchange(void)
 {
+  if(ghost_require_no_live_pool_for_layout_change("domain_exchange")) {return;}
   long count_togo = 0, count_togo_gas = 0, count_get = 0, count_get_gas = 0;
   long *count, *count_gas, *offset, *offset_gas;
   long *count_recv, *count_recv_gas, *offset_recv, *offset_recv_gas;

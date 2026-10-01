@@ -694,6 +694,11 @@ void ghost_exchange_cleanup(void);
  * do not infer liveness from ghost_get_num_ghosts()==0, which also holds for a live
  * zero-ghost pool. */
 int ghost_pool_is_live(void);
+/* Local particles may be added, removed or reordered only while no ghost pool is live: imported ghosts
+ * occupy the slots just past the local particles.  Every function that changes the local layout calls
+ * this first and returns at once when it returns 1, having requested a controlled stop that names `who`.
+ * Liveness is entered and left collectively, so every rank answers alike. */
+int ghost_require_no_live_pool_for_layout_change(const char *who);
 /* Time every particle in the live ghost pool is current to, or -1 when there is
  * no such guarantee. Established only when the owners advanced their particles
  * before packing them; a consumer that reads -1 must keep testing each ghost's

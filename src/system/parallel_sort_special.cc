@@ -62,6 +62,7 @@ static int compare_Aux_OriginTask_OriginIndex(const void *a, const void *b)
 
 void parallel_sort_special_P_GrNr_ID(void)
 {
+  if(ghost_require_no_live_pool_for_layout_change("parallel_sort_special_P_GrNr_ID")) {return;}
   int i, j, Nimport, ngrp, sendTask, recvTask;
 
   Aux = (struct aux_data *) mymalloc("Aux", NumPart * sizeof(struct aux_data));
