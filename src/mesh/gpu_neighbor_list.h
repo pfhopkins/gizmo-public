@@ -22,27 +22,17 @@
 
 /* GPU-resident neighbor list: CSR arrays.
    offsets: SharedSpace (host writes offsets[num_active]=total after scan).
-   neighbors: DeviceSpace (GPU HBM on CUDA; never host-accessed directly). */
+   neighbors: DeviceSpace (GPU HBM on CUDA; never host-accessed directly).
+   The list owns only these three arrays; it holds no part of the spatial index
+   it was searched from. */
 struct gpu_neighbor_list_t {
     int64_t *offsets;   /* [num_active+1] in SharedSpace (CSR row pointers; 64-bit) */
     int *neighbors;     /* [total_pairs] in DeviceSpace (GPU HBM — no UVM fault).
                            values are particle indices (< num_total < 2^31); only
                            the array length is 64-bit. */
+    int *d_active;      /* [num_active] in SharedSpace: the active particle of each row */
     int num_active;
     int64_t total_pairs;
-
-    /* Device-resident copies of spatial index data */
-    sfc_tile_t *d_tiles;
-    tile_bvh_node_t *d_bvh;
-    int *d_pool;
-    int *d_active;
-    int ntiles;
-    int bvh_root;
-
-
-    /* The index's member rows (points into spatial index memory; do NOT free from
-       gnl — owned by gpu_spatial_index_t, which describes them). */
-    double *d_compact_xyzh;
 };
 
 
@@ -82,11 +72,12 @@ struct gpu_spatial_index_t {
      * gpu_ngb_list_build. A mismatch (e.g. a gas-only caller with tbm=1 reusing an
      * all-types cache built with tbm=0x3f) causes the walker to return neighbors of
      * the wrong types and lazy-drift to abort on unexpected particle types.
-     * gpu_ngb_list_build hard-aborts on mismatch instead of silently mis-walking.
+     * gpu_ngb_list_build refuses a mismatch (controlled stop, empty list) instead
+     * of walking it.
      * Default -1 = "no build yet". */
     int cache_tbm = -1;
     /* Radius-policy the cached rows / tile bands were built under. Mirrors
-     * cache_tbm semantics: gpu_ngb_list_build HARD-ABORTS if the caller's Spec
+     * cache_tbm semantics: gpu_ngb_list_build refuses the index if the caller's Spec
      * radius_policy differs from this cached value (a row's reach reflects the
      * build-time policy, so a mismatched caller would see wrong leaf-h_j and miss
      * valid pairs).  Default MODE_B_RADIUS_DEFAULT matches the policy hydro Specs
@@ -275,21 +266,21 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
                         double j_kernel_radius_scale = 1.0,
                         /* radius_policy: Spec::radius_policy from the runner;
                          * controls per-particle reach used to (re)populate
-                         * the rows' reaches and gates cache reuse via
-                         * cached_idx->cache_radius_policy HARD-ABORT.  Default
+                         * the rows' reaches; a cached index built under another
+                         * policy is refused (controlled stop, empty list).  Default
                          * MODE_B_RADIUS_DEFAULT (= GAS_KERNEL) matches the
                          * policy hydro Specs use, so non-runner callers
                          * (merge_split / radfb_local / twopoint / turb_powerspectra
                          * / legacy symlist) sharing the gas-only step-persistent
-                         * SIDX do not trip the cache_radius_policy HARD-ABORT.
+                         * SIDX are not refused.
                          * Multi-type non-runner callers (twopoint with 0xFF)
                          * pass cached_idx=NULL → build local SIDX → policy
                          * doesn't matter for caching. */
                         mode_b_radius_policy_t radius_policy = MODE_B_RADIUS_DEFAULT);
 
-/* Free CSR arrays + active indices. Does NOT free tiles/BVH/pool if they
-   belong to the cached spatial index (use gpu_spatial_index_free for those). */
-void gpu_ngb_list_free(gpu_neighbor_list_t *gnl, gpu_spatial_index_t *cached_idx);
+/* Free the list's three arrays and clear them.  Safe on a list that was never
+   built, or built empty.  The spatial index is not the list's to free. */
+void gpu_ngb_list_free(gpu_neighbor_list_t *gnl);
 
 /* Copy gnl->neighbors (DEVICE_SPACE / CudaSpace) into a caller-allocated host
    buffer. Use when host code needs to index gnl.neighbors[] directly (e.g.

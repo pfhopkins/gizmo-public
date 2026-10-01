@@ -171,7 +171,7 @@ void twopoint(void)
         }
 
         if(num_src_global > 0) {
-            gpu_ngb_list_free(&gnl, NULL);
+            gpu_ngb_list_free(&gnl);
             gpu_particles_arena_invalidate();
         }
         if(ghost_imported) ghost_exchange_cleanup();

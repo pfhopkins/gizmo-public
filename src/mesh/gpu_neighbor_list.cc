@@ -623,21 +623,11 @@ void gpu_step_sidx_raise_motion(const int *idx_host, int n)
     sidx_raise_members(idx, idx_host, n, SIDX_RAISE_MOTION);
 }
 
-/* The per-active and per-pair arrays are the largest transients this loop asks for --
- * the walk scratchpad alone is 512 int slots per active particle. When one cannot be
- * had, the node is out of memory at the size this loop needs. Release the transients,
- * leave a VALID EMPTY list (every active with zero neighbours) so that whatever runs
- * between here and the stop draining walks nothing rather than reading a half-built
- * list, and name the buffer that could not be had. */
-static void ngl_build_leave_empty(gpu_neighbor_list_t *gnl, int num_active,
-                                  double *d_radii, double *d_source_pos,
-                                  int *d_scratch, int *d_counts,
-                                  const char *what, size_t bytes)
+/* Hand back a list with no pairs, after a stop has already been requested.  It
+ * requests nothing itself, so the first error stays the one reported.  d_active
+ * may be left null: the runner reads that as "a stop is pending, return". */
+static void ngl_leave_csr_empty(gpu_neighbor_list_t *gnl, int num_active)
 {
-    if(d_counts)     {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(d_counts);}
-    if(d_scratch)    {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(d_scratch);}
-    if(d_source_pos) {Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(d_source_pos);}
-    if(d_radii)      {Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(d_radii);}
     /* The row offsets are what makes the empty list readable: every consumer walks
      * offsets[aa]..offsets[aa+1] unconditionally, and only reaches the neighbour
      * array when total_pairs > 0. So when the build fails before the offsets exist,
@@ -653,6 +643,24 @@ static void ngl_build_leave_empty(gpu_neighbor_list_t *gnl, int num_active,
     }
     if(gnl->offsets) {for(int aa = 0; aa <= num_active; aa++) {gnl->offsets[aa] = 0;}}
     gnl->total_pairs = 0;
+}
+
+/* The per-active and per-pair arrays are the largest transients this loop asks for --
+ * the walk scratchpad alone is 512 int slots per active particle. When one cannot be
+ * had, the node is out of memory at the size this loop needs. Release the transients,
+ * leave a VALID EMPTY list (every active with zero neighbours) so that whatever runs
+ * between here and the stop draining walks nothing rather than reading a half-built
+ * list, and name the buffer that could not be had. */
+static void ngl_build_leave_empty(gpu_neighbor_list_t *gnl, int num_active,
+                                  double *d_radii, double *d_source_pos,
+                                  int *d_scratch, int *d_counts,
+                                  const char *what, size_t bytes)
+{
+    if(d_counts)     {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(d_counts);}
+    if(d_scratch)    {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(d_scratch);}
+    if(d_source_pos) {Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(d_source_pos);}
+    if(d_radii)      {Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(d_radii);}
+    ngl_leave_csr_empty(gnl, num_active);
     char msg[256];
     snprintf(msg, sizeof(msg),
              "gpu_ngb_list_build: could not allocate %s (%.1f MB) for %d active particles; "
@@ -725,23 +733,17 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
     gnl->num_active = num_active;
     /* Everything this function hands back starts null, so a failure part-way through
      * leaves a list whose unbuilt parts are recognisable rather than whatever the
-     * caller's struct happened to contain. Several callers declare it uninitialised,
-     * and the free path releases the spatial-index mirrors too, so those must be
-     * cleared here as well and not only where they are copied from a built index. */
+     * caller's struct happened to contain. Several callers declare it uninitialised. */
     gnl->d_active = NULL; gnl->offsets = NULL; gnl->neighbors = NULL; gnl->total_pairs = 0;
-    gnl->d_tiles = NULL; gnl->d_bvh = NULL; gnl->d_pool = NULL; gnl->d_compact_xyzh = NULL;
-    gnl->ntiles = 0; gnl->bvh_root = 0;
     double t_entry = my_second(); /* DIAG: entry */
     const double cpu_rows_child0 = CPU_ChildCharged;
-    /* Defensive guard: a cached SIDX's compact_xyzh / pool only contains the
-     * originally-built types. If the caller's type_bitmask differs from the
-     * cache's, the walker would return neighbors of types outside the
-     * caller's mask (e.g., DM neighbors leaking into a gas-only density
-     * walk → lazy-drift attempts on Type=1 → drift_particle abort
-     * 'no prediction into past allowed'). HARD-ABORT with a clear message
-     * so any future Spec-author who routes a tbm-mismatched cache fails at
-     * the right layer, not via downstream nonsense. The companion warning
-     * in gpu_neighbor_list.h on gpu_step_sidx_alltypes_ptr documents this
+    /* A cached index holds only the types it was built for. Walked under a
+     * different type_bitmask it would return neighbours outside the caller's
+     * mask (e.g. DM in a gas-only density walk, whose lazy drift then stops on
+     * Type=1). Refuse it here with a clear message, so a Spec routed to the
+     * wrong cache fails at the right layer: request the stop, hand back the
+     * empty list and return without walking. The companion warning in
+     * gpu_neighbor_list.h on gpu_step_sidx_alltypes_ptr documents this
      * invariant. */
     if (cached_idx && cached_idx->valid && cached_idx->cache_tbm >= 0 &&
         cached_idx->cache_tbm != type_bitmask) {
@@ -758,11 +760,12 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
             caller_label ? caller_label : "?", type_bitmask, cached_idx->cache_tbm);
         fflush(stderr);
         endrun(913005);
+        ngl_leave_csr_empty(gnl, num_active);
+        return;
     }
-    /* Companion HARD-ABORT for radius_policy mismatch.  The
-     * cached compact_xyzh[j*4+3] reflects the build-time policy's per-j reach;
-     * walking it under a different Spec policy would silently use the wrong
-     * leaf-side h_j and miss valid pairs.  Same shape as the cache_tbm gate. */
+    /* The same refusal for a radius_policy mismatch: a cached row's reach is the
+     * build-time policy's, so walking it under another policy would use the
+     * wrong leaf-side reach and miss valid pairs. */
     if (cached_idx && cached_idx->valid &&
         cached_idx->cache_radius_policy != radius_policy) {
         fprintf(stderr,
@@ -777,28 +780,14 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
             (unsigned)radius_policy, (unsigned)cached_idx->cache_radius_policy);
         fflush(stderr);
         endrun(913006);
+        ngl_leave_csr_empty(gnl, num_active);
+        return;
     }
     /* Early-out: with no active particles there is nothing to search.
      * Skip the SIDX build/refresh AND all kernel launches.  Allocate 1-element
      * stubs so the caller's gpu_ngb_list_free path is well-defined (it always
-     * frees neighbors/offsets/d_active).  Use cached SIDX pointers if available
-     * so the free path's "is this from cache?" comparison still works. */
+     * frees neighbors/offsets/d_active). */
     if(num_active == 0) {
-        gpu_spatial_index_t *idx_for_stubs = NULL;
-        if(cached_idx && cached_idx->valid && cached_idx->num_total == num_total) {
-            idx_for_stubs = cached_idx;
-        }
-        if(idx_for_stubs) {
-            gnl->d_tiles  = idx_for_stubs->d_tiles;
-            gnl->d_bvh    = idx_for_stubs->d_bvh;
-            gnl->d_pool   = idx_for_stubs->d_pool;
-            gnl->d_compact_xyzh = idx_for_stubs->d_compact_xyzh;
-            gnl->ntiles   = idx_for_stubs->ntiles;
-            gnl->bvh_root = idx_for_stubs->bvh_root;
-        } else {
-            gnl->d_tiles = NULL; gnl->d_bvh = NULL; gnl->d_pool = NULL; gnl->d_compact_xyzh = NULL;
-            gnl->ntiles = 0; gnl->bvh_root = 0;
-        }
         gnl->d_active  = (int *) ngl_alloc_shared(sizeof(int), "ngl_pairs_active_stub");
         gnl->offsets   = (int64_t *) ngl_alloc_shared(sizeof(int64_t), "ngl_pairs_offsets_stub");
         gnl->neighbors = (int *) ngl_alloc_device(sizeof(int), "ngl_pairs_neighbors_stub");
@@ -827,6 +816,13 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
      * index that had never registered anything would unregister handle 0, which belongs to
      * whoever did register first. */
     gpu_spatial_index_t local_idx = {};
+    /* An index built for this call alone is released on every way out of it; the
+     * list it produced holds no part of it. Freeing an index that was never built
+     * (the cached route) does nothing. */
+    struct ngl_call_index_release {
+        gpu_spatial_index_t *owned;
+        ~ngl_call_index_release() {gpu_spatial_index_free(owned);}
+    } local_idx_release = {&local_idx};
     gpu_spatial_index_t *idx;
     /* Invalidate the cached SIDX unless it still describes the same particles.
      * num_total: the slot map was sized for the old count, so accessing beyond it
@@ -899,7 +895,7 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
      * There is nothing to walk, so hand back the same empty list any other
      * exhausted allocation here produces. */
     if(!idx->valid) {
-        ngl_build_leave_empty(gnl, num_active, NULL, NULL, NULL, NULL, "the spatial index", 0);
+        ngl_leave_csr_empty(gnl, num_active);
         return;
     }
 
@@ -917,17 +913,9 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
         snprintf(msg, sizeof(msg), "gpu_ngb_list_build (caller '%s'): the drift interval since the neighbour index "
                  "was built is %g, which bounds nothing; neighbour list left empty", caller_label ? caller_label : "?", frame.D);
         gizmo_request_controlled_stop(7740, msg, __FILE__, __LINE__, __FUNCTION__);
-        ngl_build_leave_empty(gnl, num_active, NULL, NULL, NULL, NULL, "the spatial index", 0);
+        ngl_leave_csr_empty(gnl, num_active);
         return;
     }
-
-    /* Copy spatial index pointers to gnl for use by free */
-    gnl->d_tiles = idx->d_tiles;
-    gnl->d_bvh = idx->d_bvh;
-    gnl->d_pool = idx->d_pool;
-    gnl->d_compact_xyzh = idx->d_compact_xyzh;
-    gnl->ntiles = idx->ntiles;
-    gnl->bvh_root = idx->bvh_root;
 
     /* Active indices: always re-uploaded (changes per call) */
     size_t active_bytes = (size_t)((num_active > 0) ? num_active : 1) * sizeof(int);
@@ -990,20 +978,20 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
     Kokkos::fence();
     /* Fused single pass: BVH walk + write neighbors into per-particle scratchpad */
     {
-        sfc_tile_t *tiles = gnl->d_tiles;
-        tile_bvh_node_t *bvh = gnl->d_bvh;
-        int *pool = gnl->d_pool;
+        sfc_tile_t *tiles = idx->d_tiles;
+        tile_bvh_node_t *bvh = idx->d_bvh;
+        int *pool = idx->d_pool;
         int *scratch = d_scratch;
         int *counts = d_counts;
-        int ntiles = gnl->ntiles;
-        int bvh_root = gnl->bvh_root;
+        int ntiles = idx->ntiles;
+        int bvh_root = idx->bvh_root;
         int smode = search_mode;
 
         double sr_fac = search_radius_factor;
         double j_rad_scale = j_kernel_radius_scale;
         const double *radii = d_radii;
         const double *src_pos = d_source_pos;
-        const double *rows = gnl->d_compact_xyzh;
+        const double *rows = idx->d_compact_xyzh;
         const struct sfc_walk_frame walk_frame = frame;
         Kokkos::parallel_for("ngb_fused", num_active, KOKKOS_LAMBDA(int aa) {
             double h_i = radii[aa] * sr_fac;
@@ -1071,21 +1059,21 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
 
     /* Compact: copy from per-particle scratchpad into dense CSR neighbors[]. */
     {
-        sfc_tile_t *tiles = gnl->d_tiles;
-        tile_bvh_node_t *bvh = gnl->d_bvh;
-        int *pool = gnl->d_pool;
+        sfc_tile_t *tiles = idx->d_tiles;
+        tile_bvh_node_t *bvh = idx->d_bvh;
+        int *pool = idx->d_pool;
         int *scratch = d_scratch;
         int *counts = d_counts;
         int64_t *offsets = gnl->offsets;
         int *neighbors = gnl->neighbors;
-        int ntiles = gnl->ntiles;
-        int bvh_root = gnl->bvh_root;
+        int ntiles = idx->ntiles;
+        int bvh_root = idx->bvh_root;
         int smode = search_mode;
         double sr_fac = search_radius_factor;
         double j_rad_scale = j_kernel_radius_scale;
         const double *radii = d_radii;
         const double *src_pos = d_source_pos;
-        const double *rows = gnl->d_compact_xyzh;
+        const double *rows = idx->d_compact_xyzh;
         const struct sfc_walk_frame walk_frame = frame;
         Kokkos::parallel_for("ngb_compact", num_active, KOKKOS_LAMBDA(int aa) {
             int n = counts[aa];
@@ -1190,19 +1178,9 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
     Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(d_radii);
     Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(d_source_pos);
 
-    /* An index built for this call alone is rebuilt from scratch on the next one, so
-     * once the list holds its four device arrays nothing reads the rest of it again:
-     * the slot map, level schedule and looseness serve only the raises of a KEPT
-     * index. Hand those four to the list by clearing them here, then release the
-     * remainder through the index's own free, so a buffer added to the index later is
-     * covered without anyone recalling this site. Without this the rest outlives every
-     * caller that passes no cached index, which is what made the neighbour-list pool
-     * climb without bound across a long run. */
-    if(idx == &local_idx) {
-        local_idx.d_tiles = NULL; local_idx.d_bvh = NULL;
-        local_idx.d_pool  = NULL; local_idx.d_compact_xyzh = NULL;
-        gpu_spatial_index_free(&local_idx);
-    }
+    /* Release this call's own index now, so its fence and frees are charged to this
+     * build (the release at scope exit then finds nothing to do). */
+    gpu_spatial_index_free(&local_idx);
 
     /* Charge list-build wall, less any kernel time already charged inside it,
      * so the two rows never overlap. */
@@ -1210,24 +1188,16 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
 }
 
 
-void gpu_ngb_list_free(gpu_neighbor_list_t *gnl, gpu_spatial_index_t *cached_idx)
+void gpu_ngb_list_free(gpu_neighbor_list_t *gnl)
 {
     if(gnl->neighbors) Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(gnl->neighbors);
     if(gnl->offsets)   Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(gnl->offsets);
     if(gnl->d_active)  Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(gnl->d_active);
-    /* Only free tiles/BVH/pool/compact_xyzh if they were NOT from the cached index.
-     * Pointers may also be NULL (early-out path with no cache); guard each.
-     * d_compact_xyzh in particular was previously leaked here for every
-     * non-cached call (~199 MB for an all-types pool, ~73 MB for gas-only).
-     * The callers that pass no cached index are merge_and_split_particles, the
-     * turbulent power spectra and the two-point correlation. */
-    if(!cached_idx || !cached_idx->valid ||
-       gnl->d_tiles != cached_idx->d_tiles) {
-        if(gnl->d_compact_xyzh) Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(gnl->d_compact_xyzh);
-        if(gnl->d_pool)  Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(gnl->d_pool);
-        if(gnl->d_bvh)   Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(gnl->d_bvh);
-        if(gnl->d_tiles) Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(gnl->d_tiles);
-    }
+    gnl->neighbors = NULL;
+    gnl->offsets = NULL;
+    gnl->d_active = NULL;
+    gnl->num_active = 0;
+    gnl->total_pairs = 0;
 }
 
 /* Copy gnl->neighbors (DEVICE_SPACE) into a host buffer. Caller owns host_dest.
@@ -1301,10 +1271,10 @@ void gpu_build_symmetric_neighbor_list(struct particle_data *P_host, int num_tot
     }
 
 
-    /* Free GPU temporaries (keep tiles/BVH alive — owned by g_step_sidx).
+    /* Free the GPU list (the kept gas index is not the list's).
      * Arena is intentionally not released — subsequent gradient/hydro callers
      * benefit from the fast-path skip. */
-    gpu_ngb_list_free(&gpu_nl, gpu_step_sidx_ptr());
+    gpu_ngb_list_free(&gpu_nl);
 
 }
 
@@ -1348,7 +1318,7 @@ void gpu_build_cross_type_neighbor_list(struct particle_data *P_host, int num_to
     }
 
     /* Free GPU temporaries.  Arena is intentionally retained for subsequent callers. */
-    gpu_ngb_list_free(&gpu_nl, NULL);
+    gpu_ngb_list_free(&gpu_nl);
 }
 
 

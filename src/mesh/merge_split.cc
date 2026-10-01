@@ -605,7 +605,7 @@ void merge_and_split_particles(void)
         }
 
         if (num_src > 0) {
-            gpu_ngb_list_free(&gnl, NULL);
+            gpu_ngb_list_free(&gnl);
             gpu_particles_arena_invalidate();
         }
     }

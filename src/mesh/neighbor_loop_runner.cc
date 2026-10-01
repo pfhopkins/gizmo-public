@@ -1956,15 +1956,10 @@ static void run_mode_d(const neighbor_loop_args& args, const double *radii,
  * When args.external_csr is non-null, Mode A skips gpu_ngb_list_build and
  * instead stages the caller's host CSR into Kokkos memory shaped like a
  * gpu_neighbor_list_t — so the rest of run_mode_a is path-agnostic. Only
- * the build site (replaced with this helper) and the free site (the
- * matching helper below) differ between the two paths.
- *
- * The spatial-index fields of gnl (d_tiles / d_bvh / d_pool / ntiles /
- * bvh_root) stay zero/null because the pair_kernel does not read them (it
- * uses nearest_xyz, which reads All.BoxSize_* via the AllDeviceMirror).
+ * the build site (replaced with this helper) differs between the two paths.
  *
  * The runner OWNS the SharedSpace/DeviceSpace allocations made here and
- * frees them in nlr_free_external_csr_gnl(). It does NOT free the caller's
+ * frees them with gpu_ngb_list_free, as for a built list. It does NOT free the caller's
  * host buffers (active_indices / offsets / neighbors). Contract: caller
  * keeps host CSR alive for the duration of every run_neighbor_loop call
  * that injects it; the corridor design owns CSR across multiple consumers
@@ -2033,19 +2028,6 @@ nlr_stage_external_csr_into_gnl(const nlr_external_csr *ext,
         Kokkos::deep_copy(d_n, h_n);
     }
     return true;
-}
-
-static inline void
-nlr_free_external_csr_gnl(gpu_neighbor_list_t *gnl)
-{
-    if(gnl->neighbors) Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(gnl->neighbors);
-    if(gnl->d_active)  Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(gnl->d_active);
-    if(gnl->offsets)   Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(gnl->offsets);
-    gnl->neighbors = nullptr;
-    gnl->d_active  = nullptr;
-    gnl->offsets   = nullptr;
-    gnl->num_active = 0;
-    gnl->total_pairs = 0;
 }
 
 /* ============================================================================
@@ -2418,7 +2400,7 @@ static void run_mode_a(const neighbor_loop_args& args, const double *radii)
             return;
         }
         if(!nlr_stage_external_csr_into_gnl(ec, &gnl, Spec::loop_name)) {
-            nlr_free_external_csr_gnl(&gnl);
+            gpu_ngb_list_free(&gnl);
             Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(radii_uvm);
             gpu_particles_arena_release();
             return;
@@ -2440,13 +2422,12 @@ static void run_mode_a(const neighbor_loop_args& args, const double *radii)
                            Spec::radius_policy);
     }
 
-    /* A build that ran out of memory hands back the empty list, without the row
-     * index the kernel reads first, and has already asked for the stop. Release
+    /* A build that ran out of memory or refused its index hands back the empty list,
+     * without the row index the kernel reads first, and has already asked for the stop. Release
      * this call's own buffers and return; no MPI has been issued here. */
     if(gnl.d_active == nullptr) {
         Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(radii_uvm);
-        if(args.external_csr != nullptr) { nlr_free_external_csr_gnl(&gnl); }
-        else { gpu_ngb_list_free(&gnl, sidx); }
+        gpu_ngb_list_free(&gnl);
         gpu_particles_arena_release();
         return;
     }
@@ -2487,8 +2468,7 @@ static void run_mode_a(const neighbor_loop_args& args, const double *radii)
         if(d_accums)  { Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(d_accums); }
         nlr_active_stage_free(d_actives);
         Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(radii_uvm);
-        if(args.external_csr != nullptr) { nlr_free_external_csr_gnl(&gnl); }
-        else { gpu_ngb_list_free(&gnl, sidx); }
+        gpu_ngb_list_free(&gnl);
         gpu_particles_arena_release();
         gizmo_request_controlled_stop(7710,
             "run_mode_a: Mode-A per-active staging out of memory (modea_active_data is device-resident, "
@@ -2521,8 +2501,7 @@ static void run_mode_a(const neighbor_loop_args& args, const double *radii)
         Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(d_accums);
         nlr_active_stage_free(d_actives);   /* device space, not shared -- see nlr_active_stage_alloc_bytes */
         Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(radii_uvm);
-        if(args.external_csr != nullptr) { nlr_free_external_csr_gnl(&gnl); }
-        else { gpu_ngb_list_free(&gnl, sidx); }
+        gpu_ngb_list_free(&gnl);
         gpu_particles_arena_release();
         return;
     }
@@ -2616,18 +2595,13 @@ static void run_mode_a(const neighbor_loop_args& args, const double *radii)
     }
 
 
-    /* Cleanup. SIDX cache pointer passed so the free leaves cached storage
-     * intact for sink_feed/sink_swk reuse (matches existing
-     * sink_environment_gpu.cc:261 idiom). External-CSR path frees only what
-     * we staged (gnl offsets/neighbors/d_active); caller owns host CSR. */
+    /* Cleanup. The list holds no index memory, so the cached index stays for
+     * the next loop; on the external-CSR path the free releases only what we
+     * staged (gnl offsets/neighbors/d_active), the caller owning its host CSR. */
     Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(d_accums);
     nlr_active_stage_free(d_actives);
     Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(radii_uvm);
-    if(args.external_csr != nullptr) {
-        nlr_free_external_csr_gnl(&gnl);
-    } else {
-        gpu_ngb_list_free(&gnl, sidx);
-    }
+    gpu_ngb_list_free(&gnl);
     gpu_particles_arena_mark_clean_after_scatter(Spec::loop_name);
 }
 
@@ -3301,18 +3275,12 @@ NlrIterDriver<Spec>::~NlrIterDriver()
 
     /* Free Mode A cached CSR/lookup state by POINTER STATE (mode_a_csr_valid=false can mean "allocated but invalid,
      * pending rebuild" if the rebuild trigger fired but rebuild itself
-     * hadn't completed yet; check pointers, not the flag).
-     *
-     * gpu_ngb_list_free passes the SIDX pointer so the step-persistent SIDX
-     * cache is preserved across iterative calls (matches sink_env1/feed/swk
-     * idiom). */
+     * hadn't completed yet; check pointers, not the flag). */
     {
-        gpu_spatial_index_t *sidx = nlr_resolve_sidx_cache(Spec::sidx_cache_kind,
-                                                             Spec::loop_name);
         for (int sg = 0; sg < args.num_subgroups; sg++) {
             if (mode_a_cached_gnl[sg].offsets != nullptr ||
                 mode_a_cached_gnl[sg].neighbors != nullptr) {
-                gpu_ngb_list_free(&mode_a_cached_gnl[sg], sidx);
+                gpu_ngb_list_free(&mode_a_cached_gnl[sg]);
                 mode_a_cached_gnl[sg] = gpu_neighbor_list_t{};
             }
             mode_a_csr_valid[sg] = false;
@@ -3600,12 +3568,10 @@ void NlrIterDriver<Spec>::rebuild_mode_a_arena_and_ctx_for_current_active_union(
         /* Single rank: no ghost pool to manage. Just invalidate all CSR
          * caches; per-subgroup dispatch will rebuild local CSRs on first
          * access against the unchanged arena/pool. */
-        gpu_spatial_index_t *sidx = nlr_resolve_sidx_cache(Spec::sidx_cache_kind,
-                                                             Spec::loop_name);
         for (int sg = 0; sg < args.num_subgroups; sg++) {
             if (mode_a_cached_gnl[sg].offsets != nullptr ||
                 mode_a_cached_gnl[sg].neighbors != nullptr) {
-                gpu_ngb_list_free(&mode_a_cached_gnl[sg], sidx);
+                gpu_ngb_list_free(&mode_a_cached_gnl[sg]);
                 mode_a_cached_gnl[sg] = gpu_neighbor_list_t{};
             }
             mode_a_csr_valid[sg] = false;
@@ -3639,12 +3605,10 @@ void NlrIterDriver<Spec>::rebuild_mode_a_arena_and_ctx_for_current_active_union(
     /* === (0) Invalidate ALL subgroup CSR caches (avoids cross-subgroup
      * staleness after arena teardown). Free by pointer state. */
     {
-        gpu_spatial_index_t *sidx = nlr_resolve_sidx_cache(Spec::sidx_cache_kind,
-                                                             Spec::loop_name);
         for (int sg = 0; sg < args.num_subgroups; sg++) {
             if (mode_a_cached_gnl[sg].offsets != nullptr ||
                 mode_a_cached_gnl[sg].neighbors != nullptr) {
-                gpu_ngb_list_free(&mode_a_cached_gnl[sg], sidx);
+                gpu_ngb_list_free(&mode_a_cached_gnl[sg]);
                 mode_a_cached_gnl[sg] = gpu_neighbor_list_t{};
             }
             mode_a_csr_valid[sg] = false;
@@ -4495,7 +4459,7 @@ static void nlr_iter_dispatch_subgroup_mode_a(NlrIterDriver<Spec>& drv, int sg)
          * but invalid, pending rebuild"; check pointers, not flag). */
         if (drv.mode_a_cached_gnl[sg].offsets != nullptr ||
             drv.mode_a_cached_gnl[sg].neighbors != nullptr) {
-            gpu_ngb_list_free(&drv.mode_a_cached_gnl[sg], sidx);
+            gpu_ngb_list_free(&drv.mode_a_cached_gnl[sg]);
             drv.mode_a_cached_gnl[sg] = gpu_neighbor_list_t{};
         }
         if (drv.mode_a_csr_offset_lookup[sg]) {

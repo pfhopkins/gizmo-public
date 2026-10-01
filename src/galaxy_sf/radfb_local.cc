@@ -366,7 +366,7 @@ static void hii_gpu_path(const std::vector<HIISourcePrep>& src,
     }
 
     if(num_src > 0) {
-        gpu_ngb_list_free(&gnl, gpu_step_sidx_ptr());
+        gpu_ngb_list_free(&gnl);
         gpu_particles_arena_invalidate();
     }
     /* No ghost import (singledomain) -> nothing to clean up here. */

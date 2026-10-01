@@ -828,7 +828,7 @@ double powerspec_turb_obtain_fields(void)
             }
 
             if(total_pending > 0) {
-                gpu_ngb_list_free(&gnl, NULL);
+                gpu_ngb_list_free(&gnl);
                 gpu_particles_arena_invalidate();
             }
 

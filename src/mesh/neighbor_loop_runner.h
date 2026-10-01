@@ -288,7 +288,8 @@ struct IdentitySidecar {
  * type_bitmask MUST match the Spec's neighbor_type_mask. A mismatch
  * (e.g. gas-only Spec routing to the all-types cache) lets the walker
  * return wrong-type neighbors and triggers downstream drift/lazy-drift
- * aborts. gpu_ngb_list_build hard-aborts on mismatch via cache_tbm.
+ * aborts. gpu_ngb_list_build refuses a mismatch via cache_tbm (controlled
+ * stop, empty list).
  * ========================================================================== */
 
 enum class SidxCacheKind : int {
@@ -1781,8 +1782,8 @@ struct NlrIterDriver {
      * Allocated lazily on first Mode A iter dispatch; left empty on Mode B paths.
      * Lifecycle: arena_acquire ONCE per call (via acquire_arena_and_init_ctx_mode_a),
      * CSR built once per subgroup at iter 0, rebuilt on h-exceeds-buffer trigger,
-     * all freed in driver destructor (passing SIDX to gpu_ngb_list_free so the
-     * step-persistent SIDX cache survives — matches sink_env1/feed/swk idiom).
+     * all freed in driver destructor (the lists hold no index memory, so the
+     * step-persistent SIDX cache survives).
      *
      * CSR row-key invariant: mode_a_csr_offset_lookup[sg][slot]
      * is keyed on subgroup-slot-AT-BUILD-TIME, NOT on the (possibly compacted)
