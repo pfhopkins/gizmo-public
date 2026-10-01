@@ -474,14 +474,16 @@ void mode_b_drift_and_filter_candidates(const double pos[3],
     if(cands.empty()) return;
     const int num_local = ghost_get_num_local();
     const integertime time1 = All.Ti_Current;
+    std::vector<int> drifted;
     for(size_t k = 0; k < cands.size(); k++) {
         const int j = cands[k];
         /* drift_particle returns at once for a particle already current, so a j that several
          * queries reached is drifted once. */
-        if(j >= 0 && j < num_local) {drift_particle(j, time1);}
+        if(j >= 0 && j < num_local && P[j].Ti_current != time1) {drift_particle(j, time1); drifted.push_back(j);}
     }
-    /* drift_particle moves Pos and KernelRadius, so the spatial index must refresh these rows. */
-    gizmo_mark_kernel_radius_dirty_indices(cands.data(), (int)cands.size());
+    /* drift_particle moves the KernelRadius of the particles it advanced, so the spatial index
+     * must refresh those rows; a particle already current kept its own. */
+    gizmo_mark_kernel_radius_dirty_indices(drifted.data(), (int)drifted.size());
     size_t n_kept = 0;
     for(size_t k = 0; k < cands.size(); k++) {
         const int j = cands[k];

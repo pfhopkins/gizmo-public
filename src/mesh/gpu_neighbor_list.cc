@@ -1172,19 +1172,9 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
                 const int *behind_idx = pool_behind.data();
                 drift_particles_batch(behind_idx, n_behind, time1);
             }
-            /* drift_particle mutates Ti_current, Pos, AND KernelRadius (the
-             * compression it predicts). Mark h-dirty for every cache via the SSOT
-             * helper, so the next build over a kept index takes the new reaches.
-             * Promote-to-all kicks in per cache if any cache's bitset popcount
-             * exceeds threshold. */
-            if(gnl->total_pairs <= (int64_t)INT_MAX) {
-                gizmo_mark_kernel_radius_dirty_indices(ngb_host.data(), (int)gnl->total_pairs);
-            } else {
-                /* >2^31 neighbor pairs: an index list this large is hugely
-                 * redundant (num_total < 2^31), so truncating n would mark a
-                 * wrong subset. Escalate to a full-pool mark across both caches. */
-                gizmo_mark_kernel_radius_dirty_range(0, num_total);
-            }
+            /* The drift moved the KernelRadius of exactly the members it advanced, so
+             * those are the radii to mark dirty; a member it left alone kept its own. */
+            gizmo_mark_kernel_radius_dirty_indices(pool_behind.data(), (int)pool_behind.size());
             /* Move detector baseline past the lazy drift's Ti_current/Pos updates
              * — those are predicted-state setup, not kernel writes that need
              * writeback. Subsequent kernel-side writes to ghost particles will
