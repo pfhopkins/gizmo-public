@@ -215,8 +215,32 @@ double nlr_symmetric_radius_after_drift_from_fields(int type, double kernel_radi
     return nlr_symmetric_radius_from_fields(type, kr, ags_kr, force_softening, policy);
 }
 
-/* The same for particle j, its inputs read from P_arr.  Reads only.  Defined in mode_b_local_walker.cc,
- * where the AGS helpers and proto.h (which has no include guard) are in scope. */
+/* The same for particle j, its inputs read from P_arr, with the growth and floor passed in.  Reads only.
+ * One body for host and device.  It is a template so that it can live here, where neither proto.h (which
+ * has no include guard) nor ags_functions.h is in scope: its calls take P_arr, so the accessors are found
+ * where it is used, and every caller has both. */
+template <class ParticleArray>
+KOKKOS_INLINE_FUNCTION
+double nlr_particle_symmetric_radius_after_drift_P(int j, ParticleArray *P_arr, double growth, double kernel_floor,
+                                                   mode_b_radius_policy_t radius_policy)
+{
+    int ags_solves = 0;
+    double ags_kernel_radius = 0.0, ags_minsoft = 0.0, softening_kernel_radius = 0.0;
+#ifdef AGS_KERNELRADIUS_CALCULATION_IS_ACTIVE
+    if(radius_policy & (MODE_B_RADIUS_GAS_AGS | MODE_B_RADIUS_NONGAS_AGS)) {
+        ags_solves = ags_density_solves_for_P(j, P_arr);
+        ags_kernel_radius = (double)P_arr[j].AGS_KernelRadius;
+        ags_minsoft = ags_return_minsoft_P(j, P_arr);
+        softening_kernel_radius = ForceSoftening_KernelRadius_P(j, P_arr);
+    }
+#endif
+    return nlr_symmetric_radius_after_drift_from_fields((int)P_arr[j].Type, (double)P_arr[j].KernelRadius,
+                                                        (double)P_arr[j].ForceSoftening, ags_solves, ags_kernel_radius,
+                                                        ags_minsoft, softening_kernel_radius, growth, kernel_floor,
+                                                        radius_policy);
+}
+
+/* The host form, with this step's growth and floor.  Defined in mode_b_local_walker.cc. */
 double nlr_particle_symmetric_radius_after_drift(int j, struct particle_data *P_arr,
                                                  mode_b_radius_policy_t radius_policy);
 
