@@ -522,14 +522,17 @@ gravity_walk_attempt:
                  * back first and take them again afterwards. */
                 myfree(DataNodeList); myfree(DataIndexTable);
 
-                /* Same build the start of this call would have done, minus the drift and
-                 * re-sequencing: the particles are already at All.Ti_Current, and re-sequencing
-                 * here would move indices under the active list this walk is iterating.  The
+                /* Same build the start of this call would have done, minus the re-sequencing, which
+                 * would move indices under the active list this walk is iterating.  A build takes
+                 * the whole particle set at one time, and only the active set is certain to be current
+                 * here, so every particle is drifted to All.Ti_Current first (a no-op if it already is):
+                 * a tree built from positions at different times, stamped current, is wrong.  The
                  * rebuild flags are deliberately NOT cleared -- this repair does not satisfy
                  * whatever else asked for a rebuild, and the next step is entitled to see it.
                  * It also stands on the domain frame already in force, so under RANDOMIZE_GRAVTREE
                  * it does not draw a new one: a repair is not a scheduled rebuild, and re-keying
                  * the particles here would move them out from under the walk in progress. */
+                gizmo_full_drift_to(All.Ti_Current);
                 refresh_old_acceleration_for_tree_opening();
                 gizmo_exit_bad_stop_if_requested("gravtree:before_repair_treebuild");
                 /* This rebuild stands on the tree just built here, whose attachments are intact, so it
