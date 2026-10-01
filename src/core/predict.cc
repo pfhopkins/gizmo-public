@@ -217,76 +217,6 @@ void move_particles(integertime time1)
 
 
 
-/*! This function makes sure that all particle coordinates (Pos) are
- *  periodically mapped onto the interval [0, BoxSize].  After this function
- *  has been called, a new domain decomposition should be done, which will
- *  also force a new tree construction.
- */
-#ifdef BOX_PERIODIC
-void do_box_wrapping(void)
-{
-    int i, j;
-    double boxsize[3];
-    boxsize[0] = boxSize_X;
-    boxsize[1] = boxSize_Y;
-    boxsize[2] = boxSize_Z;
-    
-#ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic) private(j)
-#endif
-    for(i = 0; i < NumPart; i++)
-    {
-        for(j = 0; j < 3; j++)
-        {
-            while(P[i].Pos[j] < 0)
-            {
-                P[i].Pos[j] += boxsize[j];
-#ifdef BOX_SHEARING
-                if(j==0)
-                {
-                    P[i].Vel[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;
-                    P[i].dp[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset * P[i].Mass;
-                    if(P[i].Type==0)
-                    {
-                        CellP[i].VelPred[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;
-#if defined(HYDRO_MESHLESS_FINITE_VOLUME) // if have moving cells need to wrap them, too (if cells aren't moving, should never reach this wrap) //
-                        CellP[i].ParticleVel[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;
-#endif
-                    }
-#if (BOX_SHEARING > 1)
-                    /* if we're not assuming axisymmetry, we need to shift the coordinates for the shear flow at the boundary */
-                    P[i].Pos[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Pos_Offset;
-#endif
-                }
-#endif
-            }
-            
-            while(P[i].Pos[j] >= boxsize[j])
-            {
-                P[i].Pos[j] -= boxsize[j];
-#ifdef BOX_SHEARING
-                if(j==0)
-                {
-                    P[i].Vel[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;
-                    P[i].dp[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset * P[i].Mass;
-                    if(P[i].Type==0)
-                    {
-                        CellP[i].VelPred[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;
-#if defined(HYDRO_MESHLESS_FINITE_VOLUME) // if have moving cells need to wrap them, too (if cells aren't moving, should never reach this wrap) //
-                        CellP[i].ParticleVel[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;
-#endif
-                    }
-#if (BOX_SHEARING > 1)
-                    /* if we're not assuming axisymmetry, we need to shift the coordinates for the shear flow at the boundary */
-                    P[i].Pos[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Pos_Offset;
-#endif
-                }
-#endif
-            }
-        }
-    }
-}
-#endif
 
 
 
@@ -303,6 +233,54 @@ void do_box_wrapping(void)
 #undef KOKKOS_INLINE_FUNCTION
 #define KOKKOS_INLINE_FUNCTION
 #include "predict_functions.h"
+
+/*! This function makes sure that all particle coordinates (Pos) are
+ *  periodically mapped onto the interval [0, BoxSize].  After this function
+ *  has been called, a new domain decomposition should be done, which will
+ *  also force a new tree construction.  The fold itself is
+ *  box_wrap_position_to_primary_image (predict_functions.h); here each x fold
+ *  also carries the shearing velocity offset into the velocities.
+ */
+#ifdef BOX_PERIODIC
+void do_box_wrapping(void)
+{
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic)
+#endif
+    for(int i = 0; i < NumPart; i++)
+    {
+        struct box_wrap_x_folds folds = box_wrap_position_to_primary_image(P[i].Pos);
+#ifdef BOX_SHEARING
+        for(int f = 0; f < folds.up_from_below; f++)
+        {
+            P[i].Vel[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;
+            P[i].dp[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset * P[i].Mass;
+            if(P[i].Type==0)
+            {
+                CellP[i].VelPred[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;
+#if defined(HYDRO_MESHLESS_FINITE_VOLUME) // if have moving cells need to wrap them, too (if cells aren't moving, should never reach this wrap) //
+                CellP[i].ParticleVel[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;
+#endif
+            }
+        }
+        for(int f = 0; f < folds.down_from_above; f++)
+        {
+            P[i].Vel[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;
+            P[i].dp[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset * P[i].Mass;
+            if(P[i].Type==0)
+            {
+                CellP[i].VelPred[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;
+#if defined(HYDRO_MESHLESS_FINITE_VOLUME)
+                CellP[i].ParticleVel[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;
+#endif
+            }
+        }
+#else
+        (void)folds;
+#endif
+    }
+}
+#endif
 
 #undef KOKKOS_INLINE_FUNCTION
 #include "drift_particle_functions.h"

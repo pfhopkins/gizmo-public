@@ -258,3 +258,52 @@ void apply_special_boundary_conditions_P(int i, double mass_for_dp, int mode, st
 #endif
     return;
 }
+
+
+/* How many times box_wrap_position_to_primary_image folded the x axis, in the order it folded it: first up
+ * from below zero, then down from at or above the box.  Kept as two counts, not one net count, because a
+ * position just below zero can fold up onto the box length itself and then straight back down, and the
+ * shearing offsets a caller applies per fold do not cancel exactly in floating point. */
+struct box_wrap_x_folds {int up_from_below; int down_from_above;};
+
+/* The primary-box image of a position, folded exactly as the box wrapping folds a particle: axis by axis,
+ * x first, each axis by whole box lengths into [0, box).  In a shearing box each x fold also moves the
+ * shearing coordinate by the boundary's position offset (BOX_SHEARING > 1) before that axis is itself
+ * folded, and changes the velocity across that face by the boundary's velocity offset, which this does not
+ * apply: it returns the x folds, and the caller applies the offset once per fold, the up folds first, to
+ * whatever velocities it carries.  Outside a periodic build the position is returned unchanged with no
+ * folds.  The position must be finite. */
+KOKKOS_INLINE_FUNCTION
+struct box_wrap_x_folds box_wrap_position_to_primary_image(Vec3<MyDouble> &pos)
+{
+    struct box_wrap_x_folds folds = {0, 0};
+#ifdef BOX_PERIODIC
+    const double boxsize[3] = {boxSize_X, boxSize_Y, boxSize_Z};
+    for(int j = 0; j < 3; j++)
+    {
+        while(pos[j] < 0)
+        {
+            pos[j] += boxsize[j];
+            if(j == 0)
+            {
+                folds.up_from_below++;
+#if defined(BOX_SHEARING) && (BOX_SHEARING > 1)
+                pos[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Pos_Offset;
+#endif
+            }
+        }
+        while(pos[j] >= boxsize[j])
+        {
+            pos[j] -= boxsize[j];
+            if(j == 0)
+            {
+                folds.down_from_above++;
+#if defined(BOX_SHEARING) && (BOX_SHEARING > 1)
+                pos[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Pos_Offset;
+#endif
+            }
+        }
+    }
+#endif
+    return folds;
+}
