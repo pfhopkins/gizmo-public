@@ -7,7 +7,7 @@
 #include "../core/proto.h"
 #include "predict_functions.h" /* apply_special_boundary_conditions_P */
 #include "../system/gpu_particles_arena.h"
-#include "../mesh/gpu_neighbor_list.h" /* gpu_sidx_notify_pool_changed */
+#include "../mesh/gpu_neighbor_list.h" /* gpu_sidx_notify_owned_changed */
 #ifdef CBE_INTEGRATOR
 #include "../sidm/sidm_gpu_decls.h"
 #endif
@@ -218,7 +218,7 @@ void do_hermite_correction(void) // corrector step
                     }
 #endif
 		}}} //     for (int _apl : ActiveParticleList)
-    if(gas_corrected > 0) {gpu_sidx_notify_pool_changed();}
+    if(gas_corrected > 0) {gpu_sidx_notify_owned_changed();}
 }
 #endif // HERMITE_INTEGRATION
 

@@ -83,13 +83,15 @@ struct gpu_spatial_index_t {
      * valid pairs).  Default MODE_B_RADIUS_DEFAULT matches the policy hydro Specs
      * use; runner Mode A passes Spec::radius_policy explicitly. */
     mode_b_radius_policy_t cache_radius_policy = MODE_B_RADIUS_DEFAULT;
-    /* Ghost and pool lifecycle epochs this index was built under. The particle
-     * COUNT alone cannot detect a cleanup-and-reimport that lands the same number
-     * of ghosts with different contents, nor a change of pool membership or a
-     * position written outside a drift. Reuse therefore requires both epochs to
-     * match as well as num_total. */
-    uint64_t ghost_epoch_when_built = 0;
-    uint64_t pool_epoch_when_built  = 0;
+    /* The particles this index was built over, beyond their count. The COUNT alone
+     * cannot detect a cleanup-and-reimport that lands the same number of ghosts with
+     * different contents, nor a change of owned membership or a position written
+     * outside a drift. Reuse therefore requires the ghost pool's liveness and import
+     * (as the ghost exchange records them) and the owned epoch to match, as well as
+     * num_total. */
+    int ghost_live_when_built = 0;
+    unsigned long long ghost_provenance_when_built = 0;
+    uint64_t owned_epoch_when_built = 0;
 };
 
 
@@ -170,31 +172,18 @@ void gpu_compact_xyzh_mark_h_dirty_idx(int i);
 void gpu_compact_xyzh_mark_h_dirty_range(int start, int end);
 void gpu_compact_xyzh_mark_h_dirty_indices(const int *indices, int n);
 void gpu_compact_xyzh_mark_h_dirty_all(void);
-/* SIDX lifecycle notification hooks. ghost_exchange owns the import/cleanup
- * lifecycle; SIDX owns the spatial-index representation. These are the
- * lifecycle signals SIDX consumes. They bump the epoch counters that
- * gpu_ngb_list_build tests against a cached index's build-time stamp before
- * reusing it (ghost_epoch_when_built / pool_epoch_when_built above).
- *
- * Contract:
- *  - ghost_imported(start, count): MUST be called on every rank at the end of
- *    every ghost_exchange_*_impl path, INCLUDING the count==0 / no-receive
- *    case. count==0 invalidates any cached ghost segment from a prior import
- *    (so a ghost->no-ghost transition can never leave stale ghost data behind).
- *  - ghost_cleanup(): called from ghost_exchange_cleanup BEFORE NumPart shrinks.
- *    Frees any cached ghost segment synchronously (memory safety).
- *  - pool_changed(): called when a kept index's rows stop describing the home
- *    pool in a way neither the particle count nor the ghost epoch can see:
- *    particles rearranged (merge/split), a particle's type changed in place
- *    (force_tree_note_type_presence: star or sink formation from gas, grain
- *    promotion to gas), or a member's position written outside a drift (the
- *    Hermite corrector).  Bumps pool_epoch so the index is rebuilt on next use.
- *    A member that loses its mass is not announced: the pair kernel owns the
- *    Mass > 0 test, and rearrange_particle_sequence, which removes the slot,
- *    announces it then. */
-void gpu_sidx_notify_ghost_imported(int start, int count);
-void gpu_sidx_notify_ghost_cleanup(void);
-void gpu_sidx_notify_pool_changed(void);
+/* The owned particles changed in a way a kept index's rows cannot show and the
+ * particle count does not reveal: the decomposition re-laid them out
+ * (domain_particle_layout_changed), particles were rearranged (merge/split), a
+ * particle's type changed in place (force_tree_note_type_presence: star or sink
+ * formation from gas, grain promotion to gas), or a member's position was written
+ * outside a drift (the Hermite corrector).  Bumps the owned epoch, so an index
+ * built before it is rebuilt on its next use.  A member that loses its mass is not
+ * announced: the pair kernel owns the Mass > 0 test, and
+ * rearrange_particle_sequence, which removes the slot, announces it then.
+ * Ghost import and cleanup need no call: the index keys its imported particles on
+ * the ghost exchange's own record (ghost_pool_is_live, ghost_provenance_epoch). */
+void gpu_sidx_notify_owned_changed(void);
 
 #ifdef __cplusplus
 extern "C" {

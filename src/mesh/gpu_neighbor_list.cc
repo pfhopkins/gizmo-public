@@ -129,32 +129,17 @@ void gizmo_mark_kernel_radius_dirty_range(int start, int end)
     gpu_dirty_tracker_mark_range(start, end);
 }
 
-/* SIDX lifecycle epoch counters, bumped by the notify hooks below on every
- * ghost import, ghost cleanup and pool membership change. gpu_ngb_list_build
- * stamps them into each index at build and requires them to still match before
- * reusing it, so a cached index cannot survive a change of ghost or pool
- * identity that happens to preserve the particle count. */
-static uint64_t g_sidx_ghost_epoch = 0;
-static uint64_t g_sidx_pool_epoch  = 0;
+/* The owned particles' epoch: bumped whenever an index's rows over the owned
+ * particles stop describing them in a way the particle count cannot show (see
+ * gpu_sidx_notify_owned_changed). gpu_ngb_list_build stamps it into each index at
+ * build and requires it to still match before reusing it. The imported particles
+ * need no counter here: the ghost exchange already records whether a pool is live
+ * and which import produced it (ghost_pool_is_live, ghost_provenance_epoch). */
+static uint64_t g_sidx_owned_epoch = 0;
 
-void gpu_sidx_notify_ghost_imported(int start, int count)
+void gpu_sidx_notify_owned_changed(void)
 {
-    /* Contract requires unconditional call on every rank, including count==0. */
-    (void)start; (void)count;
-    g_sidx_ghost_epoch++;
-}
-
-void gpu_sidx_notify_ghost_cleanup(void)
-{
-    /* Called BEFORE NumPart shrinks. */
-    g_sidx_ghost_epoch++;
-}
-
-void gpu_sidx_notify_pool_changed(void)
-{
-    /* Type/Mass/membership change in the home pool — invalidate any pool-
-     * dependent cache on next access. */
-    g_sidx_pool_epoch++;
+    g_sidx_owned_epoch++;
 }
 
 
@@ -171,8 +156,6 @@ void gpu_step_sidx_invalidate_full(void)
 {
     if(g_step_sidx_alltypes.valid) gpu_spatial_index_free(&g_step_sidx_alltypes);
     if(g_step_sidx.valid) gpu_spatial_index_free(&g_step_sidx);
-    /* Force full-mode dirty so next build's compact_xyzh seeds correctly. */
-    gpu_compact_xyzh_mark_h_dirty_all();
 }
 
 
@@ -389,8 +372,9 @@ void gpu_spatial_index_build(struct particle_data *P_shared, int num_total,
     idx->num_total = num_total;
     idx->cache_tbm = type_bitmask;
     idx->cache_radius_policy = radius_policy;
-    idx->ghost_epoch_when_built = g_sidx_ghost_epoch;
-    idx->pool_epoch_when_built  = g_sidx_pool_epoch;
+    idx->ghost_live_when_built       = ghost_pool_is_live();
+    idx->ghost_provenance_when_built = ghost_provenance_epoch();
+    idx->owned_epoch_when_built      = g_sidx_owned_epoch;
     idx->ti_ref = ti_ref;
     idx->rows_are_positions = all_current;
     idx->rebuild_needed = 0;
@@ -826,11 +810,11 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
     gpu_spatial_index_t *idx;
     /* Invalidate the cached SIDX unless it still describes the same particles.
      * num_total: the slot map was sized for the old count, so accessing beyond it
-     * is UB (ghost exchange redo, particle creation).  Epochs: a
-     * cleanup-and-reimport can land the SAME ghost count with different ghost
-     * contents, which no count test can see, and a change of pool membership or
-     * a position written outside a drift likewise leaves rows that no longer
-     * describe the members.  A drift bumps neither: the kept index is read at the
+     * is UB (ghost exchange redo, particle creation).  The ghost pool's liveness
+     * and import: a cleanup-and-reimport can land the SAME ghost count with
+     * different ghost contents, which no count test can see.  The owned epoch: a
+     * change of membership or a position written outside a drift likewise leaves
+     * rows that no longer describe the members.  A drift changes none of these: the kept index is read at the
      * time of the search (sfc_tiles.h), so reuse across a drift is the common path. */
     const integertime t_now = gizmo_host_ti_current();
     const struct DriftKickTableView host_tables = drift_kick_table_view_host();
@@ -845,8 +829,9 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
     const int pool_current = (gizmo_full_drift_ti() == t_now) && ghost_segment_current;
     if(cached_idx && cached_idx->valid &&
        (cached_idx->num_total          != num_total          ||
-        cached_idx->ghost_epoch_when_built != g_sidx_ghost_epoch ||
-        cached_idx->pool_epoch_when_built  != g_sidx_pool_epoch ||
+        cached_idx->ghost_live_when_built       != ghost_pool_is_live()     ||
+        cached_idx->ghost_provenance_when_built != ghost_provenance_epoch() ||
+        cached_idx->owned_epoch_when_built      != g_sidx_owned_epoch       ||
         cached_idx->ti_ref > t_now || cached_idx->rebuild_needed)) {
         gpu_spatial_index_free(cached_idx);
     }

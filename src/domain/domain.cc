@@ -33,10 +33,10 @@
  *  holding a copy, so there is nothing in it to go stale. */
 static void domain_particle_layout_changed(const char *reason)
 {
-    /* Record the event first, so a consumer that only compares the epoch sees
-     * it regardless of what the cache-freeing calls below do. */
+    /* Epochs only: the neighbour indexes' memory was already returned at the entry
+     * of the decomposition, so an index built before this point is never reused. */
     ghost_exchange_supply_identity_changed(reason);
-    gpu_step_sidx_invalidate_full();
+    gpu_sidx_notify_owned_changed();
 }
 
 
@@ -395,6 +395,10 @@ int domain_segments_per_rank_for_particles(long long total_particles)
 void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_mergesplit_key, int allow_peano_order_cadence)
 {
     if(ghost_require_no_live_pool_for_layout_change("domain_Decomposition")) {return;}
+    /* The kept neighbour indexes will not be read again before the layout changes, so
+     * their memory is returned now, before this decomposition's own allocations and
+     * the tree allocation at its end. */
+    gpu_step_sidx_invalidate_full();
     int i, ret, retsum, diff, highest_bin_to_include; size_t bytes, all_bytes; double t0, t1;
     
     /* call first -before- a merge-split, to be sure particles are in the correct order in the tree */
@@ -701,6 +705,7 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
 void domain_Decomposition_light(int UseAllTimeBins, int do_particle_mergesplit_key)
 {
     if(ghost_require_no_live_pool_for_layout_change("domain_Decomposition_light")) {return;}
+    gpu_step_sidx_invalidate_full();   /* as in domain_Decomposition: released before any allocation here */
     int i, no; size_t bytes; double t0, t1;
 
     /* fall back to full decomposition if persistent state is not available, or if

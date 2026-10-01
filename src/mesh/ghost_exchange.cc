@@ -1536,12 +1536,10 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
     if(NumGhostParticles > 0) {
         gpu_compact_xyzh_mark_h_dirty_range(NumPart_before_ghost, NumPart);
     }
-    /* SIDX lifecycle notify: see comment in tile-overlap impl. Unconditional. */
     /* Every rank advanced its outgoing slots to this same All.Ti_Current above,
        and the exchange is collective, so the pool just installed is current at
        that time -- but only if that advance actually happened. */
     if(send_list_current == 0) {g_ghost_pool_current_ti = All.Ti_Current;}
-    gpu_sidx_notify_ghost_imported(NumPart_before_ghost, NumGhostParticles);
 
     /* Home-index exchange + provenance maps. */
     int *recv_home_idx = (int *) malloc((total_recv > 0 ? total_recv : 1) * sizeof(int));
@@ -1666,10 +1664,6 @@ void ghost_exchange_cleanup(void)
      * Either way no stale ghost-slot bit reaches compact_h_refresh. New ghost
      * slots are marked dirty at import time (mark_h_dirty_range above), so
      * symmetric h-reads on ghosts stay fresh. */
-    /* SIDX lifecycle notify BEFORE NumPart shrinks. Called whether or not
-     * NumGhostParticles>0 — a cleanup from the no-ghost-imported state is
-     * a valid signal that bumps the epoch. */
-    gpu_sidx_notify_ghost_cleanup();
     if(NumGhostParticles > GhostEpochHighWater) {GhostEpochHighWater = NumGhostParticles;}
     NumPart = NumPart_before_ghost;
     N_gas = N_gas_before_ghost;
@@ -1695,8 +1689,9 @@ void ghost_exchange_cleanup(void)
    (never elided) so a backend with explicit host/device particle buffers (no
    unified-memory coherence) has ONE mandatory place to add an explicit
    host->device ghost copy. Parity with import: import marks compact_xyzh h-dirty
-   + notifies SIDX; a value refresh changes neither Pos/h nor the slot set, so it
-   does neither — but any explicit device copy import gains MUST be mirrored here. */
+   and starts a new ghost import (which a kept index compares); a value refresh
+   changes neither Pos/h nor the slot set, so it does neither — but any explicit
+   device copy import gains MUST be mirrored here. */
 static inline void ghost_refresh_make_device_visible(int ghost_base, int ghost_count)
 {
     (void)ghost_base; (void)ghost_count;

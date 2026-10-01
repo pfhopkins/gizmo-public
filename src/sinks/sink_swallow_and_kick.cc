@@ -853,9 +853,9 @@ int sink_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int num_al
         }
         /* New particle's KernelRadius was just initialized. Mark h-dirty for
          * all caches that survive across this spawn (caches whose range covers
-         * j). Pool-membership for this new index is handled separately via
-         * notify_pool_changed; this h-dirty mark keeps the compact_xyzh.h
-         * slot fresh-on-next-build. */
+         * j). The new particle is appended, so a kept index built before it
+         * fails its particle-count check and is rebuilt; this h-dirty mark keeps
+         * the compact_xyzh.h slot fresh-on-next-build. */
         gizmo_mark_kernel_radius_dirty_indices(&j, 1);
 #endif
 #endif
