@@ -112,7 +112,7 @@ static inline struct gpu_node_mirror_ptrs_t gpu_node_mirror_ptrs(struct gpu_grav
  * the sweep's refresh pass, which falls through at dt = 0 to rewrite the mirror, passes 0 there. */
 static KOKKOS_INLINE_FUNCTION void
 gpu_node_drift_apply(struct NODE *Nodes_uvm, struct extNODE *Extnodes_uvm, int no,
-                     integertime ti_target, double dt_drift, double dt_drift_hmax, double dt_widen,
+                     integertime ti_target, double dt_drift, double dt_widen,
                      int fold_kick)
 {
     /* The arithmetic is the shared node-motion unit (gravtree_moment_kernel.h), the same one the host
@@ -124,7 +124,7 @@ gpu_node_drift_apply(struct NODE *Nodes_uvm, struct extNODE *Extnodes_uvm, int n
         Nodes_uvm[no].u.d.bitflags &= (~(1u << BITFLAG_NODEHASBEENKICKED));
     }
     node_motion_advance(node, dt_drift, dt_widen);
-    node_hmax_drift(Extnodes_uvm[no], dt_drift_hmax);
+    node_hmax_drift(Extnodes_uvm[no], dt_widen);
 
     Nodes_uvm[no].Ti_current = ti_target;
 }
@@ -283,12 +283,11 @@ extern "C" int gpu_force_drift_nodes_ex(integertime time1, int refresh_mirrors_a
         /* Same value as the host get_drift_factor(.., .., no, 1): one interpolator, one view. */
         double dt_drift = 0.0, dt_widen = 0.0;
         if(!node_already_current) {node_motion_intervals(Nodes_uvm[no].Ti_current, ti_target, dilation, &table_view, dt_drift, dt_widen);}
-        double dt_drift_hmax = dt_drift;
 
         /* A pending kick is folded only when the node moves forward, as the host drift and the walk's
            read-only prediction both do: a node already at the target time keeps it pending. */
         gpu_node_drift_apply(Nodes_uvm, Extnodes_uvm, no, ti_target,
-                             dt_drift, dt_drift_hmax, dt_widen, /*fold_kick=*/!node_already_current);
+                             dt_drift, dt_widen, /*fold_kick=*/!node_already_current);
 
         gpu_node_mirror_publish(mirror, k, no, Nodes_uvm, Extnodes_uvm);
     });
@@ -388,7 +387,7 @@ extern "C" int gpu_node_dirty_bring_gravity_current(integertime time1)
                 double dt_drift, dt_widen;
                 node_motion_intervals(Nodes_uvm[no].Ti_current, ti_target, dilation, &table_view, dt_drift, dt_widen);
                 gpu_node_drift_apply(Nodes_uvm, Extnodes_uvm, no, ti_target,
-                                     dt_drift, dt_drift, dt_widen, /*fold_kick=*/1);
+                                     dt_drift, dt_widen, /*fold_kick=*/1);
             }
             gpu_node_mirror_publish(mirror, k, no, Nodes_uvm, Extnodes_uvm);
         });

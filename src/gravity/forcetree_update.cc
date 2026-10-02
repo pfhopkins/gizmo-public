@@ -593,14 +593,15 @@ void force_drift_node(int no, integertime time1)
     }
 
     const double dt_drift = get_drift_factor(Nodes[no].Ti_current, time1, no, 1);
-    /* The widening runs on the undilated clock: vmax bounds each member's motion per unit
-       undilated interval, carrying that member's own dilation, so the node's dilated clock
-       (right for its centre of mass) would under-grow it for a member less dilated than the
+    /* The widening and the kernel-length growth run on the undilated clock: vmax bounds each
+       member's motion per unit undilated interval, carrying that member's own dilation, and each
+       member's kernel length grows over its own dilated interval, so the node's dilated clock
+       (right for its centre of mass) would under-grow both for a member less dilated than the
        node.  The same interval when no dilation is active. */
     const double dt_widen = get_drift_factor_undilated(Nodes[no].Ti_current, time1);
 
     node_motion_advance(node, dt_drift, dt_widen);
-    node_hmax_drift(Extnodes[no], dt_drift);
+    node_hmax_drift(Extnodes[no], dt_widen);
 
     /* Record that this rank has now drifted at least one node to time1 without
      * updating that node's device SoA mirror. Relaxed: every caller passes
