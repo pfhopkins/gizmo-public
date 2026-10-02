@@ -1,5 +1,6 @@
-"""Shu (1977) singular isothermal sphere collapse: checks that exactly one sink forms, and
-compares spurious COM drift with and without RANDOMIZE_GRAVTREE.
+"""Shu (1977) singular isothermal sphere collapse: checks that exactly one sink forms, compares
+spurious COM drift with and without RANDOMIZE_GRAVTREE, and runs the collapse once under
+TREE_INTEGRITY_AUDITS.
 
 The sphere is symmetric and at rest, so its net momentum should stay zero by symmetry and any
 drift is spurious. Non-periodic setup, so this exercises the move/enlarge-root-node path.
@@ -53,8 +54,11 @@ def plot_shu1977_density_slice(coords, rho, boxsize, output_dir="."):
 @pytest.mark.parametrize("num_omp_threads", (default_omp_threads(),))
 @pytest.mark.parametrize(
     "extra_config_flags",
-    [(), ("RANDOMIZE_GRAVTREE",)],
-    ids=["baseline", "randomize"],
+    # tree_audits: fatal tree audits through sink formation and accretion. Every swallow rearranges
+    # the particle list under Hermite sinks with no spawning, the case MAINTAIN_TREE_IN_REARRANGE
+    # must cover; without it the first post-swallow moments refresh aborts the run.
+    [(), ("RANDOMIZE_GRAVTREE",), ("TREE_INTEGRITY_AUDITS",)],
+    ids=["baseline", "randomize", "tree_audits"],
 )
 def test_shu1977(num_mpi_ranks, num_omp_threads, extra_config_flags, request):
     test_name = "shu1977"

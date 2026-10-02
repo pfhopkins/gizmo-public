@@ -555,14 +555,17 @@
    configs set only to expose accuracy parameters. Without it only the always-on checks run
    (force_validate_tree_links and the treebuild bookkeeping reduce). */
 
-#if defined(HERMITE_INTEGRATION) && defined(SINK_WIND_SPAWN) && !defined(MAINTAIN_TREE_IN_REARRANGE)
+#if defined(HERMITE_INTEGRATION) && defined(SINK_PARTICLES) && !defined(MAINTAIN_TREE_IN_REARRANGE)
 /* Hermite is the one consumer that walks the STANDING tree while deliberately skipping the rebuild
-   it was asked for (the HermiteOnlyFlag gate in gravtree.cc), so a spawning Hermite run must have
-   the full per-swap maintenance -- the parent-only carry is not enough for a tree that keeps being
-   walked. This deliberately OVERRIDES the nuclear-zoom exclusion above: a zoom run with Hermite and
-   spawning gets the maintenance despite the exclusion. (cf. gizmo-cpp a06e0073) */
+   it was asked for (the HermiteOnlyFlag gate in gravtree.cc), so any Hermite run whose particle list
+   is rearranged mid-step must have the full per-swap maintenance -- the parent-only carry is not
+   enough for a tree that keeps being walked. Spawning rearranges, and so does every swallow: the sink
+   pass's cleanup rearrange (run.cc) eliminates the victims even with no spawning at all. Without the
+   maintenance the Hermite corrector refreshes moments on, and takes sink forces from, a condemned
+   tree whose threading still points at the vacated slots. This deliberately OVERRIDES the
+   nuclear-zoom exclusion above. (cf. gizmo-cpp a06e0073) */
 #ifdef DISABLE_MAINTAIN_TREE_IN_REARRANGE
-#warning "DISABLE_MAINTAIN_TREE_IN_REARRANGE overridden: HERMITE_INTEGRATION + SINK_WIND_SPAWN requires tree maintenance (this config cannot serve as the no-MAINTAIN A/B arm)"
+#warning "DISABLE_MAINTAIN_TREE_IN_REARRANGE overridden: HERMITE_INTEGRATION + SINK_PARTICLES requires tree maintenance (this config cannot serve as the no-MAINTAIN A/B arm)"
 #endif
 #define MAINTAIN_TREE_IN_REARRANGE
 #endif
