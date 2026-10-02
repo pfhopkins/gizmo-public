@@ -640,9 +640,9 @@ extern "C" void gpu_nextnode_backup_suns(int n)
 /* The claimable state, ALL of it, in the same shared space as the stamps.  It used to be
  * host statics beside shared-space arrays, which meant a kernel could read the list but
  * could never claim into it: the cursor, the generation and the fail-safe flag were host
- * memory and the claim was a host builtin.  One recorder, one claim, reachable from both
- * sides is what lets the discovery pre-walk record the nodes it finds without a second
- * node-currency system growing up beside this one. */
+ * memory and the claim was a host builtin.  The claims are answered on the device
+ * (gpu_node_dirty_bring_gravity_current reads the list in a kernel), so the list and its
+ * control block stay reachable from both sides. */
 static unsigned int                *nd_seen_ = NULL;
 static int                         *nd_list_ = NULL;
 static struct gpu_node_dirty_ctl_t *nd_ctl_  = NULL;
@@ -726,45 +726,6 @@ static void nd_open_epoch_(int owner)
 }
 
 void gpu_node_dirty_begin_epoch(void) {nd_open_epoch_(GPU_NODE_DIRTY_OWNER_HOST);}
-
-/* Admission for a phase that wants to CLAIM into this recorder itself.
- *
- * Unlike the reset above it can fail, and it has to be able to: opening an epoch discards the
- * previous one's stamps, so a phase that took the recorder while another phase's claims were
- * still outstanding would erase them -- and those claims are the only record that a node's
- * mirror needs repairing.  The nodes would then be walked at stale geometry with nothing left
- * to say so, which is the failure the explicit owner exists to prevent.
- *
- * HOST is the resting owner, because host claims accumulate between phases with no epoch of
- * their own; anything else means a phase is live.  Refused means NOTHING was touched, and the
- * caller takes its own safe route -- for gravity, the full drift and the full sweep.
- * Returns 0 when the epoch is held by `owner`. */
-int gpu_node_dirty_acquire_epoch(int owner)
-{
-    if(nd_ensure_() != 0) {nd_mark_unsafe_ctl_(nd_ctl_); return 1;}
-    if(nd_ctl_->owner != GPU_NODE_DIRTY_OWNER_HOST && nd_ctl_->owner != owner) {
-        nd_mark_unsafe_ctl_(nd_ctl_);   /* another phase is live: visible, not silent */
-        return 1;
-    }
-    if(Kokkos::atomic_load(&nd_ctl_->count) != 0) {
-        nd_mark_unsafe_ctl_(nd_ctl_);   /* claims nobody has answered; taking the epoch erases them */
-        return 1;
-    }
-    nd_open_epoch_(owner);
-    return 0;
-}
-
-/* Hand the recorder back to the resting owner.  Called on EVERY exit path of whoever acquired
- * it: the epoch opens before the outcome is known, and an epoch left held refuses every later
- * admission while looking exactly like the mechanism working. */
-void gpu_node_dirty_retire(int owner)
-{
-    if(!nd_ctl_) {return;}
-    if(nd_ctl_->owner == GPU_NODE_DIRTY_OWNER_HOST) {return;}   /* already handed back */
-    if(nd_ctl_->owner != owner) {nd_mark_unsafe_ctl_(nd_ctl_); return;}   /* retiring another phase's epoch */
-    nd_ctl_->owner = GPU_NODE_DIRTY_OWNER_HOST;
-    Kokkos::memory_fence();
-}
 
 void gpu_node_dirty_claim(int no)
 {

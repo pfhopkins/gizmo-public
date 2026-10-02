@@ -784,8 +784,9 @@ gravity_walk_attempt:
      * a sum over ranks alone would average it away.  Collective, so it sits with the other
      * reductions rather than inside the rank-0 report below. */
     /* The two stamped recorders' fail-safe totals ride in the same two reductions rather than
-     * adding their own.  Each exists so that a permanent silent revert -- to sweeping every node,
-     * or to drifting every particle -- is visible rather than indistinguishable from the
+     * adding their own: the node claims answered before each device walk, and the touched set of
+     * the Mode-D fused walk.  Each exists so that a permanent silent revert -- to sweeping every
+     * node, or to drifting every particle -- is visible rather than indistinguishable from the
      * optimisation working, and nothing read either of them; but observability may not charge the
      * path it is watching, and this call already carries collectives.  Three extra words on an
      * existing reduction is free; two more reductions per gravity call would not be. */

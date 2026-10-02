@@ -312,11 +312,10 @@ extern "C" int gpu_force_drift_nodes_ex(integertime time1, int refresh_mirrors_a
 
 /* Bring just the nodes a recorder listed current at `ti`, instead of sweeping every node.
  *
- * The two claimers are the host lazy drift, which advances a node's canonical state and leaves
- * its mirror behind, and the gravity discovery pre-walk, which finds the nodes that walk will
- * reach while they still stand behind it.  Both mean the same thing here -- this node needs
- * attention before the next device gravity walk at `ti` -- and the node's OWN clock says which
- * kind of attention:
+ * The claimer is the host lazy drift, which advances a node's canonical state and leaves its
+ * mirror behind.  A claim means this node needs attention before the next device gravity walk
+ * at `ti`, and the node's OWN clock says which kind of attention (a node claimed in an earlier
+ * step can stand behind `ti` again):
  *
  *   already at `ti`  -> the arithmetic is done; publish the mirror.  It does NOT fold a pending
  *                       kick, which is what the host does on a node it finds already current.

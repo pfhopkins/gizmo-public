@@ -268,20 +268,13 @@ int gpu_gravity_tree_nodes_current_at(integertime ti);
  * ========================================================================== */
 /* Epoch ownership.  Claims are legal only from the phase that owns the open epoch, and a
  * claim from any other phase is a stopped invariant (it trips the fail-safe and the caller
- * sweeps) rather than a race to be reasoned about.  The sequence per gravity call is:
- * host claims consumed -> a FRESH epoch for the discovery pre-walk -> its claims consumed.
- * Mode-D and the host lazy drift share the HOST phase, exactly as they do today. */
+ * sweeps) rather than a race to be reasoned about.  The host is the one claiming phase: the
+ * host lazy drift and Mode-D claim into it, and the claims are answered before each device
+ * gravity walk. */
 enum gpu_node_dirty_owner_t {
-    GPU_NODE_DIRTY_OWNER_HOST   = 0,   /* force_drift_node and every other host claimer */
-    GPU_NODE_DIRTY_OWNER_DEVICE = 1    /* the gravity discovery pre-walk kernel */
+    GPU_NODE_DIRTY_OWNER_HOST   = 0    /* force_drift_node and every other host claimer */
 };
 void gpu_node_dirty_begin_epoch(void);              /* the claims are ANSWERED: fresh HOST-owned epoch */
-/* Admission for a phase that will claim into the recorder itself.  0 = acquired; nonzero =
- * refused with nothing touched, and the caller takes its own safe route.  Refuses a recorder
- * another phase still holds, or one whose claims nobody has answered -- opening an epoch
- * discards the previous one's stamps, so taking it would erase them. */
-int  gpu_node_dirty_acquire_epoch(int owner);
-void gpu_node_dirty_retire(int owner);             /* hand back; on every exit path of the acquirer */
 void gpu_node_dirty_claim(int no);                  /* host claim; owner must be HOST */
 int  gpu_node_dirty_count(void);                    /* claims outstanding in this epoch */
 /* Bring every listed node current at `ti` -- drifting the ones behind it and publishing every

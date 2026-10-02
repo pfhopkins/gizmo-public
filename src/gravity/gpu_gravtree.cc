@@ -40,7 +40,6 @@
 #include "../declarations/gpu_error_check.h"
 #include "../declarations/gpu_dispatch_templates.h"   /* the backend's lane count, which decides how lanes spread over targets */
 #include "gpu_gravity_tree.h"
-#include "../declarations/gpu_recorder_claim.h"   /* the one claim each stamped recorder has, device-callable */
 #include "../mesh/gpu_neighbor_list.h"            /* the particle touched set's epoch lifecycle (host side) */
 #include "gpu_gravtree.h"
 #include "forcetree.h"
@@ -547,10 +546,6 @@ struct gpu_grav_member_t {
     gpu_grav_member_sums_t sums;
 };
 
-/* The member state of a flavour that decides without evaluating: it judges nodes from the
- * opening inputs published in team scratch and accumulates nothing, so it holds nothing. */
-struct gpu_grav_no_member_t {};
-
 /* What an accepted element carries from its load to the shared evaluation, beyond
  * the pair inputs in grav_pair_src_t: the payload values the walker-local blocks
  * consume. Set on every path that reaches the evaluation. */
@@ -579,13 +574,8 @@ struct gpu_grav_src_payload_t {
 };
 
 /* Everything one target contributes to an opening decision, and nothing it contributes to a
- * pair evaluation.  Both walks that decide -- the evaluating walk through the member prologue
- * below, and the discovery walk, which decides but never evaluates -- read the SAME inputs, so
- * they are derived HERE once.  A second copy of this is how the two traversals would start
- * judging the same node differently.
- *
- * `zeta` and the per-target PM override come out with the inputs because the prologue needs
- * them in the same breath; a caller that only decides ignores them.
+ * pair evaluation.  `zeta` and the per-target PM override come out with the inputs because the
+ * member prologue below needs them in the same breath.
  * Returns 0 for a massless target, which takes part in nothing. */
 static KOKKOS_INLINE_FUNCTION int
 gpu_grav_open_inputs_init(const gpu_grav_walk_ctx_t &ctx, int target,
@@ -1628,7 +1618,7 @@ struct gpu_grav_walk_item_t { int no, exit; };   /* a work item's indices; its m
 
 struct gpu_grav_packet_scratch_plan_t {
     int mask_words;
-    int local_stack;   /* continuations per walker; zero for a flavour that never splits an item */
+    int local_stack;   /* continuations per walker */
     size_t open_inputs, member_inputs, member_fold, frontier, frontier_masks, records, record_masks, local, local_masks, walker_masks, counters, bytes;
 };
 
@@ -1636,12 +1626,10 @@ struct gpu_grav_packet_scratch_plan_t {
  * a frontier of frontier_cap items, a chunk of chunk_cap records and a per-walker
  * continuation stack local_stack deep.
  *
- * The three capacities are the caller's, not constants, because they are what a decision
- * flavour switches off: a flavour that takes ONE decision for the whole packet never splits
- * an item, so it has no continuations to keep and needs neither stack nor frontier, and a
- * flavour that evaluates nothing needs no record chunk.  Passing zero leaves the region
- * empty rather than merely unused -- the scratch request is what team_size_max is asked
- * about, so an unused region is a real cost in occupancy, not just in bytes. */
+ * The frontier is the caller's: only several walkers share continuations, so a single-walker
+ * team asks for none.  Zero leaves the region empty rather than merely unused -- the scratch
+ * request is what team_size_max is asked about, so an unused region is a real cost in
+ * occupancy, not just in bytes. */
 static struct gpu_grav_packet_scratch_plan_t
 gpu_grav_packet_scratch_plan(int q_dev, int team_size, int frontier_cap, int chunk_cap, int local_stack, int team_evaluates)
 {
@@ -1735,17 +1723,10 @@ enum gpu_grav_packet_step_t {
     GRAV_PACKET_STEP_YIELD          /* chunk full, or the packet gave up; the engine returns */
 };
 
-/* The fidelity flavour, and the only one instantiated today: every member judges every node for
+/* The masked flavour: every member judges every node for
  * itself, and the elements it accepts are reserved in the record chunk for the member-major
  * flush.  Bitwise per member against the single-target walk at n_walkers = 1. */
 struct GravPacketMaskedPolicy {
-    /* What this flavour needs of the engine.  These are compile-time so the instantiation that
-     * does not record cannot allocate a record chunk, and the one that never splits an item
-     * cannot allocate a continuation stack, by construction rather than by remembering to pass
-     * a zero -- and so the branches that serve them are not emitted at all. */
-    static constexpr bool records_elements = true;    /* accepted elements go to the chunk, and members flush it */
-    static constexpr bool splits_items     = true;    /* members diverge, so a descent leaves a continuation behind */
-    static constexpr bool evaluates        = true;    /* members carry accumulators and write per-target outputs */
     /* One thread per member evaluates that member's records; see GravPacketMaskedTeamPolicy for the
        flavour that spreads them over a team wider than the packet. */
     static constexpr bool team_evaluates   = false;
@@ -1754,11 +1735,6 @@ struct GravPacketMaskedPolicy {
     /* Members share one traversal and then evaluate its records in parallel, so the packet is
        what makes that sharing worth having: the configured size. */
     static constexpr int  packet_size      = TREE_QUERY_PACKET_SIZE;
-
-    /* Called for every node the walker reaches, before the prelude classifies it.  The
-     * evaluating flavour has nothing to write down: it reads the tree, it does not record it. */
-    template <class Engine>
-    KOKKOS_INLINE_FUNCTION void note_node(const Engine &, int) const {}
 
     /* Which members take this particle leaf, and the record that the flush evaluates. */
     template <class Engine>
@@ -1827,214 +1803,6 @@ struct GravPacketMaskedTeamPolicy : GravPacketMaskedPolicy {
     static constexpr bool team_evaluates = true;
 };
 
-/* The DISCOVERY flavour: it takes ONE conservative decision for the whole packet and writes
- * down what the exact walk will need brought current, instead of evaluating anything.
- *
- * It exists so an intermediate-N device step stops paying an O(NumPart) + O(Nnodes) entry fee
- * to drift everything: this traversal names the subset the exact walk actually reaches, and only
- * that subset is drifted.  For that to be safe the set it names must be a SUPERSET of everything
- * the exact walk goes on to touch, and the two traversals are separated in time by exactly the
- * drift the first one asks for -- so the decision here is taken on STALE geometry and must
- * contain every decision the exact walk will take on DRIFTED geometry.
- *
- * THE CONTAINMENT BOUND, and both of its terms are required.  For a node standing behind the
- * walk time, define ONE quantity from the same velocity bound the drift itself widens by:
- *
- *     R = TREE_NODE_WIDENING_DELTA(vmax, dt_widen)        (the undilated clock)
- *
- *   TERM 1 -- the node's length is taken as len + R, which is exactly what the drift will add
- *             to it (gpu_force_drift.cc, the widen-on-open convention).
- *   TERM 2 -- the packet's target box is expanded by R on EACH AXIS, which is what bounds the
- *             motion of everything the decision reads POSITIONS of: the node's centre of mass,
- *             and under their own flags its sink, scalar-field and luminosity centres.  Per
- *             axis rather than as a ball because the bound behind vmax is max(|vx|,|vy|,|vz|),
- *             and a box of half-width R contains the ball of radius R.
- *
- * Expanding the TARGET box is how the SOURCE's motion is bounded: the decision depends on the
- * separation between the two, so letting the box grow by R admits every position the node's
- * centre of mass can reach.  A node already standing at the walk time has R = 0.
- *
- * There is deliberately NO softening term: both traversals read the same stored maxsoft, which
- * no drift path writes, so it cannot differ between them.  Whether that bound should track the
- * particles beneath it is a separate, pre-existing question about both walks.
- *
- * It writes NOTHING but its two recorders -- no forces, no interaction counts, no import notes,
- * no processed flags.  Anything it cannot decide conservatively (a pseudo-particle, a malformed
- * index) gives the packet up through the engine's own channel, and the caller answers a given-up
- * packet by drifting everything, before any force kernel runs.
- */
-struct GravPacketCoverPolicy {
-    static constexpr bool records_elements = false;   /* it evaluates nothing, so there is nothing to record */
-    static constexpr bool splits_items     = false;   /* one decision for the packet: members never diverge (see below) */
-    static constexpr bool evaluates        = false;
-    static constexpr bool team_evaluates   = false;
-    static constexpr int  local_stack      = 0;       /* never splits, so it keeps no continuations */
-    /* ONE TARGET PER PACKET, and this is the whole reason the flavour states its own size.
-     *
-     * A packet earns its keep in the evaluating flavour because its members share one traversal
-     * and then evaluate the records together -- the sharing pays for itself at the second level.
-     * This flavour has no second level: it records and returns, so a packet of Q would leave one
-     * walker traversing while Q-1 threads waited at the barrier, and it would traverse a union
-     * box over Q scattered targets, which opens far more of the tree than any single target's own
-     * box does.  Both costs, no benefit.
-     *
-     * At one target per packet the league is the candidate count, every lane walks, and the box is
-     * that target's own -- the launch shape the fused neighbour walk's discovery already uses
-     * (neighbor_loop_runner.cc, nlr_record_and_drift_for_sources: one independently parallel walk
-     * per work item, recording visitor, then one batched drift). */
-    static constexpr int  packet_size      = 1;
-
-    /* the two recorders, by value, and what the widening needs */
-    struct gpu_node_dirty_view_t nodes;
-    struct GxTouchedSet          parts;
-    int                         *anomaly;
-    struct DriftKickTableView    tables;
-
-    /* How far this node's geometry can move between this traversal and the exact one. */
-    template <class Engine>
-    KOKKOS_INLINE_FUNCTION double widen_radius(const Engine &e, int idx) const
-    {
-        const integertime node_ti = e.ctx.tree_soa.node_ti ? e.ctx.tree_soa.node_ti[idx] : e.ctx.ti;
-        if(node_ti >= e.ctx.ti) {return 0.0;}
-        const double vmax = e.ctx.tree_soa.vmax ? (double) e.ctx.tree_soa.vmax[idx] : 0.0;
-        const double dt_widen = get_drift_factor_impl(node_ti, e.ctx.ti, 1.0, &tables);
-        const double r = TREE_NODE_WIDENING_DELTA(vmax, dt_widen);
-        return (r > 0.0) ? r : 0.0;
-    }
-
-    /* Every node the walker reaches that stands behind the walk time is written down, before
-     * anything is decided about it.  Claiming here rather than at the decision is the more
-     * conservative of the two and the easier to argue: the prelude's own branches key on mass
-     * and on the topology bits, none of which a drift writes, so this set contains the one a
-     * decision-stage claim would name. */
-    template <class Engine>
-    KOKKOS_INLINE_FUNCTION void note_node(const Engine &e, int no) const
-    {
-        const int idx = no - e.ctx.treeBase;
-        const integertime node_ti = e.ctx.tree_soa.node_ti ? e.ctx.tree_soa.node_ti[idx] : e.ctx.ti;
-        if(node_ti < e.ctx.ti) {gpu_node_dirty_claim_in(nodes, no, GPU_NODE_DIRTY_OWNER_DEVICE);}
-    }
-
-    /* Every local particle leaf the traversal steps through is written down, with NO acceptance
-     * test applied first.  That is the correctness argument, not an economy: the accept test
-     * compares positions, and the positions are precisely what has not been brought current yet,
-     * so a particle that will move into range would be rejected here and then evaluated on its
-     * undrifted position by the walk that follows.  Type and mass tests would be safe, since a
-     * drift changes neither, but they buy nothing here.  (The fused neighbour walk's recording
-     * visitor states the same rule for the same reason.) */
-    template <class Engine>
-    KOKKOS_INLINE_FUNCTION gpu_grav_packet_step_t
-    visit_leaf(const Engine &e, int no, const gpu_grav_open_inputs_t *,
-               const grav_packet_mask_word_t *, grav_packet_mask_word_t *accept_mask,
-               int *, grav_walk_record_t *, grav_packet_mask_word_t *) const
-    {
-        Engine::mask_clear(accept_mask, e.plan.mask_words);
-        gx_touched_set_claim_in(parts, no, GX_TOUCHED_OWNER_GRAVITY, anomaly);
-        return GRAV_PACKET_STEP_CONTINUE;
-    }
-
-    /* ONE decision for the whole packet, over the box its members occupy, on geometry widened by
-     * the bound above.  The result is all-or-nothing by construction -- open_mask is the item's
-     * own mask or it is empty -- which is why this flavour never splits an item and needs neither
-     * a continuation stack nor a frontier. */
-    template <class Engine>
-    KOKKOS_INLINE_FUNCTION gpu_grav_packet_step_t
-    visit_node(const Engine &e, int, const gpu_grav_node_prelude_t &nd, const gpu_grav_open_inputs_t *open,
-               const grav_packet_mask_word_t *mask, grav_packet_mask_word_t *accept_mask,
-               grav_packet_mask_word_t *open_mask, int *, grav_walk_record_t *,
-               grav_packet_mask_word_t *, int &n_note, int &n_unship) const
-    {
-        const int W = e.plan.mask_words;
-        Engine::mask_clear(accept_mask, W); Engine::mask_clear(open_mask, W);
-        n_note = 0; n_unship = 0;   /* import-completeness notes belong to the walk that evaluates */
-
-        /* the packet's own extremes: the box its targets occupy, and the target-side scalars the
-           shared cover predicate reduces over (widest softening, narrowest softening, least
-           OldAcc, whether any member is a sink, the largest PM cutoff) */
-        double cover_min[3], cover_max[3];
-        double t_soft_max = 0.0, t_soft_min = 0.0, t_aold_min = 0.0;
-        double cover_rcut = 0.0, cover_rcut2 = 0.0;
-        int cover_has_sink = 0, n_members = 0;
-        for(int m = 0; m < e.q_dev; m++) {
-            if(!Engine::mask_test(mask, m)) {continue;}
-            if(!open[m].alive) {continue;}
-            const gpu_grav_open_inputs_t &o = open[m];
-            if(n_members == 0) {
-                for(int d = 0; d < 3; d++) {cover_min[d] = o.pos[d]; cover_max[d] = o.pos[d];}
-                t_soft_max = o.soft; t_soft_min = o.soft; t_aold_min = o.aold;
-#ifdef PMGRID
-                cover_rcut = o.rcut; cover_rcut2 = o.rcut2;
-#endif
-            } else {
-                for(int d = 0; d < 3; d++) {
-                    if(o.pos[d] < cover_min[d]) {cover_min[d] = o.pos[d];}
-                    if(o.pos[d] > cover_max[d]) {cover_max[d] = o.pos[d];}
-                }
-                if(o.soft > t_soft_max) {t_soft_max = o.soft;}
-                if(o.soft < t_soft_min) {t_soft_min = o.soft;}
-                if(o.aold < t_aold_min) {t_aold_min = o.aold;}
-#ifdef PMGRID
-                if(o.rcut > cover_rcut) {cover_rcut = o.rcut; cover_rcut2 = o.rcut2;}
-#endif
-            }
-            if(o.ptype == 5) {cover_has_sink = 1;}
-            n_members++;
-        }
-        if(n_members == 0) {return GRAV_PACKET_STEP_CONTINUE;}   /* empty mask: nothing descends */
-
-        const double R = widen_radius(e, nd.idx);
-        for(int d = 0; d < 3; d++) {cover_min[d] -= R; cover_max[d] += R;}
-        const double len_widened = (double) nd.len_node + R;
-
-#if (defined(SINGLE_STAR_TIMESTEPPING) || defined(SINGLE_STAR_FIND_BINARIES)) && defined(SINGLE_STAR_DIRECT_GRAVITY_RADIUS)
-        const int pred_n_sink = (int) e.ctx.tree_soa.N_SINK[nd.idx];
-#else
-        const int pred_n_sink = 0;
-#endif
-#ifdef GRAVITY_HYBRID_OPENING_CRIT
-        const int pred_is_first_step = e.ctx.is_first_step;
-#else
-        const int pred_is_first_step = 0;
-#endif
-
-        int opens = (gravtree_open_decision_cell(
-                         (double) nd.center_node[0], (double) nd.center_node[1], (double) nd.center_node[2],
-                         (double) nd.s_node[0], (double) nd.s_node[1], (double) nd.s_node[2],
-                         len_widened, (double) nd.mass_node, (double) nd.msoft_node, pred_n_sink,
-                         cover_min, cover_max, t_soft_max, t_soft_min, t_aold_min, cover_has_sink,
-                         cover_rcut, cover_rcut2, pred_is_first_step) == GRAV_OPEN_NODE);
-
-#ifdef SINGLE_STAR_DIRECT_GRAVITY
-        /* A sink member takes no star mass from this node, so it judges a DIFFERENT multipole:
-           the sinks removed and the centre of mass shifted to what is left.  Both moments are on
-           one clock, so the shifted centre moves no further than R either.  The two variants are
-           judged against the same cover box, which only ever opens more than each would alone. */
-        if(!opens && cover_has_sink && (double) e.ctx.tree_soa.sink_mass[nd.idx] > 0.0) {
-            const double sm = (double) e.ctx.tree_soa.sink_mass[nd.idx];
-            const double mass_nosink = (double) nd.mass_node - sm;
-            if(mass_nosink > 0.0) {
-                double s_nosink[3];
-                for(int d = 0; d < 3; d++) {
-                    s_nosink[d] = ((double) nd.s_node[d] * (double) nd.mass_node
-                                   - (double) e.ctx.tree_soa.sink_pos[nd.idx][d] * sm) / mass_nosink;
-                }
-                opens = (gravtree_open_decision_cell(
-                             (double) nd.center_node[0], (double) nd.center_node[1], (double) nd.center_node[2],
-                             s_nosink[0], s_nosink[1], s_nosink[2],
-                             len_widened, mass_nosink, (double) nd.msoft_node, pred_n_sink,
-                             cover_min, cover_max, t_soft_max, t_soft_min, t_aold_min, cover_has_sink,
-                             cover_rcut, cover_rcut2, pred_is_first_step) == GRAV_OPEN_NODE);
-            }
-        }
-#endif
-
-        /* A terminal import has no children here, so opening it means accepting it: there is
-           nothing below to descend into and nothing further to bring current. */
-        if(opens && !grav_node_is_terminal(nd.node_kind)) {Engine::mask_copy(open_mask, mask, W);}
-        return GRAV_PACKET_STEP_CONTINUE;
-    }
-};
-
 template <class Policy>
 struct GpuGravPacketWalk {
     using TeamMember = Kokkos::TeamPolicy<>::member_type;
@@ -2058,9 +1826,7 @@ struct GpuGravPacketWalk {
     struct gpu_grav_packet_scratch_plan_t plan;
     Vec3<double> *d_acc; int *d_ninter; double *d_pot; int *d_failed;
     int *d_fail_by_reason;   /* [GRAV_PACKET_FAIL_REASONS] packets given up, by reason */
-    /* The flavour, by value: the evaluating one is empty, the recording one carries the two
-     * recorders it claims into.  Holding it here rather than calling through the type keeps
-     * the cover flavour's state out of the masked instantiation entirely. */
+    /* The flavour, by value; it carries no state, only the per-node decisions. */
     Policy policy;
 
     /* Give the packet up, and say why.  The first reason recorded is kept: it is the one that
@@ -2204,14 +1970,12 @@ struct GpuGravPacketWalk {
                published, else come back idle and let the round boundary decide */
             if(!item_live || no == exit) {
                 item_live = 0;
-                if constexpr (Policy::splits_items) {
-                    if(local_count > 0) {
-                        const int slot = (local_head + local_count - 1) % Policy::local_stack;
-                        no = local[slot].no; exit = local[slot].exit; mask_copy(mask, lmasks + (size_t) slot * W, W);
-                        local_count--; item_live = 1; continue;
-                    }
-                    if(frontier_pop(ctr, frontier, fmasks, no, exit, mask)) {item_live = 1; continue;}
+                if(local_count > 0) {
+                    const int slot = (local_head + local_count - 1) % Policy::local_stack;
+                    no = local[slot].no; exit = local[slot].exit; mask_copy(mask, lmasks + (size_t) slot * W, W);
+                    local_count--; item_live = 1; continue;
                 }
+                if(frontier_pop(ctr, frontier, fmasks, no, exit, mask)) {item_live = 1; continue;}
                 break;
             }
             if(budget <= 0) {break;}   /* back to the round boundary, item intact */
@@ -2226,11 +1990,6 @@ struct GpuGravPacketWalk {
             }
             if(no >= pseudo_start) {fail(ctr, GRAV_PACKET_FAIL_PSEUDO); break;}   /* pseudo-particle: the host walks every member */
 
-            /* the index is a node: the flavour sees it before the prelude, which is where a
-               recording flavour writes it down -- earlier than any decision, so what it records
-               cannot depend on geometry that has not been brought current yet */
-            policy.note_node(*this, no);
-
             gpu_grav_node_prelude_t nd;
             const gpu_grav_node_step_t step = gpu_grav_node_prelude(ctx, no, nd);
             if(step == GPU_GRAV_NODE_SKIP_TO_SIBLING) {no = nd.sibling; continue;}
@@ -2244,60 +2003,50 @@ struct GpuGravPacketWalk {
             if(n_note)   {ctr_add(&ctr[GRAV_PACKET_CTR_NOTE_INCOMPLETE], n_note);}
             if(n_unship) {ctr_add(&ctr[GRAV_PACKET_CTR_NOTE_UNSHIPPABLE], n_unship);}
             if(!mask_any(open_mask, W)) {no = nd.sibling; continue;}
-            if constexpr (!Policy::splits_items) {
-                if(mask_equal(open_mask, mask, W)) {no = nd.nextnode; continue;}
-                /* A flavour that takes one decision for the whole packet leaves open_mask either
-                   the item's own mask or empty, so both branches above are taken and this is
-                   unreachable. It is a counted give-up rather than an assumption because the
-                   alternative to noticing here is a member walking a subtree it was excluded
-                   from, and the packet has a safe route out either way. */
-                fail(ctr, GRAV_PACKET_FAIL_NO_CONTINUATION); break;
-            } else {
-                /* The packet descends for the openers; the others re-join at the node's sibling
-                   through the continuation (sibling, exit, mask).
-                 *
-                 * WHERE that continuation goes is the difference between one walker and many, and
-                 * it is the whole of the cooperative traversal.
-                 *
-                 * One walker keeps it, because the only thing the frontier can do for it is hold
-                 * an overflow, and keeping the newest locally and spilling the OLDEST is what
-                 * preserves depth-first order.  It also descends in place when nobody was excluded,
-                 * since there is nothing to hand anyone.
-                 *
-                 * Several walkers OFFER it, on every open and even when nobody was excluded: a
-                 * subtree nobody can reach is a subtree the other walkers sit idle through, and
-                 * the sibling continuation is precisely the independent piece of work to give
-                 * away.  Only when the frontier is full does the walker keep it, and only when its
-                 * own stack is full too does the packet give up -- counted, and handed to the
-                 * replay, never a spin.
-                 *
-                 * An empty continuation (the node's sibling IS the item's exit) is not worth a
-                 * slot in either regime. */
-                const int share = (n_walkers > 1);
-                const int have_continuation = (nd.sibling != exit);
-                const int all_descend = mask_equal(open_mask, mask, W);
-                if(!share && all_descend) {no = nd.nextnode; continue;}   /* same item, deeper */
-                if(have_continuation) {
-                    gpu_grav_walk_item_t cont; cont.no = nd.sibling; cont.exit = exit;
-                    int placed = 0;
-                    if(share) {placed = frontier_push(ctr, frontier, fmasks, cont, mask);}
-                    if(!placed) {
-                        if(local_count == Policy::local_stack) {
-                            /* the oldest of this walker's own continuations makes room; with one
-                               walker that is the spill that keeps the local stack depth-first */
-                            gpu_grav_walk_item_t oldest = local[local_head];
-                            if(!frontier_push(ctr, frontier, fmasks, oldest, lmasks + (size_t) local_head * W)) {
-                                fail(ctr, GRAV_PACKET_FAIL_NO_CONTINUATION); break;
-                            }
-                            local_head = (local_head + 1) % Policy::local_stack; local_count--;
+            /* The packet descends for the openers; the others re-join at the node's sibling
+               through the continuation (sibling, exit, mask).
+             *
+             * WHERE that continuation goes is the difference between one walker and many, and
+             * it is the whole of the cooperative traversal.
+             *
+             * One walker keeps it, because the only thing the frontier can do for it is hold
+             * an overflow, and keeping the newest locally and spilling the OLDEST is what
+             * preserves depth-first order.  It also descends in place when nobody was excluded,
+             * since there is nothing to hand anyone.
+             *
+             * Several walkers OFFER it, on every open and even when nobody was excluded: a
+             * subtree nobody can reach is a subtree the other walkers sit idle through, and
+             * the sibling continuation is precisely the independent piece of work to give
+             * away.  Only when the frontier is full does the walker keep it, and only when its
+             * own stack is full too does the packet give up -- counted, and handed to the
+             * replay, never a spin.
+             *
+             * An empty continuation (the node's sibling IS the item's exit) is not worth a
+             * slot in either regime. */
+            const int share = (n_walkers > 1);
+            const int have_continuation = (nd.sibling != exit);
+            const int all_descend = mask_equal(open_mask, mask, W);
+            if(!share && all_descend) {no = nd.nextnode; continue;}   /* same item, deeper */
+            if(have_continuation) {
+                gpu_grav_walk_item_t cont; cont.no = nd.sibling; cont.exit = exit;
+                int placed = 0;
+                if(share) {placed = frontier_push(ctr, frontier, fmasks, cont, mask);}
+                if(!placed) {
+                    if(local_count == Policy::local_stack) {
+                        /* the oldest of this walker's own continuations makes room; with one
+                           walker that is the spill that keeps the local stack depth-first */
+                        gpu_grav_walk_item_t oldest = local[local_head];
+                        if(!frontier_push(ctr, frontier, fmasks, oldest, lmasks + (size_t) local_head * W)) {
+                            fail(ctr, GRAV_PACKET_FAIL_NO_CONTINUATION); break;
                         }
-                        const int slot = (local_head + local_count) % Policy::local_stack;
-                        local[slot] = cont; mask_copy(lmasks + (size_t) slot * W, mask, W);
-                        local_count++;
+                        local_head = (local_head + 1) % Policy::local_stack; local_count--;
                     }
+                    const int slot = (local_head + local_count) % Policy::local_stack;
+                    local[slot] = cont; mask_copy(lmasks + (size_t) slot * W, mask, W);
+                    local_count++;
                 }
-                no = nd.nextnode; exit = nd.sibling; mask_copy(mask, open_mask, W);
             }
+            no = nd.nextnode; exit = nd.sibling; mask_copy(mask, open_mask, W);
         }
         if(stepped) {ctr_add(&ctr[GRAV_PACKET_CTR_STEPPED], stepped);}
     }
@@ -2321,12 +2070,9 @@ struct GpuGravPacketWalk {
         int                      *ctr       = (int *)                      (scratch + plan.counters);
 
         /* the member this thread owns, if any; every thread publishes an entry so the
-           walker's loop over q_dev members reads only initialised inputs.
-           A flavour that decides without evaluating needs the opening inputs and nothing else,
-           so it holds no member state at all -- the accumulators are the bulk of a member, and
-           carrying them unused would cost the registers the traversal wants. */
-        typename std::conditional<Policy::evaluates, gpu_grav_member_inputs_t, gpu_grav_no_member_t>::type in;
-        typename std::conditional<Policy::evaluates, gpu_grav_member_sums_t, gpu_grav_no_member_t>::type sums;
+           walker's loop over q_dev members reads only initialised inputs */
+        gpu_grav_member_inputs_t in;
+        gpu_grav_member_sums_t sums;
         const int have_member = (t < q_eff);
         /* The lanes that EVALUATE a member are not the lanes that traverse.  In the flavour whose team
          * evaluates, every thread walks and, once the chunk is full, every thread also evaluates, the
@@ -2334,35 +2080,28 @@ struct GpuGravPacketWalk {
          * records are spread over the team instead of queuing on one thread while the rest wait at
          * the barrier.  Otherwise lanes == 1: one thread per member. */
         const int lanes    = (Policy::team_evaluates && q_eff > 0) ? (team.team_size() / q_eff) : 1;
-        const int serves   = (Policy::evaluates && q_eff > 0 && t < lanes * q_eff) ? 1 : 0;
+        const int serves   = (q_eff > 0 && t < lanes * q_eff) ? 1 : 0;
         const int member   = serves ? (t / lanes) : 0;   /* which member this thread evaluates for */
         const int sub_lane = serves ? (t % lanes) : 0;
         if(have_member) {
-            if constexpr (Policy::evaluates) {
-                if constexpr (Policy::team_evaluates) {   /* published, for every lane working on this member */
-                    gpu_grav_member_inputs_t *member_inputs = (gpu_grav_member_inputs_t *) (scratch + plan.member_inputs);
-                    (void) gpu_grav_member_inputs_init(ctx, d_idx[first + t], member_inputs[t]);
-                    open[t] = member_inputs[t].open;
-                } else {               /* this thread is the member's only lane */
-                    (void) gpu_grav_member_inputs_init(ctx, d_idx[first + t], in);
-                    open[t] = in.open;
-                }
-            } else {
-                double pmass_unused = 0.0, zeta_unused = 0.0; grav_pm_shortrange_t pm_unused;
-                (void) gpu_grav_open_inputs_init(ctx, d_idx[first + t], open[t], pmass_unused, zeta_unused, pm_unused);
+            if constexpr (Policy::team_evaluates) {   /* published, for every lane working on this member */
+                gpu_grav_member_inputs_t *member_inputs = (gpu_grav_member_inputs_t *) (scratch + plan.member_inputs);
+                (void) gpu_grav_member_inputs_init(ctx, d_idx[first + t], member_inputs[t]);
+                open[t] = member_inputs[t].open;
+            } else {               /* this thread is the member's only lane */
+                (void) gpu_grav_member_inputs_init(ctx, d_idx[first + t], in);
+                open[t] = in.open;
             }
         } else if(t < q_dev) {
             open[t].alive = 0;
         }
         if(t == 0) {for(int c = 0; c < GRAV_PACKET_CTR_COUNT; c++) {ctr[c] = 0;}}
         team.team_barrier();
-        if constexpr (Policy::evaluates) {
-            /* every thread holds a partial sum, at the identity until it evaluates something, and a
-               thread that evaluates holds its member's inputs */
-            gpu_grav_member_sums_init(sums);
-            if constexpr (Policy::team_evaluates) {
-                if(serves) {in = ((const gpu_grav_member_inputs_t *) (scratch + plan.member_inputs))[member];}
-            }
+        /* every thread holds a partial sum, at the identity until it evaluates something, and a
+           thread that evaluates holds its member's inputs */
+        gpu_grav_member_sums_init(sums);
+        if constexpr (Policy::team_evaluates) {
+            if(serves) {in = ((const gpu_grav_member_inputs_t *) (scratch + plan.member_inputs))[member];}
         }
 
         /* Every thread below n_walkers traverses; the root item starts with one of them and the
@@ -2391,7 +2130,7 @@ struct GpuGravPacketWalk {
              * nothing was popped the two blocks are already adjacent and nothing moves at all. */
             /* read before the compaction writes anything, so no thread is reading a counter
                another is settling */
-            const int chunk_full = Policy::records_elements && (ctr[GRAV_PACKET_CTR_RECORDS] >= chunk_cap);
+            const int chunk_full = (ctr[GRAV_PACKET_CTR_RECORDS] >= chunk_cap);
             const int fr_pub    = ctr[GRAV_PACKET_CTR_FR_PUB];
             const int fr_taken  = (ctr[GRAV_PACKET_CTR_FR_TAKEN] < fr_pub) ? ctr[GRAV_PACKET_CTR_FR_TAKEN] : fr_pub;
             const int survivors = fr_pub - fr_taken;
@@ -2442,23 +2181,21 @@ struct GpuGravPacketWalk {
             if(ctr[GRAV_PACKET_CTR_FAILED]) {break;}
 
             /* the chunk is full, or the traversal has finished: every member evaluates its records */
-            if constexpr (Policy::records_elements) {
-                if(ctr[GRAV_PACKET_CTR_RECORDS] > 0 && (chunk_full || ctr[GRAV_PACKET_CTR_DONE])) {
-                    /* the member's lanes take its records in turn: lane k of the member takes
-                       records k, k + lanes, k + 2*lanes, ... that carry the member's bit */
-                    if(serves && in.open.alive) {
-                        const int n_rec = ctr[GRAV_PACKET_CTR_RECORDS];
-                        for(int r = sub_lane; r < n_rec; r += lanes) {
-                            if(!mask_test(rmasks + (size_t) r * W, member)) {continue;}
-                            /* A record this member cannot reproduce fails the whole packet, exactly as a
-                               pseudo-particle does: nothing this team computed is
-                               committed, and the replay walks every member again. */
-                            if(!evaluate_record(records[r].no, in, sums)) {fail(ctr, GRAV_PACKET_FAIL_RECORD_UNUSABLE); break;}
-                        }
+            if(ctr[GRAV_PACKET_CTR_RECORDS] > 0 && (chunk_full || ctr[GRAV_PACKET_CTR_DONE])) {
+                /* the member's lanes take its records in turn: lane k of the member takes
+                   records k, k + lanes, k + 2*lanes, ... that carry the member's bit */
+                if(serves && in.open.alive) {
+                    const int n_rec = ctr[GRAV_PACKET_CTR_RECORDS];
+                    for(int r = sub_lane; r < n_rec; r += lanes) {
+                        if(!mask_test(rmasks + (size_t) r * W, member)) {continue;}
+                        /* A record this member cannot reproduce fails the whole packet, exactly as a
+                           pseudo-particle does: nothing this team computed is
+                           committed, and the replay walks every member again. */
+                        if(!evaluate_record(records[r].no, in, sums)) {fail(ctr, GRAV_PACKET_FAIL_RECORD_UNUSABLE); break;}
                     }
-                    team.team_barrier();
-                    if(t == 0) {ctr[GRAV_PACKET_CTR_RECORDS] = 0;}
                 }
+                team.team_barrier();
+                if(t == 0) {ctr[GRAV_PACKET_CTR_RECORDS] = 0;}
             }
             team.team_barrier();
             if(ctr[GRAV_PACKET_CTR_FAILED]) {break;}
@@ -2480,27 +2217,23 @@ struct GpuGravPacketWalk {
             if(have_member && d_failed) {d_failed[first + t] = 1;}
             return;
         }
-        /* A flavour that only records writes NOTHING but its recorders -- not the import-note
-           ledger, not a target output -- so the commit below belongs to the evaluating one. */
-        if constexpr (Policy::evaluates) {
-            /* Fold each member's partial sums into its first lane: every thread leaves its whole partial
-               in team scratch, and the first lane of each member takes in the others in lane order.  A
-               thread working on no member leaves the identity it was initialised to.  `lanes` is the same
-               on every thread of the team, so the whole team takes this branch together or not at all. */
-            if constexpr (Policy::team_evaluates) {
-                if(lanes > 1) {
-                    gpu_grav_member_sums_t *partials = (gpu_grav_member_sums_t *) (scratch + plan.member_fold);
-                    partials[t] = sums;
-                    team.team_barrier();
-                    if(serves && sub_lane == 0) {for(int j = 1; j < lanes; j++) {gpu_grav_member_sums_combine(sums, partials[t + j], in.open.ptype);}}
-                }
+        /* Fold each member's partial sums into its first lane: every thread leaves its whole partial
+           in team scratch, and the first lane of each member takes in the others in lane order.  A
+           thread working on no member leaves the identity it was initialised to.  `lanes` is the same
+           on every thread of the team, so the whole team takes this branch together or not at all. */
+        if constexpr (Policy::team_evaluates) {
+            if(lanes > 1) {
+                gpu_grav_member_sums_t *partials = (gpu_grav_member_sums_t *) (scratch + plan.member_fold);
+                partials[t] = sums;
+                team.team_barrier();
+                if(serves && sub_lane == 0) {for(int j = 1; j < lanes; j++) {gpu_grav_member_sums_combine(sums, partials[t + j], in.open.ptype);}}
             }
-            if(t == 0) {gpu_grav_note_commit(ctr[GRAV_PACKET_CTR_NOTE_INCOMPLETE], ctr[GRAV_PACKET_CTR_NOTE_UNSHIPPABLE]);}
-            if(serves && sub_lane == 0) {
-                Vec3<double> acc = Vec3<double>{0,0,0}; int ninter = 0; double pot = 0.0;
-                if(in.open.alive) {gpu_grav_member_finish(ctx, in, sums, acc, ninter, pot);}
-                d_acc[first + member] = acc; d_ninter[first + member] = ninter; d_pot[first + member] = pot; d_failed[first + member] = 0;
-            }
+        }
+        if(t == 0) {gpu_grav_note_commit(ctr[GRAV_PACKET_CTR_NOTE_INCOMPLETE], ctr[GRAV_PACKET_CTR_NOTE_UNSHIPPABLE]);}
+        if(serves && sub_lane == 0) {
+            Vec3<double> acc = Vec3<double>{0,0,0}; int ninter = 0; double pot = 0.0;
+            if(in.open.alive) {gpu_grav_member_finish(ctx, in, sums, acc, ninter, pot);}
+            d_acc[first + member] = acc; d_ninter[first + member] = ninter; d_pot[first + member] = pot; d_failed[first + member] = 0;
         }
     }
 };
@@ -2532,10 +2265,9 @@ extern "C" int gpu_gravtree_packet_failure_reasons(void) {return GRAV_PACKET_FAI
  * Returns 0 on success (outputs and d_failed filled per candidate), 1 if no legal shape exists
  * for this build, in which case the caller uses the single-target walk.
  *
- * Every capacity comes from the flavour's own traits, so the instantiation that neither records
- * nor splits asks for none of that storage and is priced accordingly by team_size_max -- the
- * scratch request is what the legality bound reads, so a region left in "because it is unused
- * anyway" would still cost occupancy.
+ * Only the shape decides the scratch: the frontier exists only for several walkers, and the
+ * team-evaluation regions only for the team flavour -- the scratch request is what the legality
+ * bound reads, so a region left in "because it is unused anyway" would still cost occupancy.
  *
  * The team is NOT the packet width: it is the row's, and the members are the configured packet
  * size when that is narrower, a configured size above the team being walked as several packets of
@@ -2686,15 +2418,13 @@ static int gpu_grav_packet_launch_row(GpuGravPacketWalk<Policy> &f, const struct
          * evaluate its records in parallel, while the team's threads share the descent that
          * traversal makes. Forcing one member here -- which this did -- discards the first level
          * entirely, so the tree was walked once per target rather than once per packet and the
-         * flush ran on a single lane of the team. That is the reasoning that belongs to the
-         * DISCOVERY flavour, which has no second level and states its own packet_size of 1 as a
-         * trait; it does not transfer to the flavour that evaluates. */
+         * flush ran on a single lane of the team. */
         f.q_dev = (Policy::packet_size < team) ? Policy::packet_size : team;
-        f.n_walkers = Policy::splits_items ? ((r.n_walkers < team) ? r.n_walkers : team) : 1;
+        f.n_walkers = (r.n_walkers < team) ? r.n_walkers : team;
         f.steps_per_round = r.steps_per_round;
-        f.frontier_cap = (Policy::splits_items && f.n_walkers > 1)
+        f.frontier_cap = (f.n_walkers > 1)
                              ? ((r.frontier_mul * team > 16) ? r.frontier_mul * team : 16) : 0;
-        f.chunk_cap    = Policy::records_elements ? r.chunk : 0;
+        f.chunk_cap    = r.chunk;
         f.plan = gpu_grav_packet_scratch_plan(f.q_dev, team, f.frontier_cap, f.chunk_cap, Policy::local_stack, Policy::team_evaluates);
         /* the legality bound is asked of a probe policy carrying the same scratch request: a
            policy constructed at an illegal team size throws before it can be asked anything */
@@ -2725,18 +2455,12 @@ static int gpu_grav_packet_launch_row(GpuGravPacketWalk<Policy> &f, const struct
  * Returns 0 when the engine ran and filled the outputs, 1 when the call should take the ORDINARY
  * device schedule -- the single-target walk the caller already has. ⛔ A 1 here never means "use
  * the host": the host/device decision was taken before this function was reached and is not
- * revisited by it.
- *
- * A flavour that judges a whole packet at once has no second level to fill and keeps the
- * single-walker shape it was built and gated with, whatever the schedules say. */
+ * revisited by it. */
 template <class Policy>
 static int gpu_grav_packet_launch(GpuGravPacketWalk<Policy> &f, const char *kernel_name,
                                   struct gpu_grav_packet_shape_t *shape_out)
 {
-    if constexpr (!Policy::splits_items) {
-        const struct gpu_grav_sched_row_t solo = {GRAV_SCHED_PACKET, 1, 1, 0, 256, 64};
-        return gpu_grav_packet_launch_row(f, solo, -1, -1, kernel_name, shape_out);
-    } else if constexpr (Policy::team_evaluates) {
+    if constexpr (Policy::team_evaluates) {
         /* The flavour for a team wider than its packet is taken only where the criterion gives
          * every target a whole team, so this is the cooperative row.  ONE attempt, at the row the
          * criterion chose. There is deliberately no step-down to a narrower cooperative team: a

@@ -3844,7 +3844,7 @@ struct NlrRecordLeaf {
         const struct particle_data &Pj = P[j];
         if(!(supply_mask & (1u << (unsigned int)Pj.Type))) {return;}
         if(Pj.Mass <= 0) {return;}
-        /* The one claim, shared with the gravity discovery pre-walk.  A full list or an
+        /* The one claim.  A full list or an
          * out-of-phase claim is reported rather than dropped, because a dropped index is a
          * particle silently evaluated at a stale position -- the one failure this design
          * must not be able to have quietly. */

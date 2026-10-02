@@ -25,8 +25,7 @@
  * distinct: one says the tree cannot be walked, one says a caller's own bookkeeping broke, one
  * says a claim arrived outside its owner's phase.  Zero means nothing was reported; callers test
  * against it and must not assume 1.  How fatal each is belongs to the caller, not to the code:
- * the fused walk stops the run on any of them, while the gravity pre-walk answers an out-of-phase
- * claim by declining to the full drift it already has. */
+ * the fused walk stops the run on any of them. */
 #define GX_WALK_ANOMALY_MALFORMED_TREE       1  /* index in no class, or an unfilled view */
 #define GX_WALK_ANOMALY_TOUCHED_SET_FULL     2  /* touched-set list shorter than the set it recorded */
 #define GX_WALK_ANOMALY_RECORDER_OUT_OF_PHASE 3 /* a claim in an epoch its owner does not hold */
@@ -100,8 +99,7 @@ struct gpu_node_dirty_view_t gpu_node_dirty_view(void);
  * THE PARTICLE TOUCHED SET
  * ========================================================================== */
 
-/* THE claim, and the only one -- the fused walk's recording visitor and the gravity discovery
- * pre-walk both come through here.
+/* THE claim, and the only one -- the fused walk's recording visitor comes through here.
  *
  * `owner` is the phase the caller believes it is in, checked against the owner the host wrote
  * when it opened the epoch and carried by value in the view.  It is what stops one caller

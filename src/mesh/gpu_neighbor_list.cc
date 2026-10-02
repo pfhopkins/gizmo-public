@@ -1809,7 +1809,7 @@ static void touched_report_once_(int *latch, const char *what)
  * ⚠ A refusal is NOT self-healing.  The generation is deliberately not advanced, so the
  * previous epoch's stamps still stand and the particles carrying them can no longer re-enter
  * the list.  Every caller therefore has to ACT on a refusal -- the fused walk declines the
- * whole call collectively, the gravity pre-walk takes the full drift -- and none of them may
+ * whole call collectively -- and none of them may
  * proceed as if the epoch had opened. */
 int gx_touched_set_begin_epoch_owned(int owner)
 {

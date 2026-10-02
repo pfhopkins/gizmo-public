@@ -435,7 +435,7 @@ int gx_device_fused_walk_prepare(struct GxDeviceTreeView *out, const char *calle
  * `begin_epoch_owned` is the general form and `begin_call` is the fused walk's wrapper for it.
  * It REFUSES (nonzero, recorder untouched) while claims are still outstanding, so a second
  * caller can never advance the generation over another's live stamps; a refused caller takes
- * its own safe route -- for the gravity pre-walk, the full particle drift it already has.
+ * its own safe route.
  * `retire` closes an epoch so that any later claim reports itself as out of phase.  The claim
  * itself is device-callable and lives in declarations/gpu_recorder_claim.h, because its body
  * needs Kokkos and this header is read by host-only units. */

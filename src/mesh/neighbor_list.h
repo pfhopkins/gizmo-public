@@ -154,8 +154,7 @@ struct GxDeviceTreeView {
  * out of phase, which is what makes a claim from a kernel that outlived its epoch visible. */
 enum gx_touched_owner_t {
     GX_TOUCHED_OWNER_NONE       = 0,
-    GX_TOUCHED_OWNER_FUSED_WALK = 1,   /* the Mode-D fused walk's discovery passes */
-    GX_TOUCHED_OWNER_GRAVITY    = 2    /* the device gravity walk's one-shot discovery pre-walk */
+    GX_TOUCHED_OWNER_FUSED_WALK = 1    /* the Mode-D fused walk's discovery passes */
 };
 
 struct GxTouchedSet {
