@@ -19,6 +19,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <type_traits>
+
 #include <Kokkos_Core.hpp>
 
 #include "../declarations/gpu_all_mirror.h"
@@ -36,7 +38,9 @@
 #include "../system/gpu_particles_arena.h"
 #include "../core/timestep_functions.h"   /* Hermite source eligibility + prediction, shared verbatim with the host walk */
 #include "../declarations/gpu_error_check.h"
+#include "../declarations/gpu_dispatch_templates.h"   /* the backend's lane count, which decides how lanes spread over targets */
 #include "gpu_gravity_tree.h"
+#include "../mesh/gpu_neighbor_list.h"            /* the particle touched set's epoch lifecycle (host side) */
 #include "gpu_gravtree.h"
 #include "forcetree.h"
 #include "gravity_box_distance.h"   /* shared CPU/GPU gravity box-distance SSOT */
@@ -46,6 +50,7 @@
 #include "../mesh/kernel.h"
 #include "gravtree_force_kernel.h"  /* shared CPU/GPU accepted-source contribution physics (SSOT) */
 #include "gravtree_ewald.h"         /* shared CPU/GPU Ewald image-correction trilinear interp (SSOT) */
+#include "gravtree_moment_kernel.h" /* the node-motion arithmetic the drift runs, for predicting a node on read */
 #include "pm_highres_region.h"      /* pmforce_is_particle_high_res SSOT (device-callable) */
 /* gravtree_moment_sources.h (the SSOT source-input fill helper) is included further
  * below, AFTER the device-callable source cores, so that in this DEVICE_TU the helper
@@ -209,30 +214,58 @@ struct gpu_ewald_pot_data_t {
 
 /* Hermite pass state for the device walk. HermiteOnlyFlag and TimeBinActive[] are host
  * globals, so the walk cannot read them; the host snapshots them into a few words and
- * passes them by value, together with the drift/kick table mirror the prediction needs.
+ * passes them by value (the prediction reads the walk's own drift/kick table view).
  * No device allocation and no per-particle array -- this is the few-body regime, where a
  * pass over the particles would cost more than the walk it serves. */
 #ifdef HERMITE_INTEGRATION
 struct gpu_hermite_walk_data_t {
     struct HermiteWalkState   state;
-    struct DriftKickTableView tables;
 };
 #endif
 
-#ifdef HERMITE_INTEGRATION
-/* SharedSpace mirror of the drift/kick tables, allocated on first use and reused. Stays NULL
-   on a non-cosmological run, which every Hermite few-body problem is: the refresh below
-   returns an elapsed-time view that reads no table at all. */
-static double *hermite_drift_kick_table_dev = NULL;
+/* A source the walk found standing AHEAD of the walk time.  No drift produces that state, so it is
+ * not a case to route around: the walk reads the source as stored, counts it and keeps the first
+ * offender, and the host stops the run once the kernel has finished. */
+struct gpu_grav_time_fault_t {
+    int n_particles, n_nodes;   /* sources found ahead, counted at every read */
+    int claimed;                /* the first reader to raise this writes the offender below */
+    int first_no;
+    integertime first_ti;
+};
 
-extern "C" void gpu_gravtree_hermite_release(void)
+static KOKKOS_INLINE_FUNCTION void
+gpu_grav_note_source_ahead(struct gpu_grav_time_fault_t *fault, int is_node, int no, integertime ti_source)
 {
-    if(hermite_drift_kick_table_dev) {
-        Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(hermite_drift_kick_table_dev);
-        hermite_drift_kick_table_dev = NULL;
+    Kokkos::atomic_add(is_node ? &fault->n_nodes : &fault->n_particles, 1);
+    if(Kokkos::atomic_fetch_add(&fault->claimed, 1) == 0) {fault->first_no = no; fault->first_ti = ti_source;}
+}
+
+/* Host, once the walk's kernels have finished: a source found ahead of the walk time means this pass
+ * read a state no drift produces, so its forces are not valid.  Report the first offender and stop. */
+static void gpu_grav_report_time_fault(const char *walk, const struct gpu_grav_time_fault_t *fault, integertime ti, int errorcode)
+{
+    if(fault->n_particles == 0 && fault->n_nodes == 0) {return;}
+    printf("%s: task %d: %d particle and %d node reads found a source AHEAD of the walk time %lld (first: index %d at %lld); no drift produces that state\n",
+           walk, ThisTask, fault->n_particles, fault->n_nodes, (long long) ti, fault->first_no, (long long) fault->first_ti);
+    fflush(stdout);
+    endrun(errorcode);
+}
+
+/* This translation unit's SharedSpace mirror of the drift/gravkick tables, allocated on first
+ * use and reused.  Every device walk here reads it, to predict a source to the walk time and for
+ * the Hermite source prediction.  One storage, because a device symbol cannot be shared across
+ * translation units without relocatable device code and a second copy of the same 16 KB table
+ * would have to be kept in step with this one.  Stays NULL on a non-cosmological run: the refresh returns an
+ * elapsed-time view that reads no table at all. */
+static double *tu_drift_kick_table_dev = NULL;
+
+extern "C" void gpu_gravtree_tables_release(void)
+{
+    if(tu_drift_kick_table_dev) {
+        Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(tu_drift_kick_table_dev);
+        tu_drift_kick_table_dev = NULL;
     }
 }
-#endif
 
 /* Host: acquire the Ewald tables (idempotent) and fill the potential POD.
  * Returns 0 on success (out->active=1), nonzero if the tables are not ready
@@ -259,10 +292,9 @@ static int gpu_ewald_acquire_pot_data(struct gpu_ewald_pot_data_t *out);
  * The type-4 mass-based softening override lives in compute_force_softening_kernel_radius()
  * (forcetree.cc:67-69) and is read on GPU as Pp[p].ForceSoftening — single source of truth. */
 /* GALSF_MERGER_STARCLUSTER_PARTICLES (type-4 star cluster softening via
- * StarParticleEffectiveSize) handled inline in gpu_force_softening_kernel_radius
- * below. */
-/* ADAPTIVE_GRAVSOFT_MAX_SOFT_HARD_LIMIT (type-0 softening cap) handled inline
- * in gpu_force_softening_kernel_radius below. */
+ * StarParticleEffectiveSize) and ADAPTIVE_GRAVSOFT_MAX_SOFT_HARD_LIMIT (type-0 softening
+ * cap): both live in compute_force_softening_kernel_radius(), and the walk reads the
+ * result from the same P[i].ForceSoftening cache. */
 /* COMPUTE_TIDAL_TENSOR_IN_GRAVTREE + COMPUTE_JERK_IN_GRAVTREE: ported (ATFU).
  * Tidal tensor accumulation + jerk both mirror forcetree.cc:2081-2292.
  * All sub-cases are ported; see the entries below for details. */
@@ -338,188 +370,359 @@ static int gpu_ewald_acquire_pot_data(struct gpu_ewald_pot_data_t *out);
 
 
 /* -------------------------------------------------------------------------
- * gpu_gravtree_walk_one — device-side walk for a single target particle.
+ * The device walk, in units.
  *
- * Returns 1 on success (acc written), 0 on failure (pseudo-particle hit;
- * host must run CPU walk for this target).  Mirrors force_treeevaluate():
- * the opening decisions and the payload loads are written here against the
- * SoA / P_dev storage, and each accepted element is then evaluated by the
- * same grav_pair_evaluate_core (gravtree_force_kernel.h) the CPU walk uses.
- * The entries in the ledger above that place a term "in the force kernel"
- * refer to that shared evaluation.
- * RT payloads (RT_USE_GRAVTREE, treecol, CHIMES, FIRE longrange)
- * are included here; they accumulate into CellP_dev[target] which the host
- * scatter loop copies back to CellP[].
+ * A walk has a per-call context (the tree and the tables, read-only), a member
+ * (one target: its fixed inputs to the opening decision and the pair evaluation,
+ * and everything it accumulates), and per-element steps: a member-independent
+ * node prelude, a per-member decision, and a per-member evaluation of an accepted
+ * element through the SoA / P_dev adapter and the shared pair seam
+ * (grav_pair_evaluate_core, gravtree_force_kernel.h -- the CPU walk uses the
+ * same seam). gpu_gravtree_walk_one composes them for one target, evaluating each
+ * accepted element at encounter; a packet walk composes the same units for several
+ * targets sharing one traversal, recording elements and evaluating later. Every
+ * unit has one call site per walk so the compiler keeps a member in registers.
  * ---------------------------------------------------------------------- */
-static KOKKOS_INLINE_FUNCTION int
-gpu_gravtree_walk_one(int target,
-                      int treeBase, int treeParticleSlots, int maxNodes, int maxForeignNodes,    /* foreign-node range size; pseudos start at treeBase+maxNodes+maxForeignNodes */
-                      struct particle_data *P_dev,
-                      struct gas_cell_data *CellP_dev,
-                      const struct gpu_gravity_tree_soa_t *tree_soa,
+
+/* Per-call inputs, captured by value into the kernel. */
+struct gpu_grav_walk_ctx_t {
+    int treeBase, treeParticleSlots, maxNodes, maxForeignNodes;   /* pseudos start at treeBase+maxNodes+maxForeignNodes */
+    struct particle_data *P_dev;
+    struct gas_cell_data *CellP_dev;
+    integertime ti;   /* the walk time: every source is read as it stands at this time, predicted there if it is behind */
+    struct gpu_gravity_tree_soa_t tree_soa;   /* the SoA handle set, by value (a struct of pointers into SharedSpace) */
+    struct extNODE *Extnodes;   /* the node arrays (shifted like Nodes), read only for the pending momenta of a kicked node */
+    struct DriftKickTableView tables;   /* the drift/kick factors a prediction reads */
+    struct gpu_grav_time_fault_t *time_fault;   /* sources found ahead of the walk time (see its definition) */
 #ifdef GRAVITY_HYBRID_OPENING_CRIT
-                      int is_first_step,   /* hybrid opening: relative criterion applies only after step 0 */
+    int is_first_step;   /* hybrid opening: relative criterion applies only after step 0 */
 #endif
-                      grav_pm_shortrange_t pm,   /* PM short-range config by value (empty when !PMGRID); per-target PLACEHIGHRESREGION override below mutates this local copy */
+    grav_pm_shortrange_t pm;   /* PM short-range config (empty when !PMGRID); a member overrides its copy under PM_PLACEHIGHRESREGION */
 #ifdef RT_USE_GRAVTREE
-                      const struct gpu_rt_walk_data_t *rt_data,
+    struct gpu_rt_walk_data_t rt_data;
 #endif
 #ifdef SINK_PHOTONMOMENTUM
-                      const struct gpu_sink_walk_data_t *sink_data,
+    struct gpu_sink_walk_data_t sink_data;
 #endif
 #ifdef COSMIC_RAY_SUBGRID_LEBRON
-                      const struct gpu_cr_walk_data_t *cr_data,
+    struct gpu_cr_walk_data_t cr_data;
 #endif
-                      bool use_lazy_source,   /* evaluate the source payload on-device at each local open (no dense eager arrays; d_src_lum/d_bh_lum/d_cr_inject are NULL) */
+    bool use_lazy_source;   /* evaluate the source payload on-device at each local leaf (no dense eager arrays) */
 #ifdef HERMITE_INTEGRATION
-                      struct gpu_hermite_walk_data_t hermite,   /* Hermite pass state, by value (a few words) */
+    struct gpu_hermite_walk_data_t hermite;   /* Hermite pass state, by value (a few words) */
 #endif
-                      const struct gpu_ewald_pot_data_t *ewald_pot,  /* periodic-image potential correction (unconditional; read only under the pure-tree-periodic EVALPOTENTIAL gate) */
-                      Vec3<double> &acc_out,
-                      int &ninter_out,
-                      double &pot_out)
+    struct gpu_ewald_pot_data_t ewald_pot;   /* periodic-image potential correction (read only under the pure-tree-periodic EVALPOTENTIAL gate) */
+};
+
+/* One target of a walk: its inputs to the opening decision and to the pair
+ * evaluation, fixed for the walk, and everything the walk accumulates for it.
+ * Mirrors the CPU walk's member (forcetree.cc). */
+/* What the opening decision reads about a target at every node. A packet walk keeps a
+ * copy of every member's in team scratch, where every walker reads them. */
+struct gpu_grav_open_inputs_t {
+    Vec3<double> pos; int ptype; double soft, aold;
+#ifdef PMGRID
+    double rcut, rcut2;
+#endif
+    int alive;   /* 0 for a massless target, which takes part in nothing */
+};
+
+/* A member is split in two.  The INPUTS are fixed for the walk: what the opening decision and the
+ * pair evaluation read about the target.  The SUMS are everything the walk accumulates for it.  A
+ * packet team holds one copy of a member's inputs and gives each of the lanes working on that member
+ * its own sums, folded together when the packet commits; every field of the sums is listed, with the
+ * rule that combines it, in gpu_grav_member_sums_combine below. */
+struct gpu_grav_member_inputs_t {
+    int target;
+    struct gpu_grav_open_inputs_t open;
+    /* pair evaluation inputs */
+    double pmass, zeta;
+    grav_pair_tgt_t tgt;
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(SINK_DYNFRICTION_FROMTREE) || defined(COMPUTE_JERK_IN_GRAVTREE)
+    Vec3<double> vel;
+#endif
+#ifdef GRAVITY_SPHERICAL_SYMMETRY
+    double sph_center[3];
+#endif
+#ifdef RT_USE_GRAVTREE
+    int valid_gas_particle_for_rt;   /* read into a volatile local at each use: nvc++ constant-propagates a plain gate inside the walk loop */
+#if defined(RT_LEBRON) && !defined(RT_USE_GRAVTREE_SAVE_RAD_FLUX)
+    double fac_stellum[N_RT_FREQ_BINS];
+#endif
+#endif
+#ifdef COSMIC_RAY_SUBGRID_LEBRON
+    int cr_active_gate;
+#endif
+#ifdef SINK_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
+    double r_for_total_menclosed;
+#endif
+};
+
+struct gpu_grav_member_sums_t {
+    grav_pair_acc_t out;
+#ifdef COUNT_MASS_IN_GRAVTREE
+    double tree_mass;
+#endif
+#ifdef SINK_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
+    double m_enc_in_rcrit;
+#endif
+#ifdef RT_USE_TREECOL_FOR_NH
+    double treecol_angular_bins[RT_USE_TREECOL_FOR_NH];
+#endif
+#ifdef SINK_COMPTON_HEATING
+    double incident_flux_agn;
+#endif
+#ifdef COSMIC_RAY_SUBGRID_LEBRON
+    double SubGrid_CosmicRayEnergyDensity;
+#endif
+#ifdef CHIMES_STELLAR_FLUXES
+    double chimes_flux_G0[CHIMES_LOCAL_UV_NBINS], chimes_flux_ion[CHIMES_LOCAL_UV_NBINS];
+#endif
+#ifdef RT_OTVET
+    SymmetricTensor2<double> RT_ET[N_RT_FREQ_BINS];
+#endif
+#ifdef GALSF_FB_FIRE_RT_LONGRANGE
+    double incident_flux_uv, incident_flux_euv;
+#endif
+#if defined(RT_USE_GRAVTREE_SAVE_RAD_ENERGY)
+    double Rad_E_gamma[N_RT_FREQ_BINS];
+#endif
+#if defined(RT_USE_GRAVTREE_SAVE_RAD_FLUX)
+    Vec3<double> Rad_Flux[N_RT_FREQ_BINS];
+#endif
+#ifdef SINK_CALC_DISTANCES
+    grav_sink_prox_accum_t sink_prox;   /* nearest-sink + single-star timestep/binary accumulators (shared with the CPU walk) */
+#endif
+};
+
+/* Every field of the sums, with the rule that combines two partial sums of the same member into one:
+ * `a` takes in `b`.  THE single list for this member: a field added to gpu_grav_member_sums_t is added
+ * here in the same edit, or the packet engine's fold silently drops it (the pair and sink-proximity
+ * accumulators carry their own rules beside their definitions).  Every rule is a sum, a minimum, or a
+ * minimum carrying the fields that describe what attained it; on equal minima `a` keeps its own.
+ * target_ptype is the member's type, which the sink-proximity rules need. */
+KOKKOS_INLINE_FUNCTION void gpu_grav_member_sums_combine(gpu_grav_member_sums_t &a, const gpu_grav_member_sums_t &b, int target_ptype)
 {
-    Vec3<double> pos = P_dev[target].Pos;
-    int ptype = P_dev[target].Type;
-    double pmass = P_dev[target].Mass;
-    if(pmass <= 0) {acc_out = Vec3<double>{0,0,0}; ninter_out = 0; pot_out = 0.0; return 1;}
+    grav_pair_acc_combine(a.out, b.out);
+#ifdef COUNT_MASS_IN_GRAVTREE
+    a.tree_mass += b.tree_mass;
+#endif
+#ifdef SINK_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
+    a.m_enc_in_rcrit += b.m_enc_in_rcrit;
+#endif
+#ifdef RT_USE_TREECOL_FOR_NH
+    for(int k = 0; k < RT_USE_TREECOL_FOR_NH; k++) {a.treecol_angular_bins[k] += b.treecol_angular_bins[k];}
+#endif
+#ifdef SINK_COMPTON_HEATING
+    a.incident_flux_agn += b.incident_flux_agn;
+#endif
+#ifdef COSMIC_RAY_SUBGRID_LEBRON
+    a.SubGrid_CosmicRayEnergyDensity += b.SubGrid_CosmicRayEnergyDensity;
+#endif
+#ifdef CHIMES_STELLAR_FLUXES
+    for(int k = 0; k < CHIMES_LOCAL_UV_NBINS; k++) {a.chimes_flux_G0[k] += b.chimes_flux_G0[k]; a.chimes_flux_ion[k] += b.chimes_flux_ion[k];}
+#endif
+#ifdef RT_OTVET
+    for(int f = 0; f < N_RT_FREQ_BINS; f++) {for(int k = 0; k < 6; k++) {a.RT_ET[f].data[k] += b.RT_ET[f].data[k];}}
+#endif
+#ifdef GALSF_FB_FIRE_RT_LONGRANGE
+    a.incident_flux_uv += b.incident_flux_uv; a.incident_flux_euv += b.incident_flux_euv;
+#endif
+#if defined(RT_USE_GRAVTREE_SAVE_RAD_ENERGY)
+    for(int f = 0; f < N_RT_FREQ_BINS; f++) {a.Rad_E_gamma[f] += b.Rad_E_gamma[f];}
+#endif
+#if defined(RT_USE_GRAVTREE_SAVE_RAD_FLUX)
+    for(int f = 0; f < N_RT_FREQ_BINS; f++) {for(int k = 0; k < 3; k++) {a.Rad_Flux[f][k] += b.Rad_Flux[f][k];}}
+#endif
+#ifdef SINK_CALC_DISTANCES
+    grav_sink_prox_accum_combine(a.sink_prox, b.sink_prox, target_ptype);
+#endif
+    (void) target_ptype;
+}
+
+/* The single-target walk holds both halves itself. */
+struct gpu_grav_member_t {
+    gpu_grav_member_inputs_t in;
+    gpu_grav_member_sums_t sums;
+};
+
+/* What an accepted element carries from its load to the shared evaluation, beyond
+ * the pair inputs in grav_pair_src_t: the payload values the walker-local blocks
+ * consume. Set on every path that reaches the evaluation. */
+struct gpu_grav_src_payload_t {
+#ifdef GRAVTREE_CALCULATE_GAS_MASS_IN_NODE
+    double gasmass;
+#endif
+#ifdef DM_SCALARFIELD_SCREENING
+    Vec3<double> d_dm;   /* displacement to the DM mass centre (= the total CoM only for a pure-DM leaf) */
+    double mass_dm_local;
+#endif
+#ifdef COSMIC_RAY_SUBGRID_LEBRON
+    double cr_injection;
+#endif
+#ifdef RT_USE_GRAVTREE
+    double mass_stellarlum[N_RT_FREQ_BINS];
+    Vec3<double> d_stellarlum;
+#ifdef CHIMES_STELLAR_FLUXES
+    double chimes_mass_stellarlum_G0[CHIMES_LOCAL_UV_NBINS];
+    double chimes_mass_stellarlum_ion[CHIMES_LOCAL_UV_NBINS];
+#endif
+#ifdef SINK_PHOTONMOMENTUM
+    double mass_sinklumwt_forradfb;
+#endif
+#endif
+};
+
+/* Everything one target contributes to an opening decision, and nothing it contributes to a
+ * pair evaluation.  `zeta` and the per-target PM override come out with the inputs because the
+ * member prologue below needs them in the same breath.
+ * Returns 0 for a massless target, which takes part in nothing. */
+static KOKKOS_INLINE_FUNCTION int
+gpu_grav_open_inputs_init(const gpu_grav_walk_ctx_t &ctx, int target,
+                          gpu_grav_open_inputs_t &open, double &pmass, double &zeta,
+                          grav_pm_shortrange_t &pm)
+{
+    struct particle_data *P_dev = ctx.P_dev;
+    open.pos = P_dev[target].Pos;
+    open.ptype = P_dev[target].Type;
+    open.alive = 0;
+    pmass = P_dev[target].Mass;
+    zeta = 0.0;
+    pm = ctx.pm;
+    if(pmass <= 0) {return 0;}
+    open.alive = 1;
+    const int ptype = open.ptype;
 
 #if defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(ADAPTIVE_GRAVSOFT_FORALL) || defined(GALSF_MERGER_STARCLUSTER_PARTICLES)
     double soft = gpu_force_softening_kernel_radius(P_dev, target);
 #else
     double soft = All.ForceSoftening[ptype];
 #endif
-    double zeta = 0.0;    /* unconditional (matches CPU walk); passed to the shared pair kernel, consumed there only under #if AGS */
+    /* zeta is set unconditionally (matches CPU walk); passed to the shared pair kernel,
+     * consumed there only under #if AGS */
 #if defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(ADAPTIVE_GRAVSOFT_FORALL)
     grav_target_select_soft_and_zeta(ptype, gpu_get_ags_zeta(P_dev, target), soft, zeta);
 #endif
-    double aold = All.ErrTolForceAcc * P_dev[target].OldAcc;
+    open.soft = soft;
+    open.aold = All.ErrTolForceAcc * P_dev[target].OldAcc;
 
 #if defined(PMGRID) && defined(PM_PLACEHIGHRESREGION)
     /* high-res zoom particles use the finer short-range PM cutoff (mirrors forcetree.cc target
      * prologue). The dispatcher passes the coarse-mesh rcut/asmthfac; override per target here. */
-    if(pmforce_is_particle_high_res(ptype, pos)) {
+    if(pmforce_is_particle_high_res(ptype, open.pos)) {
         pm.rcut = All.Rcut[1]; pm.rcut2 = pm.rcut * pm.rcut; pm.asmthfac = grav_pm_asmthfac(All.Asmth[1]);
     }
 #endif
-
-    /* fed unconditionally to the shared pair kernel (consumed there only under the
-     * symmetrize-by-averaging #if); matches the CPU walk's unconditional precompute. */
-    const int ags_bitflag_primary = gravtree_ags_kernel_shared_bitflag(ptype);
-
-    /* ------------------------------------------------------------------ *
-     * SINK_CALC_DISTANCES + SINGLE_STAR_* local accumulators.              *
-     * Mirrors forcetree.cc:1509-1526.                                     *
-     * ------------------------------------------------------------------ */
-#if defined(SINGLE_STAR_TIMESTEPPING) || defined(SINK_DYNFRICTION_FROMTREE) || defined(COMPUTE_JERK_IN_GRAVTREE)
-    Vec3<double> vel = P_dev[target].Vel;
+#ifdef PMGRID
+    open.rcut = pm.rcut; open.rcut2 = pm.rcut2;
 #endif
+    return 1;
+}
+
+/* Zero one member's sums: every field starts at the identity of the rule that folds it
+ * (gpu_grav_member_sums_combine), so a partial that never evaluates anything folds in as nothing. */
+static KOKKOS_INLINE_FUNCTION void
+gpu_grav_member_sums_init(gpu_grav_member_sums_t &sums)
+{
+    grav_pair_acc_init(sums.out);
 #ifdef COUNT_MASS_IN_GRAVTREE
     /* Diagnostic: total mass seen by this target during the walk, summed only
      * over accepted interactions (mirrors forcetree.cc). The walk excludes the
      * target's own leaf (r2==0); the post-loop +=P[i].Mass in gravtree.cc
      * finalizes the sum. */
-    double tree_mass = 0.0;
+    sums.tree_mass = 0.0;
 #endif
-#ifdef DM_SCALARFIELD_SCREENING
-    /* Per-interaction DM-scalar-field state: d_dm is the displacement to the
-     * dark-matter mass center (= total CoM only when source is a pure-DM leaf
-     * particle), mass_dm_local is the mass at that center. Both reset each
-     * leaf/node iteration. Mirrors forcetree.cc:646-647 declarations. */
-    Vec3<double> d_dm = {0,0,0};
-    double mass_dm_local = 0.0;
+#ifdef SINK_COMPTON_HEATING
+    sums.incident_flux_agn = 0.0;
+#endif
+#ifdef COSMIC_RAY_SUBGRID_LEBRON
+    sums.SubGrid_CosmicRayEnergyDensity = 0.0;
+#endif
+#ifdef SINK_CALC_DISTANCES
+    grav_sink_prox_accum_init(sums.sink_prox);
+#endif
+#ifdef RT_USE_TREECOL_FOR_NH
+    {int kb; for(kb=0; kb<RT_USE_TREECOL_FOR_NH; kb++) {sums.treecol_angular_bins[kb]=0.0;}}
+#endif
+#ifdef SINK_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
+    sums.m_enc_in_rcrit = 0.0;
+#endif
+#ifdef CHIMES_STELLAR_FLUXES
+    {int kc; for(kc=0; kc<CHIMES_LOCAL_UV_NBINS; kc++) {sums.chimes_flux_G0[kc]=0; sums.chimes_flux_ion[kc]=0;}}
+#endif
+#ifdef RT_OTVET
+    {int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {sums.RT_ET[kf] = {};}}
+#endif
+#ifdef GALSF_FB_FIRE_RT_LONGRANGE
+    sums.incident_flux_uv = 0.0; sums.incident_flux_euv = 0.0;
+#endif
+#if defined(RT_USE_GRAVTREE_SAVE_RAD_ENERGY)
+    {int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {sums.Rad_E_gamma[kf]=0.0;}}
+#endif
+#if defined(RT_USE_GRAVTREE_SAVE_RAD_FLUX)
+    {int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {sums.Rad_Flux[kf]={};}}
+#endif
+}
+
+/* Set up one target's inputs for the walk (the CPU walk's target prologue).
+ * Returns 0 for a massless target, which takes part in nothing and writes zeros. */
+static KOKKOS_INLINE_FUNCTION int
+gpu_grav_member_inputs_init(const gpu_grav_walk_ctx_t &ctx, int target, gpu_grav_member_inputs_t &in)
+{
+    struct particle_data *P_dev = ctx.P_dev;
+    in.target = target;
+    double zeta = 0.0; grav_pm_shortrange_t pm;
+    if(!gpu_grav_open_inputs_init(ctx, target, in.open, in.pmass, zeta, pm)) {return 0;}
+    in.zeta = zeta;
+    const int ptype = in.open.ptype; const double pmass = in.pmass;
+    const double soft = in.open.soft;
+
+    /* fed unconditionally to the shared pair kernel (consumed there only under the
+     * symmetrize-by-averaging #if); matches the CPU walk's unconditional precompute. */
+    const int ags_bitflag_primary = gravtree_ags_kernel_shared_bitflag(ptype);
+
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(SINK_DYNFRICTION_FROMTREE) || defined(COMPUTE_JERK_IN_GRAVTREE)
+    in.vel = P_dev[target].Vel;
 #endif
 #ifdef GRAVITY_SPHERICAL_SYMMETRY
     /* Shell-theorem gravity: forces from any source at r_source > r_target
      * vanish; forces from r_source < r_target use a 1/r^3 enclosed-mass formula
-     * pointed toward the box center. Mirrors forcetree.cc:1745-1750 + 2446-2449. */
-    double sph_center[3] = {0.0, 0.0, 0.0};
+     * pointed toward the box center. Mirrors forcetree.cc. */
+    in.sph_center[0] = 0.0; in.sph_center[1] = 0.0; in.sph_center[2] = 0.0;
 #ifdef BOX_PERIODIC
-    sph_center[0] = 0.5 * boxSize_X;
-    sph_center[1] = 0.5 * boxSize_Y;
-    sph_center[2] = 0.5 * boxSize_Z;
+    in.sph_center[0] = 0.5 * boxSize_X;
+    in.sph_center[1] = 0.5 * boxSize_Y;
+    in.sph_center[2] = 0.5 * boxSize_Z;
 #endif
-#endif
-#ifdef SINK_COMPTON_HEATING
-    double incident_flux_agn = 0.0;
-#endif
-#ifdef COSMIC_RAY_SUBGRID_LEBRON
-    double SubGrid_CosmicRayEnergyDensity = 0.0;
-    double cr_injection = 0.0; /* per-interaction; reset in leaf/node blocks */
-#endif
-#ifdef SINK_CALC_DISTANCES
-    grav_sink_prox_accum_t sink_prox; grav_sink_prox_accum_init(sink_prox); /* nearest-sink + single-star timestep/binary accumulators (gravtree_force_kernel.h, shared with the CPU walk) */
-#endif
-
-    /* ------------------------------------------------------------------ *
-     * RT cluster local accumulators.  All gated by the same               *
-     * #ifdefs as the CPU walk in forcetree.cc.                             *
-     * ------------------------------------------------------------------ */
-#ifdef RT_USE_TREECOL_FOR_NH
-    const double angular_bin_size = 4.0 * M_PI / RT_USE_TREECOL_FOR_NH;
-    double treecol_angular_bins[RT_USE_TREECOL_FOR_NH];
-    {int kb; for(kb=0; kb<RT_USE_TREECOL_FOR_NH; kb++) {treecol_angular_bins[kb]=0.0;}}
-#endif
-
-#ifdef SINK_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
-    double m_enc_in_rcrit = 0.0, r_for_total_menclosed = grav_target_menc_radius(soft); /* baseline Rcrit_min applied in the helper */
 #endif
 #ifdef COSMIC_RAY_SUBGRID_LEBRON
     /* per-target CR gate (the host precompute leaves t_max_cr=0 unless All.Time>All.TimeBegin,
      * mirroring the CPU walk's gate) */
-    int cr_active_gate = (cr_data->t_max_cr > 0) ? 1 : 0;
+    in.cr_active_gate = (ctx.cr_data.t_max_cr > 0) ? 1 : 0;
 #endif
-
+#ifdef SINK_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
+    in.r_for_total_menclosed = grav_target_menc_radius(soft); /* baseline Rcrit_min applied in the helper */
+#endif
 #ifdef RT_USE_GRAVTREE
-    double mass_stellarlum[N_RT_FREQ_BINS];
-    {int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {mass_stellarlum[kf]=0.0;}}
-#ifdef CHIMES_STELLAR_FLUXES
-    double chimes_mass_stellarlum_G0[CHIMES_LOCAL_UV_NBINS];
-    double chimes_mass_stellarlum_ion[CHIMES_LOCAL_UV_NBINS];
-    double chimes_flux_G0[CHIMES_LOCAL_UV_NBINS];
-    double chimes_flux_ion[CHIMES_LOCAL_UV_NBINS];
-    {int kc; for(kc=0; kc<CHIMES_LOCAL_UV_NBINS; kc++) {chimes_mass_stellarlum_G0[kc]=0; chimes_mass_stellarlum_ion[kc]=0; chimes_flux_G0[kc]=0; chimes_flux_ion[kc]=0;}}
-#endif
-    Vec3<double> d_stellarlum = {};
-#ifdef SINK_PHOTONMOMENTUM
-    double mass_sinklumwt_forradfb = 0.0; /* per-interaction; reset in leaf/node blocks */
-#endif
     /* valid-gas RT gate via the shared helper */
-    volatile int valid_gas_particle_for_rt = grav_target_valid_gas_for_rt(ptype, soft, pmass); /* volatile: nvc++ constant-propagates this to 0 inside the walk loop otherwise */
-#ifdef RT_OTVET
-    SymmetricTensor2<double> RT_ET[N_RT_FREQ_BINS];
-    {int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {RT_ET[kf] = {};}}
-#endif
+    in.valid_gas_particle_for_rt = grav_target_valid_gas_for_rt(ptype, soft, pmass);
 #endif /* RT_USE_GRAVTREE */
 
-#ifdef GALSF_FB_FIRE_RT_LONGRANGE
-    double incident_flux_uv = 0.0, incident_flux_euv = 0.0;
-#endif
-#if defined(RT_USE_GRAVTREE_SAVE_RAD_ENERGY)
-    double Rad_E_gamma[N_RT_FREQ_BINS];
-    {int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {Rad_E_gamma[kf]=0.0;}}
-#endif
-#if defined(RT_USE_GRAVTREE_SAVE_RAD_FLUX)
-    Vec3<double> Rad_Flux[N_RT_FREQ_BINS];
-    {int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {Rad_Flux[kf]={};}}
-#endif
-
-    /* RT_LEBRON radiation-pressure coupling factor (forcetree.cc:1596-1604).
-     * Pre-computed once per target before the walk loop because it only
-     * depends on the target's properties.  Skipped when save-flux mode is
-     * active (flux is stored and converted to RP after the walk by the caller). */
+    /* RT_LEBRON radiation-pressure coupling factor (forcetree.cc). Once per target, before
+     * the walk, because it only depends on the target's properties. Skipped when save-flux
+     * mode is active (flux is stored and converted to RP after the walk by the caller). */
 #if defined(RT_USE_GRAVTREE) && defined(RT_LEBRON) && !defined(RT_USE_GRAVTREE_SAVE_RAD_FLUX)
-    double fac_stellum[N_RT_FREQ_BINS];
-    {int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {fac_stellum[kf]=0.0;}}
-    if(valid_gas_particle_for_rt) {
-        double kappa_eff[N_RT_FREQ_BINS]; int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {kappa_eff[kf] = rt_kappa(-1, kf, P_dev, CellP_dev);}
-        grav_target_rt_fac_stellum(soft, pmass, kappa_eff, fac_stellum);
+    {int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {in.fac_stellum[kf]=0.0;}}
+    {
+        volatile int valid_gas_particle_for_rt = in.valid_gas_particle_for_rt;
+        if(valid_gas_particle_for_rt) {
+            double kappa_eff[N_RT_FREQ_BINS]; int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {kappa_eff[kf] = rt_kappa(-1, kf, P_dev, ctx.CellP_dev);}
+            grav_target_rt_fac_stellum(soft, pmass, kappa_eff, in.fac_stellum);
+        }
     }
 #endif
 
-    /* the target's inputs to the shared pair evaluation, fixed for this walk, and the
-     * accumulators it writes (acceleration, potential, interaction count, and the tidal /
-     * jerk / tidal-zeta terms where compiled) */
+    /* the target's inputs to the shared pair evaluation, fixed for this walk */
     grav_pair_tgt_t tgt{}; tgt.ptype = ptype; tgt.pmass = pmass; tgt.h = soft; tgt.zeta = zeta; tgt.ags_bitflag = ags_bitflag_primary; tgt.pm = pm;
 #ifdef SINK_DYNFRICTION_FROMTREE
     tgt.sink_mass = (ptype == 5) ? P_dev[target].Sink_Mass : 0.0;
@@ -531,639 +734,1785 @@ gpu_gravtree_walk_one(int target,
     }
 #endif
 #ifdef GRAVITY_SPHERICAL_SYMMETRY
-    tgt.pos = pos; tgt.center[0] = sph_center[0]; tgt.center[1] = sph_center[1]; tgt.center[2] = sph_center[2];
+    tgt.pos = in.open.pos; tgt.center[0] = in.sph_center[0]; tgt.center[1] = in.sph_center[1]; tgt.center[2] = in.sph_center[2];
 #endif
-    grav_pair_acc_t out; grav_pair_acc_init(out);
+    in.tgt = tgt;
+    return 1;
+}
 
-    int no = treeBase;   /* root */
+/* Set up one target's member for the single-target walk: its inputs and its zeroed sums. */
+static KOKKOS_INLINE_FUNCTION int
+gpu_grav_member_init(const gpu_grav_walk_ctx_t &ctx, int target, gpu_grav_member_t &mem)
+{
+    gpu_grav_member_sums_init(mem.sums);
+    return gpu_grav_member_inputs_init(ctx, target, mem.in);
+}
 
-    while(no >= 0)
-    {
-        double h = soft;
-        /* this element's inputs to the shared pair evaluation, loaded below from the SoA / P_dev */
-        grav_pair_src_t src;   /* dr, r2, mass are assigned on every path that reaches the evaluation */
-        Vec3<double> &dr = src.dr; double &r2 = src.r2, &mass = src.mass, &h_p = src.h_p, &zeta_sec = src.zeta_sec; int &ptype_sec = src.ptype_sec;
-        h_p = -1.0; ptype_sec = -1; zeta_sec = 0.0;   /* unconditional, matching the CPU walk: consumed by the shared pair kernel */
-#if defined(SINK_DYNFRICTION_FROMTREE) || defined(COMPUTE_JERK_IN_GRAVTREE)
-        Vec3<double> &dv = src.dv; dv = Vec3<double>{0,0,0};
-#endif
-#ifdef SINK_DYNFRICTION_FROMTREE
-        double &m_j_eff_for_df = src.m_j_eff_for_df; m_j_eff_for_df = 0.0;
-#endif
-#ifdef GRAVITY_SPHERICAL_SYMMETRY
-        double &r_source = src.r_source; r_source = 0.0;
-#endif
-#ifdef ADAPTIVE_GRAVSOFT_FROM_TIDAL_CRITERION
-        SymmetricTensor2<double> &j_zeta_tidal_tt = src.j_zeta_tidal_tensorps_prevstep;
-#endif
-#ifdef GRAVTREE_CALCULATE_GAS_MASS_IN_NODE
-        double gasmass = 0.0;
-#endif
+/* A particle source as a walk at `ti` reads it, with nothing written back: position, velocity and
+ * mass predicted to the walk time by the step bodies the drift itself runs (predict_particle_motion,
+ * core/timestep_functions.h); a source already at the walk time is read as stored. A source AHEAD of
+ * the walk time, which no drift produces, is read as stored and reported. */
+struct gpu_grav_particle_now_t { Vec3<double> pos, vel; double mass; };   /* what a walk keeps of a particle source */
+static KOKKOS_INLINE_FUNCTION gpu_grav_particle_now_t
+gpu_grav_particle_source_at(struct particle_data *P_dev, struct gas_cell_data *CellP_dev, int no, integertime ti,
+                            const struct DriftKickTableView &tables, struct gpu_grav_time_fault_t *time_fault)
+{
+    if(P_dev[no].Ti_current > ti) {gpu_grav_note_source_ahead(time_fault, 0, no, P_dev[no].Ti_current);}
+    struct particle_motion_prediction motion(P_dev, CellP_dev, no);
+    predict_particle_motion(motion, ti, &tables);   /* leaves a source at or past ti as stored */
+    gpu_grav_particle_now_t out; out.pos = motion.pos_; out.vel = motion.vel_; out.mass = motion.mass_;
+    return out;
+}
 
-        if(no >= treeParticleSlots && no < treeBase) {return 0;} /* gap: malformed tree -- defer; the CPU walk's guard stops loudly */
-        if(no < treeParticleSlots) /* particle leaf */
-        {
-#ifdef SINGLE_STAR_DIRECT_GRAVITY
-            /* star-star pairs are summed exactly in star_direct_gravity_compute(); taking them
-               here as well would double every such force. Mirrors the CPU walk in forcetree.cc. */
-            if((ptype == 5) && (P_dev[no].Type == 5)) {no = tree_soa->nextnode_aux[no]; continue;}
-#endif
-            /* the source state this interaction is evaluated at, which is the drifted state
-               except where the Hermite predictor below replaces it (mirrors forcetree.cc) */
-            Vec3<double> src_pos = P_dev[no].Pos;
-            Vec3<double> src_vel = P_dev[no].Vel;   /* unconditional, mirroring forcetree.cc: the sink-proximity block reads it under SINK_CALC_DISTANCES, which several flags reach without the jerk or dynamical-friction terms */
-#ifdef HERMITE_INTEGRATION
-            /* On a Hermite pass a source the Hermite integrator owns but is not advancing this
-               step is second-order wrong where it stands; evaluate it from its own start-of-step
-               state instead. Same helper and same conditions as the host walk, so the two agree
-               whichever one a step routes to. Single sources only; nothing is written back. */
-            if(hermite_source_needs_prediction(no, P_dev, hermite.state)) {
-                hermite_predict_source_state(no, P_dev, hermite.state, &hermite.tables, src_pos, src_vel);
-            }
-#endif
-            dr = src_pos - pos;
-            gravity_box_nearest_image(dr[0], dr[1], dr[2], -1);
-            r2 = dr.norm_sq();
-            mass = P_dev[no].Mass;
-#if defined(GRAVTREE_SOURCE_DEVICE_TU)
-            /* Lazy source payload for this local leaf: evaluate the SSOT helper on-device
-             * (identical gates/formula to the eager prefill) instead of reading the dense
-             * arrays. Computed once here; consumed by the RT/sink/CR blocks below. Only for
-             * local particle leaves (no<treeBase) -- foreign leaves and nodes stay
-             * moment-backed and never reach this branch. */
-            struct gravtree_source_inputs_t lazy_src;
-            if(use_lazy_source) { gravtree_fill_particle_source_inputs(no, P_dev, CellP_dev, &lazy_src); }
+/* A node's motion as a walk at `ti` reads it, with nothing written back: the state the drift would
+ * leave it in. A node at the walk time is read as stored, its pending kick left pending (a drift folds
+ * a kick only when it moves the node forward). A node behind it has its kick folded and its centres
+ * and length advanced by the node-motion arithmetic the drift runs (gravtree_moment_kernel.h), on the
+ * same two clocks and with the dilation taken at the centre before the advance, as the drift takes
+ * them. Everything is read from the mirror except the pending momenta, which live only in the node
+ * arrays and are read there only when the mirror says the node was kicked. Returns 1 for a node AHEAD
+ * of the walk time, which no drift produces: it is left as stored for the caller to report. */
+static KOKKOS_INLINE_FUNCTION int
+gpu_grav_node_motion_at(const struct gpu_gravity_tree_soa_t &soa, const struct extNODE *ext, int idx, int no,
+                        integertime ti, const struct DriftKickTableView &tables, node_motion_prediction &m)
+{
+    for(int j = 0; j < 3; j++) {m.s_[j] = (MyFloat) soa.s[idx][j]; m.vs_[j] = (MyFloat) soa.node_vs[idx][j]; m.dp_[j] = 0;}
+    m.len_ = soa.len[idx]; m.mass_ = (double) soa.mass[idx]; m.vmax_ = (double) soa.vmax[idx];
+#ifdef RT_SEPARATELY_TRACK_LUMPOS
+    for(int j = 0; j < 3; j++) {m.rt_s_[j] = (MyFloat) soa.rt_source_lum_s[idx][j]; m.rt_vs_[j] = (MyFloat) soa.rt_source_lum_vs[idx][j]; m.rt_dp_[j] = 0;}
+    m.lum_tot_ = 0;
 #endif
 #ifdef DM_SCALARFIELD_SCREENING
-            /* Set per-interaction DM state for this leaf particle (mirrors forcetree.cc:2055). */
-            if(ptype != 0 && P_dev[no].Type == 1) { d_dm = dr; mass_dm_local = mass; }
-            else { d_dm = Vec3<double>{0,0,0}; mass_dm_local = 0; }
+    for(int j = 0; j < 3; j++) {m.s_dm_[j] = (MyFloat) soa.s_dm[idx][j]; m.vs_dm_[j] = (MyFloat) soa.vs_dm[idx][j]; m.dp_dm_[j] = 0;}
+    m.mass_dm_ = (double) soa.mass_dm[idx];
 #endif
-#ifdef GRAVITY_SPHERICAL_SYMMETRY
-            r_source = grav_spherical_symmetry_r_from_center(src_pos[0],src_pos[1],src_pos[2],sph_center[0],sph_center[1],sph_center[2]);
+#ifdef SINK_NODE_MOTION_TRACKED
+    for(int j = 0; j < 3; j++) {m.sink_pos_[j] = (MyFloat) soa.sink_pos[idx][j]; m.sink_vel_[j] = (MyFloat) soa.sink_vel[idx][j]; m.sink_dp_[j] = 0;}
+    m.sink_mass_ = (double) soa.sink_mass[idx];
 #endif
-#ifdef ADAPTIVE_GRAVSOFT_FROM_TIDAL_CRITERION
-            /* Load secondary's previous-step tidal tensor (mirrors forcetree.cc:1945). */
-            {
-                SymmetricTensor2<MyFloat> tmp = P_dev[no].tidal_tensorps_prevstep;
-                for(int kk = 0; kk < 6; kk++) j_zeta_tidal_tt.data[kk] = (double) tmp.data[kk];
-            }
-#endif
-#if defined(SINK_DYNFRICTION_FROMTREE) || defined(COMPUTE_JERK_IN_GRAVTREE)
-            dv = src_vel - vel;
-#endif
-#ifdef SINK_DYNFRICTION_FROMTREE
-            m_j_eff_for_df = mass;
-#endif
-            /* secondary (leaf) softening, loaded unconditionally so a pair whose source softening
-             * exceeds the target's gets the symmetrized max(h,h_p) force (mirrors forcetree.cc:2093).
-             * ptype_sec/zeta_sec stay gated -- only the adaptive symmetrize-by-averaging path uses them. */
-            h_p = gpu_force_softening_kernel_radius(P_dev, no);
-            ptype_sec = P_dev[no].Type;
-#if defined(ADAPTIVE_GRAVSOFT_FORGAS)
-            if(ptype_sec == 0) {zeta_sec = gpu_get_ags_zeta(P_dev, no);}
-#elif defined(ADAPTIVE_GRAVSOFT_FORALL)
-            zeta_sec = gpu_get_ags_zeta(P_dev, no);
-#endif
-#ifdef GRAVTREE_CALCULATE_GAS_MASS_IN_NODE
-            gasmass = (P_dev[no].Type == 0) ? P_dev[no].Mass : 0.0;
-#if defined(SINK_ALPHADISK_ACCRETION) && defined(RT_USE_TREECOL_FOR_NH)
-            /* gas at the inner edge of a sink's alpha-disk should not see a hole due to
-             * the sink (mirrors forcetree.cc leaf branch + the node-moment kernel). */
-            if(P_dev[no].Type == 5) {gasmass = (double) P_dev[no].Sink_Mass_Reservoir;}
-#endif
-#endif
-#ifdef RT_USE_GRAVTREE
-            /* Load leaf luminosity only for valid gas targets (mirrors forcetree.cc; the
-             * RT accumulation below is gated the same way, so non-gas targets never read
-             * these and skipping the loads avoids the wasted per-leaf table traffic). */
-            if(valid_gas_particle_for_rt)
-            {
-                d_stellarlum = dr;
-                int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {
-#if defined(GRAVTREE_SOURCE_DEVICE_TU)
-                    mass_stellarlum[kf] = use_lazy_source ? (lazy_src.rt_active ? lazy_src.src_lum[kf] : (MyFloat)0)
-                                                          : rt_data->src_lum[(long)no * N_RT_FREQ_BINS + kf];
-#else
-                    mass_stellarlum[kf] = rt_data->src_lum[(long)no * N_RT_FREQ_BINS + kf];
-#endif
-                }
-#ifdef CHIMES_STELLAR_FLUXES
-                for(kf=0; kf<CHIMES_LOCAL_UV_NBINS; kf++) {
-#if defined(GRAVTREE_SOURCE_DEVICE_TU)
-                    chimes_mass_stellarlum_G0[kf]  = use_lazy_source ? (lazy_src.rt_active ? lazy_src.src_lum_G0[kf]  : 0.0) : rt_data->src_lum_G0[(long)no * CHIMES_LOCAL_UV_NBINS + kf];
-                    chimes_mass_stellarlum_ion[kf] = use_lazy_source ? (lazy_src.rt_active ? lazy_src.src_lum_ion[kf] : 0.0) : rt_data->src_lum_ion[(long)no * CHIMES_LOCAL_UV_NBINS + kf];
-#else
-                    chimes_mass_stellarlum_G0[kf] = rt_data->src_lum_G0[(long)no * CHIMES_LOCAL_UV_NBINS + kf];
-                    chimes_mass_stellarlum_ion[kf] = rt_data->src_lum_ion[(long)no * CHIMES_LOCAL_UV_NBINS + kf];
-#endif
-                }
-#endif
-#ifdef SINK_PHOTONMOMENTUM
-                /* per-sink-leaf angle-weighted luminosity (shared formula helper) */
-                mass_sinklumwt_forradfb = 0.0;
-                if(P_dev[no].Type == 5) {
-                    double bhlum_t, bha0, bha1, bha2;
-#if defined(GRAVTREE_SOURCE_DEVICE_TU)
-                    if(use_lazy_source) {
-                        bhlum_t = lazy_src.bh_active ? (double)lazy_src.bh_lum : 0.0;
-                        bha0 = lazy_src.bh_active ? (double)lazy_src.bh_angle[0] : 0.0;
-                        bha1 = lazy_src.bh_active ? (double)lazy_src.bh_angle[1] : 0.0;
-                        bha2 = lazy_src.bh_active ? (double)lazy_src.bh_angle[2] : 0.0;
-                    } else
-#endif
-                    {
-                        bhlum_t = (double) sink_data->bh_lum[no];
-                        bha0 = (double) sink_data->bh_angle[no][0]; bha1 = (double) sink_data->bh_angle[no][1]; bha2 = (double) sink_data->bh_angle[no][2];
-                    }
-                    mass_sinklumwt_forradfb = grav_sink_fb_angleweight(bhlum_t, bha0, bha1, bha2, dr[0], dr[1], dr[2]);
-                }
-#endif
-            }
-#endif
-#ifdef COSMIC_RAY_SUBGRID_LEBRON
-            /* Mirror forcetree.cc:1734-1736 leaf CR source injection. */
-#if defined(GRAVTREE_SOURCE_DEVICE_TU)
-            cr_injection = use_lazy_source ? (double) lazy_src.cr_inject : (double) cr_data->cr_inject[no];
-#else
-            cr_injection = (double) cr_data->cr_inject[no];
-#endif
-#endif
-            /* Sink-distance + single-star timestepping tracking on particle leafs via the
-             * shared helper (gravtree_force_kernel.h) — CPU-walk semantics verbatim. */
-#ifdef SINK_CALC_DISTANCES
-            if((r2 > 0) && (mass > 0))
-            {
-                grav_sink_prox_target_t prox_target = {}; prox_target.ptype = ptype; prox_target.pmass = pmass; prox_target.soft = soft;
-#if defined(SINGLE_STAR_TIMESTEPPING)
-                prox_target.vel = vel;
-#endif
-                grav_sink_prox_leaf_src_t prox_src = {}; prox_src.src_type = P_dev[no].Type; prox_src.src_mass = P_dev[no].Mass; prox_src.motion.vel = src_vel;   /* the state this interaction was evaluated at, mirroring forcetree.cc, so (dr, vel) stays a consistent pair on a Hermite pass */
-#if defined(SPECIAL_POINT_MOTION) || defined(SPECIAL_POINT_WEIGHTED_MOTION)
-                prox_src.motion.acc = P_dev[no].Acc_Total_PrevStep;
-#endif
-#if defined(SINGLE_STAR_TIMESTEPPING) && defined(SINGLE_STAR_FB_TIMESTEPLIMIT)
-                prox_src.motion.max_feedback_vel = P_dev[no].MaxFeedbackVel;
-#endif
-                grav_sink_prox_leaf_accumulate(r2, dr, prox_target, prox_src, sink_prox);
-            }
-#endif /* SINK_CALC_DISTANCES */
-        }
-        else if(no >= treeBase + maxNodes + maxForeignNodes) /* pseudo-particle — remote (foreign-node range below pseudos; foreign nodes treated as internal in the else branch below) */
-        {
-            return 0; /* host runs CPU walk for this target */
-        }
-        else /* tree node */
-        {
-            int idx = no - treeBase;
-            Vec3<MyFloat> s_node = Vec3<MyFloat>{(MyFloat)tree_soa->s[idx][0], (MyFloat)tree_soa->s[idx][1], (MyFloat)tree_soa->s[idx][2]};
-            MyFloat len_node = tree_soa->len[idx];
-            MyFloat msoft_node = tree_soa->maxsoft[idx];
-            MyFloat mass_node = tree_soa->mass[idx];
-            Vec3<MyFloat> center_node = tree_soa->center[idx];
+    const integertime node_ti = soa.node_ti[idx];
+    if(node_ti > ti) {return 1;}
+    if(node_ti == ti) {return 0;}
 
+    if(soa.bitflags[idx] & (1u << BITFLAG_NODEHASBEENKICKED))
+    {
+        for(int j = 0; j < 3; j++) {m.dp_[j] = ext[no].dp[j];}
+#ifdef RT_SEPARATELY_TRACK_LUMPOS
+        for(int j = 0; j < 3; j++) {m.rt_dp_[j] = ext[no].rt_source_lum_dp[j];}
+        {double l = 0; for(int b = 0; b < N_RT_FREQ_BINS; b++) {l += (double) soa.stellar_lum[(long) idx * N_RT_FREQ_BINS + b];} m.lum_tot_ = l;}
+#endif
+#ifdef DM_SCALARFIELD_SCREENING
+        for(int j = 0; j < 3; j++) {m.dp_dm_[j] = ext[no].dp_dm[j];}
+#endif
+#ifdef SINK_NODE_MOTION_TRACKED
+        for(int j = 0; j < 3; j++) {m.sink_dp_[j] = ext[no].sink_dp[j];}
+#endif
+        node_motion_fold_kick(m);
+    }
+    double dilation = 1.0;
+#ifdef USE_TIMESTEP_DILATION_FOR_ZOOMS
+    dilation = node_timestep_dilation_factor_at(Vec3<double>{(double) m.s_[0], (double) m.s_[1], (double) m.s_[2]});
+#endif
+    double dt_drift, dt_widen;
+    node_motion_intervals(node_ti, ti, dilation, &tables, dt_drift, dt_widen);
+    node_motion_advance(m, dt_drift, dt_widen);
+    return 0;
+}
+
+/* The member-independent view of a tree node: its moments as stored, its geometry at the
+ * walk time (gpu_grav_node_motion_at), its import classification, and what the walk does
+ * with it before any member decides. */
+enum gpu_grav_node_step_t { GPU_GRAV_NODE_SKIP_TO_SIBLING, GPU_GRAV_NODE_DESCEND, GPU_GRAV_NODE_DECIDE };
+struct gpu_grav_node_prelude_t {
+    int idx;                        /* SoA index no - treeBase */
+    Vec3<MyFloat> s_node;           /* centre of mass at the walk time (before any star-target subtraction) */
+    MyFloat len_node, msoft_node, mass_node;
+    Vec3<MyFloat> center_node;
+    node_motion_prediction motion;  /* every moving field at the walk time; s_node and len_node are copied out of it */
+    int in_foreign_n;
+    int fl_tag, fl_type;            /* foreign-leaf identity (sidecar), or 0 / -1 */
+    double fl_zeta, fl_soft;
+    grav_node_kind_t node_kind;
+    int sibling, nextnode;
+};
+
+/* Load a node and decide what is member-independent about it: an empty node is
+ * skipped; a single-particle local or openable-foreign node is descended for an
+ * exact force; anything else goes to the per-member decision. Mirrors forcetree.cc. */
+static KOKKOS_INLINE_FUNCTION gpu_grav_node_step_t
+gpu_grav_node_prelude(const gpu_grav_walk_ctx_t &ctx, int no, gpu_grav_node_prelude_t &nd)
+{
+    const struct gpu_gravity_tree_soa_t *tree_soa = &ctx.tree_soa;
+    const int idx = no - ctx.treeBase;
+    nd.idx = idx;
+    nd.msoft_node = tree_soa->maxsoft[idx];
+    nd.mass_node = tree_soa->mass[idx];
+    nd.center_node = tree_soa->center[idx];
+    nd.sibling = tree_soa->sibling[idx];
+    nd.nextnode = tree_soa->nextnode[idx];
+
+    /* LET guard (mirrors forcetree.cc): a foreign node with nextnode < 0 (unreplaced -1
+     * sentinel from unpack) must not be opened -- that would exit the walk and skip its force. */
+    nd.in_foreign_n = (no >= ctx.treeBase + ctx.maxNodes);
+
+    /* Foreign-leaf identity lookup.  foreign_slot = idx-maxNodes -- the foreign-only sidecar
+     * index, EXPLICIT and bounds-checked so it can never be confused with the SoA index idx. */
+    nd.fl_tag = 0; nd.fl_type = -1; nd.fl_zeta = 0.0; nd.fl_soft = 0.0;
+    if(nd.in_foreign_n && tree_soa->foreign_leaf_tag) {
+        int fs = idx - ctx.maxNodes;
+        if(fs >= 0 && fs < tree_soa->foreign_leaf_cap) {
+            nd.fl_tag  = tree_soa->foreign_leaf_tag[fs];
+            nd.fl_type = tree_soa->foreign_leaf_type[fs];
+            nd.fl_zeta = (double) tree_soa->foreign_leaf_zeta[fs];
+            nd.fl_soft = (double) tree_soa->foreign_leaf_soft[fs];
+        }
+    }
+
+    /* empty-node skip: a zero-mass node contributes no force -> the sibling. Never
+     * converted to a forced multipole; also avoids descending empty nodes. */
+    if(nd.mass_node <= 0) {return GPU_GRAV_NODE_SKIP_TO_SIBLING;}
+
+    /* Classify BEFORE anything that could descend, so the wire tag is the one authority on
+     * whether this node's children were shipped (mirrors forcetree.cc). */
+    nd.node_kind = grav_classify_node(nd.in_foreign_n, nd.fl_tag, nd.nextnode);
+
+    /* single-particle node -> open to its leaf for an exact force.  Only a local node, or a
+     * foreign node shipped WITH its children, has anything below it: a foreign node reaching
+     * here with the multi-particle bit clear was shipped multipole-only, so its nextnode is
+     * the continuation past the subtree and following it would skip the node's mass. */
+    if(!(tree_soa->bitflags[idx] & (1 << BITFLAG_MULTIPLEPARTICLES))) {
+        if(nd.node_kind == GRAV_NODE_LOCAL || nd.node_kind == GRAV_NODE_FOREIGN_OPENABLE) {return GPU_GRAV_NODE_DESCEND;}
+    }
+
+    /* Only a node some member judges needs its geometry, so only such a node is brought to the walk time. */
+    if(gpu_grav_node_motion_at(*tree_soa, ctx.Extnodes, idx, no, ctx.ti, ctx.tables, nd.motion)) {
+        gpu_grav_note_source_ahead(ctx.time_fault, 1, no, tree_soa->node_ti[idx]);
+    }
+    nd.s_node = Vec3<MyFloat>{nd.motion.s_[0], nd.motion.s_[1], nd.motion.s_[2]};
+    nd.len_node = nd.motion.len_;
+    return GPU_GRAV_NODE_DECIDE;
+}
+
+/* A node's centre of mass, mass and wrapped separation as ONE member judges and
+ * evaluates them. A star target takes no star mass from the tree (star-star pairs are
+ * summed exactly in star_direct_gravity_compute(); taking them here too would double
+ * them): the tree carries monopoles only, so removing the sinks is exact -- drop their
+ * mass and shift the centre of mass to what is left; both terms are on the same clock,
+ * since SINK_NODE_MOTION_TRACKED drifts sink_pos with sink_vel exactly as s is drifted
+ * with vs. Returns 0 for a pure-star node seen by a star member: nothing is left of it.
+ * The decision and the evaluation both derive the geometry through this one function. */
+static KOKKOS_INLINE_FUNCTION int
+gpu_grav_node_member_geometry(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_node_prelude_t &nd, const gpu_grav_open_inputs_t &open,
+                              Vec3<MyFloat> &s_node, MyFloat &mass_node, Vec3<double> &dr, double &r2)
+{
+    s_node = nd.s_node; mass_node = nd.mass_node;
 #ifdef SINGLE_STAR_DIRECT_GRAVITY
-            /* A star target must take no star mass from the tree: star_direct_gravity_compute()
-               supplies every star-star pair exactly, so taking them here too would double them.
-               The tree carries monopoles only, so removing the sinks is exact -- drop their mass and
-               shift the node's center of mass to that of what is left. Both terms are on the same
-               clock, since SINK_NODE_MOTION_TRACKED drifts sink_pos with sink_vel exactly as s is
-               drifted with vs. Pure-star nodes have nothing left and are skipped. Mirrors the CPU
-               walk in forcetree.cc; mass_node is reduced before the opening criteria below so they
-               judge the node on the mass actually being used. */
-            if((ptype == 5) && (tree_soa->sink_mass[idx] > 0))
-            {
-                MyFloat sm = (MyFloat) tree_soa->sink_mass[idx];
-                if(mass_node - sm <= 0) { no = tree_soa->sibling[idx]; continue; } /* pure-star node */
-                Vec3<MyFloat> sp = Vec3<MyFloat>{(MyFloat)tree_soa->sink_pos[idx][0],
-                                                 (MyFloat)tree_soa->sink_pos[idx][1],
-                                                 (MyFloat)tree_soa->sink_pos[idx][2]};
-                MyFloat mass_nosink = mass_node - sm;
-                for(int k = 0; k < 3; k++) {s_node[k] = (s_node[k]*mass_node - sp[k]*sm) / mass_nosink;}
-                mass_node = mass_nosink;
-            }
-#endif
-            dr[0] = s_node[0] - pos[0];
-            dr[1] = s_node[1] - pos[1];
-            dr[2] = s_node[2] - pos[2];
-            gravity_box_nearest_image(dr[0], dr[1], dr[2], -1);
-            r2 = dr.norm_sq();
-
-            /* LET guard (mirrors forcetree.cc): if a foreign node has nextnode < 0
-             * (unreplaced -1 sentinel from unpack), opening it would immediately exit
-             * the while(no >= 0) walk, skipping this node's force contribution.
-             * Force multipole treatment instead. */
-            int in_foreign_n = (no >= treeBase + maxNodes);
-
-            /* Foreign-leaf identity lookup.  foreign_slot = no-(treeBase+MaxNodes) = idx-maxNodes
-             * -- the foreign-only sidecar index, EXPLICIT and bounds-checked so it can never be
-             * confused with the per-node SoA index idx (= no-treeBase). */
-            int    fl_tag = 0, fl_type = -1;
-            double fl_zeta = 0.0, fl_soft = 0.0;
-            if(in_foreign_n && tree_soa->foreign_leaf_tag) {
-                int fs = idx - maxNodes;
-                if(fs >= 0 && fs < tree_soa->foreign_leaf_cap) {
-                    fl_tag  = tree_soa->foreign_leaf_tag[fs];
-                    fl_type = tree_soa->foreign_leaf_type[fs];
-                    fl_zeta = (double) tree_soa->foreign_leaf_zeta[fs];
-                    fl_soft = (double) tree_soa->foreign_leaf_soft[fs];
-                }
-            }
-
-            /* empty-node skip: a zero-mass node contributes no force -> advance to the sibling.
-             * Never converted to a forced multipole; also avoids descending empty nodes. */
-            if(mass_node <= 0) { no = tree_soa->sibling[idx]; continue; }
-
-            /* Classify BEFORE anything that could descend, so the wire tag is the one authority on
-             * whether this node's children were shipped (mirrors forcetree.cc). */
-            grav_node_kind_t node_kind = grav_classify_node(in_foreign_n, fl_tag, tree_soa->nextnode[idx]);
-
-            /* single-particle node -> open to its leaf for an exact force.  Only a local node, or a
-             * foreign node shipped WITH its children, has anything below it: a foreign node reaching
-             * here with the multi-particle bit clear was shipped multipole-only, so its nextnode is
-             * the continuation past the subtree and following it would skip the node's mass. */
-            if(!(tree_soa->bitflags[idx] & (1 << BITFLAG_MULTIPLEPARTICLES))) {
-                if(node_kind == GRAV_NODE_LOCAL || node_kind == GRAV_NODE_FOREIGN_OPENABLE) { no = tree_soa->nextnode[idx]; continue; }
-            }
-
-            /* Acceptance geometry via the shared predicate (gravtree_opening.h), the single home for
-             * the node opening decision. The caller owns the wrapped dr/r2 (also used below for the
-             * accepted-node force) and the foreign-multipole policy; the predicate is foreign-blind
-             * geometry. PM short-range cull, neighbour sphere-box / softening-open, the angular and
-             * relative opening criteria, and the sink-direct gate all live in the predicate. */
-            {
-                double cen0 = (double)center_node[0] - pos[0];
-                double cen1 = (double)center_node[1] - pos[1];
-                double cen2 = (double)center_node[2] - pos[2];
-#ifdef PMGRID
-                double pred_rcut = pm.rcut, pred_rcut2 = pm.rcut2;
+    if((open.ptype == 5) && (ctx.tree_soa.sink_mass[nd.idx] > 0))
+    {
+        MyFloat sm = (MyFloat) ctx.tree_soa.sink_mass[nd.idx];
+        if(mass_node - sm <= 0) {return 0;} /* pure-star node */
+        Vec3<MyFloat> sp = Vec3<MyFloat>{nd.motion.sink_pos_[0], nd.motion.sink_pos_[1], nd.motion.sink_pos_[2]};   /* on the walk's clock (SINGLE_STAR_DIRECT_GRAVITY tracks sink motion) */
+        MyFloat mass_nosink = mass_node - sm;
+        for(int k = 0; k < 3; k++) {s_node[k] = (s_node[k]*mass_node - sp[k]*sm) / mass_nosink;}
+        mass_node = mass_nosink;
+    }
 #else
-                double pred_rcut = 0.0, pred_rcut2 = 0.0;
+    (void) ctx;
+#endif
+    dr[0] = s_node[0] - open.pos[0];
+    dr[1] = s_node[1] - open.pos[1];
+    dr[2] = s_node[2] - open.pos[2];
+    gravity_box_nearest_image(dr[0], dr[1], dr[2], -1);
+    r2 = dr.norm_sq();
+    return 1;
+}
+
+/* One member's opening decision at a node the prelude handed over, given the geometry
+ * it derived: SKIP, OPEN (descend), or ACCEPT (evaluate as a multipole, or with leaf
+ * semantics for a tagged foreign leaf). The predicate (gravtree_opening.h) is the single
+ * home for the acceptance geometry: PM short-range cull, neighbour sphere-box /
+ * softening-open, the angular and relative criteria, the sink-direct gate. The caller
+ * owns the wrapped dr/r2 and the foreign LET policy applied here: a terminal foreign
+ * node (a tagged single-particle leaf, or an aggregate shipped multipole-only) has no
+ * children here, so a predicate OPEN on it means "accept" -- for a truncated aggregate
+ * that is an import that no longer covers what this walk asks of it: reported through
+ * `note` (0 none, 1 truncated, 2 unshippable) so the caller can count it at once or hold
+ * it until its packet succeeds; the host reports the counts once after the walk. */
+#define GPU_GRAV_NOTE_NONE 0
+#define GPU_GRAV_NOTE_TRUNCATED 1
+#define GPU_GRAV_NOTE_UNSHIPPABLE 2
+static KOKKOS_INLINE_FUNCTION gravtree_open_t
+gpu_grav_node_member_decide(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_node_prelude_t &nd, const gpu_grav_open_inputs_t &open,
+                            MyFloat mass_node, double r2, int &note)
+{
+    note = GPU_GRAV_NOTE_NONE;
+    double cen0 = (double)nd.center_node[0] - open.pos[0];
+    double cen1 = (double)nd.center_node[1] - open.pos[1];
+    double cen2 = (double)nd.center_node[2] - open.pos[2];
+#ifdef PMGRID
+    double pred_rcut = open.rcut, pred_rcut2 = open.rcut2;
+#else
+    double pred_rcut = 0.0, pred_rcut2 = 0.0;
 #endif
 #ifdef GRAVITY_HYBRID_OPENING_CRIT
-                int pred_is_first_step = is_first_step;
+    int pred_is_first_step = ctx.is_first_step;
 #else
-                int pred_is_first_step = 0;
+    int pred_is_first_step = 0;
 #endif
 #if (defined(SINGLE_STAR_TIMESTEPPING) || defined(SINGLE_STAR_FIND_BINARIES)) && defined(SINGLE_STAR_DIRECT_GRAVITY_RADIUS)
-                int pred_n_sink = (int)tree_soa->N_SINK[idx];
+    int pred_n_sink = (int)ctx.tree_soa.N_SINK[nd.idx];
 #else
-                int pred_n_sink = 0;
+    int pred_n_sink = 0;
 #endif
-                gravtree_open_t pred = gravtree_open_decision_from_distances(
-                    r2, cen0, cen1, cen2, soft, h, aold, ptype,
-                    (double)len_node, (double)mass_node, (double)msoft_node,
-                    pred_rcut, pred_rcut2, pred_n_sink, pred_is_first_step);
-                /* Foreign LET policy (mirrors forcetree.cc).  A terminal foreign node -- a tagged
-                 * single-particle leaf, or an aggregate the sender shipped multipole-only -- has no
-                 * children here: its nextnode is the continuation PAST the subtree.  A predicate OPEN
-                 * on a leaf means "accept it with leaf semantics" (identity restored at the payload
-                 * load below); on a truncated aggregate it means the import no longer covers what this
-                 * walk asks of it.  Only a node shipped WITH its children takes nextnode. */
-                if(pred == GRAV_SKIP_NODE) { no = tree_soa->sibling[idx]; continue; }
-                if(pred == GRAV_OPEN_NODE && !grav_node_is_terminal(node_kind)) { no = tree_soa->nextnode[idx]; continue; }
-                /* Import-completeness guard: counted on device, reported once by the host after the
-                 * walk (the host cannot print from inside the kernel, and one incompleteness can
-                 * involve many nodes). */
-                if(pred == GRAV_OPEN_NODE && (node_kind == GRAV_NODE_FOREIGN_TRUNCATED
-                                              || node_kind == GRAV_NODE_FOREIGN_UNSHIPPABLE)) {
-                    Kokkos::atomic_add(&g_inv_fterm_aggregate, 1LL);
-                    if(node_kind == GRAV_NODE_FOREIGN_UNSHIPPABLE) {Kokkos::atomic_add(&g_unship_aggregate, 1LL);}
-                }
-            }
+    gravtree_open_t pred = gravtree_open_decision_from_distances(
+        r2, cen0, cen1, cen2, open.soft, open.soft, open.aold, open.ptype,
+        (double)nd.len_node, (double)mass_node, (double)nd.msoft_node,
+        pred_rcut, pred_rcut2, pred_n_sink, pred_is_first_step);
+    if(pred == GRAV_SKIP_NODE) {return GRAV_SKIP_NODE;}
+    if(pred == GRAV_OPEN_NODE && !grav_node_is_terminal(nd.node_kind)) {return GRAV_OPEN_NODE;}
+    if(pred == GRAV_OPEN_NODE && nd.node_kind == GRAV_NODE_FOREIGN_TRUNCATED)   {note = GPU_GRAV_NOTE_TRUNCATED;}
+    if(pred == GRAV_OPEN_NODE && nd.node_kind == GRAV_NODE_FOREIGN_UNSHIPPABLE) {note = GPU_GRAV_NOTE_UNSHIPPABLE;}
+    return GRAV_ACCEPT_MULTIPOLE;
+}
 
-            /* Node accepted — load payload fields */
-            h_p = msoft_node;
-            mass = mass_node;
-            /* A tagged real foreign single-particle leaf must be consumed with particle-leaf
-             * secondary-source semantics.  The node payload above already supplied mass/h_p and the
-             * synthesized RT/sink/CR/tidal (singleton-aggregate == particle value); restore the two
-             * leaf-identity fields the node moment cannot carry (Type + AGS_zeta) via the shared seam
-             * so grav_force_pair applies AGS symmetrization/zeta exactly as on the source's home rank. */
-            if(fl_tag == 1) {
-                grav_apply_foreign_leaf_identity(fl_tag, fl_type, fl_zeta, fl_soft, &ptype_sec, &zeta_sec, &h_p);
-            }
-#ifdef DM_SCALARFIELD_SCREENING
-            /* Set per-interaction DM state for this accepted node (mirrors forcetree.cc:2272).
-             * d_dm uses the DM CoM s_dm, NOT the total CoM (s_node). */
-            if(ptype != 0) {
-                d_dm[0] = (double)tree_soa->s_dm[idx][0] - pos[0];
-                d_dm[1] = (double)tree_soa->s_dm[idx][1] - pos[1];
-                d_dm[2] = (double)tree_soa->s_dm[idx][2] - pos[2];
-                mass_dm_local = (double)tree_soa->mass_dm[idx];
-            } else { d_dm = Vec3<double>{0,0,0}; mass_dm_local = 0; }
-#endif
-#ifdef GRAVITY_SPHERICAL_SYMMETRY
-            r_source = grav_spherical_symmetry_r_from_center(s_node[0],s_node[1],s_node[2],sph_center[0],sph_center[1],sph_center[2]);
-#endif
-#ifdef ADAPTIVE_GRAVSOFT_FROM_TIDAL_CRITERION
-            /* Load node's previous-step tidal tensor from SoA (mirrors forcetree.cc). */
-            for(int kk = 0; kk < 6; kk++) {
-                j_zeta_tidal_tt.data[kk] = (double) tree_soa->tidal_tensorps[(long)idx * 6 + kk];
-            }
-#endif
-#if defined(SINK_DYNFRICTION_FROMTREE) || defined(COMPUTE_JERK_IN_GRAVTREE)
-            dv[0] = (double) tree_soa->node_vs[idx][0] - vel[0];
-            dv[1] = (double) tree_soa->node_vs[idx][1] - vel[1];
-            dv[2] = (double) tree_soa->node_vs[idx][2] - vel[2];
-#endif
-#ifdef SINK_DYNFRICTION_FROMTREE
-            {
-                long np = tree_soa->N_part[idx];
-                m_j_eff_for_df = (np > 0) ? (mass / (double)np) : 0.0;
-            }
-#endif
-#ifdef GRAVTREE_CALCULATE_GAS_MASS_IN_NODE
-            gasmass = tree_soa->gasmass[idx];
-#endif
-#ifdef RT_USE_GRAVTREE
-            /* Load node stellar luminosity only for valid gas targets (mirrors
-             * forcetree.cc; the RT accumulation below is gated the same way).
-             * valid_gas_particle_for_rt is volatile int -- nvc++ constant-propagates
-             * plain int gates in device code otherwise. */
-            if(valid_gas_particle_for_rt)
-            {
-                int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {
-                    mass_stellarlum[kf] = tree_soa->stellar_lum[idx * N_RT_FREQ_BINS + kf];
-                }
-#ifdef CHIMES_STELLAR_FLUXES
-                for(kf=0; kf<CHIMES_LOCAL_UV_NBINS; kf++) {
-                    chimes_mass_stellarlum_G0[kf] = tree_soa->chimes_stellar_lum_G0[(long)idx * CHIMES_LOCAL_UV_NBINS + kf];
-                    chimes_mass_stellarlum_ion[kf] = tree_soa->chimes_stellar_lum_ion[(long)idx * CHIMES_LOCAL_UV_NBINS + kf];
-                }
-#endif
-#ifdef RT_SEPARATELY_TRACK_LUMPOS
-                d_stellarlum[0] = tree_soa->rt_source_lum_s[idx][0] - pos[0];
-                d_stellarlum[1] = tree_soa->rt_source_lum_s[idx][1] - pos[1];
-                d_stellarlum[2] = tree_soa->rt_source_lum_s[idx][2] - pos[2];
-                gravity_box_nearest_image(d_stellarlum[0], d_stellarlum[1], d_stellarlum[2], -1);
+/* Count an import-completeness note in the shared per-walk ledger (the host reports it
+ * once after the walk). A single-target walk counts at once; a packet holds its notes
+ * and counts them only when it succeeds. */
+static KOKKOS_INLINE_FUNCTION void
+gpu_grav_note_commit(int n_truncated_or_unshippable, int n_unshippable)
+{
+    if(n_truncated_or_unshippable) {Kokkos::atomic_add(&g_inv_fterm_aggregate, (long long) n_truncated_or_unshippable);}
+    if(n_unshippable) {Kokkos::atomic_add(&g_unship_aggregate, (long long) n_unshippable);}
+}
+
+/* Whether a member takes a particle leaf at all: star-star pairs are summed exactly in
+ * star_direct_gravity_compute(), so a star member passes a star leaf. */
+static KOKKOS_INLINE_FUNCTION int
+gpu_grav_leaf_member_accepts(const gpu_grav_walk_ctx_t &ctx, int no, const gpu_grav_open_inputs_t &open)
+{
+#ifdef SINGLE_STAR_DIRECT_GRAVITY
+    if((open.ptype == 5) && (ctx.P_dev[no].Type == 5)) {return 0;}
 #else
-                d_stellarlum = dr;
+    (void) ctx; (void) no; (void) open;
 #endif
-#ifdef SINK_PHOTONMOMENTUM
-                /* node-aggregated sink angle-weighted luminosity (shared formula helper) */
-                mass_sinklumwt_forradfb = grav_sink_fb_angleweight((double) tree_soa->sink_lum[idx],
-                                                                   (double) tree_soa->sink_lum_grad[idx][0], (double) tree_soa->sink_lum_grad[idx][1], (double) tree_soa->sink_lum_grad[idx][2],
-                                                                   d_stellarlum[0], d_stellarlum[1], d_stellarlum[2]);
-#endif
-            }
-#endif
-#ifdef COSMIC_RAY_SUBGRID_LEBRON
-            /* Mirror forcetree.cc:1956-1957 node-aggregated CR injection. */
-            cr_injection = (double) tree_soa->cr_injection[idx];
-#endif
-            /* Node-side sink distance + timestepping accumulators via the shared helper
-             * (gravtree_force_kernel.h) — CPU-walk semantics verbatim. The sink_vel/sink_acc
-             * SoA fields are populated from Nodes[] by gpu_pseudo_update + gpu_moment_refresh. */
-#ifdef SINK_CALC_DISTANCES
-#ifdef SPECIAL_POINT_WEIGHTED_MOTION
-            {
-                Vec3<double> node_vs = Vec3<double>{(double)tree_soa->node_vs[idx][0], (double)tree_soa->node_vs[idx][1], (double)tree_soa->node_vs[idx][2]};
-                grav_sink_prox_node_specialweighted(r2, node_vs, ptype, sink_prox);
-            }
-#endif
-            if(tree_soa->sink_mass[idx] > 0)
-            {
-                Vec3<double> sink_dr;
-                sink_dr[0] = tree_soa->sink_pos[idx][0] - pos[0];
-                sink_dr[1] = tree_soa->sink_pos[idx][1] - pos[1];
-                sink_dr[2] = tree_soa->sink_pos[idx][2] - pos[2];
-                gravity_box_nearest_image(sink_dr[0], sink_dr[1], sink_dr[2], -1);
-                grav_sink_prox_target_t prox_target = {}; prox_target.ptype = ptype; prox_target.pmass = pmass; prox_target.soft = soft;
-#if defined(SINGLE_STAR_TIMESTEPPING)
-                prox_target.vel = vel;
-#endif
-                grav_sink_prox_node_src_t prox_src = {}; prox_src.sink_mass = (double) tree_soa->sink_mass[idx];
-#if defined(SINGLE_STAR_FIND_BINARIES)
-                prox_src.n_sink = (int) tree_soa->N_SINK[idx];
-#endif
-#if defined(SINGLE_STAR_TIMESTEPPING) || defined(SPECIAL_POINT_MOTION)
-                prox_src.motion.vel = tree_soa->sink_vel[idx];
-#endif
-#if defined(SPECIAL_POINT_MOTION)
-                prox_src.motion.acc = tree_soa->sink_acc[idx];
-#endif
-#if defined(SINGLE_STAR_TIMESTEPPING) && defined(SINGLE_STAR_FB_TIMESTEPLIMIT)
-                prox_src.motion.max_feedback_vel = tree_soa->MaxFeedbackVel[idx];
-#endif
-                grav_sink_prox_node_accumulate(r2, sink_dr, prox_src, prox_target, sink_prox);
-            }
-#endif /* SINK_CALC_DISTANCES */
-        }
+    return 1;
+}
 
-        /* Evaluate this accepted element for the target. */
-        if((r2 > 0.0) && (mass > 0.0))
-        {
-            /* pair-wise gravity, PM truncation, and the accumulations inside the PM short-range
-             * gate, via the shared evaluation (gravtree_force_kernel.h), the single home for the
-             * pair physics on both walks */
-            grav_pair_result_t res = grav_pair_evaluate_core(tgt, src, out);
-            const double r = res.r, fac_accel = res.fac_accel;
+/* Evaluate one loaded element for a member: the shared pair seam and then the
+ * walker-local payload blocks. The element's pair inputs are in src (dr wrapped,
+ * r2, mass, secondary softening/type/zeta and the gated per-pair terms); its payload
+ * values are in pl. */
+static KOKKOS_INLINE_FUNCTION void
+gpu_grav_evaluate_pair(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_member_inputs_t &in, gpu_grav_member_sums_t &sums, grav_pair_src_t &src, const gpu_grav_src_payload_t &pl)
+{
+    if(!((src.r2 > 0.0) && (src.mass > 0.0))) {return;}
+    /* pair-wise gravity, PM truncation, and the accumulations inside the PM short-range
+     * gate, via the shared evaluation (gravtree_force_kernel.h), the single home for the
+     * pair physics on both walks */
+    grav_pair_result_t res = grav_pair_evaluate_core(in.tgt, src, sums.out);
+    const double r = res.r, fac_accel = res.fac_accel;
+    (void) r; (void) fac_accel;
 #ifdef GIZMO_GPU_EWALD_POT_CORRECTION
-            /* Ewald periodic-image potential correction (mirrors forcetree.cc), from dr as the
-             * evaluation left it. Pure-tree periodic only; under PMGRID the long-range potential
-             * comes from the PM solver.  active is 1 in a healthy run (acquire failure hard-stops
-             * the caller); the guard only covers the post-endrun drain. */
-            if(ewald_pot->active) {
-                grav_ewald_interp_weights ew = grav_ewald_interp_setup(dr[0], dr[1], dr[2], ewald_pot->fac_intp);
-                out.pot += mass * grav_ewald_interp_apply(ewald_pot->potcorr, ew);
-            }
+    /* Ewald periodic-image potential correction (mirrors forcetree.cc), from dr as the
+     * evaluation left it. Pure-tree periodic only; under PMGRID the long-range potential
+     * comes from the PM solver.  active is 1 in a healthy run (acquire failure hard-stops
+     * the caller); the guard only covers the post-endrun drain. */
+    if(ctx.ewald_pot.active) {
+        grav_ewald_interp_weights ew = grav_ewald_interp_setup(src.dr[0], src.dr[1], src.dr[2], ctx.ewald_pot.fac_intp);
+        sums.out.pot += src.mass * grav_ewald_interp_apply(ctx.ewald_pot.potcorr, ew);
+    }
 #endif
 #ifdef COUNT_MASS_IN_GRAVTREE
-            /* counted only for accepted interactions (r2>0, mass>0), mirroring
-             * forcetree.cc -- the walk excludes the target's own (r2==0) leaf;
-             * the post-loop += P[i].Mass in gravtree.cc adds it back exactly once. */
-            tree_mass += mass;
+    /* counted only for accepted interactions (r2>0, mass>0), mirroring forcetree.cc -- the
+     * walk excludes the target's own (r2==0) leaf; gravtree.cc adds it back exactly once. */
+    sums.tree_mass += src.mass;
 #endif
 
-            /* ------------------------------------------------------------ *
-             * RT cluster payloads.  Structure mirrors                      *
-             * forcetree.cc: OUTSIDE the PM short-range gate, so for an      *
-             * out-of-range source fac_accel is the raw un-truncated value   *
-             * here (used by the TREECOL column estimate, which has no       *
-             * PM-side completion); RT_USE_GRAVTREE computes its own fac_rt  *
-             * from d_stellarlum independently.                              *
-             * ------------------------------------------------------------ */
+    /* RT cluster payloads.  Structure mirrors forcetree.cc: OUTSIDE the PM short-range
+     * gate, so for an out-of-range source fac_accel is the raw un-truncated value here
+     * (used by the TREECOL column estimate, which has no PM-side completion);
+     * RT_USE_GRAVTREE computes its own fac_rt from d_stellarlum independently. */
 #ifdef RT_USE_TREECOL_FOR_NH
-            grav_treecol_accumulate(dr, r, fac_accel, gasmass, mass, angular_bin_size, treecol_angular_bins);
+    {
+        const double angular_bin_size = 4.0 * M_PI / RT_USE_TREECOL_FOR_NH;
+        grav_treecol_accumulate(src.dr, r, fac_accel, pl.gasmass, src.mass, angular_bin_size, sums.treecol_angular_bins);
+    }
 #endif
-
 #ifdef SINK_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
-            /* Mirror forcetree.cc. Per-interaction mass accumulation, where
-             * each visited node contributes its multipole mass when within Rcrit. */
-            if(r < r_for_total_menclosed) {m_enc_in_rcrit += mass;}
+    /* per-interaction mass accumulation: each visited node contributes its multipole mass when within Rcrit */
+    if(r < in.r_for_total_menclosed) {sums.m_enc_in_rcrit += src.mass;}
 #endif
-
 #ifdef COSMIC_RAY_SUBGRID_LEBRON
-            grav_cr_lebron_accumulate(ptype, r, soft, cr_injection, cr_active_gate, cr_data->t_max_cr, pm, SubGrid_CosmicRayEnergyDensity);
+    grav_cr_lebron_accumulate(in.open.ptype, r, in.open.soft, pl.cr_injection, in.cr_active_gate, ctx.cr_data.t_max_cr, in.tgt.pm, sums.SubGrid_CosmicRayEnergyDensity);
 #endif
-
 #ifdef RT_USE_GRAVTREE
-            if(valid_gas_particle_for_rt)
-            {
-                /* payload formulas in the shared helper; fac_rt computed there from d_stellarlum
-                 * (may differ from dr when RT_SEPARATELY_TRACK_LUMPOS; otherwise d_stellarlum == dr) */
-                grav_rt_src_t rt_src = {}; rt_src.d_stellarlum = d_stellarlum; rt_src.soft = soft; rt_src.mass_stellarlum = mass_stellarlum;
+    {
+        volatile int valid_gas_particle_for_rt = in.valid_gas_particle_for_rt;
+        if(valid_gas_particle_for_rt)
+        {
+            /* payload formulas in the shared helper; fac_rt computed there from d_stellarlum
+             * (may differ from dr when RT_SEPARATELY_TRACK_LUMPOS; otherwise d_stellarlum == dr) */
+            grav_rt_src_t rt_src = {}; rt_src.d_stellarlum = pl.d_stellarlum; rt_src.soft = in.open.soft; rt_src.mass_stellarlum = pl.mass_stellarlum;
 #ifdef CHIMES_STELLAR_FLUXES
-                rt_src.chimes_mass_stellarlum_G0 = chimes_mass_stellarlum_G0; rt_src.chimes_mass_stellarlum_ion = chimes_mass_stellarlum_ion;
+            rt_src.chimes_mass_stellarlum_G0 = pl.chimes_mass_stellarlum_G0; rt_src.chimes_mass_stellarlum_ion = pl.chimes_mass_stellarlum_ion;
 #endif
 #ifdef SINK_PHOTONMOMENTUM
-                rt_src.mass_sinklumwt_forradfb = mass_sinklumwt_forradfb;
+            rt_src.mass_sinklumwt_forradfb = pl.mass_sinklumwt_forradfb;
 #endif
 #if defined(RT_LEBRON) && !defined(RT_USE_GRAVTREE_SAVE_RAD_FLUX)
-                rt_src.fac_stellum = fac_stellum;
+            rt_src.fac_stellum = in.fac_stellum;
 #endif
-                grav_rt_accum_t rt_accum = {};
+            grav_rt_accum_t rt_accum = {};
 #if defined(RT_USE_GRAVTREE_SAVE_RAD_ENERGY)
-                rt_accum.Rad_E_gamma = Rad_E_gamma;
+            rt_accum.Rad_E_gamma = sums.Rad_E_gamma;
 #endif
 #ifdef CHIMES_STELLAR_FLUXES
-                rt_accum.chimes_flux_G0 = chimes_flux_G0; rt_accum.chimes_flux_ion = chimes_flux_ion;
+            rt_accum.chimes_flux_G0 = sums.chimes_flux_G0; rt_accum.chimes_flux_ion = sums.chimes_flux_ion;
 #endif
 #ifdef GALSF_FB_FIRE_RT_LONGRANGE
-                rt_accum.incident_flux_uv = &incident_flux_uv; rt_accum.incident_flux_euv = &incident_flux_euv;
+            rt_accum.incident_flux_uv = &sums.incident_flux_uv; rt_accum.incident_flux_euv = &sums.incident_flux_euv;
 #endif
 #ifdef SINK_COMPTON_HEATING
-                rt_accum.incident_flux_agn = &incident_flux_agn;
+            rt_accum.incident_flux_agn = &sums.incident_flux_agn;
 #endif
 #ifdef RT_OTVET
-                rt_accum.RT_ET = RT_ET;
+            rt_accum.RT_ET = sums.RT_ET;
 #endif
 #if defined(RT_USE_GRAVTREE_SAVE_RAD_FLUX)
-                rt_accum.Rad_Flux = Rad_Flux;
+            rt_accum.Rad_Flux = sums.Rad_Flux;
 #endif
-                grav_rt_payload_accumulate(rt_src, rt_accum, out.acc);
-            } /* if(valid_gas_particle_for_rt) */
-#endif /* RT_USE_GRAVTREE */
-
-#ifdef DM_SCALARFIELD_SCREENING
-            /* Yukawa-screened scalar-field force on non-gas targets (shared helper;
-             * own table gate keyed on the dm-center distance, outside the main PM gate) */
-            if(ptype != 0)
-            {
-                grav_dm_scalarfield_accumulate(d_dm, mass_dm_local, h, pm, out.acc);
-            }
-#endif /* DM_SCALARFIELD_SCREENING */
-
-        } /* if((r2>0)&&(mass>0)) */
-
-        if(no < treeParticleSlots) {
-            no = tree_soa->nextnode_aux[no];
-        } else {
-            no = tree_soa->sibling[no - treeBase];
+            grav_rt_payload_accumulate(rt_src, rt_accum, sums.out.acc);
         }
-    } /* while(no >= 0) */
-
-    /* ------------------------------------------------------------------ *
-     * Post-walk: write RT outputs to CellP_dev / P_dev.  The host scatter  *
-     * loop in gpu_gravtree_walk_primary copies these to CellP[] / P[].    *
-     * ------------------------------------------------------------------ */
-#ifdef RT_USE_TREECOL_FOR_NH
-    {int k; for(k=0; k<RT_USE_TREECOL_FOR_NH; k++) {P_dev[target].ColumnDensityBins[k] = treecol_angular_bins[k];}}
+    }
+#endif /* RT_USE_GRAVTREE */
+#ifdef DM_SCALARFIELD_SCREENING
+    /* Yukawa-screened scalar-field force on non-gas targets (shared helper;
+     * own table gate keyed on the dm-center distance, outside the main PM gate) */
+    if(in.open.ptype != 0)
+    {
+        Vec3<double> d_dm = pl.d_dm;   /* the helper takes the displacement by non-const reference */
+        grav_dm_scalarfield_accumulate(d_dm, pl.mass_dm_local, in.open.soft, in.tgt.pm, sums.out.acc);
+    }
 #endif
-#ifdef SINK_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
-    P_dev[target].MencInRcrit = m_enc_in_rcrit;
+}
+
+/* Load a particle leaf for a member through the P_dev adapter and evaluate it. The
+ * source's position, velocity and mass are its state at the walk time
+ * (gpu_grav_particle_source_at), except where the Hermite predictor replaces the position
+ * and velocity; everything else is read as stored. */
+static KOKKOS_INLINE_FUNCTION void
+gpu_grav_evaluate_leaf(const gpu_grav_walk_ctx_t &ctx, int no, const gpu_grav_member_inputs_t &in, gpu_grav_member_sums_t &sums)
+{
+    struct particle_data *P_dev = ctx.P_dev;
+    grav_pair_src_t src;
+    gpu_grav_src_payload_t pl;
+    src.h_p = -1.0; src.ptype_sec = -1; src.zeta_sec = 0.0;   /* unconditional, matching the CPU walk: consumed by the shared pair kernel */
+#if defined(SINK_DYNFRICTION_FROMTREE) || defined(COMPUTE_JERK_IN_GRAVTREE)
+    src.dv = Vec3<double>{0,0,0};
+#endif
+#ifdef SINK_DYNFRICTION_FROMTREE
+    src.m_j_eff_for_df = 0.0;
+#endif
+#ifdef GRAVITY_SPHERICAL_SYMMETRY
+    src.r_source = 0.0;
+#endif
+
+    const gpu_grav_particle_now_t motion = gpu_grav_particle_source_at(P_dev, ctx.CellP_dev, no, ctx.ti, ctx.tables, ctx.time_fault);
+    Vec3<double> src_pos = motion.pos;
+    Vec3<double> src_vel = motion.vel;   /* unconditional, mirroring forcetree.cc: the sink-proximity block reads it under SINK_CALC_DISTANCES, which several flags reach without the jerk or dynamical-friction terms */
+#ifdef HERMITE_INTEGRATION
+    /* On a Hermite pass a source the Hermite integrator owns but is not advancing this
+       step is second-order wrong where it stands; evaluate it from its own start-of-step
+       state instead. Same helper and same conditions as the host walk, so the two agree
+       whichever one a step routes to. Single sources only; nothing is written back. */
+    if(hermite_source_needs_prediction(no, P_dev, ctx.hermite.state)) {
+        hermite_predict_source_state(no, P_dev, ctx.hermite.state, &ctx.tables, src_pos, src_vel);
+    }
+#endif
+    src.dr = src_pos - in.open.pos;
+    gravity_box_nearest_image(src.dr[0], src.dr[1], src.dr[2], -1);
+    src.r2 = src.dr.norm_sq();
+    src.mass = motion.mass;
+#if defined(GRAVTREE_SOURCE_DEVICE_TU)
+    /* Lazy source payload for this local leaf: evaluate the SSOT helper on-device
+     * (identical gates/formula to the eager prefill) instead of reading the dense
+     * arrays. Only local particle leaves reach this branch -- foreign leaves and
+     * nodes stay moment-backed. */
+    struct gravtree_source_inputs_t lazy_src;
+    if(ctx.use_lazy_source) { gravtree_fill_particle_source_inputs(no, P_dev, ctx.CellP_dev, &lazy_src); }
+#endif
+#ifdef DM_SCALARFIELD_SCREENING
+    /* per-interaction DM state for this leaf particle (mirrors forcetree.cc) */
+    if(in.open.ptype != 0 && P_dev[no].Type == 1) { pl.d_dm = src.dr; pl.mass_dm_local = src.mass; }
+    else { pl.d_dm = Vec3<double>{0,0,0}; pl.mass_dm_local = 0; }
+#endif
+#ifdef GRAVITY_SPHERICAL_SYMMETRY
+    src.r_source = grav_spherical_symmetry_r_from_center(src_pos[0],src_pos[1],src_pos[2],in.sph_center[0],in.sph_center[1],in.sph_center[2]);
+#endif
+#ifdef ADAPTIVE_GRAVSOFT_FROM_TIDAL_CRITERION
+    /* the secondary's previous-step tidal tensor (mirrors forcetree.cc) */
+    {
+        SymmetricTensor2<MyFloat> tmp = P_dev[no].tidal_tensorps_prevstep;
+        for(int kk = 0; kk < 6; kk++) src.j_zeta_tidal_tensorps_prevstep.data[kk] = (double) tmp.data[kk];
+    }
+#endif
+#if defined(SINK_DYNFRICTION_FROMTREE) || defined(COMPUTE_JERK_IN_GRAVTREE)
+    src.dv = src_vel - in.vel;
+#endif
+#ifdef SINK_DYNFRICTION_FROMTREE
+    src.m_j_eff_for_df = src.mass;
+#endif
+    /* secondary (leaf) softening, loaded unconditionally so a pair whose source softening
+     * exceeds the target's gets the symmetrized max(h,h_p) force (mirrors forcetree.cc).
+     * ptype_sec/zeta_sec stay gated -- only the adaptive symmetrize-by-averaging path uses them. */
+    src.h_p = gpu_force_softening_kernel_radius(P_dev, no);
+    src.ptype_sec = P_dev[no].Type;
+#if defined(ADAPTIVE_GRAVSOFT_FORGAS)
+    if(src.ptype_sec == 0) {src.zeta_sec = gpu_get_ags_zeta(P_dev, no);}
+#elif defined(ADAPTIVE_GRAVSOFT_FORALL)
+    src.zeta_sec = gpu_get_ags_zeta(P_dev, no);
+#endif
+#ifdef GRAVTREE_CALCULATE_GAS_MASS_IN_NODE
+    pl.gasmass = (P_dev[no].Type == 0) ? motion.mass : 0.0;
+#if defined(SINK_ALPHADISK_ACCRETION) && defined(RT_USE_TREECOL_FOR_NH)
+    /* gas at the inner edge of a sink's alpha-disk should not see a hole due to
+     * the sink (mirrors forcetree.cc leaf branch + the node-moment kernel). */
+    if(P_dev[no].Type == 5) {pl.gasmass = (double) P_dev[no].Sink_Mass_Reservoir;}
+#endif
 #endif
 #ifdef RT_USE_GRAVTREE
-    /* Use valid_gas_particle_for_rt (non-const int) throughout: nvc++ miscompiles raw boolean expressions in device code */
+    /* Load leaf luminosity only for valid gas targets (mirrors forcetree.cc; the RT
+     * accumulation is gated the same way, so non-gas targets never read these and
+     * skipping the loads avoids the wasted per-leaf table traffic). */
+    {int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {pl.mass_stellarlum[kf]=0.0;}}
+    pl.d_stellarlum = {};
+#ifdef CHIMES_STELLAR_FLUXES
+    {int kc; for(kc=0; kc<CHIMES_LOCAL_UV_NBINS; kc++) {pl.chimes_mass_stellarlum_G0[kc]=0; pl.chimes_mass_stellarlum_ion[kc]=0;}}
+#endif
+#ifdef SINK_PHOTONMOMENTUM
+    pl.mass_sinklumwt_forradfb = 0.0;
+#endif
+    {
+        volatile int valid_gas_particle_for_rt = in.valid_gas_particle_for_rt;
+        if(valid_gas_particle_for_rt)
+        {
+            pl.d_stellarlum = src.dr;
+            int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {
+#if defined(GRAVTREE_SOURCE_DEVICE_TU)
+                pl.mass_stellarlum[kf] = ctx.use_lazy_source ? (lazy_src.rt_active ? lazy_src.src_lum[kf] : (MyFloat)0)
+                                                             : ctx.rt_data.src_lum[(long)no * N_RT_FREQ_BINS + kf];
+#else
+                pl.mass_stellarlum[kf] = ctx.rt_data.src_lum[(long)no * N_RT_FREQ_BINS + kf];
+#endif
+            }
+#ifdef CHIMES_STELLAR_FLUXES
+            for(kf=0; kf<CHIMES_LOCAL_UV_NBINS; kf++) {
+#if defined(GRAVTREE_SOURCE_DEVICE_TU)
+                pl.chimes_mass_stellarlum_G0[kf]  = ctx.use_lazy_source ? (lazy_src.rt_active ? lazy_src.src_lum_G0[kf]  : 0.0) : ctx.rt_data.src_lum_G0[(long)no * CHIMES_LOCAL_UV_NBINS + kf];
+                pl.chimes_mass_stellarlum_ion[kf] = ctx.use_lazy_source ? (lazy_src.rt_active ? lazy_src.src_lum_ion[kf] : 0.0) : ctx.rt_data.src_lum_ion[(long)no * CHIMES_LOCAL_UV_NBINS + kf];
+#else
+                pl.chimes_mass_stellarlum_G0[kf] = ctx.rt_data.src_lum_G0[(long)no * CHIMES_LOCAL_UV_NBINS + kf];
+                pl.chimes_mass_stellarlum_ion[kf] = ctx.rt_data.src_lum_ion[(long)no * CHIMES_LOCAL_UV_NBINS + kf];
+#endif
+            }
+#endif
+#ifdef SINK_PHOTONMOMENTUM
+            /* per-sink-leaf angle-weighted luminosity (shared formula helper) */
+            if(P_dev[no].Type == 5) {
+                double bhlum_t, bha0, bha1, bha2;
+#if defined(GRAVTREE_SOURCE_DEVICE_TU)
+                if(ctx.use_lazy_source) {
+                    bhlum_t = lazy_src.bh_active ? (double)lazy_src.bh_lum : 0.0;
+                    bha0 = lazy_src.bh_active ? (double)lazy_src.bh_angle[0] : 0.0;
+                    bha1 = lazy_src.bh_active ? (double)lazy_src.bh_angle[1] : 0.0;
+                    bha2 = lazy_src.bh_active ? (double)lazy_src.bh_angle[2] : 0.0;
+                } else
+#endif
+                {
+                    bhlum_t = (double) ctx.sink_data.bh_lum[no];
+                    bha0 = (double) ctx.sink_data.bh_angle[no][0]; bha1 = (double) ctx.sink_data.bh_angle[no][1]; bha2 = (double) ctx.sink_data.bh_angle[no][2];
+                }
+                pl.mass_sinklumwt_forradfb = grav_sink_fb_angleweight(bhlum_t, bha0, bha1, bha2, src.dr[0], src.dr[1], src.dr[2]);
+            }
+#endif
+        }
+    }
+#endif
+#ifdef COSMIC_RAY_SUBGRID_LEBRON
+    /* leaf CR source injection (mirrors forcetree.cc) */
+#if defined(GRAVTREE_SOURCE_DEVICE_TU)
+    pl.cr_injection = ctx.use_lazy_source ? (double) lazy_src.cr_inject : (double) ctx.cr_data.cr_inject[no];
+#else
+    pl.cr_injection = (double) ctx.cr_data.cr_inject[no];
+#endif
+#endif
+    /* Sink-distance + single-star timestepping tracking on particle leafs via the
+     * shared helper (gravtree_force_kernel.h) -- CPU-walk semantics verbatim. */
+#ifdef SINK_CALC_DISTANCES
+    if((src.r2 > 0) && (src.mass > 0))
+    {
+        grav_sink_prox_target_t prox_target = {}; prox_target.ptype = in.open.ptype; prox_target.pmass = in.pmass; prox_target.soft = in.open.soft;
+#if defined(SINGLE_STAR_TIMESTEPPING)
+        prox_target.vel = in.vel;
+#endif
+        grav_sink_prox_leaf_src_t prox_src = {}; prox_src.src_type = P_dev[no].Type; prox_src.src_mass = motion.mass; prox_src.motion.vel = src_vel;   /* the state this interaction was evaluated at, mirroring forcetree.cc, so (dr, vel) stays a consistent pair on a Hermite pass */
+#if defined(SPECIAL_POINT_MOTION) || defined(SPECIAL_POINT_WEIGHTED_MOTION)
+        prox_src.motion.acc = P_dev[no].Acc_Total_PrevStep;
+#endif
+#if defined(SINGLE_STAR_TIMESTEPPING) && defined(SINGLE_STAR_FB_TIMESTEPLIMIT)
+        prox_src.motion.max_feedback_vel = P_dev[no].MaxFeedbackVel;
+#endif
+        grav_sink_prox_leaf_accumulate(src.r2, src.dr, prox_target, prox_src, sums.sink_prox);
+    }
+#endif /* SINK_CALC_DISTANCES */
+
+    gpu_grav_evaluate_pair(ctx, in, sums, src, pl);
+}
+
+/* Load an accepted node for a member through the SoA adapter and evaluate it, given
+ * the node's geometry as this member derived it (gpu_grav_node_member_geometry). A
+ * tagged real foreign single-particle leaf is consumed with particle-leaf secondary
+ * semantics: the node payload supplies mass/h_p and the synthesized RT/sink/CR/tidal
+ * terms (singleton-aggregate == particle value); the two leaf-identity fields the
+ * moment cannot carry (Type + AGS_zeta) are restored via the shared seam so
+ * grav_force_pair applies AGS symmetrization/zeta exactly as on the source's home rank. */
+static KOKKOS_INLINE_FUNCTION void
+gpu_grav_evaluate_node(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_node_prelude_t &nd, const gpu_grav_member_inputs_t &in, gpu_grav_member_sums_t &sums,
+                       const Vec3<MyFloat> &s_node, MyFloat mass_node, const Vec3<double> &dr, double r2)
+{
+    const struct gpu_gravity_tree_soa_t *tree_soa = &ctx.tree_soa;
+    const int idx = nd.idx;
+    grav_pair_src_t src;
+    gpu_grav_src_payload_t pl;
+    src.dr = dr; src.r2 = r2; src.mass = mass_node;
+    src.h_p = nd.msoft_node; src.ptype_sec = -1; src.zeta_sec = 0.0;
+#if defined(SINK_DYNFRICTION_FROMTREE) || defined(COMPUTE_JERK_IN_GRAVTREE)
+    src.dv = Vec3<double>{0,0,0};
+#endif
+#ifdef SINK_DYNFRICTION_FROMTREE
+    src.m_j_eff_for_df = 0.0;
+#endif
+#ifdef GRAVITY_SPHERICAL_SYMMETRY
+    src.r_source = 0.0;
+#endif
+    if(nd.fl_tag == 1) {
+        grav_apply_foreign_leaf_identity(nd.fl_tag, nd.fl_type, nd.fl_zeta, nd.fl_soft, &src.ptype_sec, &src.zeta_sec, &src.h_p);
+    }
+#ifdef DM_SCALARFIELD_SCREENING
+    /* per-interaction DM state for this accepted node (mirrors forcetree.cc): d_dm uses the
+     * DM CoM s_dm, NOT the total CoM (s_node). */
+    if(in.open.ptype != 0) {
+        pl.d_dm[0] = (double)nd.motion.s_dm_[0] - in.open.pos[0];
+        pl.d_dm[1] = (double)nd.motion.s_dm_[1] - in.open.pos[1];
+        pl.d_dm[2] = (double)nd.motion.s_dm_[2] - in.open.pos[2];
+        pl.mass_dm_local = (double)tree_soa->mass_dm[idx];
+    } else { pl.d_dm = Vec3<double>{0,0,0}; pl.mass_dm_local = 0; }
+#endif
+#ifdef GRAVITY_SPHERICAL_SYMMETRY
+    src.r_source = grav_spherical_symmetry_r_from_center(s_node[0],s_node[1],s_node[2],in.sph_center[0],in.sph_center[1],in.sph_center[2]);
+#else
+    (void) s_node;
+#endif
+#ifdef ADAPTIVE_GRAVSOFT_FROM_TIDAL_CRITERION
+    /* the node's previous-step tidal tensor from the SoA (mirrors forcetree.cc) */
+    for(int kk = 0; kk < 6; kk++) {
+        src.j_zeta_tidal_tensorps_prevstep.data[kk] = (double) tree_soa->tidal_tensorps[(long)idx * 6 + kk];
+    }
+#endif
+#if defined(SINK_DYNFRICTION_FROMTREE) || defined(COMPUTE_JERK_IN_GRAVTREE)
+    src.dv[0] = (double) nd.motion.vs_[0] - in.vel[0];
+    src.dv[1] = (double) nd.motion.vs_[1] - in.vel[1];
+    src.dv[2] = (double) nd.motion.vs_[2] - in.vel[2];
+#endif
+#ifdef SINK_DYNFRICTION_FROMTREE
+    {
+        long np = tree_soa->N_part[idx];
+        src.m_j_eff_for_df = (np > 0) ? (src.mass / (double)np) : 0.0;
+    }
+#endif
+#ifdef GRAVTREE_CALCULATE_GAS_MASS_IN_NODE
+    pl.gasmass = tree_soa->gasmass[idx];
+#endif
+#ifdef RT_USE_GRAVTREE
+    /* Load node stellar luminosity only for valid gas targets (mirrors forcetree.cc; the RT
+     * accumulation is gated the same way). */
+    {int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {pl.mass_stellarlum[kf]=0.0;}}
+    pl.d_stellarlum = {};
+#ifdef CHIMES_STELLAR_FLUXES
+    {int kc; for(kc=0; kc<CHIMES_LOCAL_UV_NBINS; kc++) {pl.chimes_mass_stellarlum_G0[kc]=0; pl.chimes_mass_stellarlum_ion[kc]=0;}}
+#endif
+#ifdef SINK_PHOTONMOMENTUM
+    pl.mass_sinklumwt_forradfb = 0.0;
+#endif
+    {
+        volatile int valid_gas_particle_for_rt = in.valid_gas_particle_for_rt;
+        if(valid_gas_particle_for_rt)
+        {
+            int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {
+                pl.mass_stellarlum[kf] = tree_soa->stellar_lum[idx * N_RT_FREQ_BINS + kf];
+            }
+#ifdef CHIMES_STELLAR_FLUXES
+            for(kf=0; kf<CHIMES_LOCAL_UV_NBINS; kf++) {
+                pl.chimes_mass_stellarlum_G0[kf] = tree_soa->chimes_stellar_lum_G0[(long)idx * CHIMES_LOCAL_UV_NBINS + kf];
+                pl.chimes_mass_stellarlum_ion[kf] = tree_soa->chimes_stellar_lum_ion[(long)idx * CHIMES_LOCAL_UV_NBINS + kf];
+            }
+#endif
+#ifdef RT_SEPARATELY_TRACK_LUMPOS
+            pl.d_stellarlum[0] = nd.motion.rt_s_[0] - in.open.pos[0];
+            pl.d_stellarlum[1] = nd.motion.rt_s_[1] - in.open.pos[1];
+            pl.d_stellarlum[2] = nd.motion.rt_s_[2] - in.open.pos[2];
+            gravity_box_nearest_image(pl.d_stellarlum[0], pl.d_stellarlum[1], pl.d_stellarlum[2], -1);
+#else
+            pl.d_stellarlum = src.dr;
+#endif
+#ifdef SINK_PHOTONMOMENTUM
+            /* node-aggregated sink angle-weighted luminosity (shared formula helper) */
+            pl.mass_sinklumwt_forradfb = grav_sink_fb_angleweight((double) tree_soa->sink_lum[idx],
+                                                                  (double) tree_soa->sink_lum_grad[idx][0], (double) tree_soa->sink_lum_grad[idx][1], (double) tree_soa->sink_lum_grad[idx][2],
+                                                                  pl.d_stellarlum[0], pl.d_stellarlum[1], pl.d_stellarlum[2]);
+#endif
+        }
+    }
+#endif
+#ifdef COSMIC_RAY_SUBGRID_LEBRON
+    /* node-aggregated CR injection (mirrors forcetree.cc) */
+    pl.cr_injection = (double) tree_soa->cr_injection[idx];
+#endif
+    /* Node-side sink distance + timestepping accumulators via the shared helper
+     * (gravtree_force_kernel.h) -- CPU-walk semantics verbatim. The sink_vel/sink_acc
+     * SoA fields are populated from Nodes[] by gpu_pseudo_update + gpu_moment_refresh. */
+#ifdef SINK_CALC_DISTANCES
+#ifdef SPECIAL_POINT_WEIGHTED_MOTION
+    {
+        Vec3<double> node_vs = Vec3<double>{(double)nd.motion.vs_[0], (double)nd.motion.vs_[1], (double)nd.motion.vs_[2]};
+        grav_sink_prox_node_specialweighted(src.r2, node_vs, in.open.ptype, sums.sink_prox);
+    }
+#endif
+    if(tree_soa->sink_mass[idx] > 0)
+    {
+        Vec3<double> sink_dr;
+#ifdef SINK_NODE_MOTION_TRACKED
+        for(int k = 0; k < 3; k++) {sink_dr[k] = nd.motion.sink_pos_[k] - in.open.pos[k];}   /* moves with its sinks: at the walk time */
+#else
+        for(int k = 0; k < 3; k++) {sink_dr[k] = tree_soa->sink_pos[idx][k] - in.open.pos[k];}   /* not moved between builds */
+#endif
+        gravity_box_nearest_image(sink_dr[0], sink_dr[1], sink_dr[2], -1);
+        grav_sink_prox_target_t prox_target = {}; prox_target.ptype = in.open.ptype; prox_target.pmass = in.pmass; prox_target.soft = in.open.soft;
+#if defined(SINGLE_STAR_TIMESTEPPING)
+        prox_target.vel = in.vel;
+#endif
+        grav_sink_prox_node_src_t prox_src = {}; prox_src.sink_mass = (double) tree_soa->sink_mass[idx];
+#if defined(SINGLE_STAR_FIND_BINARIES)
+        prox_src.n_sink = (int) tree_soa->N_SINK[idx];
+#endif
+#if defined(SINGLE_STAR_TIMESTEPPING) || defined(SPECIAL_POINT_MOTION)
+        prox_src.motion.vel = Vec3<double>{(double)nd.motion.sink_vel_[0], (double)nd.motion.sink_vel_[1], (double)nd.motion.sink_vel_[2]};
+#endif
+#if defined(SPECIAL_POINT_MOTION)
+        prox_src.motion.acc = tree_soa->sink_acc[idx];
+#endif
+#if defined(SINGLE_STAR_TIMESTEPPING) && defined(SINGLE_STAR_FB_TIMESTEPLIMIT)
+        prox_src.motion.max_feedback_vel = tree_soa->MaxFeedbackVel[idx];
+#endif
+        grav_sink_prox_node_accumulate(src.r2, sink_dr, prox_src, prox_target, sums.sink_prox);
+    }
+#endif /* SINK_CALC_DISTANCES */
+
+    gpu_grav_evaluate_pair(ctx, in, sums, src, pl);
+}
+
+/* Write a completed member's outputs to P_dev / CellP_dev (the host scatter loop in
+ * gpu_gravtree_walk_primary copies them to P[] / CellP[]) and return the three the
+ * caller collects directly. Mirrors forcetree.cc (mode=0). */
+static KOKKOS_INLINE_FUNCTION void
+gpu_grav_member_finish(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_member_inputs_t &in, const gpu_grav_member_sums_t &sums, Vec3<double> &acc_out, int &ninter_out, double &pot_out)
+{
+    struct particle_data *P_dev = ctx.P_dev; const int target = in.target;
+#ifdef RT_USE_GRAVTREE
+    struct gas_cell_data *CellP_dev = ctx.CellP_dev;
+    volatile int valid_gas_particle_for_rt = in.valid_gas_particle_for_rt;   /* nvc++ miscompiles raw boolean gates in device code */
+#endif
+#ifdef RT_USE_TREECOL_FOR_NH
+    {int k; for(k=0; k<RT_USE_TREECOL_FOR_NH; k++) {P_dev[target].ColumnDensityBins[k] = sums.treecol_angular_bins[k];}}
+#endif
+#ifdef SINK_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
+    P_dev[target].MencInRcrit = sums.m_enc_in_rcrit;
+#endif
+#ifdef RT_USE_GRAVTREE
 #ifdef RT_OTVET
     if(valid_gas_particle_for_rt) {
-        int k; for(k=0; k<N_RT_FREQ_BINS; k++) {CellP_dev[target].ET[k] = RT_ET[k];}
-    } else if(ptype == 0) {
+        int k; for(k=0; k<N_RT_FREQ_BINS; k++) {CellP_dev[target].ET[k] = sums.RT_ET[k];}
+    } else if(in.open.ptype == 0) {
         int k; for(k=0; k<N_RT_FREQ_BINS; k++) {CellP_dev[target].ET[k] = {};}
     }
 #endif
 #ifdef GALSF_FB_FIRE_RT_LONGRANGE
     if(valid_gas_particle_for_rt) {
-        CellP_dev[target].Rad_Flux_UV  = incident_flux_uv;
-        CellP_dev[target].Rad_Flux_EUV = incident_flux_euv;
+        CellP_dev[target].Rad_Flux_UV  = sums.incident_flux_uv;
+        CellP_dev[target].Rad_Flux_EUV = sums.incident_flux_euv;
     }
 #endif
 #ifdef CHIMES_STELLAR_FLUXES
     if(valid_gas_particle_for_rt) {
         int kc; for(kc=0; kc<CHIMES_LOCAL_UV_NBINS; kc++) {
-            CellP_dev[target].Chimes_G0[kc]          = chimes_flux_G0[kc];
-            CellP_dev[target].Chimes_fluxPhotIon[kc] = chimes_flux_ion[kc];
+            CellP_dev[target].Chimes_G0[kc]          = sums.chimes_flux_G0[kc];
+            CellP_dev[target].Chimes_fluxPhotIon[kc] = sums.chimes_flux_ion[kc];
         }
     }
 #endif
 #if defined(RT_USE_GRAVTREE_SAVE_RAD_ENERGY)
     if(valid_gas_particle_for_rt) {
-        int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {CellP_dev[target].Rad_E_gamma[kf] = Rad_E_gamma[kf];}
+        int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {CellP_dev[target].Rad_E_gamma[kf] = sums.Rad_E_gamma[kf];}
     }
 #endif
 #ifdef SINK_COMPTON_HEATING
     if(valid_gas_particle_for_rt) {
-        CellP_dev[target].Rad_Flux_AGN = incident_flux_agn;
+        CellP_dev[target].Rad_Flux_AGN = sums.incident_flux_agn;
     }
 #endif
 #if defined(RT_USE_GRAVTREE_SAVE_RAD_FLUX)
     if(valid_gas_particle_for_rt) {
-        int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {CellP_dev[target].Rad_Flux[kf] = Rad_Flux[kf];}
+        int kf; for(kf=0; kf<N_RT_FREQ_BINS; kf++) {CellP_dev[target].Rad_Flux[kf] = sums.Rad_Flux[kf];}
     }
 #endif
 #endif /* RT_USE_GRAVTREE */
-
 #ifdef COSMIC_RAY_SUBGRID_LEBRON
-    /* Mirror forcetree.cc:2478-2480. */
-    if(ptype == 0) {CellP_dev[target].SubGrid_CosmicRayEnergyDensity = SubGrid_CosmicRayEnergyDensity;}
+    if(in.open.ptype == 0) {ctx.CellP_dev[target].SubGrid_CosmicRayEnergyDensity = sums.SubGrid_CosmicRayEnergyDensity;}
 #endif
-
-    /* Sink-distance / single-star timestepping outputs.
-     * Mirrors forcetree.cc:2499-2526 (mode=0). Scatter from P_dev back to P[]
-     * happens in the host post-walk loop (primary driver). */
 #ifdef SINK_CALC_DISTANCES
-    P_dev[target].Min_Distance_to_Sink = sqrt(sink_prox.Min_Distance_to_Sink2);
-    P_dev[target].Min_xyz_to_Sink = sink_prox.Min_xyz_to_Sink;
+    P_dev[target].Min_Distance_to_Sink = sqrt(sums.sink_prox.Min_Distance_to_Sink2);
+    P_dev[target].Min_xyz_to_Sink = sums.sink_prox.Min_xyz_to_Sink;
 #ifdef SINGLE_STAR_FIND_BINARIES
     P_dev[target].is_in_a_binary = 0;
-    P_dev[target].Min_Sink_OrbitalTime = sink_prox.Min_Sink_OrbitalTime;
-    if(sink_prox.Min_Sink_OrbitalTime < MAX_REAL_NUMBER) {
+    P_dev[target].Min_Sink_OrbitalTime = sums.sink_prox.Min_Sink_OrbitalTime;
+    if(sums.sink_prox.Min_Sink_OrbitalTime < MAX_REAL_NUMBER) {
         P_dev[target].is_in_a_binary = 1;
-        P_dev[target].comp_Mass = sink_prox.comp_Mass;
-        P_dev[target].comp_dx = sink_prox.comp_dx;
-        P_dev[target].comp_dv = sink_prox.comp_dv;
+        P_dev[target].comp_Mass = sums.sink_prox.comp_Mass;
+        P_dev[target].comp_dx = sums.sink_prox.comp_dx;
+        P_dev[target].comp_dv = sums.sink_prox.comp_dv;
     }
 #endif
 #ifdef SINGLE_STAR_TIMESTEPPING
-    P_dev[target].Min_Sink_Approach_Time = sqrt(sink_prox.Min_Sink_Approach_Time);
-    P_dev[target].Min_Sink_Freefall_time = sqrt(sqrt(sink_prox.Min_Sink_Freefall_time) / All.G);
+    P_dev[target].Min_Sink_Approach_Time = sqrt(sums.sink_prox.Min_Sink_Approach_Time);
+    P_dev[target].Min_Sink_Freefall_time = sqrt(sqrt(sums.sink_prox.Min_Sink_Freefall_time) / All.G);
 #ifdef SINGLE_STAR_FB_TIMESTEPLIMIT
-    P_dev[target].Min_Sink_FeedbackTime = sqrt(sink_prox.Min_Sink_FeedbackTime);
+    P_dev[target].Min_Sink_FeedbackTime = sqrt(sums.sink_prox.Min_Sink_FeedbackTime);
 #endif
 #endif
 #endif /* SINK_CALC_DISTANCES */
-
 #ifdef COMPUTE_TIDAL_TENSOR_IN_GRAVTREE
-    P_dev[target].tidal_tensorps = out.tidal_tensorps;
+    P_dev[target].tidal_tensorps = sums.out.tidal_tensorps;
 #endif
 #ifdef COMPUTE_JERK_IN_GRAVTREE
-    P_dev[target].GravJerk = out.jerk;
+    P_dev[target].GravJerk = sums.out.jerk;
 #endif
 #ifdef COUNT_MASS_IN_GRAVTREE
-    P_dev[target].TreeMass = tree_mass;
+    P_dev[target].TreeMass = sums.tree_mass;
 #endif
 #ifdef ADAPTIVE_GRAVSOFT_FROM_TIDAL_CRITERION
-    P_dev[target].tidal_zeta = (MyFloat) out.tidal_zeta;
+    P_dev[target].tidal_zeta = (MyFloat) sums.out.tidal_zeta;
 #endif
 #ifdef SPECIAL_POINT_MOTION
-    P_dev[target].vel_of_nearest_special = Vec3<MyFloat>{(MyFloat)sink_prox.vel_of_nearest_special[0],
-                                                         (MyFloat)sink_prox.vel_of_nearest_special[1],
-                                                         (MyFloat)sink_prox.vel_of_nearest_special[2]};
-    P_dev[target].acc_of_nearest_special = Vec3<MyFloat>{(MyFloat)sink_prox.acc_of_nearest_special[0],
-                                                         (MyFloat)sink_prox.acc_of_nearest_special[1],
-                                                         (MyFloat)sink_prox.acc_of_nearest_special[2]};
+    P_dev[target].vel_of_nearest_special = Vec3<MyFloat>{(MyFloat)sums.sink_prox.vel_of_nearest_special[0],
+                                                         (MyFloat)sums.sink_prox.vel_of_nearest_special[1],
+                                                         (MyFloat)sums.sink_prox.vel_of_nearest_special[2]};
+    P_dev[target].acc_of_nearest_special = Vec3<MyFloat>{(MyFloat)sums.sink_prox.acc_of_nearest_special[0],
+                                                         (MyFloat)sums.sink_prox.acc_of_nearest_special[1],
+                                                         (MyFloat)sums.sink_prox.acc_of_nearest_special[2]};
 #ifdef SPECIAL_POINT_WEIGHTED_MOTION
-    P_dev[target].weight_sum_for_special_point_smoothing = (MyFloat) sink_prox.weight_sum_for_special_point_smoothing;
+    P_dev[target].weight_sum_for_special_point_smoothing = (MyFloat) sums.sink_prox.weight_sum_for_special_point_smoothing;
 #endif
 #endif
+    acc_out = sums.out.acc;
+    ninter_out = sums.out.ninter;
+    pot_out = sums.out.pot;
+}
 
-    acc_out = out.acc;
-    ninter_out = out.ninter;
-    pot_out = out.pot;
+/* -------------------------------------------------------------------------
+ * gpu_gravtree_walk_one -- the walk for a single target: the units above composed
+ * with each accepted element evaluated at encounter.
+ *
+ * Returns 1 on success (outputs written), 0 on failure (pseudo-particle hit; host runs the CPU walk
+ * for this target).  Every source is read at the walk time without being drifted (the leaf and node
+ * loads above).  Mirrors force_treeevaluate().
+ * ---------------------------------------------------------------------- */
+static KOKKOS_INLINE_FUNCTION int
+gpu_gravtree_walk_one(const gpu_grav_walk_ctx_t &ctx, int target, Vec3<double> &acc_out, int &ninter_out, double &pot_out)
+{
+    gpu_grav_member_t mem;
+    if(!gpu_grav_member_init(ctx, target, mem)) {acc_out = Vec3<double>{0,0,0}; ninter_out = 0; pot_out = 0.0; return 1;}
+    const struct gpu_gravity_tree_soa_t *tree_soa = &ctx.tree_soa;
+    const int treeBase = ctx.treeBase, treeParticleSlots = ctx.treeParticleSlots;
+    const int pseudo_start = treeBase + ctx.maxNodes + ctx.maxForeignNodes;   /* foreign-node range below the pseudos */
+
+    int no = treeBase;   /* root */
+    while(no >= 0)
+    {
+        if(no >= treeParticleSlots && no < treeBase) {return 0;} /* gap: malformed tree -- defer; the CPU walk's guard stops loudly */
+        if(no < treeParticleSlots) /* particle leaf */
+        {
+            if(gpu_grav_leaf_member_accepts(ctx, no, mem.in.open)) {gpu_grav_evaluate_leaf(ctx, no, mem.in, mem.sums);}
+            no = tree_soa->nextnode_aux[no];
+            continue;
+        }
+        if(no >= pseudo_start) {return 0;} /* pseudo-particle -- remote: host runs the CPU walk for this target */
+
+        gpu_grav_node_prelude_t nd;
+        const gpu_grav_node_step_t step = gpu_grav_node_prelude(ctx, no, nd);
+        if(step == GPU_GRAV_NODE_SKIP_TO_SIBLING) {no = nd.sibling; continue;}
+        if(step == GPU_GRAV_NODE_DESCEND) {no = nd.nextnode; continue;}
+        Vec3<MyFloat> s_node; MyFloat mass_node; Vec3<double> dr; double r2;
+        if(!gpu_grav_node_member_geometry(ctx, nd, mem.in.open, s_node, mass_node, dr, r2)) {no = nd.sibling; continue;} /* pure-star node, star target */
+        int note;
+        const gravtree_open_t pred = gpu_grav_node_member_decide(ctx, nd, mem.in.open, mass_node, r2, note);
+        if(note != GPU_GRAV_NOTE_NONE) {gpu_grav_note_commit(1, (note == GPU_GRAV_NOTE_UNSHIPPABLE) ? 1 : 0);}
+        if(pred == GRAV_SKIP_NODE) {no = nd.sibling; continue;}
+        if(pred == GRAV_OPEN_NODE) {no = nd.nextnode; continue;}
+        gpu_grav_evaluate_node(ctx, nd, mem.in, mem.sums, s_node, mass_node, dr, r2);
+        no = nd.sibling;
+    }
+
+    gpu_grav_member_finish(ctx, mem.in, mem.sums, acc_out, ninter_out, pot_out);
     return 1;
 }
 
+
+/* -------------------------------------------------------------------------
+ * The packet engine: one team of threads walks the tree once for a packet of
+ * up to q_dev adjacent targets and evaluates every member's forces.
+ *
+ * Member m is thread m (m < q_eff). It holds its own target state in registers
+ * exactly as the single-target walk does and publishes only its opening inputs to
+ * team scratch, where the walker reads them. The traversal is shared: the walker
+ * carries one work item -- the next index, the first index NOT in the item, and
+ * the members still taking part -- and at every node each member in the item
+ * applies its own opening decision. Members that accept or skip a node the packet
+ * then descends are absent from that subtree; they re-join through the
+ * continuation (sibling, exit, mask) the walker stores when it descends, on its
+ * bounded local stack or, when that is full, on the team frontier. Accepted
+ * elements go to a bounded record chunk with the mask of the members that
+ * accepted them; whenever it fills, and once more when the traversal ends, every
+ * member evaluates its own records in append order through the same load and
+ * evaluate units as the single-target walk. With one walker the traversal is that
+ * walk's depth-first order, so each member's records are the sequence its own
+ * walk would have accumulated, in the same order.
+ *
+ * A packet that meets a pseudo-particle, or a malformed index, or that has no room
+ * left for a continuation, fails as a whole: nothing is written for any member. Its
+ * members are then walked one at a time by the single-target device walk, which
+ * leaves to the host loop exactly the targets that meet the pseudo-particle
+ * themselves, as the flat route does. The packet's import notes are held in
+ * scratch and counted only when it succeeds.
+ *
+ * Everything a team holds is in its level-0 scratch, sized for the launch shape
+ * in one place (gpu_grav_packet_scratch_plan) so the legality check sees the whole
+ * request; nothing here is sized by the configured packet size or by the tree.
+ * ---------------------------------------------------------------------- */
+
+#define GRAV_PACKET_MASK_BITS 64
+#define GRAV_PACKET_Q_DEV_MAX 256               /* members per packet on the device; a larger configured packet size is walked as several packets */
+#define GRAV_PACKET_LOCAL_STACK 16              /* continuations a walker keeps itself; the oldest moves to the frontier when full */
+typedef unsigned long long grav_packet_mask_word_t;
+
+struct gpu_grav_walk_item_t { int no, exit; };   /* a work item's indices; its mask words live beside it */
+
+struct gpu_grav_packet_scratch_plan_t {
+    int mask_words;
+    int local_stack;   /* continuations per walker */
+    size_t open_inputs, member_inputs, member_fold, frontier, frontier_masks, records, record_masks, local, local_masks, walker_masks, counters, bytes;
+};
+
+/* The scratch a team needs for one launch shape: q_dev members, team_size threads,
+ * a frontier of frontier_cap items, a chunk of chunk_cap records and a per-walker
+ * continuation stack local_stack deep.
+ *
+ * The frontier is the caller's: only several walkers share continuations, so a single-walker
+ * team asks for none.  Zero leaves the region empty rather than merely unused -- the scratch
+ * request is what team_size_max is asked about, so an unused region is a real cost in
+ * occupancy, not just in bytes. */
+static struct gpu_grav_packet_scratch_plan_t
+gpu_grav_packet_scratch_plan(int q_dev, int team_size, int frontier_cap, int chunk_cap, int local_stack, int team_evaluates)
+{
+    struct gpu_grav_packet_scratch_plan_t p;
+    p.mask_words = (q_dev + GRAV_PACKET_MASK_BITS - 1) / GRAV_PACKET_MASK_BITS;
+    p.local_stack = local_stack;
+    size_t off = 0;
+    auto take = [&off](size_t bytes, size_t align) {off = ((off + align - 1) / align) * align; size_t here = off; off += bytes; return here;};
+    p.open_inputs    = take((size_t) q_dev * sizeof(gpu_grav_open_inputs_t), alignof(gpu_grav_open_inputs_t));
+    /* a flavour whose whole team evaluates also publishes each member's full inputs, which every lane
+       working on that member reads, and one partial sum per thread, through which the lanes of a member
+       are folded when the packet commits */
+    p.member_inputs  = take(team_evaluates ? (size_t) q_dev * sizeof(gpu_grav_member_inputs_t) : 0, alignof(gpu_grav_member_inputs_t));
+    p.member_fold    = take(team_evaluates ? (size_t) team_size * sizeof(gpu_grav_member_sums_t) : 0, alignof(gpu_grav_member_sums_t));
+    p.frontier       = take((size_t) frontier_cap * sizeof(gpu_grav_walk_item_t), alignof(gpu_grav_walk_item_t));
+    p.frontier_masks = take((size_t) frontier_cap * p.mask_words * sizeof(grav_packet_mask_word_t), alignof(grav_packet_mask_word_t));
+    p.records        = take((size_t) chunk_cap * sizeof(grav_walk_record_t), alignof(grav_walk_record_t));
+    p.record_masks   = take((size_t) chunk_cap * p.mask_words * sizeof(grav_packet_mask_word_t), alignof(grav_packet_mask_word_t));
+    p.local          = take((size_t) team_size * local_stack * sizeof(gpu_grav_walk_item_t), alignof(gpu_grav_walk_item_t));
+    p.local_masks    = take((size_t) team_size * local_stack * p.mask_words * sizeof(grav_packet_mask_word_t), alignof(grav_packet_mask_word_t));
+    p.walker_masks   = take((size_t) team_size * 3 * p.mask_words * sizeof(grav_packet_mask_word_t), alignof(grav_packet_mask_word_t));   /* a walker's item mask + its two scratch masks */
+    /* 16 ints, deliberately not sized to GRAV_PACKET_CTR_COUNT: the scratch request feeds
+     * team_size_max, so shrinking it could change the launch shape and with it what is being
+     * measured.  The static_assert that keeps the slack honest sits with the enum below, which
+     * is where a counter would be added. */
+    p.counters       = take(16 * sizeof(int), alignof(long long));
+    p.bytes = off;
+    return p;
+}
+
+/* Why a packet gave itself up.  These are NOT interchangeable, which is the whole reason they
+ * are counted apart: meeting a pseudo-particle is the design working (the host owns those
+ * targets), while running out of room for a continuation is the engine hitting its own budget on
+ * a divergent traversal -- correctness is safe either way, but the second is a PERFORMANCE CLIFF
+ * in exactly the deep clustered subtrees this engine exists to speed up, and a single total would
+ * bury it under the ordinary pseudo replays. A malformed index is a broken tree. */
+enum {
+    GRAV_PACKET_FAIL_NONE = 0,
+    GRAV_PACKET_FAIL_MALFORMED_INDEX,    /* an index in the gap between particle slots and the node base */
+    GRAV_PACKET_FAIL_PSEUDO,             /* a pseudo-particle: the host walks every member */
+    GRAV_PACKET_FAIL_NO_CONTINUATION,    /* local stack and frontier both full */
+    GRAV_PACKET_FAIL_RECORD_UNUSABLE,    /* a record the flush could not reproduce */
+    GRAV_PACKET_FAIL_NO_PROGRESS,        /* a round in which no walker advanced and none was waiting on the chunk */
+    GRAV_PACKET_FAIL_REASONS
+};
+
+/* team-scope counters, one int slot each */
+enum {
+    GRAV_PACKET_CTR_RECORDS = 0,       /* records in the chunk; reserved by atomic increment, clamped to the chunk once per round */
+    /* The frontier's three counters.  Slots [0, FR_PUB) are the published stack and do not move
+     * for the length of a round; new pushes grow above it and are read by nobody until the round
+     * boundary compacts them in.  That is what makes a failed reservation harmless: an overflowing
+     * pusher leaves its index above the cap and simply does not write, where a pusher that tried to
+     * hand the index back could race a second overflowing pusher and wind the counter back below a
+     * slot already holding a live continuation, which the next push would then overwrite. */
+    GRAV_PACKET_CTR_FR_PUB,            /* published items, poppable this round */
+    GRAV_PACKET_CTR_FR_TAKEN,          /* published items claimed this round */
+    GRAV_PACKET_CTR_FR_NEW,            /* reservations made above the published block this round */
+    GRAV_PACKET_CTR_FAILED,            /* the packet failed: pseudo-particle, malformed index, or no room for a continuation */
+    GRAV_PACKET_CTR_FAIL_REASON,       /* which of the above; read only when FAILED is set */
+    GRAV_PACKET_CTR_DONE,              /* the traversal is finished: a team-level verdict taken at the round boundary, never by one walker */
+    GRAV_PACKET_CTR_WORKING,           /* walkers still holding an item or a continuation at the end of the round */
+    GRAV_PACKET_CTR_STEPPED,           /* nodes stepped this round, by the whole team */
+    GRAV_PACKET_CTR_NOTE_INCOMPLETE,   /* import-completeness notes, held until success */
+    GRAV_PACKET_CTR_NOTE_UNSHIPPABLE,
+    GRAV_PACKET_CTR_COUNT
+};
+
+/* The team's counter block is a fixed 16 ints in the scratch plan above, and it is the LAST
+ * region taken -- so a counter added past that bound would not overlap another region, it would
+ * run off the end of the team's scratch with nothing to say so. */
+static_assert(GRAV_PACKET_CTR_COUNT <= 16,
+              "the per-team counter block is 16 ints; widen it in gpu_grav_packet_scratch_plan");
+
+/* What a walker does when it reaches a node or a leaf: the per-node decision, and what
+ * becomes of the elements that decision accepts.
+ *
+ * The traversal itself -- the (no, exit, mask) work item, the local LIFO and the frontier, the
+ * give-up accounting -- is the same whatever is being decided, so it stays in the engine below
+ * and the flavour is a template parameter of it.  One engine with a flavour parameter rather
+ * than one walk per flavour is what stops a second device traversal growing up beside this one
+ * with its own copy of the periodic-wrap convention and its own rule for which index classes a
+ * walk may follow (mesh/device_tree_walk.h states the same invariant for the neighbour walk).
+ *
+ * A flavour returns YIELD to stop the walker for this round with its item intact; the engine
+ * resumes at the same node afterwards, which is why a decision must be reproducible rather than
+ * consumed.  CONTINUE means the walker advances as the traversal says.
+ */
+enum gpu_grav_packet_step_t {
+    GRAV_PACKET_STEP_CONTINUE = 0,
+    GRAV_PACKET_STEP_YIELD          /* chunk full, or the packet gave up; the engine returns */
+};
+
+/* The masked flavour: every member judges every node for
+ * itself, and the elements it accepts are reserved in the record chunk for the member-major
+ * flush.  Bitwise per member against the single-target walk at n_walkers = 1. */
+struct GravPacketMaskedPolicy {
+    /* One thread per member evaluates that member's records; see GravPacketMaskedTeamPolicy for the
+       flavour that spreads them over a team wider than the packet. */
+    static constexpr bool team_evaluates   = false;
+    /* Compile-time so the walker's ring index stays a mask rather than a division. */
+    static constexpr int  local_stack      = GRAV_PACKET_LOCAL_STACK;
+    /* Members share one traversal and then evaluate its records in parallel, so the packet is
+       what makes that sharing worth having: the configured size. */
+    static constexpr int  packet_size      = TREE_QUERY_PACKET_SIZE;
+
+    /* Which members take this particle leaf, and the record that the flush evaluates. */
+    template <class Engine>
+    KOKKOS_INLINE_FUNCTION gpu_grav_packet_step_t
+    visit_leaf(const Engine &e, int no, const gpu_grav_open_inputs_t *open,
+               const grav_packet_mask_word_t *mask, grav_packet_mask_word_t *accept_mask,
+               int *ctr, grav_walk_record_t *records, grav_packet_mask_word_t *rmasks) const
+    {
+        const int W = e.plan.mask_words;
+        Engine::mask_clear(accept_mask, W);
+        for(int m = 0; m < e.q_dev; m++) {
+            if(!Engine::mask_test(mask, m)) {continue;}
+            if(gpu_grav_leaf_member_accepts(e.ctx, no, open[m])) {Engine::mask_set(accept_mask, m);}
+        }
+        if(!Engine::mask_any(accept_mask, W)) {return GRAV_PACKET_STEP_CONTINUE;}
+        const int r = e.record_reserve(ctr);
+        if(r < 0) {return GRAV_PACKET_STEP_YIELD;}   /* chunk full: the flush follows; resume here */
+        records[r].no = no; records[r].kind = GRAV_NODE_LOCAL; records[r].leaf_tag = LET_LEAF_TAG_NODE;
+        Engine::mask_copy(rmasks + (size_t) r * W, accept_mask, W);
+        return GRAV_PACKET_STEP_CONTINUE;
+    }
+
+    /* Which members accept this node's multipole and which must descend into it, and the record
+     * for the accepting ones.  `open_mask` is the engine's: it decides the continuation from it. */
+    template <class Engine>
+    KOKKOS_INLINE_FUNCTION gpu_grav_packet_step_t
+    visit_node(const Engine &e, int no, const gpu_grav_node_prelude_t &nd, const gpu_grav_open_inputs_t *open,
+               const grav_packet_mask_word_t *mask, grav_packet_mask_word_t *accept_mask,
+               grav_packet_mask_word_t *open_mask, int *ctr, grav_walk_record_t *records,
+               grav_packet_mask_word_t *rmasks, int &n_note, int &n_unship) const
+    {
+        const int W = e.plan.mask_words;
+        Engine::mask_clear(accept_mask, W); Engine::mask_clear(open_mask, W);
+        n_note = 0; n_unship = 0;
+        for(int m = 0; m < e.q_dev; m++) {
+            if(!Engine::mask_test(mask, m)) {continue;}
+            Vec3<MyFloat> s_node; MyFloat mass_node; Vec3<double> dr; double r2;
+            if(!gpu_grav_node_member_geometry(e.ctx, nd, open[m], s_node, mass_node, dr, r2)) {continue;}   /* a star member is done with a pure-star node */
+            int note;
+            const gravtree_open_t pred = gpu_grav_node_member_decide(e.ctx, nd, open[m], mass_node, r2, note);
+            if(note != GPU_GRAV_NOTE_NONE) {n_note++; if(note == GPU_GRAV_NOTE_UNSHIPPABLE) {n_unship++;}}
+            if(pred == GRAV_SKIP_NODE) {continue;}
+            if(pred == GRAV_OPEN_NODE) {Engine::mask_set(open_mask, m); continue;}
+            Engine::mask_set(accept_mask, m);
+        }
+        if(Engine::mask_any(accept_mask, W)) {
+            const int r = e.record_reserve(ctr);
+            if(r < 0) {return GRAV_PACKET_STEP_YIELD;}   /* chunk full: resume at this node after the flush (its decisions are re-made identically) */
+            records[r].no = no; records[r].kind = nd.node_kind; records[r].leaf_tag = nd.fl_tag;
+            Engine::mask_copy(rmasks + (size_t) r * W, accept_mask, W);
+        }
+        return GRAV_PACKET_STEP_CONTINUE;
+    }
+};
+
+/* The same decisions and records, for a team WIDER than its packet (the cooperative schedule):
+ * once the chunk is full every thread evaluates, the team divided into one group of lanes per
+ * member, each lane holding a partial sum that is folded into the member's first lane when the
+ * packet commits.
+ *
+ * It is a separate flavour, not a runtime switch, so that each schedule is compiled for the work it
+ * actually does: a team of one thread per member needs neither the published inputs nor the fold,
+ * and their code changes how the compiler lays out the member state for the WHOLE kernel (one kernel
+ * serving both schedules ran a quarter slower per call at large N under the FIRE physics). */
+struct GravPacketMaskedTeamPolicy : GravPacketMaskedPolicy {
+    static constexpr bool team_evaluates = true;
+};
+
+template <class Policy>
+struct GpuGravPacketWalk {
+    using TeamMember = Kokkos::TeamPolicy<>::member_type;
+    gpu_grav_walk_ctx_t ctx;
+    const int *d_idx;   /* candidates in ActiveParticleList order */
+    int n_cand, q_dev, frontier_cap, chunk_cap;
+    /* How many of the team's threads traverse, and how far each one goes before returning to the
+     * round boundary.
+     *
+     * n_walkers = 1 is the single-walker traversal: the frontier publishes on the push and pops
+     * from its top, which is depth-first order and bitwise against the single-target walk.
+     * n_walkers = T is the cooperative traversal -- every thread walks, and an opened subtree is
+     * offered to the others through the frontier.  Members are still threads 0..q_eff-1, so a wide
+     * team with a narrow packet is a team where most threads only traverse, which is the shape a
+     * step with few targets and a deep tree wants.
+     *
+     * steps_per_round bounds a walker's run so that what it published becomes visible to an idle
+     * walker: too large and the others wait, too small and the round boundary is the cost.  It is
+     * a column of the launch table, not a knob. */
+    int n_walkers, steps_per_round;
+    struct gpu_grav_packet_scratch_plan_t plan;
+    Vec3<double> *d_acc; int *d_ninter; double *d_pot; int *d_failed;
+    int *d_fail_by_reason;   /* [GRAV_PACKET_FAIL_REASONS] packets given up, by reason */
+    /* The flavour, by value; it carries no state, only the per-node decisions. */
+    Policy policy;
+
+    /* Give the packet up, and say why.  The first reason recorded is kept: it is the one that
+     * actually stopped the traversal, and a later lane writing over it would report a symptom. */
+    /* Several threads can reach a give-up at once, so the flag is CLAIMED rather than assigned:
+     * whoever claims it writes the reason, and the reason the report carries is the one that
+     * actually stopped a traversal first.
+     *
+     * Always claimed, never a cheaper unsynchronised path for a single walker: this is reached
+     * from the record-evaluation loop as well as the traversal, and that loop runs on every
+     * member thread whatever n_walkers is. Keying the cheap path on n_walkers would be sound only
+     * while the two happen to move together, and the failure it would produce -- FAILED set with
+     * the reason still zero, tallied into the unused slot -- is invisible in the output and
+     * corrupts the very counter the continuation-budget question is read from. It costs an atomic
+     * on a path that by construction runs at most once per packet. */
+    KOKKOS_INLINE_FUNCTION void fail(int *ctr, int reason) const
+    {
+        if(Kokkos::atomic_compare_exchange(&ctr[GRAV_PACKET_CTR_FAILED], 0, 1) == 0) {
+            ctr[GRAV_PACKET_CTR_FAIL_REASON] = reason;
+        }
+    }
+
+    /* Add to a team counter several walkers may be adding to at once.  Plain arithmetic with one
+     * walker, so the single-walker traversal keeps the instruction sequence it was gated with. */
+    KOKKOS_INLINE_FUNCTION void ctr_add(int *slot, int by) const
+    {
+        if(n_walkers == 1) {*slot += by;} else {Kokkos::atomic_fetch_add(slot, by);}
+    }
+
+    KOKKOS_INLINE_FUNCTION static void mask_clear(grav_packet_mask_word_t *m, int words) {for(int w = 0; w < words; w++) {m[w] = 0ULL;}}
+    KOKKOS_INLINE_FUNCTION static void mask_copy(grav_packet_mask_word_t *dst, const grav_packet_mask_word_t *src, int words) {for(int w = 0; w < words; w++) {dst[w] = src[w];}}
+    KOKKOS_INLINE_FUNCTION static int  mask_test(const grav_packet_mask_word_t *m, int b) {return (int)((m[b / GRAV_PACKET_MASK_BITS] >> (b % GRAV_PACKET_MASK_BITS)) & 1ULL);}
+    KOKKOS_INLINE_FUNCTION static void mask_set(grav_packet_mask_word_t *m, int b) {m[b / GRAV_PACKET_MASK_BITS] |= (1ULL << (b % GRAV_PACKET_MASK_BITS));}
+    KOKKOS_INLINE_FUNCTION static int  mask_any(const grav_packet_mask_word_t *m, int words) {for(int w = 0; w < words; w++) {if(m[w]) {return 1;}} return 0;}
+    KOKKOS_INLINE_FUNCTION static int  mask_equal(const grav_packet_mask_word_t *a, const grav_packet_mask_word_t *b, int words) {for(int w = 0; w < words; w++) {if(a[w] != b[w]) {return 0;}} return 1;}
+
+    /* Offer a continuation to the other walkers, or keep it if there is no room.  Returns 1 when
+     * the item is on the frontier and the caller is rid of it.
+     *
+     * With one walker the frontier is a plain stack that publishes on the push, which is the
+     * depth-first overflow store the single-walker traversal is gated on.  With several, a push
+     * reserves above the published block and a reservation past the cap is simply not taken: the
+     * counter is left where it is and clamped once, at the round boundary, by the one thread doing
+     * the compaction.  Handing a failed index back would be the race -- two overflowing pushers
+     * each decrementing can leave the counter below a slot that already holds a live continuation. */
+    KOKKOS_INLINE_FUNCTION int frontier_push(int *ctr, gpu_grav_walk_item_t *frontier, grav_packet_mask_word_t *fmasks,
+                                             const gpu_grav_walk_item_t &item, const grav_packet_mask_word_t *item_mask) const
+    {
+        const int W = plan.mask_words;
+        int slot;
+        if(n_walkers == 1) {
+            if(ctr[GRAV_PACKET_CTR_FR_PUB] == frontier_cap) {return 0;}
+            slot = ctr[GRAV_PACKET_CTR_FR_PUB]++;
+        } else {
+            const int n = Kokkos::atomic_fetch_add(&ctr[GRAV_PACKET_CTR_FR_NEW], 1);
+            slot = ctr[GRAV_PACKET_CTR_FR_PUB] + n;
+            if(slot >= frontier_cap) {return 0;}
+        }
+        frontier[slot] = item;
+        mask_copy(fmasks + (size_t) slot * W, item_mask, W);
+        return 1;
+    }
+
+    /* Take a published item, if this walker gets one.  A claim past the published block is not
+     * handed back either: the compaction clamps it against what was actually published. */
+    KOKKOS_INLINE_FUNCTION int frontier_pop(int *ctr, const gpu_grav_walk_item_t *frontier, const grav_packet_mask_word_t *fmasks,
+                                            int &no, int &exit, grav_packet_mask_word_t *mask) const
+    {
+        const int W = plan.mask_words;
+        const int pub = ctr[GRAV_PACKET_CTR_FR_PUB];
+        if(pub <= 0) {return 0;}
+        int slot;
+        if(n_walkers == 1) {
+            slot = --ctr[GRAV_PACKET_CTR_FR_PUB];
+        } else {
+            const int k = Kokkos::atomic_fetch_add(&ctr[GRAV_PACKET_CTR_FR_TAKEN], 1);
+            if(k >= pub) {return 0;}
+            slot = pub - 1 - k;   /* newest first, over a block that does not move during the round */
+        }
+        no = frontier[slot].no; exit = frontier[slot].exit;
+        mask_copy(mask, fmasks + (size_t) slot * W, W);
+        return 1;
+    }
+
+    /* Reserve a record slot.  Past the chunk nothing is written and nothing is handed back: the
+     * walker yields with its item intact, the flush follows, and the node is reached again and
+     * decided identically.  The clamp at the round boundary is what keeps the count honest. */
+    KOKKOS_INLINE_FUNCTION int record_reserve(int *ctr) const
+    {
+        const int r = (n_walkers == 1) ? ctr[GRAV_PACKET_CTR_RECORDS]++
+                                       : Kokkos::atomic_fetch_add(&ctr[GRAV_PACKET_CTR_RECORDS], 1);
+        return (r < chunk_cap) ? r : -1;
+    }
+
+    /* One member's evaluation of a recorded element: the leaf through the P_dev adapter,
+     * a node re-derived from its index through the same prelude and geometry the walker
+     * used (the same statements, so the same values), then the shared evaluation. */
+    /* Returns 1 when the element was evaluated, 0 when the record cannot be reproduced.
+     *
+     * A record's accept mask is built only from members whose prelude reached the decision and
+     * whose geometry resolved, so re-deriving here reaches the same two answers -- the node index
+     * and the member's inputs are the same, and nothing between the decision and the flush moves
+     * them. Both are still tested rather than assumed: the invariant lives seventy lines away in
+     * the walker, and the cost of it being wrong is not a skipped contribution but an evaluation
+     * on uninitialised geometry. Declining hands the whole packet to the replay chain that
+     * already exists for every other reason a packet cannot be completed on the device. */
+    KOKKOS_INLINE_FUNCTION int evaluate_record(int no, const gpu_grav_member_inputs_t &in, gpu_grav_member_sums_t &sums) const
+    {
+        if(no < ctx.treeParticleSlots) {gpu_grav_evaluate_leaf(ctx, no, in, sums); return 1;}
+        gpu_grav_node_prelude_t nd;
+        const gpu_grav_node_step_t step = gpu_grav_node_prelude(ctx, no, nd);
+        if(step != GPU_GRAV_NODE_DECIDE) {return 0;}   /* an accepted node is one the prelude handed to the decision */
+        Vec3<MyFloat> s_node; MyFloat mass_node; Vec3<double> dr; double r2;
+        if(!gpu_grav_node_member_geometry(ctx, nd, in.open, s_node, mass_node, dr, r2)) {return 0;}   /* a member with the bit set is never a star seeing a pure-star node */
+        gpu_grav_evaluate_node(ctx, nd, in, sums, s_node, mass_node, dr, r2);
+        return 1;
+    }
+
+    /* The walker: advance its item until its step budget runs out, the chunk is full, it runs out
+     * of work, or the packet fails. All of its state persists across the round boundary and the
+     * flush that follows: the item in the caller's variables, the continuations in scratch.
+     *
+     * Running out of work is not the end of the traversal -- another walker may be about to
+     * publish -- so the walker simply comes back idle and the round boundary decides. */
+    KOKKOS_INLINE_FUNCTION void walk(int &no, int &exit, grav_packet_mask_word_t *mask, int &item_live,
+                                     grav_packet_mask_word_t *accept_mask, grav_packet_mask_word_t *open_mask,
+                                     int &local_head, int &local_count,
+                                     gpu_grav_walk_item_t *local, grav_packet_mask_word_t *lmasks,
+                                     const gpu_grav_open_inputs_t *open,
+                                     gpu_grav_walk_item_t *frontier, grav_packet_mask_word_t *fmasks,
+                                     grav_walk_record_t *records, grav_packet_mask_word_t *rmasks, int *ctr) const
+    {
+        const int W = plan.mask_words;
+        const int treeBase = ctx.treeBase, treeParticleSlots = ctx.treeParticleSlots;
+        const int pseudo_start = treeBase + ctx.maxNodes + ctx.maxForeignNodes;
+        int budget = steps_per_round, stepped = 0;
+
+        while(1)
+        {
+            /* the item is complete: resume the newest continuation, else one the frontier has
+               published, else come back idle and let the round boundary decide */
+            if(!item_live || no == exit) {
+                item_live = 0;
+                if(local_count > 0) {
+                    const int slot = (local_head + local_count - 1) % Policy::local_stack;
+                    no = local[slot].no; exit = local[slot].exit; mask_copy(mask, lmasks + (size_t) slot * W, W);
+                    local_count--; item_live = 1; continue;
+                }
+                if(frontier_pop(ctr, frontier, fmasks, no, exit, mask)) {item_live = 1; continue;}
+                break;
+            }
+            if(budget <= 0) {break;}   /* back to the round boundary, item intact */
+            budget--; stepped++;
+            if(no < 0) {item_live = 0; continue;}   /* the single-target walk's end-of-walk sentinel: nothing beyond it */
+            if(no >= treeParticleSlots && no < treeBase) {fail(ctr, GRAV_PACKET_FAIL_MALFORMED_INDEX); break;}   /* gap: malformed tree; the host walk stops loudly */
+            if(no < treeParticleSlots) /* particle leaf: per member, the star-star pass */
+            {
+                if(policy.visit_leaf(*this, no, open, mask, accept_mask, ctr, records, rmasks) == GRAV_PACKET_STEP_YIELD) {break;}
+                no = ctx.tree_soa.nextnode_aux[no];
+                continue;
+            }
+            if(no >= pseudo_start) {fail(ctr, GRAV_PACKET_FAIL_PSEUDO); break;}   /* pseudo-particle: the host walks every member */
+
+            gpu_grav_node_prelude_t nd;
+            const gpu_grav_node_step_t step = gpu_grav_node_prelude(ctx, no, nd);
+            if(step == GPU_GRAV_NODE_SKIP_TO_SIBLING) {no = nd.sibling; continue;}
+            if(step == GPU_GRAV_NODE_DESCEND) {no = nd.nextnode; continue;}
+
+            /* the flavour judges the node and records what it accepts; the engine owns only
+               what the resulting open mask means for the traversal */
+            int n_note = 0, n_unship = 0;
+            if(policy.visit_node(*this, no, nd, open, mask, accept_mask, open_mask, ctr, records, rmasks,
+                                 n_note, n_unship) == GRAV_PACKET_STEP_YIELD) {break;}
+            if(n_note)   {ctr_add(&ctr[GRAV_PACKET_CTR_NOTE_INCOMPLETE], n_note);}
+            if(n_unship) {ctr_add(&ctr[GRAV_PACKET_CTR_NOTE_UNSHIPPABLE], n_unship);}
+            if(!mask_any(open_mask, W)) {no = nd.sibling; continue;}
+            /* The packet descends for the openers; the others re-join at the node's sibling
+               through the continuation (sibling, exit, mask).
+             *
+             * WHERE that continuation goes is the difference between one walker and many, and
+             * it is the whole of the cooperative traversal.
+             *
+             * One walker keeps it, because the only thing the frontier can do for it is hold
+             * an overflow, and keeping the newest locally and spilling the OLDEST is what
+             * preserves depth-first order.  It also descends in place when nobody was excluded,
+             * since there is nothing to hand anyone.
+             *
+             * Several walkers OFFER it, on every open and even when nobody was excluded: a
+             * subtree nobody can reach is a subtree the other walkers sit idle through, and
+             * the sibling continuation is precisely the independent piece of work to give
+             * away.  Only when the frontier is full does the walker keep it, and only when its
+             * own stack is full too does the packet give up -- counted, and handed to the
+             * replay, never a spin.
+             *
+             * An empty continuation (the node's sibling IS the item's exit) is not worth a
+             * slot in either regime. */
+            const int share = (n_walkers > 1);
+            const int have_continuation = (nd.sibling != exit);
+            const int all_descend = mask_equal(open_mask, mask, W);
+            if(!share && all_descend) {no = nd.nextnode; continue;}   /* same item, deeper */
+            if(have_continuation) {
+                gpu_grav_walk_item_t cont; cont.no = nd.sibling; cont.exit = exit;
+                int placed = 0;
+                if(share) {placed = frontier_push(ctr, frontier, fmasks, cont, mask);}
+                if(!placed) {
+                    if(local_count == Policy::local_stack) {
+                        /* the oldest of this walker's own continuations makes room; with one
+                           walker that is the spill that keeps the local stack depth-first */
+                        gpu_grav_walk_item_t oldest = local[local_head];
+                        if(!frontier_push(ctr, frontier, fmasks, oldest, lmasks + (size_t) local_head * W)) {
+                            fail(ctr, GRAV_PACKET_FAIL_NO_CONTINUATION); break;
+                        }
+                        local_head = (local_head + 1) % Policy::local_stack; local_count--;
+                    }
+                    const int slot = (local_head + local_count) % Policy::local_stack;
+                    local[slot] = cont; mask_copy(lmasks + (size_t) slot * W, mask, W);
+                    local_count++;
+                }
+            }
+            no = nd.nextnode; exit = nd.sibling; mask_copy(mask, open_mask, W);
+        }
+        if(stepped) {ctr_add(&ctr[GRAV_PACKET_CTR_STEPPED], stepped);}
+    }
+
+    KOKKOS_INLINE_FUNCTION void operator()(const TeamMember &team) const
+    {
+        const int W = plan.mask_words;
+        const int p = team.league_rank();
+        const int first = p * q_dev;
+        const int q_eff = (n_cand - first < q_dev) ? (n_cand - first) : q_dev;
+        const int t = team.team_rank();
+        char *scratch = (char *) team.team_scratch(0).get_shmem(plan.bytes);
+        gpu_grav_open_inputs_t   *open      = (gpu_grav_open_inputs_t *)   (scratch + plan.open_inputs);
+        gpu_grav_walk_item_t     *frontier  = (gpu_grav_walk_item_t *)     (scratch + plan.frontier);
+        grav_packet_mask_word_t  *fmasks    = (grav_packet_mask_word_t *)  (scratch + plan.frontier_masks);
+        grav_walk_record_t       *records   = (grav_walk_record_t *)       (scratch + plan.records);
+        grav_packet_mask_word_t  *rmasks    = (grav_packet_mask_word_t *)  (scratch + plan.record_masks);
+        gpu_grav_walk_item_t     *local     = (gpu_grav_walk_item_t *)     (scratch + plan.local) + (size_t) t * Policy::local_stack;
+        grav_packet_mask_word_t  *lmasks    = (grav_packet_mask_word_t *)  (scratch + plan.local_masks) + (size_t) t * Policy::local_stack * W;
+        grav_packet_mask_word_t  *wmasks    = (grav_packet_mask_word_t *)  (scratch + plan.walker_masks) + (size_t) t * 3 * W;
+        int                      *ctr       = (int *)                      (scratch + plan.counters);
+
+        /* the member this thread owns, if any; every thread publishes an entry so the
+           walker's loop over q_dev members reads only initialised inputs */
+        gpu_grav_member_inputs_t in;
+        gpu_grav_member_sums_t sums;
+        const int have_member = (t < q_eff);
+        /* The lanes that EVALUATE a member are not the lanes that traverse.  In the flavour whose team
+         * evaluates, every thread walks and, once the chunk is full, every thread also evaluates, the
+         * team being divided into one group of `lanes` threads per member, so a single target's
+         * records are spread over the team instead of queuing on one thread while the rest wait at
+         * the barrier.  Otherwise lanes == 1: one thread per member. */
+        const int lanes    = (Policy::team_evaluates && q_eff > 0) ? (team.team_size() / q_eff) : 1;
+        const int serves   = (q_eff > 0 && t < lanes * q_eff) ? 1 : 0;
+        const int member   = serves ? (t / lanes) : 0;   /* which member this thread evaluates for */
+        const int sub_lane = serves ? (t % lanes) : 0;
+        if(have_member) {
+            if constexpr (Policy::team_evaluates) {   /* published, for every lane working on this member */
+                gpu_grav_member_inputs_t *member_inputs = (gpu_grav_member_inputs_t *) (scratch + plan.member_inputs);
+                (void) gpu_grav_member_inputs_init(ctx, d_idx[first + t], member_inputs[t]);
+                open[t] = member_inputs[t].open;
+            } else {               /* this thread is the member's only lane */
+                (void) gpu_grav_member_inputs_init(ctx, d_idx[first + t], in);
+                open[t] = in.open;
+            }
+        } else if(t < q_dev) {
+            open[t].alive = 0;
+        }
+        if(t == 0) {for(int c = 0; c < GRAV_PACKET_CTR_COUNT; c++) {ctr[c] = 0;}}
+        team.team_barrier();
+        /* every thread holds a partial sum, at the identity until it evaluates something, and a
+           thread that evaluates holds its member's inputs */
+        gpu_grav_member_sums_init(sums);
+        if constexpr (Policy::team_evaluates) {
+            if(serves) {in = ((const gpu_grav_member_inputs_t *) (scratch + plan.member_inputs))[member];}
+        }
+
+        /* Every thread below n_walkers traverses; the root item starts with one of them and the
+         * rest join as subtrees are offered. Members are threads below q_eff, so a team wider than
+         * the packet is a team whose extra threads only ever walk -- which is the point when a
+         * rank has few targets and a deep tree. */
+        const int is_walker = (t < n_walkers);
+        int no = ctx.treeBase, exit = -1;
+        grav_packet_mask_word_t *mask = wmasks, *accept_mask = wmasks + W, *open_mask = wmasks + 2 * W; mask_clear(mask, W);
+        for(int m = 0; m < q_dev; m++) {if(open[m].alive) {mask_set(mask, m);}}
+        int item_live = (t == 0) ? mask_any(mask, W) : 0;   /* a packet of massless targets walks nothing */
+        int local_head = 0, local_count = 0;
+
+        while(1)
+        {
+            if(is_walker && !ctr[GRAV_PACKET_CTR_FAILED]) {
+                walk(no, exit, mask, item_live, accept_mask, open_mask, local_head, local_count, local, lmasks, open, frontier, fmasks, records, rmasks, ctr);
+                if(item_live || local_count > 0) {ctr_add(&ctr[GRAV_PACKET_CTR_WORKING], 1);}
+            }
+            team.team_barrier();
+            if(ctr[GRAV_PACKET_CTR_FAILED]) {break;}
+
+            /* The round boundary, and the only place the frontier changes shape.  What survives is
+             * the published block the pops did not reach, and on top of it this round's new pushes
+             * moved down to meet it -- so the stack stays newest-on-top and holds no gap.  When
+             * nothing was popped the two blocks are already adjacent and nothing moves at all. */
+            /* read before the compaction writes anything, so no thread is reading a counter
+               another is settling */
+            const int chunk_full = (ctr[GRAV_PACKET_CTR_RECORDS] >= chunk_cap);
+            const int fr_pub    = ctr[GRAV_PACKET_CTR_FR_PUB];
+            const int fr_taken  = (ctr[GRAV_PACKET_CTR_FR_TAKEN] < fr_pub) ? ctr[GRAV_PACKET_CTR_FR_TAKEN] : fr_pub;
+            const int survivors = fr_pub - fr_taken;
+            const int room      = frontier_cap - fr_pub;
+            const int fr_new    = (ctr[GRAV_PACKET_CTR_FR_NEW] < room) ? ctr[GRAV_PACKET_CTR_FR_NEW] : room;
+            if(fr_taken > 0 && fr_new > 0) {
+                /* ONE thread, ASCENDING, and both halves of that are load-bearing.
+                 *
+                 * The source and destination blocks OVERLAP whenever more items were pushed than
+                 * popped, which is the ordinary case: the slot this step writes,
+                 * survivors + j, is the source of item j - fr_taken, an EARLIER index.  Ascending
+                 * order is therefore safe by construction -- that earlier item has already been
+                 * copied out before anything writes over it -- while a parallel copy has no order
+                 * at all, so one lane can destroy a continuation before the lane that owns it has
+                 * read it.  The subtree in the destroyed slot is then lost and the overwriting one
+                 * is walked twice, with no failure raised, because both are perfectly well-formed
+                 * items.  Measured that way: 79% of evrard's particles wrong at the first snapshot,
+                 * and per-step interaction counts moving in BOTH directions.
+                 *
+                 * It costs one thread a run over at most the frontier once per round, against T
+                 * walkers each taking up to steps_per_round node steps; if a round boundary ever
+                 * shows up in a measurement, the fix is a ring buffer that never moves anything,
+                 * not a parallel copy. */
+                if(t == 0) {
+                    for(int j = 0; j < fr_new; j++) {
+                        frontier[survivors + j] = frontier[fr_pub + j];
+                        mask_copy(fmasks + (size_t) (survivors + j) * W, fmasks + (size_t) (fr_pub + j) * W, W);
+                    }
+                }
+            }
+            team.team_barrier();
+
+            if(t == 0) {
+                ctr[GRAV_PACKET_CTR_FR_PUB] = survivors + fr_new;
+                ctr[GRAV_PACKET_CTR_FR_TAKEN] = 0; ctr[GRAV_PACKET_CTR_FR_NEW] = 0;
+                if(ctr[GRAV_PACKET_CTR_RECORDS] > chunk_cap) {ctr[GRAV_PACKET_CTR_RECORDS] = chunk_cap;}
+                ctr[GRAV_PACKET_CTR_DONE] = (ctr[GRAV_PACKET_CTR_WORKING] == 0 && ctr[GRAV_PACKET_CTR_FR_PUB] == 0);
+                /* A round in which nobody advanced and nobody was waiting on the chunk cannot
+                 * happen: a walker holding an item steps at least once, and a team holding nothing
+                 * is done.  It is tested rather than asserted because the alternative to noticing
+                 * is a kernel that never returns, and the packet has a counted way out. */
+                if(ctr[GRAV_PACKET_CTR_STEPPED] == 0 && !ctr[GRAV_PACKET_CTR_DONE] && !chunk_full) {
+                    fail(ctr, GRAV_PACKET_FAIL_NO_PROGRESS);
+                }
+                ctr[GRAV_PACKET_CTR_STEPPED] = 0;
+            }
+            team.team_barrier();
+            if(ctr[GRAV_PACKET_CTR_FAILED]) {break;}
+
+            /* the chunk is full, or the traversal has finished: every member evaluates its records */
+            if(ctr[GRAV_PACKET_CTR_RECORDS] > 0 && (chunk_full || ctr[GRAV_PACKET_CTR_DONE])) {
+                /* the member's lanes take its records in turn: lane k of the member takes
+                   records k, k + lanes, k + 2*lanes, ... that carry the member's bit */
+                if(serves && in.open.alive) {
+                    const int n_rec = ctr[GRAV_PACKET_CTR_RECORDS];
+                    for(int r = sub_lane; r < n_rec; r += lanes) {
+                        if(!mask_test(rmasks + (size_t) r * W, member)) {continue;}
+                        /* A record this member cannot reproduce fails the whole packet, exactly as a
+                           pseudo-particle does: nothing this team computed is
+                           committed, and the replay walks every member again. */
+                        if(!evaluate_record(records[r].no, in, sums)) {fail(ctr, GRAV_PACKET_FAIL_RECORD_UNUSABLE); break;}
+                    }
+                }
+                team.team_barrier();
+                if(t == 0) {ctr[GRAV_PACKET_CTR_RECORDS] = 0;}
+            }
+            team.team_barrier();
+            if(ctr[GRAV_PACKET_CTR_FAILED]) {break;}
+            if(ctr[GRAV_PACKET_CTR_DONE]) {break;}
+            if(t == 0) {ctr[GRAV_PACKET_CTR_WORKING] = 0;}
+            team.team_barrier();
+        }
+
+        /* commit, or discard everything */
+        if(ctr[GRAV_PACKET_CTR_FAILED]) {
+            /* Once per packet, not per member: the leader owns the tally, so the count is packets
+             * given up rather than targets replayed, which is the quantity the budget question
+             * asks.  d_failed is the replay's channel and is rewritten by it, so the reason needs
+             * this one of its own. */
+            if(t == 0 && d_fail_by_reason) {
+                const int r = ctr[GRAV_PACKET_CTR_FAIL_REASON];
+                Kokkos::atomic_fetch_add(&d_fail_by_reason[(r > 0 && r < GRAV_PACKET_FAIL_REASONS) ? r : 0], 1);
+            }
+            if(have_member && d_failed) {d_failed[first + t] = 1;}
+            return;
+        }
+        /* Fold each member's partial sums into its first lane: every thread leaves its whole partial
+           in team scratch, and the first lane of each member takes in the others in lane order.  A
+           thread working on no member leaves the identity it was initialised to.  `lanes` is the same
+           on every thread of the team, so the whole team takes this branch together or not at all. */
+        if constexpr (Policy::team_evaluates) {
+            if(lanes > 1) {
+                gpu_grav_member_sums_t *partials = (gpu_grav_member_sums_t *) (scratch + plan.member_fold);
+                partials[t] = sums;
+                team.team_barrier();
+                if(serves && sub_lane == 0) {for(int j = 1; j < lanes; j++) {gpu_grav_member_sums_combine(sums, partials[t + j], in.open.ptype);}}
+            }
+        }
+        if(t == 0) {gpu_grav_note_commit(ctr[GRAV_PACKET_CTR_NOTE_INCOMPLETE], ctr[GRAV_PACKET_CTR_NOTE_UNSHIPPABLE]);}
+        if(serves && sub_lane == 0) {
+            Vec3<double> acc = Vec3<double>{0,0,0}; int ninter = 0; double pot = 0.0;
+            if(in.open.alive) {gpu_grav_member_finish(ctx, in, sums, acc, ninter, pot);}
+            d_acc[first + member] = acc; d_ninter[first + member] = ninter; d_pot[first + member] = pot; d_failed[first + member] = 0;
+        }
+    }
+};
+
+/* The shape the last primary walk on this rank used, in full, so a pricing arm records what it
+ * measured rather than what it asked for. */
+static struct gpu_grav_packet_shape_t g_packet_shape = {GRAV_PACKET_MODE_NONE, 0, 0, 0, 0, 0, 0, -1, -1, 0};
+
+/* gravity_tree() writes it into the per-call timings record, so a run's readout says what was
+ * measured -- including the table row, which is how a backend that could not launch the requested
+ * shape is seen instead of silently changing the experiment. */
+extern "C" void gpu_gravtree_packet_shape(struct gpu_grav_packet_shape_t *out) {*out = g_packet_shape;}
+
+/* Packets given up on the last primary walk, by reason, alongside the shape: a cliff shows up as
+ * a NO_CONTINUATION count that grows while the shape stays put, which a total could not show. */
+/* The public slot count and the engine's reason list must not drift apart: the report indexes
+ * slots by hand, so a new reason added without widening the header would be counted and never
+ * printed. */
+static_assert(GRAV_PACKET_FAIL_REASONS == GRAV_PACKET_FAIL_REASON_SLOTS,
+              "gpu_gravtree.h's GRAV_PACKET_FAIL_REASON_SLOTS must match the engine's reason count");
+static long long g_packet_fail[GRAV_PACKET_FAIL_REASONS] = {0};
+extern "C" void gpu_gravtree_packet_failures(long long *out, int n)
+{
+    for(int r = 0; r < n; r++) {out[r] = (r < GRAV_PACKET_FAIL_REASONS) ? g_packet_fail[r] : 0;}
+}
+extern "C" int gpu_gravtree_packet_failure_reasons(void) {return GRAV_PACKET_FAIL_REASONS;}
+
+/* Host: choose the launch shape and run the packet engine over the candidates.
+ * Returns 0 on success (outputs and d_failed filled per candidate), 1 if no legal shape exists
+ * for this build, in which case the caller uses the single-target walk.
+ *
+ * Only the shape decides the scratch: the frontier exists only for several walkers, and the
+ * team-evaluation regions only for the team flavour -- the scratch request is what the legality
+ * bound reads, so a region left in "because it is unused anyway" would still cost occupancy.
+ *
+ * The team is NOT the packet width: it is the row's, and the members are the configured packet
+ * size when that is narrower, a configured size above the team being walked as several packets of
+ * team-many. That ceiling is deliberate -- every member owns a thread, so no thread carries
+ * several complete target states across rounds -- and it does mean a row chosen for occupancy
+ * caps how many targets can share one traversal, which is why both numbers are reported. */
+/* HOW THE DEVICE SPREADS ITS LANES OVER THIS CALL'S TARGETS.
+ *
+ * ⛔ This decides NOTHING about whether the device is used. That decision is made upstream from
+ * the rank's active count, exactly as it always has been, and nothing here is consulted for it or
+ * may change it. Every path below ends on the device; none of them can route work to the host.
+ *
+ * The question here is only which device schedule fits the call:
+ *
+ *   A WHOLE TEAM PER TARGET IS AFFORDABLE -- the cooperative schedule. Giving each of a handful of
+ *     targets one lane leaves almost the whole device idle while those few lanes each grind down a
+ *     long serial traversal, which is the defect the cooperative walk exists to remove. So each
+ *     target gets a TEAM, and that team's lanes share its descent.
+ *
+ *   OTHERWISE -- the ordinary schedule. Each lane takes a target and walks it alone, covering
+ *     several targets in turn when there are more targets than lanes.
+ *
+ * The key is structural -- lanes the machine has, against targets THIS RANK must walk -- not a
+ * tuned target count, so the same code chooses on a laptop thread pool and on a GPU three orders
+ * of magnitude wider:
+ *
+ *     cooperative  iff  lane_count / n_targets >= GRAV_COOP_MAX_LANES_PER_TARGET
+ *     team              = GRAV_COOP_MAX_LANES_PER_TARGET, one target per team
+ *
+ * ⛔⛔ THE ORDINARY SCHEDULE IS NOT A GOOD SCHEDULE, AND NOTHING HERE SHOULD BE READ AS SAYING IT
+ * IS. It is one independent pointer-chasing walk per lane, so a wavefront's lanes diverge across
+ * unrelated paths; measured against seven host threads on the same problem it loses by 4x at ten
+ * thousand targets a rank, and wins only 4x where the step is fully active -- a whole GCD
+ * performing like a couple of host cores. The masked packet schedule below, where several targets
+ * share ONE traversal, exists precisely to attack that, and until it is measured at large N the
+ * ordinary schedule is a PLACEHOLDER that happens to be what this code did before, not a choice
+ * anything has justified.
+ *
+ * ⛔ Capacity exhaustion inside a cooperative team is a RARE, COUNTED safety valve and must never
+ * be how an ordinary call gets handled: a packet that gives up is re-walked by the device
+ * single-target walk, which is the ordinary schedule, so correctness is safe and the cost is the
+ * traversal it threw away. The production schedules are therefore required to show zero
+ * give-ups; a deliberately undersized capacity is a gate-only positive control. */
+enum gpu_grav_sched_mode_t {
+    GRAV_SCHED_FLAT = 0,      /* one lane per target, the target's own serial walk: the fallback, and the replay of a packet that gives up */
+    GRAV_SCHED_PACKET,        /* one walker per team, members sharing its traversal: the dense schedule */
+    GRAV_SCHED_COOPERATIVE    /* one target per team, the team's lanes sharing that target's traversal */
+};
+
+/* A schedule is the WHOLE shape, because its pieces are not independent: a wide team is what gives
+ * a target with few companions more than one traversing lane, but it also multiplies the
+ * per-walker continuation storage, and that scratch is paid for in teams resident per compute
+ * unit. The capacities below are a starting bracket, not a measurement -- the B3 pricing campaign
+ * sets them, and reads `steps_per_round` (how long a walker runs before what it published becomes
+ * visible to an idle one) over {16, 32, 64, 128}. */
+struct gpu_grav_sched_row_t {
+    enum gpu_grav_sched_mode_t mode;
+    int team;              /* threads in the team */
+    int n_walkers;         /* of those, how many traverse */
+    int frontier_mul;      /* frontier items per walker */
+    int chunk;             /* records held between flushes */
+    int steps_per_round;
+};
+
+/* The cooperative schedules, widest first.
+ *
+ * ⛔ ONLY THE FIRST ROW IS SELECTED IN PRODUCTION, and deliberately so: a partially wide team is
+ * the shape that was MEASURED TO LOSE. On a 128-rank clustered zoom at the stock routing
+ * threshold, ranks taking the device route hold ~1e4 targets against ~2e5 lanes -- about 20 lanes
+ * per target, so a team of ~16 -- and on the six steps where that happened the imbalance row cost
+ * 101.8 s where the same steps without it cost 2-4 s apiece. Cooperation there buys a little
+ * traversal sharing on a device that was already fed, pays the barrier and frontier for it, and
+ * gives up the packet sharing (q_dev drops to 1) into the bargain; and because the schedule is
+ * chosen per rank, only the handful of ranks that qualify slow down, so the whole of it lands in
+ * the imbalance row while the other hundred ranks wait.
+ *
+ * The narrower rows therefore stay here as the shape a MEASURED dispatch table would fill in, and
+ * as the only way to exercise cooperation on a host backend whose lane count is its thread count.
+ * They are not reachable from the production criterion, and a team the backend cannot launch falls
+ * to GRAV_SCHED_FLAT -- still on the device -- rather than quietly narrowing, which would answer a
+ * pricing arm with a shape nobody chose. */
+static const struct gpu_grav_sched_row_t g_grav_coop_rows[] = {
+    {GRAV_SCHED_COOPERATIVE, 64, 64, 4, 256, 32},
+    {GRAV_SCHED_COOPERATIVE, 32, 32, 4, 256, 64},
+    {GRAV_SCHED_COOPERATIVE, 16, 16, 4, 256, 64},
+    {GRAV_SCHED_COOPERATIVE,  8,  8, 4, 256, 64},
+    {GRAV_SCHED_COOPERATIVE,  4,  4, 4, 256, 64},
+    {GRAV_SCHED_COOPERATIVE,  2,  2, 4, 256, 64},
+};
+static const int g_grav_coop_n_rows = (int) (sizeof(g_grav_coop_rows) / sizeof(g_grav_coop_rows[0]));
+
+/* The most lanes worth putting on one target's traversal. Beyond some width the walkers spend
+ * more of the round waiting at the barrier and contending for the frontier than they save on the
+ * descent, and the shared frontier has to hold a continuation for every one of them. Internal,
+ * and the pricing campaign's to set. */
+#define GRAV_COOP_MAX_LANES_PER_TARGET 64
+
+/* A DENSE call -- one where the device cannot give every target a whole team -- walks as MASKED
+ * PACKETS: TREE_QUERY_PACKET_SIZE neighbouring targets share one traversal, each still judging every
+ * node for itself.  Against one independent traversal per lane, on a 128-rank zoom both with and
+ * without the FIRE physics, packets are 27-45% faster in every step class they serve and neutral in
+ * the rest (which the cooperative row takes).  The single-target walk remains the schedule when a
+ * packet row cannot be launched, and the replay for a packet that gives up. */
+
+/* The cooperative row this call takes, or -1 for the ordinary schedule.
+ *
+ * The test is FULL-TEAM ELIGIBILITY, not a fitted crossover: cooperate only where every target can
+ * be given a whole team. It is stated that way because it is the honest reading of what is known.
+ * A rank with ~20 lanes per target was measured to lose badly, and above the cap the team size is
+ * the cap whatever the ratio is -- so raising the bar past the cap would change no team allocation
+ * anywhere, only exclude a middle band that no per-rank measurement has yet adjudicated. When one
+ * does, this becomes a table with narrower rows in it.
+ *
+ * ⛔ The ratio is this RANK's, from its own target count, because the schedule is this rank's. A
+ * global active count divided by the rank count is not this quantity and must not be substituted
+ * for it: the ranks are precisely what is inhomogeneous here. */
+/* ⚠ The test below asks for a whole team per TARGET, while a cooperative team now serves a whole
+ * PACKET of them -- so it demands more lanes than the shape strictly needs, by the packet size.
+ * That is deliberate for now: it engages cooperation only where cooperation was already measured
+ * to win, and adds the member sharing on top. Relaxing it toward what the shape actually costs
+ * (a full team per PACKET) is a MEASUREMENT, not an adjustment, and the last time a criterion here
+ * was chosen by argument it cost 42 s of imbalance. */
+static int gpu_grav_coop_first_row(int n_cand)
+{
+    if(n_cand <= 0) {return -1;}
+    if(gizmo_gpu_lane_count() / n_cand < GRAV_COOP_MAX_LANES_PER_TARGET) {return -1;}
+    return 0;
+}
+
+/* Run one schedule row, or report that the backend cannot launch it.
+ *
+ * Returns 0 on success, 1 when this row is not launchable here -- which is a statement about the
+ * row and the backend only. What the caller does about it (the next named row, then the ordinary
+ * device schedule) is the caller's, and in no case is it to send work to the host. */
+template <class Policy>
+static int gpu_grav_packet_launch_row(GpuGravPacketWalk<Policy> &f, const struct gpu_grav_sched_row_t &r,
+                                      int row_requested, int row_effective, const char *kernel_name,
+                                      struct gpu_grav_packet_shape_t *shape_out)
+{
+    {
+        int team = r.team;
+        if(team > GRAV_PACKET_Q_DEV_MAX) {team = GRAV_PACKET_Q_DEV_MAX;}
+        /* Members per packet: the configured packet size, or the team when that is narrower
+         * (78b.1), for EVERY evaluating schedule including the cooperative one.
+         *
+         * The cooperative schedule is a team of walkers on a packet, not on a single target. Both
+         * levels are wanted and they compose: the members share ONE traversal of the tree and then
+         * evaluate its records in parallel, while the team's threads share the descent that
+         * traversal makes. Forcing one member here -- which this did -- discards the first level
+         * entirely, so the tree was walked once per target rather than once per packet and the
+         * flush ran on a single lane of the team. */
+        f.q_dev = (Policy::packet_size < team) ? Policy::packet_size : team;
+        f.n_walkers = (r.n_walkers < team) ? r.n_walkers : team;
+        f.steps_per_round = r.steps_per_round;
+        f.frontier_cap = (f.n_walkers > 1)
+                             ? ((r.frontier_mul * team > 16) ? r.frontier_mul * team : 16) : 0;
+        f.chunk_cap    = r.chunk;
+        f.plan = gpu_grav_packet_scratch_plan(f.q_dev, team, f.frontier_cap, f.chunk_cap, Policy::local_stack, Policy::team_evaluates);
+        /* the legality bound is asked of a probe policy carrying the same scratch request: a
+           policy constructed at an illegal team size throws before it can be asked anything */
+        Kokkos::TeamPolicy<> probe(1, 1, 1);
+        probe.set_scratch_size(0, Kokkos::PerTeam(f.plan.bytes));
+        const int hw = probe.team_size_max(f, Kokkos::ParallelForTag());
+        if(hw < team) {return 1;}   /* this row does not fit this backend */
+        const int league = (f.n_cand + f.q_dev - 1) / f.q_dev;
+        Kokkos::TeamPolicy<> policy(league, team, 1);
+        policy.set_scratch_size(0, Kokkos::PerTeam(f.plan.bytes));
+        Kokkos::parallel_for(kernel_name, policy, f);
+        Kokkos::fence();
+        gizmo_gpu_check_last_error(kernel_name, league);
+        if(shape_out) {
+            shape_out->mode = (int) r.mode;
+            shape_out->team = team; shape_out->q_dev = f.q_dev;
+            shape_out->n_walkers = f.n_walkers; shape_out->frontier = f.frontier_cap;
+            shape_out->chunk = f.chunk_cap; shape_out->steps_per_round = f.steps_per_round;
+            shape_out->row_requested = row_requested; shape_out->row_effective = row_effective;
+            shape_out->scratch_bytes = (long long) f.plan.bytes;
+        }
+        return 0;
+    }
+}
+
+/* Choose and run a device schedule for this call's targets.
+ *
+ * Returns 0 when the engine ran and filled the outputs, 1 when the call should take the ORDINARY
+ * device schedule -- the single-target walk the caller already has. ⛔ A 1 here never means "use
+ * the host": the host/device decision was taken before this function was reached and is not
+ * revisited by it. */
+template <class Policy>
+static int gpu_grav_packet_launch(GpuGravPacketWalk<Policy> &f, const char *kernel_name,
+                                  struct gpu_grav_packet_shape_t *shape_out)
+{
+    if constexpr (Policy::team_evaluates) {
+        /* The flavour for a team wider than its packet is taken only where the criterion gives
+         * every target a whole team, so this is the cooperative row.  ONE attempt, at the row the
+         * criterion chose. There is deliberately no step-down to a narrower cooperative team: a
+         * partial team is the shape that was measured to lose, so a backend that cannot launch
+         * the full one takes the ordinary device schedule instead. */
+        const int first_row = gpu_grav_coop_first_row(f.n_cand);
+        if(first_row < 0) {return 1;}
+        return gpu_grav_packet_launch_row(f, g_grav_coop_rows[first_row], first_row, first_row,
+                                          kernel_name, shape_out);
+    } else {
+        /* Not enough lanes for a whole team per target: MASKED PACKETS, where
+         * TREE_QUERY_PACKET_SIZE targets adjacent in the active list, and therefore adjacent
+         * in space, share ONE traversal while each still judges every node for itself.  One
+         * independent traversal per lane instead has every lane chasing its own pointer chain,
+         * so a wavefront's lanes diverge across unrelated paths and the node loads they have in
+         * common are never shared. */
+        if(Policy::packet_size > 1) {
+            const int t = (Policy::packet_size < GRAV_PACKET_Q_DEV_MAX) ? Policy::packet_size
+                                                                        : GRAV_PACKET_Q_DEV_MAX;
+            const struct gpu_grav_sched_row_t dense = {GRAV_SCHED_PACKET, t, 1, 0, 256, 64};
+            return gpu_grav_packet_launch_row(f, dense, -1, -1, kernel_name, shape_out);
+        }
+        return 1;
+    }
+}
+
+template <class Policy>
+static int gpu_gravtree_walk_packets_as(const gpu_grav_walk_ctx_t &ctx, const int *d_idx, int n_cand,
+                                        Vec3<double> *d_acc, int *d_ninter, double *d_pot, int *d_failed,
+                                        int *d_fail_by_reason, const char *kernel_name)
+{
+    GpuGravPacketWalk<Policy> f;
+    f.ctx = ctx; f.d_idx = d_idx; f.n_cand = n_cand;
+    f.d_acc = d_acc; f.d_ninter = d_ninter; f.d_pot = d_pot; f.d_failed = d_failed;
+    f.d_fail_by_reason = d_fail_by_reason;
+    return gpu_grav_packet_launch(f, kernel_name, &g_packet_shape);
+}
+
+/* Where every target can be given a whole team, the team evaluates each member's records over
+ * several lanes; elsewhere each member has one thread.  The two are separate kernels so that each
+ * is compiled for the evaluation it does (GravPacketMaskedTeamPolicy says why). */
+static int gpu_gravtree_walk_packets(const gpu_grav_walk_ctx_t &ctx, const int *d_idx, int n_cand,
+                                     Vec3<double> *d_acc, int *d_ninter, double *d_pot, int *d_failed,
+                                     int *d_fail_by_reason)
+{
+    if(gpu_grav_coop_first_row(n_cand) >= 0) {
+        return gpu_gravtree_walk_packets_as<GravPacketMaskedTeamPolicy>(ctx, d_idx, n_cand, d_acc, d_ninter, d_pot, d_failed,
+                                                                        d_fail_by_reason, "gravtree_walk_packets_team");
+    }
+    return gpu_gravtree_walk_packets_as<GravPacketMaskedPolicy>(ctx, d_idx, n_cand, d_acc, d_ninter, d_pot, d_failed,
+                                                                d_fail_by_reason, "gravtree_walk_packets");
+}
 
 #ifdef PMGRID
 /* SharedSpace mirrors of the PM short-range lookup tables. Seeded once and kept
@@ -1226,6 +2575,8 @@ struct grav_walk_scratch_plan
 {
     size_t bytes;
     size_t acc, pot, idx, failed, ninter;
+    size_t fail_by_reason;   /* [GRAV_PACKET_FAIL_REASONS], written by the engine's team leaders */
+    size_t time_fault;       /* [1] gpu_grav_time_fault_t: sources found ahead of the walk time */
 };
 
 static inline size_t grav_walk_scratch_align(size_t offset, size_t alignment)
@@ -1258,47 +2609,74 @@ grav_walk_scratch_plan_for(int num_targets, int with_potential_and_interactions)
         offset = grav_walk_scratch_align(offset, alignof(int));
         plan.ninter = offset;  offset += n * sizeof(int);
     }
+    /* Not per target: one tally for the whole launch, carved from the same block so it needs no
+     * allocation of its own and is host-readable the moment the kernel has been waited on. */
+    offset = grav_walk_scratch_align(offset, alignof(int));
+    plan.fail_by_reason = offset;  offset += (size_t) GRAV_PACKET_FAIL_REASONS * sizeof(int);
+    offset = grav_walk_scratch_align(offset, alignof(struct gpu_grav_time_fault_t));
+    plan.time_fault = offset;  offset += sizeof(struct gpu_grav_time_fault_t);
     plan.bytes = offset;
     return plan;
+}
+
+/* Every device walk predicts nodes from their MIRROR, so the mirror must describe each node's state
+ * at that node's own time.  A host lazy drift advances a node and leaves its mirror behind, and
+ * claims it; the claims are answered here, before every device walk, whatever else has certified
+ * the tree -- O(claims), nothing when there are none.  When the claim record cannot say which nodes
+ * they are (it overflowed, or its fail-safe fired) the full mirror refresh answers instead: the only
+ * sweep that also rewrites nodes already at this time.  Never expected; reported.  Returns nonzero
+ * when not even that succeeded, after requesting the stop: the caller must not walk. */
+static int gpu_grav_answer_node_claims(integertime ti, const char *walk)
+{
+    if(gpu_node_dirty_bring_gravity_current(ti) == 0) {return 0;}
+    static int reported_claim_fallback = 0;
+    if(!reported_claim_fallback) {
+        reported_claim_fallback = 1;
+        printf("%s: task %d: the node claim record could not name the host-drifted nodes; refreshing every node mirror instead (reported once)\n", walk, ThisTask);
+        fflush(stdout);
+    }
+    if(gpu_force_drift_nodes_ex(ti, /*refresh_mirrors_already_current=*/1) == 0) {return 0;}
+    endrun(929702);
+    return 1;
 }
 
 extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
 {
     GIZMO_GPU_ENSURE_ALL_FRESH();
     int num_active_total = (int) ActiveParticleList.size();
+    /* Cleared before any early return, so the shape reported for THIS call is this call's: a
+     * host-routed or empty call reports 0/0 rather than whatever the previous device call ran.
+     * The give-up tally is cleared with it and for the same reason -- it was cleared only where
+     * the engine runs, so a host-routed step re-reported, and re-reduced, the previous device
+     * call's counts against gpu_gravtree.h's promise that they read zero on such a call. */
+    {struct gpu_grav_packet_shape_t cleared = {GRAV_PACKET_MODE_NONE, 0, 0, 0, 0, 0, 0, -1, -1, 0}; g_packet_shape = cleared;}
+    for(int r = 0; r < GRAV_PACKET_FAIL_REASONS; r++) {g_packet_fail[r] = 0;}
     /* How many candidates this walk leaves to the host loop: every active until this walk has
      * selected and taken some. The host loop sizes its per-thread packet workspace from it. */
     if(host_candidates_left) {*host_candidates_left = (num_active_total > 0) ? num_active_total : 0;}
     if(Ewald_iter > 0) {return 0;}
     if(num_active_total <= 0) {return 0;}
 
-    /* The CPU walk (forcetree.cc) JIT-drifts particles and nodes whose
-     * Ti_current is stale, at the point of encounter in the walk. Without
-     * this, inactive particles (outside the currently active timebin) hold
-     * stale positions since GIZMO only drifts active bins per sync-point
-     * (run.cc:629) and only rebuilds the tree occasionally. The GPU walk
-     * cannot call these host-only helpers from inside the Kokkos kernel,
-     * so we apply the drift once up-front here: drift all particles, then
-     * drift all nodes whose Ti_current lags All.Ti_Current.  The node drift
-     * loop is a single GPU kernel that mutates UVM Nodes/Extnodes AND the
-     * SoA mirror in one pass — no host loop, no AoS->SoA reseed afterwards.
-     * Cost is O(active drifted nodes) with GPU parallelism over
-     * Numnodestree (early-out when Ti_current matches). */
+    /* The CPU walk (forcetree.cc) drifts a particle or a node whose Ti_current is stale at the
+     * moment it opens it. This walk drifts nothing: the targets are the active set, drifted here
+     * before the routing decision so that the candidacy test and both routes read current
+     * targets, and every source it reaches -- particle or node -- is read as it stands at the walk
+     * time, predicted there without being written back (gpu_grav_particle_source_at,
+     * gpu_grav_node_motion_at). */
     /* Host-side wrapper in the GPU TU must use the out-of-line host accessor
      * `gizmo_host_ti_current()` (defined in core/predict.cc) rather than a
      * bare All.Ti_Current read, so the host-snapshot intent at this call
      * site stays correct even when the device-pass redirect is active. */
     integertime ti_curr_host = gizmo_host_ti_current();
-    move_particles(ti_curr_host); /* drifts all P[], invalidates arena */
-    /* SoA must exist before the drift kernel — it writes mirror fields. */
+    move_particles(ti_curr_host); /* drifts the ACTIVE set; every other particle is still at its own Ti_current */
+    /* The SoA must exist before anything below reads or repairs the node mirror. */
     gpu_gravity_tree_acquire(MaxNodes + 1, Nodes_base, Extnodes_base);
 
-    /* Select the particles this walk will actually cover BEFORE drifting any node: the
-     * node drift below exists only to serve this walk, so a step that turns out to walk
-     * nothing, or that is small enough to be cheaper on the host, must not pay for it.
-     * The selection reads only particle state (ActiveParticleList, ProcessedFlag and the
+    /* Select the particles this walk will actually cover BEFORE any device work: a step that
+     * turns out to walk nothing, or that is small enough to be cheaper on the host, must not pay
+     * for it.  The selection reads only particle state (ActiveParticleList, ProcessedFlag and the
      * candidacy predicate), all of which move_particles above has already brought to
-     * ti_curr_host, so it is independent of the node drift that now follows it. */
+     * ti_curr_host. */
     int *idx_host = (int *) mymalloc("gpu_grav_idx", num_active_total * sizeof(int));
     int num_active = 0;
     for(int a = 0; a < num_active_total; a++) {
@@ -1315,21 +2693,9 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
     if(host_candidates_left) {*host_candidates_left = num_active;}
     if(num_active <= 0) {myfree(idx_host); return 0;}
 
-    /* Few enough candidates that the host walk, which drifts nodes only as it opens
-     * them, beats this walk plus the all-node drift it requires. Returning with
-     * ProcessedFlag untouched leaves every candidate to the host loop in gravtree.cc. */
+    /* Few enough candidates that the host walk is the cheaper route (gravity_walk_route_to_host).
+     * Returning with ProcessedFlag untouched leaves every candidate to the host loop in gravtree.cc. */
     if(gravity_walk_route_to_host(num_active)) {myfree(idx_host); return 0;}
-
-    /* Already-current geometry needs no sweep, and asking for one when a host
-     * lazy drift armed the latch earlier in the step would fail rather than
-     * no-op.  A tree built since that drift is current and its mirror was
-     * rewritten with it. */
-    if(!gpu_gravity_tree_nodes_current_at(ti_curr_host)
-            && gpu_force_drift_nodes(ti_curr_host) != 0) {
-        myfree(idx_host);   /* LIFO mymalloc cleanup before drain */
-        endrun(929702);
-        return 1;   /* soft bad-stop: skip walk on un-drifted nodes; drains at next poll */
-    }
 
     /* Acquire the arena (P_dev + CellP_dev in SharedSpace) */
     gpu_particles_arena_set_site("gpu_gravtree_walk_primary");
@@ -1353,6 +2719,89 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
         myfree(idx_host);   /* LIFO mymalloc cleanup before drain */
         return 1;
     }
+
+    int treeBase = All.TreeNodeIndexBase;
+    int treeParticleSlots_snap = All.TreeParticleSlots;
+    int maxNodes_snap = MaxNodes;
+    int maxForeignNodes_snap = MaxForeignNodes;    /* LET */
+    const struct gpu_gravity_tree_soa_t soa_snap = *soa;
+#ifdef GRAVITY_HYBRID_OPENING_CRIT
+    /* host-evaluate the first-step predicate once; captured by value into the device walk */
+    int is_first_step_snap = (All.Ti_Current == 0 && RestartFlag != 1);
+#endif
+
+#ifdef PMGRID
+    double rcut_snap     = All.Rcut[0];
+    double rcut2_snap    = rcut_snap * rcut_snap;
+    double asmthfac_snap = 0.5 / All.Asmth[0] * (GIZMO_GPU_GRAVTREE_NTAB / 3.0);
+    /* shortrange_table is a host global (forcetree.cc); the SharedSpace mirror the
+     * kernel reads is seeded once per run, not per call. */
+    if(gpu_shortrange_tables_acquire() != 0) {
+        myfree(idx_host);
+        return 1;
+    }
+#endif
+    /* read-only PM short-range config captured by value into the device walk (empty when
+     * !PMGRID; per-target PLACEHIGHRESREGION override happens inside the walk on its copy). */
+    grav_pm_shortrange_t pm_snap{};
+#ifdef PMGRID
+    pm_snap.rcut = rcut_snap; pm_snap.rcut2 = rcut2_snap; pm_snap.asmthfac = asmthfac_snap;
+    pm_snap.shortrange_tab = g_d_shortrange_tab;
+#ifdef EVALPOTENTIAL
+    pm_snap.shortrange_pot_tab = g_d_shortrange_pot_tab;
+#endif
+#ifdef COMPUTE_TIDAL_TENSOR_IN_GRAVTREE
+    pm_snap.shortrange_tidal_tab = g_d_shortrange_tidal_tab;
+#endif
+#endif
+
+    /* Scratch arrays for per-target results, carved from one allocation */
+    const struct grav_walk_scratch_plan scratch = grav_walk_scratch_plan_for(num_active, 1);
+    char *scratch_block = (char *) gizmo_gpu_alloc_shared(scratch.bytes, "gravity_walk");
+    if(!scratch_block) {
+        printf("gpu_gravtree_walk_primary: kokkos_malloc failed\n");
+        endrun(913201);
+        myfree(idx_host);   /* LIFO mymalloc cleanup before drain */
+        return 1;
+    }
+    int          *d_idx    = (int *)          (scratch_block + scratch.idx);
+    int          *d_failed = (int *)          (scratch_block + scratch.failed);
+    Vec3<double> *d_acc    = (Vec3<double> *) (scratch_block + scratch.acc);
+    int          *d_ninter = (int *)          (scratch_block + scratch.ninter);
+    double       *d_pot    = (double *)       (scratch_block + scratch.pot);
+    int          *d_fail_by_reason = (int *) (scratch_block + scratch.fail_by_reason);
+    memcpy(d_idx, idx_host, num_active * sizeof(int));
+    memset(d_failed, 0, num_active * sizeof(int));
+    memset(d_fail_by_reason, 0, GRAV_PACKET_FAIL_REASONS * sizeof(int));
+    for(int r = 0; r < GRAV_PACKET_FAIL_REASONS; r++) {g_packet_fail[r] = 0;}
+
+    /* The tables a prediction reads, refreshed once for the call: every source is read at the walk
+     * time from wherever it stands, and the Hermite source prediction shares them. */
+    struct DriftKickTableView tables_snap;
+    if(drift_kick_table_mirror_refresh(&tu_drift_kick_table_dev, &tables_snap) != 0) {
+        Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(scratch_block);
+        myfree(idx_host);   /* soft bad-stop already requested: no launch without the tables a prediction reads */
+        return 1;
+    }
+    struct gpu_grav_time_fault_t *time_fault = (struct gpu_grav_time_fault_t *) (scratch_block + scratch.time_fault);
+    memset(time_fault, 0, sizeof(struct gpu_grav_time_fault_t));
+
+    gpu_grav_walk_ctx_t ctx{};
+    ctx.treeBase = treeBase; ctx.treeParticleSlots = treeParticleSlots_snap;
+    ctx.maxNodes = maxNodes_snap; ctx.maxForeignNodes = maxForeignNodes_snap;
+    ctx.P_dev = P_dev; ctx.CellP_dev = CellP_dev; ctx.ti = ti_curr_host; ctx.tree_soa = soa_snap;
+    ctx.Extnodes = Extnodes; ctx.tables = tables_snap; ctx.time_fault = time_fault;
+#ifdef GRAVITY_HYBRID_OPENING_CRIT
+    ctx.is_first_step = is_first_step_snap;
+#endif
+    ctx.pm = pm_snap;
+
+    if(gpu_grav_answer_node_claims(ti_curr_host, "gpu_gravtree_walk_primary") != 0) {
+        Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(scratch_block);
+        myfree(idx_host);   /* LIFO mymalloc cleanup before drain */
+        return 1;   /* soft bad-stop: never walk a mirror that could not be brought up to date; drains at next poll */
+    }
+
 
     /* Per-particle gravity source inputs (RT luminosity / sink bolometric luminosity /
      * CR injection), evaluated via the shared SSOT helper gravtree_fill_particle_source_
@@ -1503,60 +2952,7 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
 #endif
     };
 
-    /* Scratch arrays for per-target results, carved from one allocation */
-    const struct grav_walk_scratch_plan scratch = grav_walk_scratch_plan_for(num_active, 1);
-    char *scratch_block = (char *) gizmo_gpu_alloc_shared(scratch.bytes, "gravity_walk");
-    if(!scratch_block) {
-        printf("gpu_gravtree_walk_primary: kokkos_malloc failed\n");
-        endrun(913201);
-        release_payload_buffers();
-        myfree(idx_host);   /* LIFO mymalloc cleanup before drain */
-        return 1;
-    }
-    int          *d_idx    = (int *)          (scratch_block + scratch.idx);
-    int          *d_failed = (int *)          (scratch_block + scratch.failed);
-    Vec3<double> *d_acc    = (Vec3<double> *) (scratch_block + scratch.acc);
-    int          *d_ninter = (int *)          (scratch_block + scratch.ninter);
-    double       *d_pot    = (double *)       (scratch_block + scratch.pot);
-    memcpy(d_idx, idx_host, num_active * sizeof(int));
-    memset(d_failed, 0, num_active * sizeof(int));
 
-    int treeBase = All.TreeNodeIndexBase;
-    int treeParticleSlots_snap = All.TreeParticleSlots;
-    int maxNodes_snap = MaxNodes;
-    int maxForeignNodes_snap = MaxForeignNodes;    /* LET */
-    const struct gpu_gravity_tree_soa_t soa_snap = *soa;
-#ifdef GRAVITY_HYBRID_OPENING_CRIT
-    /* host-evaluate the first-step predicate once; captured by value into the device walk */
-    int is_first_step_snap = (All.Ti_Current == 0 && RestartFlag != 1);
-#endif
-
-#ifdef PMGRID
-    double rcut_snap     = All.Rcut[0];
-    double rcut2_snap    = rcut_snap * rcut_snap;
-    double asmthfac_snap = 0.5 / All.Asmth[0] * (GIZMO_GPU_GRAVTREE_NTAB / 3.0);
-    /* shortrange_table is a host global (forcetree.cc); the SharedSpace mirror the
-     * kernel reads is seeded once per run, not per call. */
-    if(gpu_shortrange_tables_acquire() != 0) {
-        Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(scratch_block);
-        release_payload_buffers();
-        myfree(idx_host);
-        return 1;
-    }
-#endif
-    /* read-only PM short-range config captured by value into the device walk (empty when
-     * !PMGRID; per-target PLACEHIGHRESREGION override happens inside the walk on its copy). */
-    grav_pm_shortrange_t pm_snap{};
-#ifdef PMGRID
-    pm_snap.rcut = rcut_snap; pm_snap.rcut2 = rcut2_snap; pm_snap.asmthfac = asmthfac_snap;
-    pm_snap.shortrange_tab = g_d_shortrange_tab;
-#ifdef EVALPOTENTIAL
-    pm_snap.shortrange_pot_tab = g_d_shortrange_pot_tab;
-#endif
-#ifdef COMPUTE_TIDAL_TENSOR_IN_GRAVTREE
-    pm_snap.shortrange_tidal_tab = g_d_shortrange_tidal_tab;
-#endif
-#endif
 
 #ifdef RT_USE_GRAVTREE
     const struct gpu_rt_walk_data_t rt_data_dev = rt_data_snap;
@@ -1589,57 +2985,72 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
 #ifdef HERMITE_INTEGRATION
     struct gpu_hermite_walk_data_t hermite_dev;
     hermite_dev.state = HermiteWalk;
-    hermite_dev.tables = drift_kick_table_view(NULL, NULL, 0.0, 0.0, All.Timebase_interval, 0);
-    /* the mirror is only built on a Hermite pass: the predictor returns immediately when
-       HermiteOnlyFlag is 0, so an ordinary pass would be copying a table nothing reads */
-    if(HermiteOnlyFlag && drift_kick_table_mirror_refresh(&hermite_drift_kick_table_dev, &hermite_dev.tables) != 0) {
-        Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(scratch_block);
-        release_payload_buffers();
-        myfree(idx_host);   /* soft bad-stop already requested: no launch without the tables the prediction reads */
-        return 1;
-    }
 #endif
 
     /* Invariant guard: reset the per-walk counter. */
     g_inv_fterm_aggregate = 0; g_unship_aggregate = 0;
 
-    Kokkos::parallel_for("gravtree_walk_primary", num_active, KOKKOS_LAMBDA(int a) {
-        int target = d_idx[a];
-        Vec3<double> acc;
-        int ninter;
-        double pot;
-        int ok = gpu_gravtree_walk_one(target, treeBase, treeParticleSlots_snap, maxNodes_snap, maxForeignNodes_snap,
-                                        P_dev, CellP_dev, &soa_snap,
-#ifdef GRAVITY_HYBRID_OPENING_CRIT
-                                        is_first_step_snap,
-#endif
-                                        pm_snap,
+    /* The rest of the context: the source payload arrays and the Hermite and Ewald state.  The
+     * pointers it holds are SharedSpace / captured-snapshot addresses valid for the launch. */
 #ifdef RT_USE_GRAVTREE
-                                        &rt_data_dev,
+    ctx.rt_data = rt_data_dev;
 #endif
 #ifdef SINK_PHOTONMOMENTUM
-                                        &sink_data_dev,
+    ctx.sink_data = sink_data_dev;
 #endif
 #ifdef COSMIC_RAY_SUBGRID_LEBRON
-                                        &cr_data_dev,
+    ctx.cr_data = cr_data_dev;
 #endif
-                                        use_lazy_source,
+    ctx.use_lazy_source = use_lazy_source;
 #ifdef HERMITE_INTEGRATION
-                                        hermite_dev,
+    ctx.hermite = hermite_dev;
 #endif
-                                        &ewald_pot_dev,
-                                        acc, ninter, pot);
-        if(ok) {
-            d_acc[a] = acc;
-            d_ninter[a] = ninter;
-            d_pot[a] = pot;
-            d_failed[a] = 0;
-        } else {
-            d_failed[a] = 1;
-        }
-    });
-    Kokkos::fence();
-    gizmo_gpu_check_last_error("gravtree_walk_primary", num_active);
+    ctx.ewald_pot = ewald_pot_dev;
+
+    /* Choose the device schedule for this call. The engine takes the call only when this rank has
+     * so few targets that giving each one a lane would leave most of the device idle; otherwise
+     * this returns nonzero and the ordinary single-target walk below takes every candidate, which
+     * is exactly what this code did before the cooperative walk existed.
+     *
+     * ⛔ Neither branch is a routing decision. The host/device question was settled before this
+     * point and is not reopened here: both of these run on the device. */
+    int walked_as_packets = (gpu_gravtree_walk_packets(ctx, d_idx, num_active, d_acc, d_ninter, d_pot, d_failed,
+                                                       d_fail_by_reason) == 0);
+    if(walked_as_packets) {
+        /* The launcher has waited on the kernel, so the tally is complete and in shared space. */
+        for(int r = 0; r < GRAV_PACKET_FAIL_REASONS; r++) {g_packet_fail[r] = (long long) d_fail_by_reason[r];}
+    } else {
+        /* Say so in the artifact rather than leaving the record empty: "the ordinary schedule ran"
+           and "no device walk ran" are different facts and a pricing arm has to tell them apart. */
+        g_packet_shape.mode = GRAV_PACKET_MODE_FLAT;
+    }
+    /* The single-target walk: every candidate when the engine did not run, otherwise only the
+     * members of packets that failed. A packet fails as a whole when any member meets a
+     * pseudo-particle, so its other members are walked here exactly as the flat route would
+     * have walked them, and only a target that meets the pseudo-particle itself is left to the
+     * host loop -- the same targets the flat route leaves it. */
+    {
+        const int only_failed = walked_as_packets;
+        Kokkos::parallel_for("gravtree_walk_primary", num_active, KOKKOS_LAMBDA(int a) {
+            if(only_failed && !d_failed[a]) {return;}
+            int target = d_idx[a];
+            Vec3<double> acc;
+            int ninter;
+            double pot;
+            int ok = gpu_gravtree_walk_one(ctx, target, acc, ninter, pot);
+            if(ok == 1) {
+                d_acc[a] = acc;
+                d_ninter[a] = ninter;
+                d_pot[a] = pot;
+                d_failed[a] = 0;
+            } else {
+                d_failed[a] = 1;   /* met a pseudo-particle */
+            }
+        });
+        Kokkos::fence();
+        gizmo_gpu_check_last_error("gravtree_walk_primary", num_active);
+    }
+    gpu_grav_report_time_fault("gpu_gravtree_walk_primary", time_fault, ti_curr_host, 913213);
     /* Import-completeness record.  A foreign node the sender shipped as a childless multipole, which
      * this walk's predicate now wants to descend, means the import no longer covers what the walk
      * asks of it.  Counted in the kernel and folded into the shared ledger here; gravity_tree()
@@ -1775,10 +3186,8 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
      * (kernel output went to d_* buffers, not arena). Verified safe with
      * GIZMO_GPU_ARENA_DEBUG=1. */
     gpu_particles_arena_mark_clean_after_scatter("gpu_gravtree_walk_primary");
-    /* No SoA invalidate: the next force_treebuild fully repopulates the SoA
-     * via the build pipeline; the next pre-walk drift mutates only the
-     * stale-Ti_current nodes via gpu_force_drift_nodes (UVM AoS + SoA in one
-     * kernel).  No host-side reseed scaffolding remains. */
+    /* No SoA invalidate: the walk wrote nothing to the tree, and the next force_treebuild fully
+     * repopulates the SoA via the build pipeline. */
 
     Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(scratch_block);
     release_payload_buffers();
@@ -1852,12 +3261,15 @@ static int gpu_ewald_acquire_pot_data(struct gpu_ewald_pot_data_t *out)
 #endif
 
 /* Device-side Ewald walk for a single target. Returns 1 on success (acc
- * written), 0 if a pseudo-particle was encountered (defer to CPU). */
+ * written), 0 if a pseudo-particle was encountered (defer to CPU). Every source
+ * is read at the walk time without being drifted, through the same two readers
+ * as the primary walk (position and mass only: the correction needs no more). */
 static KOKKOS_INLINE_FUNCTION int
 gpu_ewald_walk_one(int target,
                    int treeBase, int treeParticleSlots, int maxNodes, int maxForeignNodes,    /* LET */
-                   struct particle_data *P_dev,
-                   const struct gpu_gravity_tree_soa_t *tree_soa,
+                   struct particle_data *P_dev, struct gas_cell_data *CellP_dev, integertime ti,
+                   const struct gpu_gravity_tree_soa_t *tree_soa, const struct extNODE *ext_nodes,
+                   const struct DriftKickTableView &tables, struct gpu_grav_time_fault_t *time_fault,
 #ifdef GRAVITY_HYBRID_OPENING_CRIT
                    int is_first_step,   /* hybrid opening: relative criterion applies only after step 0 */
 #endif
@@ -1873,7 +3285,7 @@ gpu_ewald_walk_one(int target,
     int no = treeBase; /* root node */
     while(no >= 0)
     {
-        double mass = 0.0;
+        double mass = 0.0, len_node = 0.0;
         Vec3<double> dr = {0.0, 0.0, 0.0};
         int is_leaf = 0;
         int idx = 0;
@@ -1884,10 +3296,11 @@ gpu_ewald_walk_one(int target,
         if(no >= treeParticleSlots && no < treeBase) {return 0;} /* gap: malformed tree -- defer; the CPU Ewald walk's guard stops loudly */
         if(no < treeParticleSlots) /* particle leaf */
         {
-            dr[0] = P_dev[no].Pos[0] - pos[0];
-            dr[1] = P_dev[no].Pos[1] - pos[1];
-            dr[2] = P_dev[no].Pos[2] - pos[2];
-            mass  = P_dev[no].Mass;
+            const gpu_grav_particle_now_t motion = gpu_grav_particle_source_at(P_dev, CellP_dev, no, ti, tables, time_fault);
+            dr[0] = motion.pos[0] - pos[0];
+            dr[1] = motion.pos[1] - pos[1];
+            dr[2] = motion.pos[2] - pos[2];
+            mass  = motion.mass;
             is_leaf = 1;
         }
         else if(no >= treeBase + maxNodes + maxForeignNodes) /* pseudo-particle — defer to CPU (foreign-node range below) */
@@ -1918,10 +3331,15 @@ gpu_ewald_walk_one(int target,
                     continue;
                 }
             }
+            node_motion_prediction motion;
+            if(gpu_grav_node_motion_at(*tree_soa, ext_nodes, idx, no, ti, tables, motion)) {
+                gpu_grav_note_source_ahead(time_fault, 1, no, tree_soa->node_ti[idx]);
+            }
             mass  = tree_soa->mass[idx];
-            dr[0] = tree_soa->s[idx][0] - pos[0];
-            dr[1] = tree_soa->s[idx][1] - pos[1];
-            dr[2] = tree_soa->s[idx][2] - pos[2];
+            dr[0] = motion.s_[0] - pos[0];
+            dr[1] = motion.s_[1] - pos[1];
+            dr[2] = motion.s_[2] - pos[2];
+            len_node = motion.len_;   /* the geometric centre does not move between builds; the length is widened */
         }
 
         /* nearest-image wrap on the displacement (shared SSOT helper) */
@@ -1933,7 +3351,7 @@ gpu_ewald_walk_one(int target,
             /* Opening check + periodic-boundary skip (mirrors forcetree.cc:2769-2842) */
             double r2  = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
             if(r2 <= 0) r2 = 1e-300;
-            double len = tree_soa->len[idx];
+            double len = len_node;
             int openflag = 0;
             if(errtoltheta) {
                 if(len * len > r2 * errtoltheta * errtoltheta) openflag = 1;
@@ -2005,26 +3423,11 @@ extern "C" int gpu_ewald_walk_primary(void)
     int num_active_total = (int) ActiveParticleList.size();
     if(num_active_total <= 0) {return 0;}
 
-    /* This walk consumes the node mirror (len, center, the node threading) but never
-     * refreshes it -- it relies on the primary walk having swept the nodes earlier in
-     * the same evaluation. When the primary walk ran on the host instead, no sweep
-     * happened and the mirror still holds geometry from an earlier time, so walking it
-     * here would write Ewald corrections from stale node extents and mark the particles
-     * processed, leaving the host correction loop nothing to fix. Decline instead: with
-     * ProcessedFlag untouched, that loop takes every particle and drifts nodes as it
-     * opens them.
-     *
-     * Both halves of the test are needed. The certification records that a sweep ran at
-     * this time; it does not survive a host lazy drift that happens afterwards at the
-     * same time, which refreshes a node in the AoS while leaving its mirror behind. The
-     * second clause covers exactly that ordering. */
-    if(!gpu_gravity_tree_nodes_current_at(gizmo_host_ti_current())) {
-        return 0;
-    }
+    const integertime ti_curr_host = gizmo_host_ti_current();
 
-    /* Particles have already been drifted by the primary walk (Ewald_iter==0);
-     * the tree SoA mirror is still valid. Just re-acquire (cache-hit).
-     * soa->nextnode_aux aliases UVM Nextnode[]; no per-walk memcpy. */
+    /* Re-acquire the tree SoA (cache-hit).  soa->nextnode_aux aliases UVM Nextnode[]; no per-walk
+     * memcpy.  Sources are read at the walk time, as in the primary walk, so this pass runs whichever
+     * route the primary took. */
     int min_nodes = MaxNodes + 1;
     gpu_gravity_tree_acquire(min_nodes, Nodes_base, Extnodes_base);
     const struct gpu_gravity_tree_soa_t *soa = gpu_gravity_tree_soa();
@@ -2033,7 +3436,8 @@ extern "C" int gpu_ewald_walk_primary(void)
     gpu_particles_arena_set_site("gpu_gravtree_walk_ewald");
     gpu_particles_arena_acquire(NumPart, P, CellP);
     struct particle_data *P_dev = gpu_particles_arena_P();
-    if(!P_dev) {return 0;}
+    struct gas_cell_data *CellP_dev = gpu_particles_arena_CellP();   /* NULL on a gas-free problem; read only for a gas source */
+    if(!P_dev || ((All.TotN_gas > 0) && !CellP_dev)) {return 0;}
 
     if(gpu_ewald_tables_acquire() != 0) {return 1;}   /* soft bad-stop: tables not ready, skip walk (idx_host not yet alloc'd); drains at next poll */
 
@@ -2049,9 +3453,16 @@ extern "C" int gpu_ewald_walk_primary(void)
     }
     if(num_active == 0) { myfree(idx_host); return 0; }
 
+    if(gpu_grav_answer_node_claims(ti_curr_host, "gpu_ewald_walk_primary") != 0) {myfree(idx_host); return 1;}
+    struct DriftKickTableView tables_snap;
+    if(drift_kick_table_mirror_refresh(&tu_drift_kick_table_dev, &tables_snap) != 0) {myfree(idx_host); return 1;}   /* soft bad-stop already requested */
+
     const struct grav_walk_scratch_plan scratch = grav_walk_scratch_plan_for(num_active, 0);
     char *scratch_block = (char *) gizmo_gpu_alloc_shared(scratch.bytes, "gravity_walk");
     if(!scratch_block) {printf("gpu_ewald_walk_primary: kokkos_malloc failed\n"); endrun(914102); myfree(idx_host); return 1;}
+    struct gpu_grav_time_fault_t *time_fault = (struct gpu_grav_time_fault_t *) (scratch_block + scratch.time_fault);
+    memset(time_fault, 0, sizeof(struct gpu_grav_time_fault_t));
+    const struct extNODE *Extnodes_snap = Extnodes;
     int          *d_idx    = (int *)          (scratch_block + scratch.idx);
     int          *d_failed = (int *)          (scratch_block + scratch.failed);
     Vec3<double> *d_acc    = (Vec3<double> *) (scratch_block + scratch.acc);
@@ -2084,7 +3495,7 @@ extern "C" int gpu_ewald_walk_primary(void)
         int target = d_idx[a];
         Vec3<double> acc;
         int ok = gpu_ewald_walk_one(target, treeBase, treeParticleSlots_snap, maxNodes_snap, maxForeignNodes_sn,
-                                     P_dev, &soa_snap,
+                                     P_dev, CellP_dev, ti_curr_host, &soa_snap, Extnodes_snap, tables_snap, time_fault,
 #ifdef GRAVITY_HYBRID_OPENING_CRIT
                                      is_first_step_snap,
 #endif
@@ -2092,11 +3503,12 @@ extern "C" int gpu_ewald_walk_primary(void)
                                      fac_intp, boxsize, boxhalf,
                                      errtoltheta, errtolforceacc,
                                      acc);
-        if(ok) {d_acc[a] = acc; d_failed[a] = 0;}
-        else   {d_failed[a] = 1;}
+        if(ok == 1) {d_acc[a] = acc; d_failed[a] = 0;}
+        else        {d_failed[a] = 1;}   /* met a pseudo-particle */
     });
     Kokkos::fence();
     gizmo_gpu_check_last_error("gpu_ewald_walk_primary", num_active);
+    gpu_grav_report_time_fault("gpu_ewald_walk_primary", time_fault, ti_curr_host, 914103);
     /* Import-completeness record, same contract and same ledger as the primary walk: a foreign node
      * the sender shipped as a childless multipole, which this walk has to resolve below, means the
      * import no longer covers what the walk asks of it. */

@@ -97,7 +97,7 @@ struct GxDeviceTreeView {
     /* WIDEN-ON-OPEN (landing 4).  A device walk cannot take a lock, so it cannot
      * drift a node it reaches.  Instead it widens the node's own opening bound by
      * how far that node could have moved since the mirror was written:
-     *     len_effective = len + TREE_DRIFT_VELOCITY_PREFAC * vmax * dt(node_ti -> now)
+     *     len_effective = len + TREE_NODE_WIDENING_DELTA(vmax, dt(node_ti -> now))
      * which is the SAME expression the sweep and force_drift_node apply -- the walk
      * just evaluates it lazily, for the ~4k nodes it visits, instead of eagerly for
      * ~1.4M.  Over-widening is harmless (over-inclusion, re-gated by the pair
@@ -148,12 +148,22 @@ struct GxDeviceTreeView {
  *
  * Lives in this header, not beside the traversal, for the reason the tree view
  * does: plain data, read by host units that no device compiler ever sees. */
+/* Which phase may claim right now.  One generation deliberately spans several passes of one
+ * fused call while the cursor resets at each consume, so "whose generation is this" cannot be
+ * inferred from the cursor and has to be named.  NONE is the retired state: every claim in it is
+ * out of phase, which is what makes a claim from a kernel that outlived its epoch visible. */
+enum gx_touched_owner_t {
+    GX_TOUCHED_OWNER_NONE       = 0,
+    GX_TOUCHED_OWNER_FUSED_WALK = 1    /* the Mode-D fused walk's discovery passes */
+};
+
 struct GxTouchedSet {
     unsigned int *seen     = nullptr;  /* [capacity] generation stamps, never cleared */
     int          *list     = nullptr;  /* [capacity] compacted distinct local indices */
     int          *counter  = nullptr;  /* [1] append cursor for the current pass */
     int           capacity = 0;        /* owned local particle slots at the last ensure */
     unsigned int  gen      = 0;        /* this call's generation */
+    int           owner    = GX_TOUCHED_OWNER_NONE;  /* constant within an epoch, like gen */
 };
 
 

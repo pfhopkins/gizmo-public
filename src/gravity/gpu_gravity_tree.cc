@@ -18,6 +18,7 @@
 #include "../declarations/allvars.h"
 #include "../declarations/gpu_error_check.h"
 #include "gpu_gravity_tree.h"
+#include "../declarations/gpu_recorder_claim.h"   /* the shared control block + the one claim */
 #include "gpu_topology_finalize.h"   /* gizmo_gpu_prepare_shared_for_free */
 #include "forcetree.h"   /* force_treebuild_generation() — SoA-drift stamp invalidation key */
 
@@ -161,13 +162,37 @@ static void free_arrays_(void)
  * transactional rollback in gpu_gravity_tree_grow_foreign are written against.
  * Kept local rather than delegating to the shared helper: this TU does not
  * include proto.h, and a GPU TU should not take that dependency for one call. */
+/* Which side the tree mirror belongs to. 0 none / 1 host / 2 device, the same three values the
+ * particle-storage knob uses.
+ *
+ * This mirror is the DEVICE's copy of the tree -- it exists because the device walk needs a layout
+ * it can read, and the walk reads nothing else; the AoS is the host's structure and no device code
+ * touches it. Left unhinted, though, a managed buffer settles where it is FIRST TOUCHED, and the
+ * host builds the tree, so the device then chases pointers through it a page at a time across the
+ * fabric. That is not a neutral default, it is a host-resident default for a device-only reader.
+ *
+ * It is a knob rather than a constant because the answer moves as the rest of the corridor moves:
+ * the moment refresh and the node drift sweep are already device kernels writing this mirror, and
+ * more is going the same way, while the build and the lazy per-node repair still write it from the
+ * host. ⛔ The default below is TODAY'S BEHAVIOUR, and it is a placeholder, not a verdict -- no arm
+ * has yet priced the alternative, and the first one that does should move it. */
+#define GRAV_TREE_PLACEMENT_NONE   0
+#define GRAV_TREE_PLACEMENT_HOST   1
+#define GRAV_TREE_PLACEMENT_DEVICE 2
+#ifndef GPU_TREE_STORAGE_PLACEMENT
+#define GPU_TREE_STORAGE_PLACEMENT GRAV_TREE_PLACEMENT_NONE
+#endif
+
 static void *tree_soa_alloc(size_t bytes)
 {
     /* The mirror is about half the shared-space bytes a tree build releases, so it takes
      * the same treatment as the node arrays: its length is recorded here and used to
      * migrate it home before it is released. */
     try { void *ptr = Kokkos::kokkos_malloc<GIZMO_KOKKOS_SHARED_SPACE>("gravity_tree_soa", bytes);
-          gizmo_gpu_shared_track(ptr, bytes); return ptr; }
+          gizmo_gpu_shared_track(ptr, bytes);
+          /* before anything touches it, so the first write already lands where the policy wants */
+          gizmo_gpu_place_shared(ptr, bytes, GPU_TREE_STORAGE_PLACEMENT, "Gravity tree mirror");
+          return ptr; }
     catch(const std::exception &) { return NULL; }
 }
 
@@ -299,7 +324,8 @@ extern "C" size_t gpu_gravity_tree_bytes_per_node(void)
          + sizeof(long)                          /* N_part   */
          + 8 * sizeof(int)                       /* suns_backup */
          + sizeof(Vec3<MyGravFloat>)             /* node_vs  */
-         + 3 * sizeof(MyGravFloat);              /* hmax, vmax, divVmax */
+         + 3 * sizeof(MyGravFloat)               /* hmax, vmax, divVmax */
+         + sizeof(integertime);                  /* node_ti  */
 }
 
 /* seed_node_ / seed_dirty_ / dirty_[] / mark_dirty / dirty_count_
@@ -488,9 +514,7 @@ extern "C" void gpu_gravity_tree_release(void)
     soa_valid_    = 0;
     gpu_force_drift_release();
     gpu_moment_refresh_release();
-#ifdef HERMITE_INTEGRATION
-    gpu_gravtree_hermite_release();
-#endif
+    gpu_gravtree_tables_release();
 }
 
 /* Record node geometry drifted to `ti` (snapshot current treebuild gen). Set by
@@ -613,25 +637,37 @@ extern "C" void gpu_nextnode_backup_suns(int n)
  * race even when both write the same value, and this file's own node-currency
  * publication uses atomics for exactly that reason).
  * ========================================================================== */
-static unsigned int *nd_seen_    = NULL;   /* [cap] generation stamps, never cleared */
-static int          *nd_list_    = NULL;   /* [cap] compacted node indices */
-static int           nd_cap_     = 0;
-static int           nd_count_   = 0;
-static unsigned int  nd_gen_     = 0;
-/* ⛔ ATOMIC, because the path that exists to FORCE safety must not itself be
-   undefined. force_drift_node's callers hold three DIFFERENT locks and
-   force_update_hmax holds none, so two threads can reach the fail-safe writes
-   concurrently; a plain store from two threads is a data race even when both
-   write the same value, and this file's own node-currency publication uses
-   atomics for exactly that reason. */
-static int           nd_unsafe_  = 0;      /* out-of-range or overflow seen this epoch */
-static long long     nd_unsafe_events_ = 0;
-static inline void nd_mark_unsafe_(void)
+/* The claimable state, ALL of it, in the same shared space as the stamps.  It used to be
+ * host statics beside shared-space arrays, which meant a kernel could read the list but
+ * could never claim into it: the cursor, the generation and the fail-safe flag were host
+ * memory and the claim was a host builtin.  The claims are answered on the device
+ * (gpu_node_dirty_bring_gravity_current reads the list in a kernel), so the list and its
+ * control block stay reachable from both sides. */
+static unsigned int                *nd_seen_ = NULL;
+static int                         *nd_list_ = NULL;
+static struct gpu_node_dirty_ctl_t *nd_ctl_  = NULL;
+static int                          nd_cap_  = 0;
+
+/* The fail-safe's own counter lives in the control block, which is the one thing whose
+ * ABSENCE the counter most needs to report: if that allocation fails there is nowhere
+ * device-visible to record anything, and the run reverts to full sweeping permanently while
+ * gpu_node_dirty_unsafe_events() reads zero forever -- indistinguishable from the optimisation
+ * working. This host-resident counter is the floor under that case; it counts the firings that
+ * had no block to be written into, and the accessor reports both. */
+static long long nd_unsafe_events_host_ = 0;
+
+/* Reads the recorder's own storage, so it stays with the storage rather than in the claim header. */
+static inline int nd_is_unsafe_(void)
 {
-    __atomic_store_n(&nd_unsafe_, 1, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&nd_unsafe_events_, 1, __ATOMIC_RELAXED);
+    return (nd_ctl_ && Kokkos::atomic_load(&nd_ctl_->unsafe)) ? 1 : 0;
 }
-static inline int nd_is_unsafe_(void) {return __atomic_load_n(&nd_unsafe_, __ATOMIC_RELAXED);}
+struct gpu_node_dirty_view_t gpu_node_dirty_view(void)
+{
+    struct gpu_node_dirty_view_t v;
+    v.seen = nd_seen_; v.list = nd_list_; v.ctl = nd_ctl_;
+    v.cap  = nd_cap_;  v.base = All.TreeNodeIndexBase;
+    return v;
+}
 
 /* Size to the LIVE installed range, and rebuild if it moved. Growing loses the
    epoch on purpose: the slot->index mapping itself changed, so held claims would
@@ -644,7 +680,13 @@ static int nd_ensure_(void)
     int cap = MaxNodes + AllocatedForeignNodes;
     const int soa_cap = gpu_gravity_tree_capacity();
     if(soa_cap > 0 && soa_cap < cap) {cap = soa_cap;}
-    if(cap <= 0) {return 1;}
+    if(cap <= 0) {nd_unsafe_events_host_++; return 1;}
+    if(!nd_ctl_) {
+        nd_ctl_ = (struct gpu_node_dirty_ctl_t *) tree_soa_alloc(sizeof(struct gpu_node_dirty_ctl_t));
+        if(!nd_ctl_) {nd_unsafe_events_host_++; return 1;}
+        nd_ctl_->generation = 0; nd_ctl_->count = 0; nd_ctl_->unsafe = 0;
+        nd_ctl_->owner = GPU_NODE_DIRTY_OWNER_HOST; nd_ctl_->unsafe_events = 0;
+    }
     if(cap != nd_cap_) {
         if(nd_seen_) {gizmo_gpu_tree_soa_release(nd_seen_); nd_seen_ = NULL;}
         if(nd_list_) {gizmo_gpu_tree_soa_release(nd_list_); nd_list_ = NULL;}
@@ -653,87 +695,50 @@ static int nd_ensure_(void)
         if(!nd_seen_ || !nd_list_) {
             if(nd_seen_) {gizmo_gpu_tree_soa_release(nd_seen_); nd_seen_ = NULL;}
             if(nd_list_) {gizmo_gpu_tree_soa_release(nd_list_); nd_list_ = NULL;}
-            nd_cap_ = 0; return 1;
+            nd_cap_ = 0; nd_unsafe_events_host_++; return 1;
         }
         for(int k = 0; k < cap; k++) {nd_seen_[k] = 0u;}
-        nd_cap_ = cap; nd_gen_ = 0; nd_count_ = 0;
+        nd_cap_ = cap; nd_ctl_->generation = 0; nd_ctl_->count = 0;
     }
     return 0;
 }
 
-void gpu_node_dirty_begin_epoch(void)
+/* Open a fresh epoch owned by `owner`, discarding whatever the last one held.
+ *
+ * The discard is the whole point at the two call sites that use it: the full-refresh sweep and
+ * the subset consumer have both just ANSWERED every claim, so the stamps describe work that is
+ * done.  It is also why this is not the entry point a phase uses to TAKE the recorder -- see
+ * the admission below. */
+static void nd_open_epoch_(int owner)
 {
-    if(nd_ensure_() != 0) {nd_mark_unsafe_(); return;}
+    if(nd_ensure_() != 0) {nd_mark_unsafe_ctl_(nd_ctl_); return;}
     /* Zero is the never-claimed value, so a wrap must skip it AND clear, or a slot
        still holding the old maximum would read as claimed and its node would go
        unrepaired. */
-    if(++nd_gen_ == 0u) {
+    if(++nd_ctl_->generation == 0u) {
         for(int k = 0; k < nd_cap_; k++) {nd_seen_[k] = 0u;}
-        nd_gen_ = 1u;
+        nd_ctl_->generation = 1u;
     }
-    nd_count_ = 0;
-    __atomic_store_n(&nd_unsafe_, 0, __ATOMIC_RELAXED);
+    nd_ctl_->count = 0;
+    nd_ctl_->owner = owner;
+    Kokkos::atomic_store(&nd_ctl_->unsafe, 0);
+    Kokkos::memory_fence();   /* the epoch is open before any claim in it is visible */
 }
+
+void gpu_node_dirty_begin_epoch(void) {nd_open_epoch_(GPU_NODE_DIRTY_OWNER_HOST);}
 
 void gpu_node_dirty_claim(int no)
 {
-    if(!nd_seen_ || !nd_list_) {nd_mark_unsafe_(); return;}
-    const int k = no - All.TreeNodeIndexBase;
-    if(k < 0 || k >= nd_cap_) {nd_mark_unsafe_(); return;}
-    /* Relaxed exchange: one claim per node per epoch. Concurrent callers hold
-       different locks, so nothing else serialises this. */
-    unsigned int prev;
-    /* RELEASE: the geometry this claim refers to was published by the release store
-       in force_drift_node just above; a repair that ACQUIRES the claim therefore
-       observes that geometry. Release/acquire must be on the SAME object, which is
-       why the ordering rides on the claim rather than on the node's Ti_current. */
-    __atomic_exchange(&nd_seen_[k], &nd_gen_, &prev, __ATOMIC_RELEASE);
-    if(prev == nd_gen_) {return;}
-    const int slot = __atomic_fetch_add(&nd_count_, 1, __ATOMIC_RELAXED);
-    if(slot < nd_cap_) {nd_list_[slot] = no;}
-    else               {nd_mark_unsafe_();}
+    if(!nd_seen_ || !nd_list_ || !nd_ctl_) {
+        if(!nd_ctl_) {nd_unsafe_events_host_++;}   /* nowhere to record it but here */
+        nd_mark_unsafe_ctl_(nd_ctl_);
+        return;
+    }
+    const struct gpu_node_dirty_view_t v = gpu_node_dirty_view();
+    gpu_node_dirty_claim_in(v, no, GPU_NODE_DIRTY_OWNER_HOST);
 }
 
-int gpu_node_dirty_repair(integertime ti)
-{
-    /* ACQUIRE the phase boundary before consuming the claims: repair runs between
-       phases, after every host writer has finished, and this makes that ordering
-       explicit rather than assumed. Paired with the release in the claim. */
-    __atomic_thread_fence(__ATOMIC_ACQUIRE);
-    if(nd_is_unsafe_() || !nd_list_ || !nd_seen_) {return 1;}   /* caller falls back to the sweep */
-    struct gpu_gravity_tree_soa_t *soa = gpu_gravity_tree_soa();
-    if(!soa || !soa->len || !soa->node_ti || !soa->center) {return 1;}
-    const int n = nd_count_;
-    for(int i = 0; i < n; i++) {
-        const int no = nd_list_[i];
-        const int k  = no - All.TreeNodeIndexBase;
-        if(k < 0 || k >= nd_cap_) {return 1;}
-        /* Class (a) is exactly a mirror rewrite: the AoS is already current, so
-           there is no arithmetic to redo -- copy the geometry the walk reads, and
-           the TIME it was written at, together. */
-        soa->len[k]     = Nodes[no].len;
-        soa->center[k]  = Nodes[no].center;
-        soa->node_ti[k] = Nodes[no].Ti_current;
-        if(soa->vmax) {
-            const MyGravFloat v = (MyGravFloat) Extnodes[no].vmax;
-            if(soa->vmax[k] < v) {soa->vmax[k] = v;}
-        }
-        if(soa->bitflags) {soa->bitflags[k] = Nodes[no].u.d.bitflags;}
-    }
-    /* Advance the generation rather than just resetting the cursor. Clearing the
-       cursor alone leaves every stamp at the CURRENT generation, so a node drifted
-       AGAIN after this repair would see its own stamp and never re-claim -- and
-       oneway_safe_at would then report "nothing outstanding" for a mirror a whole
-       drift interval behind. Bumping the generation invalidates every stamp in O(1)
-       without clearing the array, which is the whole point of stamping. */
-    nd_count_ = 0;
-    if(++nd_gen_ == 0u) {
-        for(int k = 0; k < nd_cap_; k++) {nd_seen_[k] = 0u;}
-        nd_gen_ = 1u;
-    }
-    (void) ti;
-    return 0;
-}
+int gpu_node_dirty_count(void) {return nd_ctl_ ? Kokkos::atomic_load(&nd_ctl_->count) : 0;}
 
 /* The foreign storage grows between phases whenever an import needs more room, and the
  * host walk then drifts -- and claims -- nodes in the new slots.  The set is sized when an
@@ -743,18 +748,19 @@ int gpu_node_dirty_repair(integertime ti)
  * recorded still name the same nodes.  Runs between phases, like the growth it follows. */
 void gpu_node_dirty_grow_to(int cap)
 {
-    if(!nd_seen_ || !nd_list_ || cap <= nd_cap_) {return;}
+    if(!nd_seen_ || !nd_list_ || !nd_ctl_ || cap <= nd_cap_) {return;}
     unsigned int *seen = (unsigned int *) tree_soa_alloc((size_t) cap * sizeof(unsigned int));
     int          *list = (int *)          tree_soa_alloc((size_t) cap * sizeof(int));
     if(!seen || !list) {
         if(seen) {gizmo_gpu_tree_soa_release(seen);}
         if(list) {gizmo_gpu_tree_soa_release(list);}
-        nd_mark_unsafe_();   /* the next prepare sweeps, as before; nothing is lost silently */
+        nd_mark_unsafe_ctl_(nd_ctl_);   /* the next prepare sweeps, as before; nothing is lost silently */
         return;
     }
     for(int k = 0; k < nd_cap_; k++) {seen[k] = nd_seen_[k];}
     for(int k = nd_cap_; k < cap; k++) {seen[k] = 0u;}
-    const int n = (nd_count_ < nd_cap_) ? nd_count_ : nd_cap_;
+    const int held = nd_ctl_->count;
+    const int n = (held < nd_cap_) ? held : nd_cap_;
     for(int k = 0; k < n; k++) {list[k] = nd_list_[k];}
     gizmo_gpu_tree_soa_release(nd_seen_); gizmo_gpu_tree_soa_release(nd_list_);
     nd_seen_ = seen; nd_list_ = list; nd_cap_ = cap;
@@ -764,7 +770,8 @@ void gpu_node_dirty_release(void)
 {
     if(nd_seen_) {gizmo_gpu_tree_soa_release(nd_seen_); nd_seen_ = NULL;}
     if(nd_list_) {gizmo_gpu_tree_soa_release(nd_list_); nd_list_ = NULL;}
-    nd_cap_ = 0; nd_count_ = 0; nd_gen_ = 0; nd_unsafe_ = 0;
+    if(nd_ctl_)  {gizmo_gpu_tree_soa_release(nd_ctl_);  nd_ctl_  = NULL;}
+    nd_cap_ = 0;
 }
 
 /* ONEWAY-safe: the walk widens on open, so it does NOT need every mirror current.
@@ -775,13 +782,19 @@ void gpu_node_dirty_release(void)
 /* How often the fail-safe fired. A permanent silent revert to full sweeping is
    otherwise indistinguishable from the optimisation working. */
 
-long long gpu_node_dirty_unsafe_events(void) {return __atomic_load_n(&nd_unsafe_events_, __ATOMIC_RELAXED);}
+long long gpu_node_dirty_unsafe_events(void)
+{
+    /* Both, because either alone can be the whole story: the block's own count is empty when the
+       block never existed, and the host count cannot see anything a kernel recorded. */
+    const long long in_block = nd_ctl_ ? Kokkos::atomic_load(&nd_ctl_->unsafe_events) : 0;
+    return in_block + nd_unsafe_events_host_;
+}
 
 int gpu_gravity_tree_oneway_safe_at(integertime ti)
 {
     if(gpu_gravity_tree_nodes_current_at(ti)) {return 1;}
     struct gpu_gravity_tree_soa_t *soa = gpu_gravity_tree_soa();
     if(!soa || !soa->node_ti || !soa->vmax || !soa->len) {return 0;}
-    if(nd_is_unsafe_() || !nd_seen_ || !nd_list_) {return 0;}
-    return (nd_count_ == 0) ? 1 : 0;   /* nothing outstanding => the mirror describes the tree */
+    if(nd_is_unsafe_() || !nd_seen_ || !nd_list_ || !nd_ctl_) {return 0;}
+    return (gpu_node_dirty_count() == 0) ? 1 : 0;   /* nothing outstanding => the mirror describes the tree */
 }

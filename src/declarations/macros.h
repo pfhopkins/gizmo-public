@@ -264,10 +264,14 @@ void        gizmo_request_controlled_stop(int code, const char *reason,
 
 
 /* A drifted tree node's size grows to bound the particles it may now contain: the node is widened
- * by this factor times its maximum member speed times the drift interval.  The gravity walk applies
- * it when it drifts a reused node, and the LET pack must predict the SAME growth when it decides
- * what to ship, so the two are kept here rather than written out at each site. */
+ * by this factor times its maximum member speed times the drift interval.  The node drift, the
+ * gravity and neighbour walks that reach a node behind the walk time, and the LET pack (which must
+ * predict the SAME growth when it decides what to ship) all take the widening from
+ * TREE_NODE_WIDENING_DELTA, so the rule is written once.  vmax already carries each member's own
+ * timestep dilation, so the interval is the undilated one.  A macro, like the rest of this file,
+ * so it is usable in device code and this header can be included more than once. */
 #define TREE_DRIFT_VELOCITY_PREFAC 2.0
+#define TREE_NODE_WIDENING_DELTA(vmax, dt_undilated) (TREE_DRIFT_VELOCITY_PREFAC * (double)(vmax) * (double)(dt_undilated))
 
 /* How far ahead the LET pack assumes the tree it is building will be reused.  The rebuild cadence
  * gives a point estimate of that lifetime; the estimate can fall short, and the opening rules grow

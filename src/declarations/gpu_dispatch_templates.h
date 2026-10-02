@@ -70,6 +70,20 @@ inline int gizmo_gpu_team_size_max(const F& f)
     return probe.team_size_max(f, Kokkos::ParallelForTag());
 }
 
+/* How many work items the default execution space can have in flight at once:
+ * the hardware's lane count, as Kokkos reports it for the backend in use.
+ *
+ * It answers one question -- are there more lanes than there are items to give
+ * them -- which is what decides whether a loop should divide ONE item's work
+ * among several lanes instead of giving each lane its own. Keyed on the machine
+ * rather than on a tuned item count, so the same code makes the right choice on
+ * a laptop's thread pool and on a GPU three orders of magnitude wider. */
+inline int gizmo_gpu_lane_count()
+{
+    const int n = (int) Kokkos::DefaultExecutionSpace().concurrency();
+    return (n > 0) ? n : 1;
+}
+
 /* True when the default execution space runs on the host, where a kernel's
  * items are already spread across the available threads and there are no SIMT
  * lanes left to divide an item's work among. Team-per-item policies are a

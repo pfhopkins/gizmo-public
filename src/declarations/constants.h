@@ -239,7 +239,17 @@
  * ranks, 8 cut the host walk by 14% and was never slower than 1 on any class of step, while 64 gave
  * the same gain on the steps that matter most but cost more on the many tiny steps, where a large
  * packet does far more opening-criterion work than the node loads it shares; so 8 is the default.
- * Override in Config.sh. */
+ * Override in Config.sh. Any value of 1 or more is honoured, up to 256 members per packet; a larger
+ * configured size is walked as several packets of that many. The members actually used are further
+ * capped by the team the call runs on, and reported with the shape as Qdev.
+ *
+ * On the device the team that walks a packet is generally WIDER than the packet. Every thread in it
+ * traverses, sharing one target's descent as readily as several targets', while the first members-many
+ * threads additionally own the targets and evaluate what the traversal accepts. So this value sets how many
+ * targets SHARE a traversal, not how many threads PERFORM one: a step with very few active elements still
+ * puts a whole team on each of them. The team size is chosen per call from the rank's own candidate count,
+ * and the shape actually launched -- team, members, walkers and the capacities behind them -- is written
+ * into each call's timings record. */
 #ifndef TREE_QUERY_PACKET_SIZE
 #define TREE_QUERY_PACKET_SIZE 8
 #endif

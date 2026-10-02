@@ -430,9 +430,21 @@ int gx_device_fused_walk_prepare(struct GxDeviceTreeView *out, const char *calle
  * the drift reports only whether a controlled stop is already pending, which is
  * a property of the run rather than of these particles, and a caller that
  * branched on it would take a different path through a collective exchange than
- * its peers. */
+ * its peers.
+ *
+ * `begin_epoch_owned` is the general form and `begin_call` is the fused walk's wrapper for it.
+ * It REFUSES (nonzero, recorder untouched) while claims are still outstanding, so a second
+ * caller can never advance the generation over another's live stamps; a refused caller takes
+ * its own safe route.
+ * `retire` closes an epoch so that any later claim reports itself as out of phase.  The claim
+ * itself is device-callable and lives in declarations/gpu_recorder_claim.h, because its body
+ * needs Kokkos and this header is read by host-only units. */
 int  gx_touched_set_ensure(int local_particle_slots);
-void gx_touched_set_begin_call(void);
+int  gx_touched_set_begin_call(void);
+int  gx_touched_set_begin_epoch_owned(int owner);
+void gx_touched_set_retire(int owner);
+long long gx_touched_set_refused_epochs(void);
+long long gx_touched_set_retire_faults(void);
 struct GxTouchedSet gx_touched_set_view(void);
 void gx_touched_set_drift_and_mark(integertime time1);
 /* Released once at shutdown, before Kokkos is finalized. Not on the tree or

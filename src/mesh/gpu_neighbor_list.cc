@@ -1775,8 +1775,56 @@ int gx_touched_set_ensure(int local_particle_slots)
     return 0;
 }
 
-void gx_touched_set_begin_call(void)
+/* Lifecycle faults, counted per rank.  A caller that is permanently declining to its own safe
+ * route, or a retire that found work nobody drained, is otherwise indistinguishable from the
+ * mechanism simply working. */
+static long long g_touched_refused_epochs  = 0;
+static long long g_touched_retire_faults   = 0;
+/* Whether this epoch's claims have already been waited for.  A consume fences; retire needs to
+ * know so it does not fence a second time on every successful call. */
+static int       g_touched_consumed_this_epoch = 0;
+
+/* Each fault owns its latch.  One shared latch let the first report -- typically the benign
+ * "another phase still holds it" refusal -- silence the serious one for the rest of the run,
+ * so a recorder retired with claims nobody consumed could pass unmentioned. */
+static void touched_report_once_(int *latch, const char *what)
 {
+    if(!latch || *latch) {return;}
+    *latch = 1;
+    printf("touched set: task %d: %s\n", ThisTask, what);
+    fflush(stdout);
+}
+
+/* Open an epoch for `owner`.  Returns 0 when the recorder is now this owner's, nonzero when it
+ * could not be handed over -- and a refusal leaves the generation, the cursor and the owner
+ * exactly as they were, because the whole point is not to disturb whoever still holds them.
+ *
+ * THE ADMISSION CONDITION IS THAT NOBODY HOLDS THE RECORDER, and nothing else.  The cursor
+ * cannot serve: a consume resets it while the generation deliberately lives on across the
+ * remaining passes of the same call, so a zero cursor mid-call means "this pass is drained",
+ * never "the recorder is free".  Admitting on a zero cursor would let a second owner take the
+ * generation between two passes of a live call, and the first owner's next claim would then
+ * arrive out of phase -- which is why the holder, not the cursor, is the question.
+ *
+ * ⚠ A refusal is NOT self-healing.  The generation is deliberately not advanced, so the
+ * previous epoch's stamps still stand and the particles carrying them can no longer re-enter
+ * the list.  Every caller therefore has to ACT on a refusal -- the fused walk declines the
+ * whole call collectively -- and none of them may
+ * proceed as if the epoch had opened. */
+int gx_touched_set_begin_epoch_owned(int owner)
+{
+    if(!g_touched_set.seen || !g_touched_set.list || !g_touched_set.counter) {
+        g_touched_refused_epochs++;
+        return 1;
+    }
+    if(g_touched_set.owner != GX_TOUCHED_OWNER_NONE) {
+        g_touched_refused_epochs++;
+        static int latch_busy = 0;
+        touched_report_once_(&latch_busy,
+                             "an epoch was requested while another phase still held the recorder; "
+                             "the requester takes its own fallback");
+        return 1;
+    }
     /* Zero is the never-claimed value, so a wrap has to skip it AND clear the
      * stamps -- otherwise a slot still carrying the old maximum would read as
      * claimed by the new generation and its particle would silently go
@@ -1785,8 +1833,61 @@ void gx_touched_set_begin_call(void)
         for(int k = 0; k < g_touched_set.capacity; k++) {g_touched_set.seen[k] = 0u;}
         g_touched_set.gen = 1u;
     }
-    if(g_touched_set.counter) {*g_touched_set.counter = 0;}
+    *g_touched_set.counter = 0;
+    g_touched_set.owner    = owner;
+    g_touched_consumed_this_epoch = 0;
+    Kokkos::memory_fence();   /* the epoch is open before any claim in it is visible */
+    return 0;
 }
+
+/* The fused walk's entry point.  It holds the recorder for its whole call, across every
+ * discovery pass, and retires at the end of that call.  It reports rather than swallows,
+ * because its caller (the walk preparation) already has the collective decline that a
+ * refusal needs. */
+int gx_touched_set_begin_call(void)
+{
+    return gx_touched_set_begin_epoch_owned(GX_TOUCHED_OWNER_FUSED_WALK);
+}
+
+/* End an epoch.  MUST be called after the owner's last consume, which is also what fences the
+ * recording kernel -- retiring with a kernel still in flight would leave claims arriving into
+ * an epoch that no longer exists.
+ *
+ * Both faults are loud.  Retiring someone else's epoch means two phases disagree about who is
+ * running, and returning quietly would leave the real holder's epoch closed underneath it.  A
+ * nonzero cursor means claims were recorded and never drained, i.e. particles the walk reached
+ * were never drifted -- the silent staleness this recorder exists to prevent, so it is
+ * reported rather than cleared quietly. */
+void gx_touched_set_retire(int owner)
+{
+    if(g_touched_set.owner != owner) {
+        g_touched_retire_faults++;
+        static int latch_wrong_owner = 0;
+        touched_report_once_(&latch_wrong_owner, "a phase tried to retire a recorder epoch it does not hold");
+        return;
+    }
+    /* Wait for the recording kernel before reading the cursor -- but only when nothing else
+     * already has.  A consume fences, so after one the cursor is readable and a second wait
+     * would be a host-side device synchronize on the critical path of every fused call.  It is
+     * the path with NO consume that the check below exists for, and there nothing has waited,
+     * so reading the cursor would report the epoch clean whenever the kernel's writes were
+     * merely not visible yet -- blind in exactly the case it is for.  A full fence, not a
+     * memory fence: the kernel may still be running, so ordering the accesses is not enough. */
+    if(!g_touched_consumed_this_epoch) {Kokkos::fence();}
+    if(g_touched_set.counter && *g_touched_set.counter != 0) {
+        g_touched_retire_faults++;
+        static int latch_undrained = 0;
+        touched_report_once_(&latch_undrained,
+                             "a recorder epoch retired with claims nobody consumed; "
+                             "the particles they name were never drifted");
+        *g_touched_set.counter = 0;
+    }
+    g_touched_set.owner = GX_TOUCHED_OWNER_NONE;
+    Kokkos::memory_fence();   /* the epoch is closed before the next one can open */
+}
+
+long long gx_touched_set_refused_epochs(void) {return g_touched_refused_epochs;}
+long long gx_touched_set_retire_faults(void)  {return g_touched_retire_faults;}
 
 struct GxTouchedSet gx_touched_set_view(void) {return g_touched_set;}
 
@@ -1826,6 +1927,7 @@ void gx_touched_set_drift_and_mark(integertime time1)
      * allocation, here, several kernel launches before the anomaly that records
      * the overflow is ever looked at.  So the allocation bounds the read, and the
      * anomaly stays the thing that reports it. */
+    g_touched_consumed_this_epoch = 1;   /* the fence above has waited for this epoch's claims */
     const int claimed = *g_touched_set.counter;
     const int n = (claimed < g_touched_set.capacity) ? claimed : g_touched_set.capacity;
     /* First claims for THIS pass. Reported separately from the pass and call
@@ -1964,7 +2066,31 @@ int gx_device_fused_walk_prepare(struct GxDeviceTreeView *out, const char *calle
         }
         return 1;
     }
-    gx_touched_set_begin_call();
+    /* The epoch is a capability too, and it is refused only when another phase still holds the
+     * recorder.  Declining here routes it through the same collective vote as a workspace that
+     * could not be allocated, so every rank falls back together -- and a refusal must never be
+     * walked past, because it leaves the previous epoch's stamps standing. */
+    if(gx_touched_set_begin_call() != 0) {
+        static int reported = 0;
+        if(!reported) {
+            reported = 1;
+            printf("%s: task %d could not open a touched-set epoch; this call falls back for every rank\n",
+                   caller, ThisTask);
+            fflush(stdout);
+        }
+        return 1;
+    }
+    /* From here the epoch is OPEN, and this function owns it until it reports success.  The
+     * caller arms its own guard only once we return 0, so anything that leaves by another door
+     * has to close the epoch itself -- otherwise the recorder stays held, every later call is
+     * refused, and the run is pinned to its fallback while looking exactly like the mechanism
+     * working.  That is the failure the caller's guard was added to prevent, and it reappears
+     * here because opening and closing sat with different owners.  Holding it in a scope guard
+     * puts both with whoever opened it, so a return added below cannot reintroduce it. */
+    struct FusedPrepareEpoch {
+        int held = 1;
+        ~FusedPrepareEpoch() {if(held) {gx_touched_set_retire(GX_TOUCHED_OWNER_FUSED_WALK);}}
+    } prepare_epoch;
 
     const int nodes_already_current = gpu_gravity_tree_nodes_current_at(All.Ti_Current) ? 1 : 0;
     /* Nothing dirtied them, so the span the census measures starts here. */
@@ -1997,7 +2123,9 @@ int gx_device_fused_walk_prepare(struct GxDeviceTreeView *out, const char *calle
          *
          * Any doubt falls back to the old behaviour: an unsafe or overflowed
          * dirty epoch, or a mirror that cannot carry the widening inputs, makes
-         * gpu_node_dirty_repair() return nonzero and the full sweep runs. */
+         * gpu_node_dirty_bring_gravity_current() return nonzero and the full sweep runs.
+         * Its claims are nodes the host drifted, so bringing them current is publishing them:
+         * the same routine gravity uses, one consumer of the claim list. */
         int sweep_rc = 0;
         int _sweep_needed  = 1;
         /* ⛔ Widening needs its inputs. Without them the walk would open on the
@@ -2011,7 +2139,7 @@ int gx_device_fused_walk_prepare(struct GxDeviceTreeView *out, const char *calle
             _sweep_needed = 1;                       /* cannot widen -> must sweep */
         } else if(gpu_gravity_tree_oneway_safe_at(All.Ti_Current)) {
             _sweep_needed = 0;                       /* already safe to walk */
-        } else if(gpu_node_dirty_repair(All.Ti_Current) == 0) {
+        } else if(gpu_node_dirty_bring_gravity_current(All.Ti_Current) == 0) {
             _sweep_needed = 0;                       /* O(Ndirty) repair sufficed */
         }
         if(_sweep_needed) {
@@ -2034,6 +2162,7 @@ int gx_device_fused_walk_prepare(struct GxDeviceTreeView *out, const char *calle
         }
     }
 
+    prepare_epoch.held = 0;   /* success: the epoch passes to the caller's guard, which retires it */
     return 0;
 }
 

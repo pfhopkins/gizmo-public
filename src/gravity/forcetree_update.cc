@@ -12,6 +12,7 @@
 #include "../core/timestep_functions.h"   /* dilation, for the motion bound */
 #include "force_node_drift_sync.h"
 #include "gpu_gravity_tree.h"        /* SoA mirror: vmax coherence for widen-on-open */
+#include "gravtree_moment_kernel.h"   /* the shared node-motion arithmetic */
 
 /* GPU replacement for force_update_tree. */
 extern "C" void gpu_force_update_tree(void);
@@ -67,22 +68,22 @@ integertime force_host_lazy_drift_ti(void)
  *  the KDK sequence, and the quantity that sizes the work here.
  *
  *  The route therefore keys on the COMING step's count, not on how many kicks are being
- *  propagated. Taking the host path here drifts nodes lazily, which hands the rest of the
- *  time step to the host (see gravity_walk_route_to_host); so the only thing the route has
- *  to protect is that a host-lazy drift is never followed by a device walk reading the
- *  mirror it staled. The coming step's count settles exactly that, because it is the same
- *  count the walk itself routes on, taken before the walk's own candidacy filter and so an
- *  upper bound on it. When it says host, the walk that follows is on the host too and the
- *  device sweep would buy no safety -- only the cost of drifting every node in the tree to
- *  serve however few elements are active. */
+ *  propagated: it is the count the gravity walk itself routes on, taken before the walk's own
+ *  candidacy filter and so an upper bound on it. A host update drifts nodes lazily and claims
+ *  them; a device gravity walk that follows answers those claims before it reads the mirror,
+ *  so the two routes need not agree. When this says host, the device sweep would only cost
+ *  drifting every node in the tree to serve however few elements are active. */
 void force_update_tree(void)
 {
-    /* One test, on the count the following gravity walk will itself route on. The
-     * device path must drift every node in the tree before its parallel walk is
-     * race-free, and that sweep is sized by the tree, not by how much work this call
-     * has to do; so it is worth paying only when a device walk follows and needs the
-     * nodes current. When this says host, none does. */
-    const int to_host = gravity_walk_route_to_host(NumForceUpdateAtSyncPoint);
+    /* Two tests.  The count: the device path must drift every node in the tree before its
+     * parallel kick walk is race-free, and that sweep is sized by the tree, not by how much work
+     * this call has to do.  And once any node has been drifted lazily at this time the update
+     * stays on the host: the device path's full-tree sweep skips nodes already at its target
+     * time, so it cannot bring their mirror up to date and refuses to run (gpu_force_drift_nodes).
+     * A tree built after that drift is exempt: the build rewrote every node and every mirror. */
+    const int host_drifted_nodes_now = !gpu_gravity_tree_nodes_current_at(All.Ti_Current)
+                                       && (force_host_lazy_drift_ti() == All.Ti_Current);
+    const int to_host = host_drifted_nodes_now || gravity_walk_route_to_host(NumForceUpdateAtSyncPoint);
 
     if(!to_host) {gpu_force_update_tree();}
     else
@@ -111,10 +112,11 @@ void force_update_tree(void)
  *  device version relies on the preceding all-node drift sweep and therefore uses atomics
  *  where this accumulates directly. */
 
-/* Raise the SoA mirror of a node's vmax to match the AoS.
+/* Raise the SoA mirror of a node's vmax to match the AoS, and mark it as holding a pending
+ * kick, so a walk predicting the node knows to read the impulse from the canonical node.
  *
  * vmax is a RUNNING MAX, and the ONEWAY device walk widens its opening bound by
- * `PREFAC * vmax * dt`.  A mirror left behind the AoS is therefore SMALLER, the
+ * TREE_NODE_WIDENING_DELTA(vmax, dt).  A mirror left behind the AoS is therefore SMALLER, the
  * bound is UNDER-widened, and the walk silently under-includes neighbours -- the
  * one failure this contract exists to prevent.  Raising (never lowering) keeps the
  * mirror conservative even if a writer is missed: too large only over-widens, and
@@ -123,7 +125,7 @@ void force_update_tree(void)
  * Indexing follows forcetree.cc:1441: slot k = no - All.TreeNodeIndexBase, valid
  * for local nodes (k < MaxNodes) and installed foreign ones, bounded by the mirror
  * that exists rather than by the index range it sits in. */
-static inline void force_soa_raise_vmax(int no, MyFloat vmax_aos)
+static inline void force_soa_mark_kick(int no, MyFloat vmax_aos)
 {
     struct gpu_gravity_tree_soa_t *soa = gpu_gravity_tree_soa();
     if(!soa || !soa->vmax) {return;}
@@ -137,6 +139,7 @@ static inline void force_soa_raise_vmax(int no, MyFloat vmax_aos)
     if(k < 0 || k >= cap) {return;}
     const MyGravFloat v = (MyGravFloat) vmax_aos;
     if(soa->vmax[k] < v) {soa->vmax[k] = v;}
+    if(soa->bitflags) {soa->bitflags[k] |= (1u << BITFLAG_NODEHASBEENKICKED);}
 }
 
 void force_kick_node(int i, Vec3<MyDouble>& dp)
@@ -172,7 +175,7 @@ void force_kick_node(int i, Vec3<MyDouble>& dp)
         Extnodes[no].sink_dp += sink_dp;
 #endif
         if(Extnodes[no].vmax < vmax) {Extnodes[no].vmax = vmax;}
-        force_soa_raise_vmax(no, Extnodes[no].vmax);   /* keep the walk's mirror conservative */
+        force_soa_mark_kick(no, Extnodes[no].vmax);   /* keep the walk's mirror conservative */
         Nodes[no].u.d.bitflags |= (1 << BITFLAG_NODEHASBEENKICKED);
         Extnodes[no].Ti_lastkicked = All.Ti_Current;
 
@@ -421,7 +424,7 @@ void force_finish_kick_nodes(void)
         /* The MERGED cross-rank value, not this rank's contribution: this site runs on
            BOTH kick routes (gpu_force_update.cc:279 calls it too), so it is where the
            top-level set gets its final answer. */
-        force_soa_raise_vmax(no, Extnodes[no].vmax);
+        force_soa_mark_kick(no, Extnodes[no].vmax);
         Nodes[no].u.d.bitflags |= (1 << BITFLAG_NODEHASBEENKICKED);
         Extnodes[no].Ti_lastkicked = All.Ti_Current;
 
@@ -444,103 +447,39 @@ void force_finish_kick_nodes(void)
 
 void force_drift_node(int no, integertime time1)
 {
-  int j;
-  integertime time0;
-  double dt_drift, dt_drift_hmax, fac;
-
   /* Acquire-load: if another thread already drifted this node to time1, we both
    * skip AND observe its published geometry (paired with the release store below). */
   if(time1 == modeb_node_ti_current_acquire(no))
     return;
 
-  time0 = Extnodes[no].Ti_lastkicked;
-
-  if(Nodes[no].u.d.bitflags & (1 << BITFLAG_NODEHASBEENKICKED))
+  /* A kicked node was brought current when its kick was added, so its pending momentum
+     describes motion from exactly its own time onward. */
+  const int kicked = (Nodes[no].u.d.bitflags & (1 << BITFLAG_NODEHASBEENKICKED)) ? 1 : 0;
+  if(kicked && Extnodes[no].Ti_lastkicked != Nodes[no].Ti_current)
     {
-      if(Extnodes[no].Ti_lastkicked != Nodes[no].Ti_current)
-	{
-	  printf("Task=%d Extnodes[no].Ti_lastkicked=%lld  Nodes[no].Ti_current=%lld\n",ThisTask, (long long)Extnodes[no].Ti_lastkicked, (long long)Nodes[no].Ti_current);
-	  printf("inconsistency in drift node\n"); fflush(stdout); endrun(90001007); return;   /* graceful: skip node drift; bad-stop drains at the next gravity-walk poll */
-	}
+      printf("Task=%d Extnodes[no].Ti_lastkicked=%lld  Nodes[no].Ti_current=%lld\n",ThisTask, (long long)Extnodes[no].Ti_lastkicked, (long long)Nodes[no].Ti_current);
+      printf("inconsistency in drift node\n"); fflush(stdout); endrun(90001007); return;   /* graceful: skip node drift; bad-stop drains at the next gravity-walk poll */
+    }
 
-      if(Nodes[no].u.d.mass) {fac = 1 / Nodes[no].u.d.mass;} else {fac = 0;}
-
-#ifdef RT_SEPARATELY_TRACK_LUMPOS
-        double fac_stellar_lum;
-        double l_tot=0; for(j=0;j<N_RT_FREQ_BINS;j++) {l_tot += (Nodes[no].stellar_lum[j]);}
-        if(l_tot>0) {fac_stellar_lum = 1 / l_tot;} else {fac_stellar_lum = 0;}
-#endif
-
-#ifdef DM_SCALARFIELD_SCREENING
-      double fac_dm;
-      if(Nodes[no].mass_dm) {fac_dm = 1 / Nodes[no].mass_dm;} else {fac_dm = 0;}
-#endif
-
-      Extnodes[no].vs += fac * Extnodes[no].dp;
-      Extnodes[no].dp = {};
-#ifdef RT_SEPARATELY_TRACK_LUMPOS
-      Extnodes[no].rt_source_lum_vs += fac_stellar_lum * Extnodes[no].rt_source_lum_dp;
-      Extnodes[no].rt_source_lum_dp = {};
-#endif
-#ifdef DM_SCALARFIELD_SCREENING
-      Extnodes[no].vs_dm += fac_dm * Extnodes[no].dp_dm;
-      Extnodes[no].dp_dm = {};
-#endif
-#ifdef SINK_NODE_MOTION_TRACKED
-      /* sink_vel lives in Nodes, not Extnodes, but is updated exactly as vs is. Normalised by
-         sink_mass rather than mass: it is the mean velocity of the special-type particles alone. */
-      {
-          double fac_sink = (Nodes[no].sink_mass > 0) ? (1.0 / Nodes[no].sink_mass) : 0.0;
-          Nodes[no].sink_vel += fac_sink * Extnodes[no].sink_dp;
-          Extnodes[no].sink_dp = {};
-      }
-#endif
+  /* The arithmetic is the shared node-motion unit (gravtree_moment_kernel.h), the same one the
+     device sweep runs. */
+  const node_motion_in_arrays node = {Nodes, Extnodes, no};
+  if(kicked)
+    {
+      node_motion_fold_kick(node);
       Nodes[no].u.d.bitflags &= (~(1 << BITFLAG_NODEHASBEENKICKED));
     }
 
-    dt_drift = dt_drift_hmax = get_drift_factor(Nodes[no].Ti_current, time1, no, 1);
+    const double dt_drift = get_drift_factor(Nodes[no].Ti_current, time1, no, 1);
     /* The widening runs on the undilated clock: vmax bounds each member's motion per unit
        undilated interval, carrying that member's own dilation, so the node's dilated clock
        (right for its centre of mass) would under-grow it for a member less dilated than the
        node.  The same interval when no dilation is active. */
     const double dt_widen = get_drift_factor_undilated(Nodes[no].Ti_current, time1);
-    
 
-    Nodes[no].u.d.s += Extnodes[no].vs * dt_drift;
-#ifdef SINK_NODE_MOTION_TRACKED
-    /* Keep sink_pos on the same clock as u.d.s, exactly once. Left undrifted it stays at its
-       last-build value while the sinks move, and the nearest-sink distance, the sink timestep
-       criteria and (under SINGLE_STAR_DIRECT_GRAVITY) the monopole subtraction all read a stale
-       position on a different clock from u.d.s. The device drift kernel does the same. */
-    Nodes[no].sink_pos += Nodes[no].sink_vel * dt_drift;
-#endif
-  Nodes[no].len += TREE_DRIFT_VELOCITY_PREFAC * Extnodes[no].vmax * dt_widen;
+    node_motion_advance(node, dt_drift, dt_widen);
+    node_hmax_drift(Extnodes[no], dt_drift);
 
-#ifdef DM_SCALARFIELD_SCREENING
-    Nodes[no].s_dm += Extnodes[no].vs_dm * dt_drift;
-#endif
-#ifdef RT_SEPARATELY_TRACK_LUMPOS
-    Nodes[no].rt_source_lum_s += Extnodes[no].rt_source_lum_vs * dt_drift;
-#endif
-
-    if(Extnodes[no].hmax > 0) {Extnodes[no].hmax *= exp(DMAX(-1.,DMIN(1.,Extnodes[no].divVmax * dt_drift_hmax / NUMDIMS)));}
-    /* Mode B per-type bands: upward-only inflate. The bands
-     * include static-ish sources like P[j].ForceSoftening (per
-     * force_hmax_per_type_particle_radius), so decaying the band below the
-     * actual FS value would under-bound the node-prune. force_update_hmax()
-     * re-grows the bands per-particle each call; we just must not shrink
-     * them under drift. (Scalar `hmax` retains its legacy bidirectional decay
-     * — its semantics are unchanged.) */
-    {
-        double decay_fac = exp(DMAX(-1., DMIN(1., Extnodes[no].divVmax * dt_drift_hmax / NUMDIMS)));
-        if(decay_fac > 1.0) {
-            for(int t = 0; t < 6; t++) {
-                if(Extnodes[no].hmax_per_type[t] > 0) {
-                    Extnodes[no].hmax_per_type[t] *= (MyFloat)decay_fac;
-                }
-            }
-        }
-    }
     /* Record that this rank has now drifted at least one node to time1 without
      * updating that node's device SoA mirror. Relaxed: every caller passes
      * All.Ti_Current, so concurrent writers store the same value, and the only reader

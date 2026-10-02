@@ -11,33 +11,25 @@
 #include "../core/proto.h"
 #include "gpu_gravtree.h"
 #include "gpu_gravity_tree.h"   /* gpu_gravity_tree_mark_born_current */
+#include "../mesh/gpu_neighbor_list.h"   /* the touched set's lifecycle counters, reported below */
 #include "../system/gpu_particles_arena.h"
 #include "../core/timestep_functions.h"   /* Hermite pass state, refreshed below */
 #include "../mesh/kernel.h"
 #include "./analytic_gravity.h"
 
 /*! Host-vs-device routing for the gravity walk and the dynamic tree update, keyed on the
- *  RANK-LOCAL count of active gravity candidates. The device path must drift every node
- *  in the tree before its parallel walk can be race-free, so its floor is set by the tree
- *  size rather than by the active set; the host walk drifts each node only when it opens
- *  it. Below the threshold the sweep costs more than the walk it enables.
+ *  RANK-LOCAL count of active gravity candidates. The device tree update must drift every
+ *  node in the tree before its parallel kick walk can be race-free, so its floor is set by
+ *  the tree size rather than by the active set; the host paths drift each node only when
+ *  they reach it.
  *
  *  The threshold is conservative against a crossover measured near 6e4 rank-local
  *  candidates on 16-rank FIRE, where routing the whole tree walk to the host cut the
- *  cost of steps with fewer than 1e4 global active elements by a third. Above it the
- *  device path wins and the host walk's serial node drift becomes the bottleneck. */
+ *  cost of steps with fewer than 1e4 global active elements by a third -- measured when
+ *  the device gravity walk also drifted every node it could reach before walking, which
+ *  it no longer does (it reads each source at the walk time). */
 int gravity_walk_route_to_host(long long n_local_active)
 {
-    /* Once any node has been drifted lazily at this time, the host owns the rest of the
-     * time step: the device sweep skips nodes already at its target time, so it can no
-     * longer bring their mirror up to date, and a second gravity evaluation at the same
-     * time (a Hermite correction pass, a repeated walk for the opening criterion) would
-     * otherwise read that stale geometry.  A tree built after that drift is
-     * exempt: the build rewrote every node and every mirror, so the record of an
-     * earlier lazy drift no longer describes anything. */
-    if(!gpu_gravity_tree_nodes_current_at(All.Ti_Current)
-            && force_host_lazy_drift_ti() == All.Ti_Current) {return 1;}
-
     return (All.GravityHostWalkBelowActive > 0 && n_local_active < (long long)All.GravityHostWalkBelowActive) ? 1 : 0;
 }
 
@@ -521,14 +513,17 @@ gravity_walk_attempt:
                  * back first and take them again afterwards. */
                 myfree(DataNodeList); myfree(DataIndexTable);
 
-                /* Same build the start of this call would have done, minus the drift and
-                 * re-sequencing: the particles are already at All.Ti_Current, and re-sequencing
-                 * here would move indices under the active list this walk is iterating.  The
+                /* Same build the start of this call would have done, minus the re-sequencing, which
+                 * would move indices under the active list this walk is iterating.  A build takes
+                 * the whole particle set at one time, and only the active set is certain to be current
+                 * here, so every particle is drifted to All.Ti_Current first (a no-op if it already is):
+                 * a tree built from positions at different times, stamped current, is wrong.  The
                  * rebuild flags are deliberately NOT cleared -- this repair does not satisfy
                  * whatever else asked for a rebuild, and the next step is entitled to see it.
                  * It also stands on the domain frame already in force, so under RANDOMIZE_GRAVTREE
                  * it does not draw a new one: a repair is not a scheduled rebuild, and re-keying
                  * the particles here would move them out from under the walk in progress. */
+                gizmo_full_drift_to(All.Ti_Current);
                 refresh_old_acceleration_for_tree_opening();
                 gizmo_exit_bad_stop_if_requested("gravtree:before_repair_treebuild");
                 /* This rebuild stands on the tree just built here, whose attachments are intact, so it
@@ -784,6 +779,43 @@ gravity_walk_attempt:
     All.TotNumOfForces += GlobNumForceUpdate;
     plb = (NumPart / ((double) All.TotNumPart)) * NTask;
     MPI_Reduce(&plb, &plb_max, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    /* Packets the device engine gave up on this call, by reason, summed over ranks and also taken
+     * at its worst rank: a budget cliff is a property of the rank with the divergent subtree, and
+     * a sum over ranks alone would average it away.  Collective, so it sits with the other
+     * reductions rather than inside the rank-0 report below. */
+    /* The two stamped recorders' fail-safe totals ride in the same two reductions rather than
+     * adding their own: the node claims answered before each device walk, and the touched set of
+     * the Mode-D fused walk.  Each exists so that a permanent silent revert -- to sweeping every
+     * node, or to drifting every particle -- is visible rather than indistinguishable from the
+     * optimisation working, and nothing read either of them; but observability may not charge the
+     * path it is watching, and this call already carries collectives.  Three extra words on an
+     * existing reduction is free; two more reductions per gravity call would not be. */
+    /* Scoped, not #define: a macro here would be translation-unit-wide despite sitting in a
+       function. */
+    constexpr int recorder_slots = 3;
+    /* Which device schedule each rank took this call, counted across ranks.  The shape line below
+       is one rank's, and on an inhomogeneous problem the ranks that matter are the ones with the
+       fewest targets -- exactly the ones that take a different schedule from rank 0.  Without this
+       an arm cannot tell whether the cooperative path ran at all, and a null result would be
+       unreadable rather than negative. */
+    constexpr int mode_slots     = 3;   /* flat, packet, cooperative */
+    constexpr int report_slots   = GRAV_PACKET_FAIL_REASON_SLOTS + recorder_slots + mode_slots;
+    long long packet_fail[report_slots] = {0};
+    long long packet_fail_sum[report_slots] = {0};
+    long long packet_fail_max[report_slots] = {0};
+    gpu_gravtree_packet_failures(packet_fail, GRAV_PACKET_FAIL_REASON_SLOTS);
+    packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 0] = gpu_node_dirty_unsafe_events();
+    packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 1] = gx_touched_set_refused_epochs();
+    packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 2] = gx_touched_set_retire_faults();
+    {
+        struct gpu_grav_packet_shape_t ps_local; gpu_gravtree_packet_shape(&ps_local);
+        const int mode_base = GRAV_PACKET_FAIL_REASON_SLOTS + recorder_slots;
+        if(ps_local.mode == GRAV_PACKET_MODE_FLAT)             {packet_fail[mode_base + 0] = 1;}
+        else if(ps_local.mode == GRAV_PACKET_MODE_PACKET)      {packet_fail[mode_base + 1] = 1;}
+        else if(ps_local.mode == GRAV_PACKET_MODE_COOPERATIVE) {packet_fail[mode_base + 2] = 1;}
+    }
+    MPI_Reduce(packet_fail, packet_fail_sum, report_slots, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(packet_fail, packet_fail_max, report_slots, MPI_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
     MPI_Reduce(&Numnodestree, &maxnumnodes, 1, MPI_INT, MPI_MAX, 0, MPI_COMM_WORLD);
     /* The span from the end of the build to here is the force walk.  Only the
      * wait is separately measured inside it, so the walk row is the rest of the
@@ -800,7 +832,37 @@ gravity_walk_attempt:
         fprintf(FdTimings, "work-load balance: %g (%g %g) rel1to2=%g   max=%g avg=%g\n", maxt / (1.0e-6 + sumt / NTask), maxt1 / (1.0e-6 + sumt1 / NTask), maxt2 / (1.0e-6 + sumt2 / NTask), sumt1 / (1.0e-6 + sumt1 + sumt2), maxt, sumt / NTask);
         fprintf(FdTimings, "particle-load balance: %g\n", plb_max);
         fprintf(FdTimings, "max. nodes: %d, filled: %g\n", maxnumnodes, maxnumnodes / ((double) MaxNodes));
-        fprintf(FdTimings, "part/sec=%g | %g  ia/part=%g (%g)\n", GlobNumForceUpdate / (sumt + 1.0e-20), GlobNumForceUpdate / (1.0e-6 + maxt * NTask), ((double) (sum_costtotal)) / (1.0e-20 + GlobNumForceUpdate), ((double) ewaldtot) / (1.0e-20 + GlobNumForceUpdate)); fprintf(FdTimings, "\n");
+        fprintf(FdTimings, "part/sec=%g | %g  ia/part=%g (%g)\n", GlobNumForceUpdate / (sumt + 1.0e-20), GlobNumForceUpdate / (1.0e-6 + maxt * NTask), ((double) (sum_costtotal)) / (1.0e-20 + GlobNumForceUpdate), ((double) ewaldtot) / (1.0e-20 + GlobNumForceUpdate)); {struct gpu_grav_packet_shape_t ps; gpu_gravtree_packet_shape(&ps);
+            /* Which device schedule ran, spelled out, so a run that was meant to exercise wide
+               cooperative teams cannot quietly have taken a narrow or serial one instead. */
+            const char *ps_mode = (ps.mode == GRAV_PACKET_MODE_COOPERATIVE) ? "cooperative"
+                                : (ps.mode == GRAV_PACKET_MODE_PACKET)      ? "packet"
+                                : (ps.mode == GRAV_PACKET_MODE_FLAT)        ? "flat" : "none";
+            fprintf(FdTimings, "packet-modes: ranks flat=%lld packet=%lld cooperative=%lld\n",
+                    packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + recorder_slots + 0],
+                    packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + recorder_slots + 1],
+                    packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + recorder_slots + 2]);
+            fprintf(FdTimings, "packet: mode=%s Q=%d T=%d Qdev=%d walkers=%d F=%d C=%d k=%d row=%d/%d scratch=%lld\n",
+                    ps_mode, TREE_QUERY_PACKET_SIZE, ps.team, ps.q_dev, ps.n_walkers, ps.frontier, ps.chunk,
+                    ps.steps_per_round, ps.row_requested, ps.row_effective, ps.scratch_bytes);
+            fprintf(FdTimings, "packet-gaveup: malformed=%lld pseudo=%lld nocont=%lld record=%lld noprogress=%lld (worst rank: %lld %lld %lld %lld %lld)\n",
+                    packet_fail_sum[1], packet_fail_sum[2], packet_fail_sum[3], packet_fail_sum[4], packet_fail_sum[5],
+                    packet_fail_max[1], packet_fail_max[2], packet_fail_max[3], packet_fail_max[4], packet_fail_max[5]);
+            /* Only when there is something to say.  These are fail-safe EVENTS, not telemetry:
+               a zero line on every call would be noise in the artifact the track reads, while a
+               nonzero one is the whole point -- it says the run has quietly stopped using the
+               mechanism being priced. */
+            if(packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + 0] ||
+               packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + 1] ||
+               packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + 2]) {
+                fprintf(FdTimings, "recorder-failsafe: node-unsafe=%lld touched-refused=%lld touched-retire-faults=%lld (worst rank: %lld %lld %lld)\n",
+                        packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + 0],
+                        packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + 1],
+                        packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + 2],
+                        packet_fail_max[GRAV_PACKET_FAIL_REASON_SLOTS + 0],
+                        packet_fail_max[GRAV_PACKET_FAIL_REASON_SLOTS + 1],
+                        packet_fail_max[GRAV_PACKET_FAIL_REASON_SLOTS + 2]);
+            }} fprintf(FdTimings, "\n");
         fflush(FdTimings);
     }
     double costtotal_new = 0, sum_costtotal_new;

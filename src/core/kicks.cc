@@ -5,7 +5,7 @@
 #include <math.h>
 #include "../declarations/allvars.h"
 #include "../core/proto.h"
-#include "predict_functions.h" /* apply_special_boundary_conditions_P */
+#include "timestep_functions.h" /* apply_special_boundary_conditions_P */
 #include "../system/gpu_particles_arena.h"
 #ifdef CBE_INTEGRATOR
 #include "../sidm/sidm_gpu_decls.h"

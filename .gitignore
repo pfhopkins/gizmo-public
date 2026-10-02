@@ -115,6 +115,11 @@ HANDOFF_*.md
 MEMORY.md
 *_design.md
 *_handoff.md
+# Session working directories: spikes, gate harnesses, apply/revert probes and their logs.
+# Untracked by convention for several sessions, but nothing enforced it -- one `git add -A`
+# would have swept them into public history.
+patches_*/
+_spike_backup_*/
 .claude_required_reading.txt
 # scratch parameter-file variants used when driving a test by hand
 test/*/_*.params

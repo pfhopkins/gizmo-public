@@ -896,8 +896,8 @@ extern struct extNODE
 #endif
   Vec3<MyFloat> vs;
   MyFloat vmax;			/*!< how fast any member can move along an axis, per unit undilated drift interval
-				   (particle_motion_speed_bound); the node's box grows by TREE_DRIFT_VELOCITY_PREFAC
-				   times this times the interval since it was last drifted, so a member not yet drifted
+				   (particle_motion_speed_bound); the node's box grows by TREE_NODE_WIDENING_DELTA of
+				   this and the interval since it was last drifted, so a member not yet drifted
 				   is still inside it */
   MyFloat hmax;			/*!< maximum gas kernel length in node. Legacy aggregate:
 				   gas-only at tree build, AGS-aware after force_update_hmax

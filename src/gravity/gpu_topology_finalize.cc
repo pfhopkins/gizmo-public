@@ -365,7 +365,7 @@ extern "C" void gizmo_gpu_prepare_shared_for_free(void *ptr)
          * it to the next routine that checks, which would stop the run and name a kernel
          * that did nothing wrong.  Failing to migrate only costs speed: the block is
          * released either way and the answer does not change. */
-        hipGetLastError();
+        (void) hipGetLastError();
 #ifdef OUTPUT_ADDITIONAL_RUNINFO
         /* Once per run: the release still happens and the answer is unaffected, but the
          * run is paying the slow release this exists to avoid, and nothing else would
@@ -381,7 +381,9 @@ extern "C" void gizmo_gpu_prepare_shared_for_free(void *ptr)
 #endif
         return;
     }
-    hipDeviceSynchronize();
+    /* A failure here is not this prefetch's: the synchronize reports any earlier asynchronous device
+       error, so it goes to the same check every kernel launch uses rather than being dropped. */
+    if(hipDeviceSynchronize() != hipSuccess) {gizmo_gpu_check_last_error("earlier asynchronous device work (reported while releasing a tree block)", 0);}
 #endif
 }
 

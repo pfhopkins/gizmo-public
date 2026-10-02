@@ -74,6 +74,7 @@
  * next rebuild, and its timestep is how long this tree is expected to last.  Computed once per
  * build, collectively, because the occupancies are global. */
 static integertime g_let_tree_lifetime_dti = 0;
+static double g_let_tree_lifetime_drift = 0;   /* undilated drift factor over that horizon, from now */
 
 static void let_compute_tree_lifetime(void)
 {
@@ -95,6 +96,7 @@ static void let_compute_tree_lifetime(void)
      * drifted at that point and the tree is fresh, so the honest horizon is zero -- and reaching for
      * All.HighestOccupiedTimeBin here would read a value this run has not written yet (on a restart,
      * the PREVIOUS run's, which pads maximally for no reason). */
+    g_let_tree_lifetime_drift = 0;
     if(occupied_total <= 0) {g_let_tree_lifetime_dti = 0; return;}
     /* Nothing crosses the threshold: the system steps as a whole, so the coarsest occupied bin is
      * the interval that matters.  Taken from the counts just reduced, not from global state. */
@@ -107,17 +109,17 @@ static void let_compute_tree_lifetime(void)
     integertime remaining = TIMEBASE - All.Ti_Current;
     if(remaining < 0) {remaining = 0;}
     if(g_let_tree_lifetime_dti > remaining) {g_let_tree_lifetime_dti = remaining;}
+    if(g_let_tree_lifetime_dti > 0) {g_let_tree_lifetime_drift = get_drift_factor_undilated(All.Ti_Current, All.Ti_Current + g_let_tree_lifetime_dti);}
 }
 
 /* The node size the walk may reach before this tree is rebuilt.  The growth rule is the walk's own
- * (TREE_DRIFT_VELOCITY_PREFAC * vmax * undilated drift factor), evaluated over the tree's expected
+ * (TREE_NODE_WIDENING_DELTA over the undilated drift factor), evaluated over the tree's expected
  * lifetime; vmax already carries each member's own dilation.  Used ONLY to decide essentiality: the
  * node itself ships at its true build-time size, and the receiver widens it the ordinary way. */
 static double let_node_len_over_tree_lifetime(int no, double len)
 {
     if(g_let_tree_lifetime_dti <= 0) {return len;}
-    double dt_lifetime = get_drift_factor_undilated(All.Ti_Current, All.Ti_Current + g_let_tree_lifetime_dti);
-    return len + TREE_DRIFT_VELOCITY_PREFAC * (double) Extnodes[no].vmax * dt_lifetime;
+    return len + TREE_NODE_WIDENING_DELTA((double) Extnodes[no].vmax, g_let_tree_lifetime_drift);
 }
 
 
@@ -1175,8 +1177,7 @@ static void let_bucket_cube(int no, int slot, const int *members, int n,
 static double let_aggregate_len_over_tree_lifetime(const struct LETNodeWire *w, double len)
 {
     if(g_let_tree_lifetime_dti <= 0) {return len;}
-    const double dt_lifetime = get_drift_factor_undilated(All.Ti_Current, All.Ti_Current + g_let_tree_lifetime_dti);
-    return len + TREE_DRIFT_VELOCITY_PREFAC * (double) w->extnode.vmax * dt_lifetime;
+    return len + TREE_NODE_WIDENING_DELTA((double) w->extnode.vmax, g_let_tree_lifetime_drift);
 }
 
 /* Build the leaf's aggregate wire from the members already gathered in the worker's scratch.

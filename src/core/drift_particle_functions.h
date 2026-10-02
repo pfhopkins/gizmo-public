@@ -21,9 +21,9 @@
 #define KOKKOS_INLINE_FUNCTION inline
 #endif
 
-#include "timestep_functions.h"      /* DriftKickTableView, get_{drift,gravkick}_factor_impl, dilation */
+#include "timestep_functions.h"      /* DriftKickTableView, get_{drift,gravkick}_factor_impl, dilation, the particle motion step bodies */
 #include "../gravity/binary_functions.h" /* odeint_super_timestep */
-#include "predict_functions.h"       /* advect_mesh_point_P, apply_special_boundary_conditions_P */
+#include "predict_functions.h"       /* Get_Gas_PhiField_DampingTimeInv_P */
 #include "../gravity/ags_functions.h"    /* ags_density_isactive_P, ags_return_{min,max}soft_P, dm_fuzzy */
 #include "../eos/eos_functions.h"        /* set_eos_pressure_impl */
 #ifdef COSMIC_RAY_FLUID
@@ -89,52 +89,18 @@ void drift_particle_impl(int i, integertime time1, struct particle_data *pp,
     
     dt_drift = get_drift_factor_impl(time0, time1, timestep_dilation_factor(i, pp), tables);
         
+    /* A super-timestepped sink: the position step moves its binary's centre of mass, and the
+       internal orbit is advanced on top of that.  The orbit's velocity kick is also consumed by
+       the velocity prediction further down.  predict_particle_motion (timestep_functions.h) runs the
+       same motion steps in the same order, read-only; a change to the order belongs in both. */
+    Vec3<double> fewbody_kick_dv = {};
 #if (SINGLE_STAR_TIMESTEPPING > 0)
-    /* A super-timestepped sink: the drift below moves its binary's centre of mass, and the
-       internal orbit is advanced on top of that.  Also consumed by the velocity prediction
-       further down, so declared outside the position update. */
-    Vec3<double> fewbody_drift_dx = {}, fewbody_kick_dv = {};
-    volatile int super_timestepped_sink = ((pp[i].Type == 5) && (pp[i].SuperTimestepFlag >= 2)) ? 1 : 0;
+    volatile int super_timestepped_sink = is_super_timestepped_sink(i, pp);
 #endif
-#if !defined(FREEZE_HYDRO)
-    /* A finite-volume gas cell moves with its mesh-generating point, a super-timestepped sink
-       with its binary, everything else with its own velocity.  The two special cases are
-       different particle types, so both must be live in a build that has both. */
-#if (SINGLE_STAR_TIMESTEPPING > 0)
-    if(super_timestepped_sink)
     {
-        Vec3<double> COM_Vel = pp[i].Vel + pp[i].comp_dv * (pp[i].comp_Mass/(pp[i].Mass+pp[i].comp_Mass)); //center of mass velocity
-        pp[i].Pos += COM_Vel * dt_drift; //center of mass drift
-        odeint_super_timestep(i, dt_drift, fewbody_kick_dv, fewbody_drift_dx, 1, pp); // do_fewbody_drift
-        pp[i].GravAccel = pp[i].COM_GravAccel; //Overwrite the acceleration with center of mass value
-        pp[i].Pos += fewbody_drift_dx; //Keplerian evolution
-        pp[i].Vel += fewbody_kick_dv; //move on binary.orbit
+        particle_motion_in_arrays motion = {pp, cell, i};
+        particle_position_step(motion, dt_drift, fewbody_kick_dv);
     }
-    else
-#endif
-#if defined(HYDRO_MESHLESS_FINITE_VOLUME)
-    if(pp[i].Type==0) {advect_mesh_point_P(i,dt_drift,pp,cell);}
-    else
-#endif
-    {pp[i].Pos += pp[i].Vel * dt_drift;}
-#endif // FREEZE_HYDRO clause
-#if (NUMDIMS==1)
-    pp[i].Pos[1]=pp[i].Pos[2]=0; // force zero-ing
-#endif
-#if (NUMDIMS==2)
-    pp[i].Pos[2]=0; // force zero-ing
-#endif
-
-#ifdef DILATION_FOR_STELLAR_KINEMATICS_ONLY
-    double dilation = timestep_dilation_factor(i, pp); /* f = 1/a <= 1 */
-    if(dilation < 1.) {
-        /* the drift above advanced the particle over only the fraction f of the raw interval, since
-           dt_drift already carries the f. add back the bulk motion over the remaining (1-f) of the
-           raw interval, so that only the motion relative to the surroundings is dilated */
-        double cfac = dt_drift * (1./dilation - 1.);
-        pp[i].Pos += pp[i].vel_of_nearest_special * cfac;
-    }
-#endif
 
     double divv_fac = pp[i].Particle_DivVel * dt_drift;
     /* How far the predicted kernel radius may move in one drift.  The two directions
@@ -207,7 +173,7 @@ void drift_particle_impl(int i, integertime time1, struct particle_data *pp,
 #endif
             
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
-            pp[i].Mass = DMAX(pp[i].Mass + cell[i].DtMass * dt_entr, 0.5 * cell[i].MassTrue); cell[i].Mass = pp[i].Mass;
+            pp[i].Mass = mfv_drifted_mass(pp[i].Mass, cell[i].DtMass, cell[i].MassTrue, dt_entr); cell[i].Mass = pp[i].Mass;
 #endif
             
             cell[i].Density *= exp(-divv_fac);

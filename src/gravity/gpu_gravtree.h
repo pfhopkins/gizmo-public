@@ -40,6 +40,46 @@ extern "C" {
  * host_candidates_left (may be NULL) receives how many walk candidates this
  * pass leaves to the host loop -- an upper bound on any early return. */
 int gpu_gravtree_walk_primary(int *host_candidates_left);
+/* The device schedule the last primary walk used on this rank, written into the per-call timings
+ * record. It carries the row the call ASKED for and the row it actually ran, because the two
+ * differ exactly when the backend could not launch the requested one -- and a pricing arm that
+ * cannot see that difference is reading a measurement of a shape nobody chose. Mode FLAT with
+ * zeros is a call that took the ordinary one-lane-per-target walk.
+ */
+/* Which device schedule ran. 0 = one lane per target, the target's own serial walk (the ordinary
+ * schedule, and what a call takes whenever the device has a target for every lane); 1 = one walker
+ * per team with the members sharing its traversal; 2 = one target per team with the team's lanes
+ * sharing that target's traversal. -1 when no device walk ran at all.
+ *
+ * None of these is a routing decision: every one of them is on the device, and which of them ran
+ * says nothing about whether the call could have gone to the host. */
+#define GRAV_PACKET_MODE_NONE        (-1)
+#define GRAV_PACKET_MODE_FLAT         0
+#define GRAV_PACKET_MODE_PACKET       1
+#define GRAV_PACKET_MODE_COOPERATIVE  2
+
+struct gpu_grav_packet_shape_t {
+    int mode;              /* one of the above */
+    int team;              /* threads in the team */
+    int q_dev;             /* members (targets) per packet */
+    int n_walkers;         /* threads that traverse; 1 is the depth-first single-walker traversal */
+    int frontier;          /* items the shared frontier holds */
+    int chunk;             /* records held between flushes */
+    int steps_per_round;   /* node steps a walker takes before the round boundary */
+    int row_requested;
+    int row_effective;
+    long long scratch_bytes;
+};
+void gpu_gravtree_packet_shape(struct gpu_grav_packet_shape_t *out);
+
+/* Packets the device engine gave up on the last primary walk, by reason, so that a traversal
+ * exhausting the engine's continuation budget is visible instead of being a silent slow path.
+ * Slot 0 is unused; the rest follow the engine's own reason order (malformed index,
+ * pseudo-particle, no continuation, unusable record, no progress in a round). Zero on a
+ * host-routed call. */
+#define GRAV_PACKET_FAIL_REASON_SLOTS 6
+void gpu_gravtree_packet_failures(long long *out, int n);
+int  gpu_gravtree_packet_failure_reasons(void);
 
 /* GPU Ewald-correction walk. Called from gravity_tree() when Ewald_iter==1
  * (pure-tree periodic, BOX_PERIODIC && !GRAVITY_NOT_PERIODIC && !PMGRID).
