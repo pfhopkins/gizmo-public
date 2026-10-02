@@ -244,6 +244,23 @@ double get_gravkick_factor_impl(integertime time0, integertime time1, double dil
     return drift_kick_table_factor(view->gravkick, time0, time1, view) * dilation;
 }
 
+/* The two intervals a tree node moves over between time0 and time1: its centres on its own
+   (dilated) clock, and its length widened on the undilated clock, because vmax already carries each
+   member's own dilation.  One home for both on the device: the full sweep, the claimed-subset drift
+   and the gravity walk's read-only prediction.  The host lazy drift (force_drift_node) computes the
+   same two factors itself, through the host tables. */
+KOKKOS_INLINE_FUNCTION
+void node_motion_intervals(integertime time0, integertime time1, double dilation,
+                           const struct DriftKickTableView *view, double &dt_drift, double &dt_widen)
+{
+    dt_drift = get_drift_factor_impl(time0, time1, dilation, view);
+#ifdef USE_TIMESTEP_DILATION_FOR_ZOOMS
+    dt_widen = get_drift_factor_impl(time0, time1, 1.0, view);
+#else
+    dt_widen = dt_drift;
+#endif
+}
+
 
 /* --- 4th-order Hermite integration -----------------------------------------
  * Which particles the Hermite integrator advances, and how a source that is not

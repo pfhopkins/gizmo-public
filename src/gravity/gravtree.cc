@@ -18,27 +18,18 @@
 #include "./analytic_gravity.h"
 
 /*! Host-vs-device routing for the gravity walk and the dynamic tree update, keyed on the
- *  RANK-LOCAL count of active gravity candidates. The device path must drift every node
- *  in the tree before its parallel walk can be race-free, so its floor is set by the tree
- *  size rather than by the active set; the host walk drifts each node only when it opens
- *  it. Below the threshold the sweep costs more than the walk it enables.
+ *  RANK-LOCAL count of active gravity candidates. The device tree update must drift every
+ *  node in the tree before its parallel kick walk can be race-free, so its floor is set by
+ *  the tree size rather than by the active set; the host paths drift each node only when
+ *  they reach it.
  *
  *  The threshold is conservative against a crossover measured near 6e4 rank-local
  *  candidates on 16-rank FIRE, where routing the whole tree walk to the host cut the
- *  cost of steps with fewer than 1e4 global active elements by a third. Above it the
- *  device path wins and the host walk's serial node drift becomes the bottleneck. */
+ *  cost of steps with fewer than 1e4 global active elements by a third -- measured when
+ *  the device gravity walk also drifted every node it could reach before walking, which
+ *  it no longer does (it reads each source at the walk time). */
 int gravity_walk_route_to_host(long long n_local_active)
 {
-    /* Once any node has been drifted lazily at this time, the host owns the rest of the
-     * time step: the device sweep skips nodes already at its target time, so it can no
-     * longer bring their mirror up to date, and a second gravity evaluation at the same
-     * time (a Hermite correction pass, a repeated walk for the opening criterion) would
-     * otherwise read that stale geometry.  A tree built after that drift is
-     * exempt: the build rewrote every node and every mirror, so the record of an
-     * earlier lazy drift no longer describes anything. */
-    if(!gpu_gravity_tree_nodes_current_at(All.Ti_Current)
-            && force_host_lazy_drift_ti() == All.Ti_Current) {return 1;}
-
     return (All.GravityHostWalkBelowActive > 0 && n_local_active < (long long)All.GravityHostWalkBelowActive) ? 1 : 0;
 }
 
@@ -800,7 +791,7 @@ gravity_walk_attempt:
      * existing reduction is free; two more reductions per gravity call would not be. */
     /* Scoped, not #define: a macro here would be translation-unit-wide despite sitting in a
        function. */
-    constexpr int recorder_slots = 5;
+    constexpr int recorder_slots = 3;
     /* Which device schedule each rank took this call, counted across ranks.  The shape line below
        is one rank's, and on an inhomogeneous problem the ranks that matter are the ones with the
        fewest targets -- exactly the ones that take a different schedule from rank 0.  Without this
@@ -815,8 +806,6 @@ gravity_walk_attempt:
     packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 0] = gpu_node_dirty_unsafe_events();
     packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 1] = gx_touched_set_refused_epochs();
     packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 2] = gx_touched_set_retire_faults();
-    gpu_gravtree_subset_drift_counts(&packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 3],
-                                     &packet_fail[GRAV_PACKET_FAIL_REASON_SLOTS + 4]);
     {
         struct gpu_grav_packet_shape_t ps_local; gpu_gravtree_packet_shape(&ps_local);
         const int mode_base = GRAV_PACKET_FAIL_REASON_SLOTS + recorder_slots;
@@ -855,9 +844,9 @@ gravity_walk_attempt:
             fprintf(FdTimings, "packet: mode=%s Q=%d T=%d Qdev=%d walkers=%d F=%d C=%d k=%d row=%d/%d scratch=%lld\n",
                     ps_mode, TREE_QUERY_PACKET_SIZE, ps.team, ps.q_dev, ps.n_walkers, ps.frontier, ps.chunk,
                     ps.steps_per_round, ps.row_requested, ps.row_effective, ps.scratch_bytes);
-            fprintf(FdTimings, "packet-gaveup: malformed=%lld stale=%lld pseudo=%lld nocont=%lld record=%lld noprogress=%lld (worst rank: %lld %lld %lld %lld %lld %lld)\n",
-                    packet_fail_sum[1], packet_fail_sum[2], packet_fail_sum[3], packet_fail_sum[4], packet_fail_sum[5], packet_fail_sum[6],
-                    packet_fail_max[1], packet_fail_max[2], packet_fail_max[3], packet_fail_max[4], packet_fail_max[5], packet_fail_max[6]);
+            fprintf(FdTimings, "packet-gaveup: malformed=%lld pseudo=%lld nocont=%lld record=%lld noprogress=%lld (worst rank: %lld %lld %lld %lld %lld)\n",
+                    packet_fail_sum[1], packet_fail_sum[2], packet_fail_sum[3], packet_fail_sum[4], packet_fail_sum[5],
+                    packet_fail_max[1], packet_fail_max[2], packet_fail_max[3], packet_fail_max[4], packet_fail_max[5]);
             /* Only when there is something to say.  These are fail-safe EVENTS, not telemetry:
                a zero line on every call would be noise in the artifact the track reads, while a
                nonzero one is the whole point -- it says the run has quietly stopped using the
@@ -872,17 +861,6 @@ gravity_walk_attempt:
                         packet_fail_max[GRAV_PACKET_FAIL_REASON_SLOTS + 0],
                         packet_fail_max[GRAV_PACKET_FAIL_REASON_SLOTS + 1],
                         packet_fail_max[GRAV_PACKET_FAIL_REASON_SLOTS + 2]);
-            }
-            /* How the sources were brought current, on the same cadence as the packet shape
-               beside it: this is the row's own quantity, not a fail-safe, so it prints whenever
-               the device route ran rather than only when something went wrong. */
-            if(packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + 3] ||
-               packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + 4]) {
-                fprintf(FdTimings, "subset-drift: taken=%lld declined=%lld (worst rank: %lld %lld)\n",
-                        packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + 3],
-                        packet_fail_sum[GRAV_PACKET_FAIL_REASON_SLOTS + 4],
-                        packet_fail_max[GRAV_PACKET_FAIL_REASON_SLOTS + 3],
-                        packet_fail_max[GRAV_PACKET_FAIL_REASON_SLOTS + 4]);
             }} fprintf(FdTimings, "\n");
         fflush(FdTimings);
     }

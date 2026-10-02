@@ -688,10 +688,9 @@ KOKKOS_INLINE_FUNCTION static void moment_finalize(const moment_node_ref<AccT>& 
  * kicked by since it last moved. Drifting it folds that pending momentum into the velocities, then
  * advances every centre, and widens its length by how far any member can have moved (on the
  * undilated clock, which the caller supplies as dt_widen). WHETHER to fold is the caller's decision:
- * the host lazy drift folds only when it moves a node forward (a kicked node that is already current
- * keeps its velocity and pending momentum until its next drift), while the device sweep's full mirror
- * refresh also folds a current node at dt = 0. Both reach the same state at the next real drift; the
- * node velocity read in between differs.
+ * every venue folds only when it moves a node forward (a kicked node that is already current keeps its
+ * velocity and pending momentum until its next drift) -- the host lazy drift, both device sweeps, and
+ * the walk's read-only prediction.
  *
  * The host lazy drift (force_drift_node) and the device sweep (gpu_node_drift_apply) both run
  * exactly this; each keeps its own bookkeeping (drift factors, time stamps, flags, locking). The
@@ -724,6 +723,41 @@ struct node_motion_in_arrays {
     KOKKOS_INLINE_FUNCTION MyFloat  &sink_vel(int j) const {return nodes[no].sink_vel[j];}
     KOKKOS_INLINE_FUNCTION MyDouble &sink_dp(int j)  const {return ext[no].sink_dp[j];}
     KOKKOS_INLINE_FUNCTION double    sink_mass()     const {return (double) nodes[no].sink_mass;}
+#endif
+};
+
+/* The same fields held as local values, for a walk that predicts a node to its own time and writes
+ * nothing back: the walk fills it from wherever it reads the node, and the fold and advance below run
+ * on it exactly as on the node arrays. The pending momenta and the luminosity sum are filled only when
+ * the walk folds a kick; until then they read as zero. */
+struct node_motion_prediction {
+    mutable MyFloat s_[3], vs_[3], len_; mutable MyDouble dp_[3]; double mass_, vmax_;
+    KOKKOS_INLINE_FUNCTION MyFloat  &s(int j)    const {return s_[j];}
+    KOKKOS_INLINE_FUNCTION MyFloat  &vs(int j)   const {return vs_[j];}
+    KOKKOS_INLINE_FUNCTION MyDouble &dp(int j)   const {return dp_[j];}
+    KOKKOS_INLINE_FUNCTION MyFloat  &len()       const {return len_;}
+    KOKKOS_INLINE_FUNCTION double    mass()      const {return mass_;}
+    KOKKOS_INLINE_FUNCTION double    vmax()      const {return vmax_;}
+#ifdef RT_SEPARATELY_TRACK_LUMPOS
+    mutable MyFloat rt_s_[3], rt_vs_[3]; mutable MyDouble rt_dp_[3]; double lum_tot_;
+    KOKKOS_INLINE_FUNCTION MyFloat  &rt_s(int j)  const {return rt_s_[j];}
+    KOKKOS_INLINE_FUNCTION MyFloat  &rt_vs(int j) const {return rt_vs_[j];}
+    KOKKOS_INLINE_FUNCTION MyDouble &rt_dp(int j) const {return rt_dp_[j];}
+    KOKKOS_INLINE_FUNCTION double    lum_tot()    const {return lum_tot_;}
+#endif
+#ifdef DM_SCALARFIELD_SCREENING
+    mutable MyFloat s_dm_[3], vs_dm_[3]; mutable MyDouble dp_dm_[3]; double mass_dm_;
+    KOKKOS_INLINE_FUNCTION MyFloat  &s_dm(int j)  const {return s_dm_[j];}
+    KOKKOS_INLINE_FUNCTION MyFloat  &vs_dm(int j) const {return vs_dm_[j];}
+    KOKKOS_INLINE_FUNCTION MyDouble &dp_dm(int j) const {return dp_dm_[j];}
+    KOKKOS_INLINE_FUNCTION double    mass_dm()    const {return mass_dm_;}
+#endif
+#ifdef SINK_NODE_MOTION_TRACKED
+    mutable MyFloat sink_pos_[3], sink_vel_[3]; mutable MyDouble sink_dp_[3]; double sink_mass_;
+    KOKKOS_INLINE_FUNCTION MyFloat  &sink_pos(int j) const {return sink_pos_[j];}
+    KOKKOS_INLINE_FUNCTION MyFloat  &sink_vel(int j) const {return sink_vel_[j];}
+    KOKKOS_INLINE_FUNCTION MyDouble &sink_dp(int j)  const {return sink_dp_[j];}
+    KOKKOS_INLINE_FUNCTION double    sink_mass()     const {return sink_mass_;}
 #endif
 };
 

@@ -51,6 +51,7 @@
 #include "../mesh/kernel.h"
 #include "gravtree_force_kernel.h"  /* shared CPU/GPU accepted-source contribution physics (SSOT) */
 #include "gravtree_ewald.h"         /* shared CPU/GPU Ewald image-correction trilinear interp (SSOT) */
+#include "gravtree_moment_kernel.h" /* the node-motion arithmetic the drift runs, for predicting a node on read */
 #include "pm_highres_region.h"      /* pmforce_is_particle_high_res SSOT (device-callable) */
 /* gravtree_moment_sources.h (the SSOT source-input fill helper) is included further
  * below, AFTER the device-callable source cores, so that in this DEVICE_TU the helper
@@ -214,21 +215,48 @@ struct gpu_ewald_pot_data_t {
 
 /* Hermite pass state for the device walk. HermiteOnlyFlag and TimeBinActive[] are host
  * globals, so the walk cannot read them; the host snapshots them into a few words and
- * passes them by value, together with the drift/kick table mirror the prediction needs.
+ * passes them by value (the prediction reads the walk's own drift/kick table view).
  * No device allocation and no per-particle array -- this is the few-body regime, where a
  * pass over the particles would cost more than the walk it serves. */
 #ifdef HERMITE_INTEGRATION
 struct gpu_hermite_walk_data_t {
     struct HermiteWalkState   state;
-    struct DriftKickTableView tables;
 };
 #endif
 
+/* A source the walk found standing AHEAD of the walk time.  No drift produces that state, so it is
+ * not a case to route around: the walk reads the source as stored, counts it and keeps the first
+ * offender, and the host stops the run once the kernel has finished. */
+struct gpu_grav_time_fault_t {
+    int n_particles, n_nodes;   /* sources found ahead, counted at every read */
+    int claimed;                /* the first reader to raise this writes the offender below */
+    int first_no;
+    integertime first_ti;
+};
+
+static KOKKOS_INLINE_FUNCTION void
+gpu_grav_note_source_ahead(struct gpu_grav_time_fault_t *fault, int is_node, int no, integertime ti_source)
+{
+    Kokkos::atomic_add(is_node ? &fault->n_nodes : &fault->n_particles, 1);
+    if(Kokkos::atomic_fetch_add(&fault->claimed, 1) == 0) {fault->first_no = no; fault->first_ti = ti_source;}
+}
+
+/* Host, once the walk's kernels have finished: a source found ahead of the walk time means this pass
+ * read a state no drift produces, so its forces are not valid.  Report the first offender and stop. */
+static void gpu_grav_report_time_fault(const char *walk, const struct gpu_grav_time_fault_t *fault, integertime ti, int errorcode)
+{
+    if(fault->n_particles == 0 && fault->n_nodes == 0) {return;}
+    printf("%s: task %d: %d particle and %d node reads found a source AHEAD of the walk time %lld (first: index %d at %lld); no drift produces that state\n",
+           walk, ThisTask, fault->n_particles, fault->n_nodes, (long long) ti, fault->first_no, (long long) fault->first_ti);
+    fflush(stdout);
+    endrun(errorcode);
+}
+
 /* This translation unit's SharedSpace mirror of the drift/gravkick tables, allocated on first
- * use and reused.  Two readers -- the Hermite source prediction and the discovery traversal's
- * node widening -- and one storage, because a device symbol cannot be shared across translation
- * units without relocatable device code and a second copy of the same 16 KB table would have to
- * be kept in step with this one.  Stays NULL on a non-cosmological run: the refresh returns an
+ * use and reused.  Every device walk here reads it, to predict a source to the walk time and for
+ * the Hermite source prediction.  One storage, because a device symbol cannot be shared across
+ * translation units without relocatable device code and a second copy of the same 16 KB table
+ * would have to be kept in step with this one.  Stays NULL on a non-cosmological run: the refresh returns an
  * elapsed-time view that reads no table at all. */
 static double *tu_drift_kick_table_dev = NULL;
 
@@ -265,10 +293,9 @@ static int gpu_ewald_acquire_pot_data(struct gpu_ewald_pot_data_t *out);
  * The type-4 mass-based softening override lives in compute_force_softening_kernel_radius()
  * (forcetree.cc:67-69) and is read on GPU as Pp[p].ForceSoftening — single source of truth. */
 /* GALSF_MERGER_STARCLUSTER_PARTICLES (type-4 star cluster softening via
- * StarParticleEffectiveSize) handled inline in gpu_force_softening_kernel_radius
- * below. */
-/* ADAPTIVE_GRAVSOFT_MAX_SOFT_HARD_LIMIT (type-0 softening cap) handled inline
- * in gpu_force_softening_kernel_radius below. */
+ * StarParticleEffectiveSize) and ADAPTIVE_GRAVSOFT_MAX_SOFT_HARD_LIMIT (type-0 softening
+ * cap): both live in compute_force_softening_kernel_radius(), and the walk reads the
+ * result from the same P[i].ForceSoftening cache. */
 /* COMPUTE_TIDAL_TENSOR_IN_GRAVTREE + COMPUTE_JERK_IN_GRAVTREE: ported (ATFU).
  * Tidal tensor accumulation + jerk both mirror forcetree.cc:2081-2292.
  * All sub-cases are ported; see the entries below for details. */
@@ -363,8 +390,11 @@ struct gpu_grav_walk_ctx_t {
     int treeBase, treeParticleSlots, maxNodes, maxForeignNodes;   /* pseudos start at treeBase+maxNodes+maxForeignNodes */
     struct particle_data *P_dev;
     struct gas_cell_data *CellP_dev;
-    integertime ti;   /* the time every particle source this walk evaluates must stand at */
+    integertime ti;   /* the walk time: every source is read as it stands at this time, predicted there if it is behind */
     struct gpu_gravity_tree_soa_t tree_soa;   /* the SoA handle set, by value (a struct of pointers into SharedSpace) */
+    struct extNODE *Extnodes;   /* the node arrays (shifted like Nodes), read only for the pending momenta of a kicked node */
+    struct DriftKickTableView tables;   /* the drift/kick factors a prediction reads */
+    struct gpu_grav_time_fault_t *time_fault;   /* sources found ahead of the walk time (see its definition) */
 #ifdef GRAVITY_HYBRID_OPENING_CRIT
     int is_first_step;   /* hybrid opening: relative criterion applies only after step 0 */
 #endif
@@ -728,15 +758,83 @@ gpu_grav_member_init(const gpu_grav_walk_ctx_t &ctx, int target, gpu_grav_member
     return gpu_grav_member_inputs_init(ctx, target, mem.in);
 }
 
-/* The member-independent view of a tree node: its moments and geometry as stored,
- * its import classification, and what the walk does with it before any member
- * decides. */
+/* A particle source as a walk at `ti` reads it, with nothing written back: position, velocity and
+ * mass predicted to the walk time by the step bodies the drift itself runs (predict_particle_motion,
+ * core/timestep_functions.h); a source already at the walk time is read as stored. A source AHEAD of
+ * the walk time, which no drift produces, is read as stored and reported. */
+static KOKKOS_INLINE_FUNCTION void
+gpu_grav_particle_source_at(const struct particle_data *P_dev, int no, integertime ti, const struct DriftKickTableView &tables,
+                            struct gpu_grav_time_fault_t *time_fault, struct particle_motion_prediction &motion)
+{
+    if(P_dev[no].Ti_current > ti) {gpu_grav_note_source_ahead(time_fault, 0, no, P_dev[no].Ti_current);}
+    predict_particle_motion(motion, ti, &tables);   /* leaves a source at or past ti as stored */
+}
+
+/* A node's motion as a walk at `ti` reads it, with nothing written back: the state the drift would
+ * leave it in. A node at the walk time is read as stored, its pending kick left pending (a drift folds
+ * a kick only when it moves the node forward). A node behind it has its kick folded and its centres
+ * and length advanced by the node-motion arithmetic the drift runs (gravtree_moment_kernel.h), on the
+ * same two clocks and with the dilation taken at the centre before the advance, as the drift takes
+ * them. Everything is read from the mirror except the pending momenta, which live only in the node
+ * arrays and are read there only when the mirror says the node was kicked. Returns 1 for a node AHEAD
+ * of the walk time, which no drift produces: it is left as stored for the caller to report. */
+static KOKKOS_INLINE_FUNCTION int
+gpu_grav_node_motion_at(const struct gpu_gravity_tree_soa_t &soa, const struct extNODE *ext, int idx, int no,
+                        integertime ti, const struct DriftKickTableView &tables, node_motion_prediction &m)
+{
+    for(int j = 0; j < 3; j++) {m.s_[j] = (MyFloat) soa.s[idx][j]; m.vs_[j] = (MyFloat) soa.node_vs[idx][j]; m.dp_[j] = 0;}
+    m.len_ = soa.len[idx]; m.mass_ = (double) soa.mass[idx]; m.vmax_ = (double) soa.vmax[idx];
+#ifdef RT_SEPARATELY_TRACK_LUMPOS
+    for(int j = 0; j < 3; j++) {m.rt_s_[j] = (MyFloat) soa.rt_source_lum_s[idx][j]; m.rt_vs_[j] = (MyFloat) soa.rt_source_lum_vs[idx][j]; m.rt_dp_[j] = 0;}
+    m.lum_tot_ = 0;
+#endif
+#ifdef DM_SCALARFIELD_SCREENING
+    for(int j = 0; j < 3; j++) {m.s_dm_[j] = (MyFloat) soa.s_dm[idx][j]; m.vs_dm_[j] = (MyFloat) soa.vs_dm[idx][j]; m.dp_dm_[j] = 0;}
+    m.mass_dm_ = (double) soa.mass_dm[idx];
+#endif
+#ifdef SINK_NODE_MOTION_TRACKED
+    for(int j = 0; j < 3; j++) {m.sink_pos_[j] = (MyFloat) soa.sink_pos[idx][j]; m.sink_vel_[j] = (MyFloat) soa.sink_vel[idx][j]; m.sink_dp_[j] = 0;}
+    m.sink_mass_ = (double) soa.sink_mass[idx];
+#endif
+    const integertime node_ti = soa.node_ti[idx];
+    if(node_ti > ti) {return 1;}
+    if(node_ti == ti) {return 0;}
+
+    if(soa.bitflags[idx] & (1u << BITFLAG_NODEHASBEENKICKED))
+    {
+        for(int j = 0; j < 3; j++) {m.dp_[j] = ext[no].dp[j];}
+#ifdef RT_SEPARATELY_TRACK_LUMPOS
+        for(int j = 0; j < 3; j++) {m.rt_dp_[j] = ext[no].rt_source_lum_dp[j];}
+        {double l = 0; for(int b = 0; b < N_RT_FREQ_BINS; b++) {l += (double) soa.stellar_lum[(long) idx * N_RT_FREQ_BINS + b];} m.lum_tot_ = l;}
+#endif
+#ifdef DM_SCALARFIELD_SCREENING
+        for(int j = 0; j < 3; j++) {m.dp_dm_[j] = ext[no].dp_dm[j];}
+#endif
+#ifdef SINK_NODE_MOTION_TRACKED
+        for(int j = 0; j < 3; j++) {m.sink_dp_[j] = ext[no].sink_dp[j];}
+#endif
+        node_motion_fold_kick(m);
+    }
+    double dilation = 1.0;
+#ifdef USE_TIMESTEP_DILATION_FOR_ZOOMS
+    dilation = node_timestep_dilation_factor_at(Vec3<double>{(double) m.s_[0], (double) m.s_[1], (double) m.s_[2]});
+#endif
+    double dt_drift, dt_widen;
+    node_motion_intervals(node_ti, ti, dilation, &tables, dt_drift, dt_widen);
+    node_motion_advance(m, dt_drift, dt_widen);
+    return 0;
+}
+
+/* The member-independent view of a tree node: its moments as stored, its geometry at the
+ * walk time (gpu_grav_node_motion_at), its import classification, and what the walk does
+ * with it before any member decides. */
 enum gpu_grav_node_step_t { GPU_GRAV_NODE_SKIP_TO_SIBLING, GPU_GRAV_NODE_DESCEND, GPU_GRAV_NODE_DECIDE };
 struct gpu_grav_node_prelude_t {
     int idx;                        /* SoA index no - treeBase */
-    Vec3<MyFloat> s_node;           /* centre of mass as stored (before any star-target subtraction) */
+    Vec3<MyFloat> s_node;           /* centre of mass at the walk time (before any star-target subtraction) */
     MyFloat len_node, msoft_node, mass_node;
     Vec3<MyFloat> center_node;
+    node_motion_prediction motion;  /* every moving field at the walk time; s_node and len_node are copied out of it */
     int in_foreign_n;
     int fl_tag, fl_type;            /* foreign-leaf identity (sidecar), or 0 / -1 */
     double fl_zeta, fl_soft;
@@ -753,8 +851,6 @@ gpu_grav_node_prelude(const gpu_grav_walk_ctx_t &ctx, int no, gpu_grav_node_prel
     const struct gpu_gravity_tree_soa_t *tree_soa = &ctx.tree_soa;
     const int idx = no - ctx.treeBase;
     nd.idx = idx;
-    nd.s_node = Vec3<MyFloat>{(MyFloat)tree_soa->s[idx][0], (MyFloat)tree_soa->s[idx][1], (MyFloat)tree_soa->s[idx][2]};
-    nd.len_node = tree_soa->len[idx];
     nd.msoft_node = tree_soa->maxsoft[idx];
     nd.mass_node = tree_soa->mass[idx];
     nd.center_node = tree_soa->center[idx];
@@ -793,6 +889,13 @@ gpu_grav_node_prelude(const gpu_grav_walk_ctx_t &ctx, int no, gpu_grav_node_prel
     if(!(tree_soa->bitflags[idx] & (1 << BITFLAG_MULTIPLEPARTICLES))) {
         if(nd.node_kind == GRAV_NODE_LOCAL || nd.node_kind == GRAV_NODE_FOREIGN_OPENABLE) {return GPU_GRAV_NODE_DESCEND;}
     }
+
+    /* Only a node some member judges needs its geometry, so only such a node is brought to the walk time. */
+    if(gpu_grav_node_motion_at(*tree_soa, ctx.Extnodes, idx, no, ctx.ti, ctx.tables, nd.motion)) {
+        gpu_grav_note_source_ahead(ctx.time_fault, 1, no, tree_soa->node_ti[idx]);
+    }
+    nd.s_node = Vec3<MyFloat>{nd.motion.s_[0], nd.motion.s_[1], nd.motion.s_[2]};
+    nd.len_node = nd.motion.len_;
     return GPU_GRAV_NODE_DECIDE;
 }
 
@@ -814,9 +917,7 @@ gpu_grav_node_member_geometry(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_nod
     {
         MyFloat sm = (MyFloat) ctx.tree_soa.sink_mass[nd.idx];
         if(mass_node - sm <= 0) {return 0;} /* pure-star node */
-        Vec3<MyFloat> sp = Vec3<MyFloat>{(MyFloat)ctx.tree_soa.sink_pos[nd.idx][0],
-                                         (MyFloat)ctx.tree_soa.sink_pos[nd.idx][1],
-                                         (MyFloat)ctx.tree_soa.sink_pos[nd.idx][2]};
+        Vec3<MyFloat> sp = Vec3<MyFloat>{nd.motion.sink_pos_[0], nd.motion.sink_pos_[1], nd.motion.sink_pos_[2]};   /* on the walk's clock (SINGLE_STAR_DIRECT_GRAVITY tracks sink motion) */
         MyFloat mass_nosink = mass_node - sm;
         for(int k = 0; k < 3; k++) {s_node[k] = (s_node[k]*mass_node - sp[k]*sm) / mass_nosink;}
         mass_node = mass_nosink;
@@ -1002,7 +1103,9 @@ gpu_grav_evaluate_pair(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_member_inp
 }
 
 /* Load a particle leaf for a member through the P_dev adapter and evaluate it. The
- * source state is the drifted state, except where the Hermite predictor replaces it. */
+ * source's position, velocity and mass are its state at the walk time
+ * (gpu_grav_particle_source_at), except where the Hermite predictor replaces the position
+ * and velocity; everything else is read as stored. */
 static KOKKOS_INLINE_FUNCTION void
 gpu_grav_evaluate_leaf(const gpu_grav_walk_ctx_t &ctx, int no, const gpu_grav_member_inputs_t &in, gpu_grav_member_sums_t &sums)
 {
@@ -1020,21 +1123,23 @@ gpu_grav_evaluate_leaf(const gpu_grav_walk_ctx_t &ctx, int no, const gpu_grav_me
     src.r_source = 0.0;
 #endif
 
-    Vec3<double> src_pos = P_dev[no].Pos;
-    Vec3<double> src_vel = P_dev[no].Vel;   /* unconditional, mirroring forcetree.cc: the sink-proximity block reads it under SINK_CALC_DISTANCES, which several flags reach without the jerk or dynamical-friction terms */
+    struct particle_motion_prediction motion(P_dev, ctx.CellP_dev, no);
+    gpu_grav_particle_source_at(P_dev, no, ctx.ti, ctx.tables, ctx.time_fault, motion);
+    Vec3<double> src_pos = motion.pos_;
+    Vec3<double> src_vel = motion.vel_;   /* unconditional, mirroring forcetree.cc: the sink-proximity block reads it under SINK_CALC_DISTANCES, which several flags reach without the jerk or dynamical-friction terms */
 #ifdef HERMITE_INTEGRATION
     /* On a Hermite pass a source the Hermite integrator owns but is not advancing this
        step is second-order wrong where it stands; evaluate it from its own start-of-step
        state instead. Same helper and same conditions as the host walk, so the two agree
        whichever one a step routes to. Single sources only; nothing is written back. */
     if(hermite_source_needs_prediction(no, P_dev, ctx.hermite.state)) {
-        hermite_predict_source_state(no, P_dev, ctx.hermite.state, &ctx.hermite.tables, src_pos, src_vel);
+        hermite_predict_source_state(no, P_dev, ctx.hermite.state, &ctx.tables, src_pos, src_vel);
     }
 #endif
     src.dr = src_pos - in.open.pos;
     gravity_box_nearest_image(src.dr[0], src.dr[1], src.dr[2], -1);
     src.r2 = src.dr.norm_sq();
-    src.mass = P_dev[no].Mass;
+    src.mass = motion.mass_;
 #if defined(GRAVTREE_SOURCE_DEVICE_TU)
     /* Lazy source payload for this local leaf: evaluate the SSOT helper on-device
      * (identical gates/formula to the eager prefill) instead of reading the dense
@@ -1075,7 +1180,7 @@ gpu_grav_evaluate_leaf(const gpu_grav_walk_ctx_t &ctx, int no, const gpu_grav_me
     src.zeta_sec = gpu_get_ags_zeta(P_dev, no);
 #endif
 #ifdef GRAVTREE_CALCULATE_GAS_MASS_IN_NODE
-    pl.gasmass = (P_dev[no].Type == 0) ? P_dev[no].Mass : 0.0;
+    pl.gasmass = (P_dev[no].Type == 0) ? motion.mass_ : 0.0;
 #if defined(SINK_ALPHADISK_ACCRETION) && defined(RT_USE_TREECOL_FOR_NH)
     /* gas at the inner edge of a sink's alpha-disk should not see a hole due to
      * the sink (mirrors forcetree.cc leaf branch + the node-moment kernel). */
@@ -1157,7 +1262,7 @@ gpu_grav_evaluate_leaf(const gpu_grav_walk_ctx_t &ctx, int no, const gpu_grav_me
 #if defined(SINGLE_STAR_TIMESTEPPING)
         prox_target.vel = in.vel;
 #endif
-        grav_sink_prox_leaf_src_t prox_src = {}; prox_src.src_type = P_dev[no].Type; prox_src.src_mass = P_dev[no].Mass; prox_src.motion.vel = src_vel;   /* the state this interaction was evaluated at, mirroring forcetree.cc, so (dr, vel) stays a consistent pair on a Hermite pass */
+        grav_sink_prox_leaf_src_t prox_src = {}; prox_src.src_type = P_dev[no].Type; prox_src.src_mass = motion.mass_; prox_src.motion.vel = src_vel;   /* the state this interaction was evaluated at, mirroring forcetree.cc, so (dr, vel) stays a consistent pair on a Hermite pass */
 #if defined(SPECIAL_POINT_MOTION) || defined(SPECIAL_POINT_WEIGHTED_MOTION)
         prox_src.motion.acc = P_dev[no].Acc_Total_PrevStep;
 #endif
@@ -1204,9 +1309,9 @@ gpu_grav_evaluate_node(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_node_prelu
     /* per-interaction DM state for this accepted node (mirrors forcetree.cc): d_dm uses the
      * DM CoM s_dm, NOT the total CoM (s_node). */
     if(in.open.ptype != 0) {
-        pl.d_dm[0] = (double)tree_soa->s_dm[idx][0] - in.open.pos[0];
-        pl.d_dm[1] = (double)tree_soa->s_dm[idx][1] - in.open.pos[1];
-        pl.d_dm[2] = (double)tree_soa->s_dm[idx][2] - in.open.pos[2];
+        pl.d_dm[0] = (double)nd.motion.s_dm_[0] - in.open.pos[0];
+        pl.d_dm[1] = (double)nd.motion.s_dm_[1] - in.open.pos[1];
+        pl.d_dm[2] = (double)nd.motion.s_dm_[2] - in.open.pos[2];
         pl.mass_dm_local = (double)tree_soa->mass_dm[idx];
     } else { pl.d_dm = Vec3<double>{0,0,0}; pl.mass_dm_local = 0; }
 #endif
@@ -1222,9 +1327,9 @@ gpu_grav_evaluate_node(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_node_prelu
     }
 #endif
 #if defined(SINK_DYNFRICTION_FROMTREE) || defined(COMPUTE_JERK_IN_GRAVTREE)
-    src.dv[0] = (double) tree_soa->node_vs[idx][0] - in.vel[0];
-    src.dv[1] = (double) tree_soa->node_vs[idx][1] - in.vel[1];
-    src.dv[2] = (double) tree_soa->node_vs[idx][2] - in.vel[2];
+    src.dv[0] = (double) nd.motion.vs_[0] - in.vel[0];
+    src.dv[1] = (double) nd.motion.vs_[1] - in.vel[1];
+    src.dv[2] = (double) nd.motion.vs_[2] - in.vel[2];
 #endif
 #ifdef SINK_DYNFRICTION_FROMTREE
     {
@@ -1260,9 +1365,9 @@ gpu_grav_evaluate_node(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_node_prelu
             }
 #endif
 #ifdef RT_SEPARATELY_TRACK_LUMPOS
-            pl.d_stellarlum[0] = tree_soa->rt_source_lum_s[idx][0] - in.open.pos[0];
-            pl.d_stellarlum[1] = tree_soa->rt_source_lum_s[idx][1] - in.open.pos[1];
-            pl.d_stellarlum[2] = tree_soa->rt_source_lum_s[idx][2] - in.open.pos[2];
+            pl.d_stellarlum[0] = nd.motion.rt_s_[0] - in.open.pos[0];
+            pl.d_stellarlum[1] = nd.motion.rt_s_[1] - in.open.pos[1];
+            pl.d_stellarlum[2] = nd.motion.rt_s_[2] - in.open.pos[2];
             gravity_box_nearest_image(pl.d_stellarlum[0], pl.d_stellarlum[1], pl.d_stellarlum[2], -1);
 #else
             pl.d_stellarlum = src.dr;
@@ -1286,16 +1391,18 @@ gpu_grav_evaluate_node(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_node_prelu
 #ifdef SINK_CALC_DISTANCES
 #ifdef SPECIAL_POINT_WEIGHTED_MOTION
     {
-        Vec3<double> node_vs = Vec3<double>{(double)tree_soa->node_vs[idx][0], (double)tree_soa->node_vs[idx][1], (double)tree_soa->node_vs[idx][2]};
+        Vec3<double> node_vs = Vec3<double>{(double)nd.motion.vs_[0], (double)nd.motion.vs_[1], (double)nd.motion.vs_[2]};
         grav_sink_prox_node_specialweighted(src.r2, node_vs, in.open.ptype, sums.sink_prox);
     }
 #endif
     if(tree_soa->sink_mass[idx] > 0)
     {
         Vec3<double> sink_dr;
-        sink_dr[0] = tree_soa->sink_pos[idx][0] - in.open.pos[0];
-        sink_dr[1] = tree_soa->sink_pos[idx][1] - in.open.pos[1];
-        sink_dr[2] = tree_soa->sink_pos[idx][2] - in.open.pos[2];
+#ifdef SINK_NODE_MOTION_TRACKED
+        for(int k = 0; k < 3; k++) {sink_dr[k] = nd.motion.sink_pos_[k] - in.open.pos[k];}   /* moves with its sinks: at the walk time */
+#else
+        for(int k = 0; k < 3; k++) {sink_dr[k] = tree_soa->sink_pos[idx][k] - in.open.pos[k];}   /* not moved between builds */
+#endif
         gravity_box_nearest_image(sink_dr[0], sink_dr[1], sink_dr[2], -1);
         grav_sink_prox_target_t prox_target = {}; prox_target.ptype = in.open.ptype; prox_target.pmass = in.pmass; prox_target.soft = in.open.soft;
 #if defined(SINGLE_STAR_TIMESTEPPING)
@@ -1306,7 +1413,7 @@ gpu_grav_evaluate_node(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_node_prelu
         prox_src.n_sink = (int) tree_soa->N_SINK[idx];
 #endif
 #if defined(SINGLE_STAR_TIMESTEPPING) || defined(SPECIAL_POINT_MOTION)
-        prox_src.motion.vel = tree_soa->sink_vel[idx];
+        prox_src.motion.vel = Vec3<double>{(double)nd.motion.sink_vel_[0], (double)nd.motion.sink_vel_[1], (double)nd.motion.sink_vel_[2]};
 #endif
 #if defined(SPECIAL_POINT_MOTION)
         prox_src.motion.acc = tree_soa->sink_acc[idx];
@@ -1432,9 +1539,9 @@ gpu_grav_member_finish(const gpu_grav_walk_ctx_t &ctx, const gpu_grav_member_inp
  * gpu_gravtree_walk_one -- the walk for a single target: the units above composed
  * with each accepted element evaluated at encounter.
  *
- * Returns 1 on success (outputs written), -1 when an accepted particle source is not at the walk
- * time (the host walk, which drifts what it opens, takes the target), 0 on failure (pseudo-particle hit;
- * host runs the CPU walk for this target).  Mirrors force_treeevaluate().
+ * Returns 1 on success (outputs written), 0 on failure (pseudo-particle hit; host runs the CPU walk
+ * for this target).  Every source is read at the walk time without being drifted (the leaf and node
+ * loads above).  Mirrors force_treeevaluate().
  * ---------------------------------------------------------------------- */
 static KOKKOS_INLINE_FUNCTION int
 gpu_gravtree_walk_one(const gpu_grav_walk_ctx_t &ctx, int target, Vec3<double> &acc_out, int &ninter_out, double &pot_out)
@@ -1451,13 +1558,7 @@ gpu_gravtree_walk_one(const gpu_grav_walk_ctx_t &ctx, int target, Vec3<double> &
         if(no >= treeParticleSlots && no < treeBase) {return 0;} /* gap: malformed tree -- defer; the CPU walk's guard stops loudly */
         if(no < treeParticleSlots) /* particle leaf */
         {
-            if(gpu_grav_leaf_member_accepts(ctx, no, mem.in.open)) {
-                /* The same invariant the host walk asserts on every accepted particle: a source is
-                   evaluated only at the walk time. Nothing drifts here, so a stale source hands the
-                   target to the host walk instead of producing a force from a stale position. */
-                if(ctx.P_dev[no].Ti_current != ctx.ti) {return -1;}
-                gpu_grav_evaluate_leaf(ctx, no, mem.in, mem.sums);
-            }
+            if(gpu_grav_leaf_member_accepts(ctx, no, mem.in.open)) {gpu_grav_evaluate_leaf(ctx, no, mem.in, mem.sums);}
             no = tree_soa->nextnode_aux[no];
             continue;
         }
@@ -1573,12 +1674,10 @@ gpu_grav_packet_scratch_plan(int q_dev, int team_size, int frontier_cap, int chu
  * targets), while running out of room for a continuation is the engine hitting its own budget on
  * a divergent traversal -- correctness is safe either way, but the second is a PERFORMANCE CLIFF
  * in exactly the deep clustered subtrees this engine exists to speed up, and a single total would
- * bury it under the ordinary pseudo replays. A stale source should be zero on every call now that
- * the walk drifts what it evaluates; a malformed index is a broken tree. */
+ * bury it under the ordinary pseudo replays. A malformed index is a broken tree. */
 enum {
     GRAV_PACKET_FAIL_NONE = 0,
     GRAV_PACKET_FAIL_MALFORMED_INDEX,    /* an index in the gap between particle slots and the node base */
-    GRAV_PACKET_FAIL_STALE_SOURCE,       /* a particle source behind the walk time */
     GRAV_PACKET_FAIL_PSEUDO,             /* a pseudo-particle: the host walks every member */
     GRAV_PACKET_FAIL_NO_CONTINUATION,    /* local stack and frontier both full */
     GRAV_PACKET_FAIL_RECORD_UNUSABLE,    /* a record the flush could not reproduce */
@@ -1598,7 +1697,7 @@ enum {
     GRAV_PACKET_CTR_FR_PUB,            /* published items, poppable this round */
     GRAV_PACKET_CTR_FR_TAKEN,          /* published items claimed this round */
     GRAV_PACKET_CTR_FR_NEW,            /* reservations made above the published block this round */
-    GRAV_PACKET_CTR_FAILED,            /* the packet failed: pseudo-particle, stale particle source, malformed index, or no room for a continuation */
+    GRAV_PACKET_CTR_FAILED,            /* the packet failed: pseudo-particle, malformed index, or no room for a continuation */
     GRAV_PACKET_CTR_FAIL_REASON,       /* which of the above; read only when FAILED is set */
     GRAV_PACKET_CTR_DONE,              /* the traversal is finished: a team-level verdict taken at the round boundary, never by one walker */
     GRAV_PACKET_CTR_WORKING,           /* walkers still holding an item or a continuation at the end of the round */
@@ -1672,7 +1771,6 @@ struct GravPacketMaskedPolicy {
             if(gpu_grav_leaf_member_accepts(e.ctx, no, open[m])) {Engine::mask_set(accept_mask, m);}
         }
         if(!Engine::mask_any(accept_mask, W)) {return GRAV_PACKET_STEP_CONTINUE;}
-        if(e.ctx.P_dev[no].Ti_current != e.ctx.ti) {e.fail(ctr, GRAV_PACKET_FAIL_STALE_SOURCE); return GRAV_PACKET_STEP_YIELD;}   /* a source behind the walk time: the replay classifies and hands it to the host walk */
         const int r = e.record_reserve(ctr);
         if(r < 0) {return GRAV_PACKET_STEP_YIELD;}   /* chunk full: the flush follows; resume here */
         records[r].no = no; records[r].kind = GRAV_NODE_LOCAL; records[r].leaf_tag = LET_LEAF_TAG_NODE;
@@ -2350,7 +2448,7 @@ struct GpuGravPacketWalk {
                         for(int r = sub_lane; r < n_rec; r += lanes) {
                             if(!mask_test(rmasks + (size_t) r * W, member)) {continue;}
                             /* A record this member cannot reproduce fails the whole packet, exactly as a
-                               pseudo-particle or a stale source does: nothing this team computed is
+                               pseudo-particle does: nothing this team computed is
                                committed, and the replay walks every member again. */
                             if(!evaluate_record(records[r].no, in, sums)) {fail(ctr, GRAV_PACKET_FAIL_RECORD_UNUSABLE); break;}
                         }
@@ -2689,125 +2787,6 @@ static int gpu_gravtree_walk_packets(const gpu_grav_walk_ctx_t &ctx, const int *
                                                                 d_fail_by_reason, "gravtree_walk_packets");
 }
 
-/* Run the discovery traversal over this call's candidates: the engine with the cover flavour,
- * claiming into the two recorders.  Returns 0 when the launch happened, 1 when no legal shape
- * exists for this build -- in which case the caller drifts everything, as it does for every
- * other reason discovery cannot be relied on. */
-static int gpu_grav_discover_sources(const gpu_grav_walk_ctx_t &ctx, const int *d_idx, int n_cand,
-                                     const struct DriftKickTableView &tables,
-                                     int *d_discover_fail, int *d_anomaly)
-{
-    GpuGravPacketWalk<GravPacketCoverPolicy> f;
-    f.ctx = ctx; f.d_idx = d_idx; f.n_cand = n_cand;
-    f.d_acc = NULL; f.d_ninter = NULL; f.d_pot = NULL; f.d_failed = NULL;   /* it writes no target outputs */
-    f.d_fail_by_reason = d_discover_fail;
-    f.policy.nodes   = gpu_node_dirty_view();
-    f.policy.parts   = gx_touched_set_view();
-    f.policy.anomaly = d_anomaly;
-    f.policy.tables  = tables;
-    /* the reported shape belongs to the walk that is being priced, not to this traversal */
-    return gpu_grav_packet_launch(f, "gravtree_discover_sources", NULL);
-}
-
-/* Bring every source this walk will evaluate -- local particles and tree nodes -- to the walk
- * time, by finding them first instead of drifting everything.
- *
- * The order below is the contract, not an arrangement of convenience:
- *
- *   1. answer the claims the HOST made earlier in the step.  A node the host lazily drifted
- *      stands at the walk time with a STALE centre of mass in the mirror, so a discovery run
- *      before this step would widen by zero around the wrong position and its containment
- *      argument would be false.
- *   2. open an epoch on each recorder, owned by this phase.  A refusal means another phase
- *      still holds one; the caller drifts everything rather than claim into it.
- *   3. the discovery traversal.
- *   4. wait for it, then read what its claims reported.
- *   5. consume: the listed nodes, then the listed particles.
- *   6. retire, on EVERY exit path -- the epoch opens before the outcome is known, and a leaked
- *      one refuses every later call while looking exactly like the mechanism working.
- *
- * Returns 0 when every source the walk can reach stands at the walk time.  Any other outcome
- * returns nonzero and the caller takes the full particle drift and the full node sweep BEFORE
- * any force kernel is launched -- never after, never best-effort. */
-/* How the device gravity route has been getting its sources current, as run totals on this
- * rank.  A subset path that quietly stops being taken -- a recorder that stays unsafe, an epoch
- * another phase never gives back, a traversal that keeps giving packets up -- leaves the run
- * drifting everything on every call while every other number looks exactly as it does when the
- * mechanism works.  That is the failure this pair exists to make visible, and it is why they
- * ship rather than living in a probe. */
-static long long g_subset_taken = 0, g_subset_declined = 0;
-extern "C" void gpu_gravtree_subset_drift_counts(long long *taken, long long *declined)
-{
-    if(taken)    {*taken    = g_subset_taken;}
-    if(declined) {*declined = g_subset_declined;}
-}
-
-static int gpu_grav_bring_sources_current(const gpu_grav_walk_ctx_t &ctx, const int *d_idx, int n_cand,
-                                          int *d_discover_fail, int *d_anomaly)
-{
-    const integertime ti = ctx.ti;
-
-    /* 1 */
-    if(gpu_node_dirty_bring_gravity_current(ti) != 0) {g_subset_declined++; return 1;}
-
-    /* 2 -- the particle recorder first, because it is the one that can refuse; the node
-     *      recorder's epoch is opened only once there is a discovery to run.  Neither early
-     *      return has an epoch to retire: the first is before any is opened, the second is the
-     *      open itself failing. */
-    if(gx_touched_set_ensure(ctx.treeParticleSlots) != 0) {g_subset_declined++; return 1;}
-    if(gx_touched_set_begin_epoch_owned(GX_TOUCHED_OWNER_GRAVITY) != 0) {g_subset_declined++; return 1;}
-
-    int status = 1;   /* nothing is relied on until the whole sequence has run */
-    {
-        struct DriftKickTableView tables;
-        if(drift_kick_table_mirror_refresh(&tu_drift_kick_table_dev, &tables) == 0)
-        {
-            memset(d_discover_fail, 0, GRAV_PACKET_FAIL_REASONS * sizeof(int));
-            *d_anomaly = 0;
-
-            if(gpu_node_dirty_acquire_epoch(GPU_NODE_DIRTY_OWNER_DEVICE) != 0) {
-                /* another phase holds the node recorder, or its claims are unanswered; the
-                   discovery cannot record into it, so the caller drifts everything */
-                gx_touched_set_retire(GX_TOUCHED_OWNER_GRAVITY);
-                g_subset_declined++;
-                return 1;
-            }
-
-            /* 3 + 4 -- the launcher waits on the kernel, so the claims and everything they
-             *           reported are complete and readable once it returns. */
-            if(gpu_grav_discover_sources(ctx, d_idx, n_cand, tables, d_discover_fail, d_anomaly) == 0)
-            {
-                int gave_up = 0;
-                for(int r = 0; r < GRAV_PACKET_FAIL_REASONS; r++) {gave_up += d_discover_fail[r];}
-                /* A packet that gave up walked only part of the tree, so the set is incomplete;
-                 * an out-of-phase or overflowed claim means the recorders cannot be trusted.
-                 * Either way this is a DECLINE, counted rather than fatal -- the fused walk
-                 * treats the same reports as fatal because it has no second route, and this
-                 * one does. */
-                if(gave_up == 0 && *d_anomaly == 0) {
-                    /* 5 -- nodes, then particles */
-                    if(gpu_node_dirty_bring_gravity_current(ti) == 0) {
-                        gx_touched_set_drift_and_mark(ti);
-                        status = 0;
-                    }
-                }
-            }
-            /* The node recorder returns to the host claimers whatever happened.  On the
-             * declining path the generation bump also invalidates this epoch's stamps, so the
-             * sweep that follows finds nothing left behind to trip over; on the succeeding path
-             * the consumer has already answered the claims and re-opened a host epoch, and this
-             * retire is the no-op that says so. */
-            if(status != 0) {gpu_node_dirty_begin_epoch();}
-            gpu_node_dirty_retire(GPU_NODE_DIRTY_OWNER_DEVICE);
-        }
-    }
-
-    /* 6 */
-    gx_touched_set_retire(GX_TOUCHED_OWNER_GRAVITY);
-    if(status == 0) {g_subset_taken++;} else {g_subset_declined++;}
-    return status;
-}
-
 #ifdef PMGRID
 /* SharedSpace mirrors of the PM short-range lookup tables. Seeded once and kept
  * for the run: force_treeallocate() rebuilds the host tables from
@@ -2870,8 +2849,7 @@ struct grav_walk_scratch_plan
     size_t bytes;
     size_t acc, pot, idx, failed, ninter;
     size_t fail_by_reason;   /* [GRAV_PACKET_FAIL_REASONS], written by the engine's team leaders */
-    size_t discover_fail;    /* [GRAV_PACKET_FAIL_REASONS], the discovery traversal's own tally */
-    size_t discover_anomaly; /* [1], what the discovery's recorder claims reported */
+    size_t time_fault;       /* [1] gpu_grav_time_fault_t: sources found ahead of the walk time */
 };
 
 static inline size_t grav_walk_scratch_align(size_t offset, size_t alignment)
@@ -2908,15 +2886,31 @@ grav_walk_scratch_plan_for(int num_targets, int with_potential_and_interactions)
      * allocation of its own and is host-readable the moment the kernel has been waited on. */
     offset = grav_walk_scratch_align(offset, alignof(int));
     plan.fail_by_reason = offset;  offset += (size_t) GRAV_PACKET_FAIL_REASONS * sizeof(int);
-    /* The discovery traversal's channels.  Separate from the tally above because the walk's own
-     * one is read after the walk and would otherwise carry the discovery's counts into the
-     * per-call packet report. */
-    offset = grav_walk_scratch_align(offset, alignof(int));
-    plan.discover_fail = offset;  offset += (size_t) GRAV_PACKET_FAIL_REASONS * sizeof(int);
-    offset = grav_walk_scratch_align(offset, alignof(int));
-    plan.discover_anomaly = offset;  offset += sizeof(int);
+    offset = grav_walk_scratch_align(offset, alignof(struct gpu_grav_time_fault_t));
+    plan.time_fault = offset;  offset += sizeof(struct gpu_grav_time_fault_t);
     plan.bytes = offset;
     return plan;
+}
+
+/* Every device walk predicts nodes from their MIRROR, so the mirror must describe each node's state
+ * at that node's own time.  A host lazy drift advances a node and leaves its mirror behind, and
+ * claims it; the claims are answered here, before every device walk, whatever else has certified
+ * the tree -- O(claims), nothing when there are none.  When the claim record cannot say which nodes
+ * they are (it overflowed, or its fail-safe fired) the full mirror refresh answers instead: the only
+ * sweep that also rewrites nodes already at this time.  Never expected; reported.  Returns nonzero
+ * when not even that succeeded, after requesting the stop: the caller must not walk. */
+static int gpu_grav_answer_node_claims(integertime ti, const char *walk)
+{
+    if(gpu_node_dirty_bring_gravity_current(ti) == 0) {return 0;}
+    static int reported_claim_fallback = 0;
+    if(!reported_claim_fallback) {
+        reported_claim_fallback = 1;
+        printf("%s: task %d: the node claim record could not name the host-drifted nodes; refreshing every node mirror instead (reported once)\n", walk, ThisTask);
+        fflush(stdout);
+    }
+    if(gpu_force_drift_nodes_ex(ti, /*refresh_mirrors_already_current=*/1) == 0) {return 0;}
+    endrun(929702);
+    return 1;
 }
 
 extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
@@ -2937,26 +2931,25 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
     if(num_active_total <= 0) {return 0;}
 
     /* The CPU walk (forcetree.cc) drifts a particle or a node whose Ti_current is stale at the
-     * moment it opens it. This walk cannot call those host-only helpers from inside a kernel, so
-     * the drifting happens up front, in two parts: the active set here, before the routing
-     * decision, so that the candidacy test and both routes read current targets; then, only on
-     * the device route, every remaining particle and every stale node (below). The node drift is
-     * one kernel that mutates UVM Nodes/Extnodes AND the SoA mirror in one pass. */
+     * moment it opens it. This walk drifts nothing: the targets are the active set, drifted here
+     * before the routing decision so that the candidacy test and both routes read current
+     * targets, and every source it reaches -- particle or node -- is read as it stands at the walk
+     * time, predicted there without being written back (gpu_grav_particle_source_at,
+     * gpu_grav_node_motion_at). */
     /* Host-side wrapper in the GPU TU must use the out-of-line host accessor
      * `gizmo_host_ti_current()` (defined in core/predict.cc) rather than a
      * bare All.Ti_Current read, so the host-snapshot intent at this call
      * site stays correct even when the device-pass redirect is active. */
     integertime ti_curr_host = gizmo_host_ti_current();
     move_particles(ti_curr_host); /* drifts the ACTIVE set; every other particle is still at its own Ti_current */
-    /* SoA must exist before the drift kernel — it writes mirror fields. */
+    /* The SoA must exist before anything below reads or repairs the node mirror. */
     gpu_gravity_tree_acquire(MaxNodes + 1, Nodes_base, Extnodes_base);
 
-    /* Select the particles this walk will actually cover BEFORE drifting any node: the
-     * node drift below exists only to serve this walk, so a step that turns out to walk
-     * nothing, or that is small enough to be cheaper on the host, must not pay for it.
-     * The selection reads only particle state (ActiveParticleList, ProcessedFlag and the
+    /* Select the particles this walk will actually cover BEFORE any device work: a step that
+     * turns out to walk nothing, or that is small enough to be cheaper on the host, must not pay
+     * for it.  The selection reads only particle state (ActiveParticleList, ProcessedFlag and the
      * candidacy predicate), all of which move_particles above has already brought to
-     * ti_curr_host, so it is independent of the node drift that now follows it. */
+     * ti_curr_host. */
     int *idx_host = (int *) mymalloc("gpu_grav_idx", num_active_total * sizeof(int));
     int num_active = 0;
     for(int a = 0; a < num_active_total; a++) {
@@ -2973,9 +2966,8 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
     if(host_candidates_left) {*host_candidates_left = num_active;}
     if(num_active <= 0) {myfree(idx_host); return 0;}
 
-    /* Few enough candidates that the host walk, which drifts nodes only as it opens
-     * them, beats this walk plus the all-node drift it requires. Returning with
-     * ProcessedFlag untouched leaves every candidate to the host loop in gravtree.cc. */
+    /* Few enough candidates that the host walk is the cheaper route (gravity_walk_route_to_host).
+     * Returning with ProcessedFlag untouched leaves every candidate to the host loop in gravtree.cc. */
     if(gravity_walk_route_to_host(num_active)) {myfree(idx_host); return 0;}
 
     /* Acquire the arena (P_dev + CellP_dev in SharedSpace) */
@@ -3056,74 +3048,31 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
     memset(d_fail_by_reason, 0, GRAV_PACKET_FAIL_REASONS * sizeof(int));
     for(int r = 0; r < GRAV_PACKET_FAIL_REASONS; r++) {g_packet_fail[r] = 0;}
 
-    /* The decision half of the walk context: the tree, the arena, the walk time, the topology
-     * bounds and the PM cutoff -- everything BOTH traversals read to decide which sources they
-     * reach.  It is filled here, before anything is drifted, because the discovery traversal
-     * below runs on it.  The evaluation half -- the RT / sink / cosmic-ray source arrays, the
-     * Hermite and Ewald payload state -- is attached further down, AFTER the sources are
-     * current, so nothing derived from particle state is built ahead of the drift that decides
-     * what those particles are. */
+    /* The tables a prediction reads, refreshed once for the call: every source is read at the walk
+     * time from wherever it stands, and the Hermite source prediction shares them. */
+    struct DriftKickTableView tables_snap;
+    if(drift_kick_table_mirror_refresh(&tu_drift_kick_table_dev, &tables_snap) != 0) {
+        Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(scratch_block);
+        myfree(idx_host);   /* soft bad-stop already requested: no launch without the tables a prediction reads */
+        return 1;
+    }
+    struct gpu_grav_time_fault_t *time_fault = (struct gpu_grav_time_fault_t *) (scratch_block + scratch.time_fault);
+    memset(time_fault, 0, sizeof(struct gpu_grav_time_fault_t));
+
     gpu_grav_walk_ctx_t ctx{};
     ctx.treeBase = treeBase; ctx.treeParticleSlots = treeParticleSlots_snap;
     ctx.maxNodes = maxNodes_snap; ctx.maxForeignNodes = maxForeignNodes_snap;
     ctx.P_dev = P_dev; ctx.CellP_dev = CellP_dev; ctx.ti = ti_curr_host; ctx.tree_soa = soa_snap;
+    ctx.Extnodes = Extnodes; ctx.tables = tables_snap; ctx.time_fault = time_fault;
 #ifdef GRAVITY_HYBRID_OPENING_CRIT
     ctx.is_first_step = is_first_step_snap;
 #endif
     ctx.pm = pm_snap;
 
-    /* Every source this walk evaluates -- particle and node -- must stand at ti_curr_host, and
-     * the walk opens inactive particles as freely as the host walk does.  The host walk drifts
-     * such a source at the moment it reaches it; this walk has no such moment, so the sources
-     * are brought current up front, here, after the routing decision so a host-routed call pays
-     * nothing for it.
-     *
-     * Which sources: the ones this walk actually reaches, found by a conservative discovery
-     * traversal, rather than every local particle and every stale node in the tree.  When that
-     * cannot be established -- for any reason at all -- the fallback is the whole thing,
-     * drifted before any force kernel is launched, never after and never partially. */
-    /* PARTICLE currency.  A full-N drift may ALREADY have run for this step -- the tree build
-     * does one, and gizmo_full_drift_to is idempotent against the stamp it leaves -- in which
-     * case every local particle stands at ti, there is no drift work to place, and launching a
-     * discovery would traverse the tree to rediscover a saving that is not there.  Measured on
-     * test/fire with every call device-routed: 18 of 66 calls are in exactly that state.
-     *
-     * Otherwise the drift is real work, and the subset places it on the sources the walk
-     * actually reaches.  Anything the subset cannot establish -- a refused epoch, a recorder
-     * fail-safe, a packet given up -- takes the full drift instead, before any force kernel. */
-    /* Whether the subset brought THIS walk's sources current.  It is a per-call result, private
-       to this dispatch: it never becomes a whole-tree certificate, and no other consumer reads it. */
-    int sources_brought_current_here = 0;
-    if(gizmo_full_drift_ti() < ti_curr_host)
-    {
-        if(gpu_grav_bring_sources_current(ctx, d_idx, num_active,
-                                          (int *) (scratch_block + scratch.discover_fail),
-                                          (int *) (scratch_block + scratch.discover_anomaly)) == 0)
-        {
-            sources_brought_current_here = 1;
-        }
-        else
-        {
-            gizmo_full_drift_to(ti_curr_host);
-        }
-    }
-
-    /* NODE currency, asked separately because it has a different answer: a host lazy drift can
-     * leave node mirrors behind on a step whose particles are entirely current.  The certificate
-     * says whether a build or a sweep has left every mirror current, and the sweep answers it
-     * when nothing has -- asking for one when a host lazy drift armed the latch earlier in the
-     * step would fail rather than no-op, which is what the certificate check avoids. */
-    /* The subset already brought every node this walk reaches current, so sweeping the whole tree
-       here would redo it -- which is what stopped the node half from replacing anything.  The
-       GLOBAL certificate keeps its meaning untouched for every other consumer; only this call's
-       sweep is suppressed, and only when the subset succeeded for this call. */
-    if(!sources_brought_current_here
-            && !gpu_gravity_tree_nodes_current_at(ti_curr_host)
-            && gpu_force_drift_nodes(ti_curr_host) != 0) {
+    if(gpu_grav_answer_node_claims(ti_curr_host, "gpu_gravtree_walk_primary") != 0) {
         Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(scratch_block);
         myfree(idx_host);   /* LIFO mymalloc cleanup before drain */
-        endrun(929702);
-        return 1;   /* soft bad-stop: skip walk on un-drifted nodes; drains at next poll */
+        return 1;   /* soft bad-stop: never walk a mirror that could not be brought up to date; drains at next poll */
     }
 
 
@@ -3309,24 +3258,13 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
 #ifdef HERMITE_INTEGRATION
     struct gpu_hermite_walk_data_t hermite_dev;
     hermite_dev.state = HermiteWalk;
-    hermite_dev.tables = drift_kick_table_view(NULL, NULL, 0.0, 0.0, All.Timebase_interval, 0);
-    /* the mirror is only built on a Hermite pass: the predictor returns immediately when
-       HermiteOnlyFlag is 0, so an ordinary pass would be copying a table nothing reads */
-    if(HermiteOnlyFlag && drift_kick_table_mirror_refresh(&tu_drift_kick_table_dev, &hermite_dev.tables) != 0) {
-        Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(scratch_block);
-        release_payload_buffers();
-        myfree(idx_host);   /* soft bad-stop already requested: no launch without the tables the prediction reads */
-        return 1;
-    }
 #endif
 
     /* Invariant guard: reset the per-walk counter. */
     g_inv_fterm_aggregate = 0; g_unship_aggregate = 0;
 
-    /* The evaluation half of the context (see the decision half above): everything derived from
-     * particle state, attached only now that the sources it is derived from stand at the walk
-     * time.  The pointers it holds are SharedSpace / captured-snapshot addresses valid for the
-     * launch. */
+    /* The rest of the context: the source payload arrays and the Hermite and Ewald state.  The
+     * pointers it holds are SharedSpace / captured-snapshot addresses valid for the launch. */
 #ifdef RT_USE_GRAVTREE
     ctx.rt_data = rt_data_dev;
 #endif
@@ -3379,12 +3317,13 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
                 d_pot[a] = pot;
                 d_failed[a] = 0;
             } else {
-                d_failed[a] = (ok == 0) ? 1 : 2;   /* 1: met a pseudo-particle; 2: met a stale source */
+                d_failed[a] = 1;   /* met a pseudo-particle */
             }
         });
         Kokkos::fence();
         gizmo_gpu_check_last_error("gravtree_walk_primary", num_active);
     }
+    gpu_grav_report_time_fault("gpu_gravtree_walk_primary", time_fault, ti_curr_host, 913213);
     /* Import-completeness record.  A foreign node the sender shipped as a childless multipole, which
      * this walk's predicate now wants to descend, means the import no longer covers what the walk
      * asks of it.  Counted in the kernel and folded into the shared ledger here; gravity_tree()
@@ -3393,7 +3332,7 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
     gravity_note_unshippable_import(g_unship_aggregate);
 
     /* Scatter successes back to host; copy RT CellP fields from device mirror */
-    int nsucceeded = 0, n_stale_source = 0;
+    int nsucceeded = 0;
     double costtotal_added = 0;
     for(int a = 0; a < num_active; a++) {
         int i = d_idx[a];
@@ -3510,19 +3449,9 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
              * struct copy P_dev[i] = P[i] would be self-assignment. */
 
             nsucceeded++;
-        } else if(d_failed[a] == 2) {n_stale_source++;}
-    }
-    Costtotal += costtotal_added;
-    if(n_stale_source > 0) {
-        /* Once per rank: B3a's subset drift is what renders this unreachable, and until then a
-           per-step stream from every rank buries the run's own output. */
-        static int reported_stale_source = 0;
-        if(!reported_stale_source) {
-            reported_stale_source = 1;
-            printf("gpu_gravtree_walk_primary: task %d: %d of %d targets met a particle source behind the walk time and were handed to the host walk (reported once)\n", ThisTask, n_stale_source, num_active);
-            fflush(stdout);
         }
     }
+    Costtotal += costtotal_added;
 
     /* mark_clean (not invalidate): the per-active-i
      * P_dev[i]=P[i] mirror in the scatter loop above keeps arena coherent
@@ -3530,10 +3459,8 @@ extern "C" int gpu_gravtree_walk_primary(int *host_candidates_left)
      * (kernel output went to d_* buffers, not arena). Verified safe with
      * GIZMO_GPU_ARENA_DEBUG=1. */
     gpu_particles_arena_mark_clean_after_scatter("gpu_gravtree_walk_primary");
-    /* No SoA invalidate: the next force_treebuild fully repopulates the SoA
-     * via the build pipeline; the next pre-walk drift mutates only the
-     * stale-Ti_current nodes via gpu_force_drift_nodes (UVM AoS + SoA in one
-     * kernel).  No host-side reseed scaffolding remains. */
+    /* No SoA invalidate: the walk wrote nothing to the tree, and the next force_treebuild fully
+     * repopulates the SoA via the build pipeline. */
 
     Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(scratch_block);
     release_payload_buffers();
@@ -3607,13 +3534,15 @@ static int gpu_ewald_acquire_pot_data(struct gpu_ewald_pot_data_t *out)
 #endif
 
 /* Device-side Ewald walk for a single target. Returns 1 on success (acc
- * written), 0 if a pseudo-particle was encountered (defer to CPU), -1 if a
- * particle source is not at the walk time (defer to CPU, which drifts it). */
+ * written), 0 if a pseudo-particle was encountered (defer to CPU). Every source
+ * is read at the walk time without being drifted, through the same two readers
+ * as the primary walk (position and mass only: the correction needs no more). */
 static KOKKOS_INLINE_FUNCTION int
 gpu_ewald_walk_one(int target,
                    int treeBase, int treeParticleSlots, int maxNodes, int maxForeignNodes,    /* LET */
-                   struct particle_data *P_dev, integertime ti,
-                   const struct gpu_gravity_tree_soa_t *tree_soa,
+                   struct particle_data *P_dev, struct gas_cell_data *CellP_dev, integertime ti,
+                   const struct gpu_gravity_tree_soa_t *tree_soa, const struct extNODE *ext_nodes,
+                   const struct DriftKickTableView &tables, struct gpu_grav_time_fault_t *time_fault,
 #ifdef GRAVITY_HYBRID_OPENING_CRIT
                    int is_first_step,   /* hybrid opening: relative criterion applies only after step 0 */
 #endif
@@ -3629,7 +3558,7 @@ gpu_ewald_walk_one(int target,
     int no = treeBase; /* root node */
     while(no >= 0)
     {
-        double mass = 0.0;
+        double mass = 0.0, len_node = 0.0;
         Vec3<double> dr = {0.0, 0.0, 0.0};
         int is_leaf = 0;
         int idx = 0;
@@ -3640,11 +3569,12 @@ gpu_ewald_walk_one(int target,
         if(no >= treeParticleSlots && no < treeBase) {return 0;} /* gap: malformed tree -- defer; the CPU Ewald walk's guard stops loudly */
         if(no < treeParticleSlots) /* particle leaf */
         {
-            if(P_dev[no].Ti_current != ti) {return -1;}   /* the same source-currency invariant as the primary walk */
-            dr[0] = P_dev[no].Pos[0] - pos[0];
-            dr[1] = P_dev[no].Pos[1] - pos[1];
-            dr[2] = P_dev[no].Pos[2] - pos[2];
-            mass  = P_dev[no].Mass;
+            struct particle_motion_prediction motion(P_dev, CellP_dev, no);
+            gpu_grav_particle_source_at(P_dev, no, ti, tables, time_fault, motion);
+            dr[0] = motion.pos_[0] - pos[0];
+            dr[1] = motion.pos_[1] - pos[1];
+            dr[2] = motion.pos_[2] - pos[2];
+            mass  = motion.mass_;
             is_leaf = 1;
         }
         else if(no >= treeBase + maxNodes + maxForeignNodes) /* pseudo-particle — defer to CPU (foreign-node range below) */
@@ -3675,10 +3605,15 @@ gpu_ewald_walk_one(int target,
                     continue;
                 }
             }
+            node_motion_prediction motion;
+            if(gpu_grav_node_motion_at(*tree_soa, ext_nodes, idx, no, ti, tables, motion)) {
+                gpu_grav_note_source_ahead(time_fault, 1, no, tree_soa->node_ti[idx]);
+            }
             mass  = tree_soa->mass[idx];
-            dr[0] = tree_soa->s[idx][0] - pos[0];
-            dr[1] = tree_soa->s[idx][1] - pos[1];
-            dr[2] = tree_soa->s[idx][2] - pos[2];
+            dr[0] = motion.s_[0] - pos[0];
+            dr[1] = motion.s_[1] - pos[1];
+            dr[2] = motion.s_[2] - pos[2];
+            len_node = motion.len_;   /* the geometric centre does not move between builds; the length is widened */
         }
 
         /* nearest-image wrap on the displacement (shared SSOT helper) */
@@ -3690,7 +3625,7 @@ gpu_ewald_walk_one(int target,
             /* Opening check + periodic-boundary skip (mirrors forcetree.cc:2769-2842) */
             double r2  = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
             if(r2 <= 0) r2 = 1e-300;
-            double len = tree_soa->len[idx];
+            double len = len_node;
             int openflag = 0;
             if(errtoltheta) {
                 if(len * len > r2 * errtoltheta * errtoltheta) openflag = 1;
@@ -3762,35 +3697,11 @@ extern "C" int gpu_ewald_walk_primary(void)
     int num_active_total = (int) ActiveParticleList.size();
     if(num_active_total <= 0) {return 0;}
 
-    /* This walk consumes the node mirror (len, center, the node threading) but never
-     * refreshes it -- it relies on the primary walk having swept the nodes earlier in
-     * the same evaluation. When the primary walk ran on the host instead, no sweep
-     * happened and the mirror still holds geometry from an earlier time, so walking it
-     * here would write Ewald corrections from stale node extents and mark the particles
-     * processed, leaving the host correction loop nothing to fix. Decline instead: with
-     * ProcessedFlag untouched, that loop takes every particle and drifts nodes as it
-     * opens them.
-     *
-     * Both halves of the test are needed. The certification records that a sweep ran at
-     * this time; it does not survive a host lazy drift that happens afterwards at the
-     * same time, which refreshes a node in the AoS while leaving its mirror behind. The
-     * second clause covers exactly that ordering. */
     const integertime ti_curr_host = gizmo_host_ti_current();
-    if(!gpu_gravity_tree_nodes_current_at(ti_curr_host)) {
-        return 0;
-    }
 
-    /* Every particle source this walk evaluates must stand at ti_curr_host, exactly as in the
-     * primary walk -- and this walk reaches inactive particles just as freely. The primary
-     * drifts them only on the route it takes itself, so a step whose primary walk ran on the
-     * HOST arrives here with only the active set current, and without this every target would
-     * meet a stale source and defer, leaving this pass to do nothing at all. Cached: a no-op
-     * when the primary already drifted for its own device route. */
-    gizmo_full_drift_to(ti_curr_host);
-
-    /* Particles have already been drifted by the primary walk (Ewald_iter==0);
-     * the tree SoA mirror is still valid. Just re-acquire (cache-hit).
-     * soa->nextnode_aux aliases UVM Nextnode[]; no per-walk memcpy. */
+    /* Re-acquire the tree SoA (cache-hit).  soa->nextnode_aux aliases UVM Nextnode[]; no per-walk
+     * memcpy.  Sources are read at the walk time, as in the primary walk, so this pass runs whichever
+     * route the primary took. */
     int min_nodes = MaxNodes + 1;
     gpu_gravity_tree_acquire(min_nodes, Nodes_base, Extnodes_base);
     const struct gpu_gravity_tree_soa_t *soa = gpu_gravity_tree_soa();
@@ -3799,7 +3710,8 @@ extern "C" int gpu_ewald_walk_primary(void)
     gpu_particles_arena_set_site("gpu_gravtree_walk_ewald");
     gpu_particles_arena_acquire(NumPart, P, CellP);
     struct particle_data *P_dev = gpu_particles_arena_P();
-    if(!P_dev) {return 0;}
+    struct gas_cell_data *CellP_dev = gpu_particles_arena_CellP();   /* NULL on a gas-free problem; read only for a gas source */
+    if(!P_dev || ((All.TotN_gas > 0) && !CellP_dev)) {return 0;}
 
     if(gpu_ewald_tables_acquire() != 0) {return 1;}   /* soft bad-stop: tables not ready, skip walk (idx_host not yet alloc'd); drains at next poll */
 
@@ -3815,9 +3727,16 @@ extern "C" int gpu_ewald_walk_primary(void)
     }
     if(num_active == 0) { myfree(idx_host); return 0; }
 
+    if(gpu_grav_answer_node_claims(ti_curr_host, "gpu_ewald_walk_primary") != 0) {myfree(idx_host); return 1;}
+    struct DriftKickTableView tables_snap;
+    if(drift_kick_table_mirror_refresh(&tu_drift_kick_table_dev, &tables_snap) != 0) {myfree(idx_host); return 1;}   /* soft bad-stop already requested */
+
     const struct grav_walk_scratch_plan scratch = grav_walk_scratch_plan_for(num_active, 0);
     char *scratch_block = (char *) gizmo_gpu_alloc_shared(scratch.bytes, "gravity_walk");
     if(!scratch_block) {printf("gpu_ewald_walk_primary: kokkos_malloc failed\n"); endrun(914102); myfree(idx_host); return 1;}
+    struct gpu_grav_time_fault_t *time_fault = (struct gpu_grav_time_fault_t *) (scratch_block + scratch.time_fault);
+    memset(time_fault, 0, sizeof(struct gpu_grav_time_fault_t));
+    const struct extNODE *Extnodes_snap = Extnodes;
     int          *d_idx    = (int *)          (scratch_block + scratch.idx);
     int          *d_failed = (int *)          (scratch_block + scratch.failed);
     Vec3<double> *d_acc    = (Vec3<double> *) (scratch_block + scratch.acc);
@@ -3850,7 +3769,7 @@ extern "C" int gpu_ewald_walk_primary(void)
         int target = d_idx[a];
         Vec3<double> acc;
         int ok = gpu_ewald_walk_one(target, treeBase, treeParticleSlots_snap, maxNodes_snap, maxForeignNodes_sn,
-                                     P_dev, ti_curr_host, &soa_snap,
+                                     P_dev, CellP_dev, ti_curr_host, &soa_snap, Extnodes_snap, tables_snap, time_fault,
 #ifdef GRAVITY_HYBRID_OPENING_CRIT
                                      is_first_step_snap,
 #endif
@@ -3859,17 +3778,18 @@ extern "C" int gpu_ewald_walk_primary(void)
                                      errtoltheta, errtolforceacc,
                                      acc);
         if(ok == 1) {d_acc[a] = acc; d_failed[a] = 0;}
-        else        {d_failed[a] = (ok == 0) ? 1 : 2;}   /* 1: met a pseudo-particle; 2: met a stale source */
+        else        {d_failed[a] = 1;}   /* met a pseudo-particle */
     });
     Kokkos::fence();
     gizmo_gpu_check_last_error("gpu_ewald_walk_primary", num_active);
+    gpu_grav_report_time_fault("gpu_ewald_walk_primary", time_fault, ti_curr_host, 914103);
     /* Import-completeness record, same contract and same ledger as the primary walk: a foreign node
      * the sender shipped as a childless multipole, which this walk has to resolve below, means the
      * import no longer covers what the walk asks of it. */
     gravity_note_incomplete_import_count(g_inv_fterm_aggregate);
     gravity_note_unshippable_import(g_unship_aggregate);
 
-    int nsucceeded = 0, n_stale_source = 0;
+    int nsucceeded = 0;
     for(int a = 0; a < num_active; a++) {
         if(!d_failed[a]) {
             int target = idx_host[a];
@@ -3878,16 +3798,6 @@ extern "C" int gpu_ewald_walk_primary(void)
             P[target].GravAccel[2] += d_acc[a][2];
             ProcessedFlag[target] = 1;
             nsucceeded++;
-        } else if(d_failed[a] == 2) {n_stale_source++;}
-    }
-    if(n_stale_source > 0) {
-        /* Once per rank: B3a's subset drift is what renders this unreachable, and until then a
-           per-step stream from every rank buries the run's own output. */
-        static int reported_stale_source = 0;
-        if(!reported_stale_source) {
-            reported_stale_source = 1;
-            printf("gpu_ewald_walk_primary: task %d: %d of %d targets met a particle source behind the walk time and were handed to the host walk (reported once)\n", ThisTask, n_stale_source, num_active);
-            fflush(stdout);
         }
     }
 

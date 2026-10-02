@@ -107,11 +107,9 @@ static inline struct gpu_node_mirror_ptrs_t gpu_node_mirror_ptrs(struct gpu_grav
 }
 
 /* Advance ONE node's canonical AoS state to `ti_target`.
- * `fold_kick` is explicit rather than inferred: the host (force_drift_node) does NOT fold a
- * pending kick on a node that already stands at the target time -- it returns early -- while
- * this sweep's refresh pass falls through at dt = 0 and does. Both reach the same state once
- * the next real drift runs, but the node velocity a walk reads in between differs, so the
- * caller states which behaviour it wants instead of inheriting it. */
+ * `fold_kick` is the caller's: every venue folds a pending kick only when it moves the node
+ * forward -- the host (force_drift_node) returns early on a node already at the target time, and
+ * the sweep's refresh pass, which falls through at dt = 0 to rewrite the mirror, passes 0 there. */
 static KOKKOS_INLINE_FUNCTION void
 gpu_node_drift_apply(struct NODE *Nodes_uvm, struct extNODE *Extnodes_uvm, int no,
                      integertime ti_target, double dt_drift, double dt_drift_hmax, double dt_widen,
@@ -268,10 +266,10 @@ extern "C" int gpu_force_drift_nodes_ex(integertime time1, int refresh_mirrors_a
          * mirror can be stale while the node is current, and skipping here is
          * what leaves it that way.  When the caller asks, fall through with a
          * zero drift: s, len and hmax are all advanced by dt, so a zero dt
-         * changes none of them, the kick fold is dt-independent and idempotent
-         * on an already-folded node, and the tail rewrites the mirror from the
-         * node's current values.  Cost is a full mirror rewrite; there is no
-         * other effect. */
+         * changes none of them, a pending kick stays pending (it is folded only
+         * by a forward drift), and the tail rewrites the mirror from the node's
+         * current values.  Cost is a full mirror rewrite; there is no other
+         * effect. */
         const bool node_already_current = (Nodes_uvm[no].Ti_current == ti_target);
         if(node_already_current && !refresh_all) {return;}
 
@@ -283,24 +281,14 @@ extern "C" int gpu_force_drift_nodes_ex(integertime time1, int refresh_mirrors_a
 #endif
 
         /* Same value as the host get_drift_factor(.., .., no, 1): one interpolator, one view. */
-        double dt_drift = node_already_current
-                            ? 0.0
-                            : get_drift_factor_impl(Nodes_uvm[no].Ti_current, ti_target,
-                                                    dilation, &table_view);
+        double dt_drift = 0.0, dt_widen = 0.0;
+        if(!node_already_current) {node_motion_intervals(Nodes_uvm[no].Ti_current, ti_target, dilation, &table_view, dt_drift, dt_widen);}
         double dt_drift_hmax = dt_drift;
-        /* The widening runs on the undilated clock (see force_drift_node): vmax carries each
-           member's own dilation.  One interpolation when the two clocks coincide. */
-#ifdef USE_TIMESTEP_DILATION_FOR_ZOOMS
-        double dt_widen = node_already_current
-                            ? 0.0
-                            : get_drift_factor_impl(Nodes_uvm[no].Ti_current, ti_target,
-                                                    1.0, &table_view);
-#else
-        double dt_widen = dt_drift;
-#endif
 
+        /* A pending kick is folded only when the node moves forward, as the host drift and the walk's
+           read-only prediction both do: a node already at the target time keeps it pending. */
         gpu_node_drift_apply(Nodes_uvm, Extnodes_uvm, no, ti_target,
-                             dt_drift, dt_drift_hmax, dt_widen, /*fold_kick=*/1);
+                             dt_drift, dt_drift_hmax, dt_widen, /*fold_kick=*/!node_already_current);
 
         gpu_node_mirror_publish(mirror, k, no, Nodes_uvm, Extnodes_uvm);
     });
@@ -398,15 +386,8 @@ extern "C" int gpu_node_dirty_bring_gravity_current(integertime time1)
 #else
                 const double dilation = 1.0;
 #endif
-                const double dt_drift = get_drift_factor_impl(Nodes_uvm[no].Ti_current, ti_target,
-                                                              dilation, &table_view);
-                /* the widening runs on the undilated clock, exactly as in the sweep */
-#ifdef USE_TIMESTEP_DILATION_FOR_ZOOMS
-                const double dt_widen = get_drift_factor_impl(Nodes_uvm[no].Ti_current, ti_target,
-                                                              1.0, &table_view);
-#else
-                const double dt_widen = dt_drift;
-#endif
+                double dt_drift, dt_widen;
+                node_motion_intervals(Nodes_uvm[no].Ti_current, ti_target, dilation, &table_view, dt_drift, dt_widen);
                 gpu_node_drift_apply(Nodes_uvm, Extnodes_uvm, no, ti_target,
                                      dt_drift, dt_drift, dt_widen, /*fold_kick=*/1);
             }

@@ -74,15 +74,12 @@ void gpu_gravtree_packet_shape(struct gpu_grav_packet_shape_t *out);
 
 /* Packets the device engine gave up on the last primary walk, by reason, so that a traversal
  * exhausting the engine's continuation budget is visible instead of being a silent slow path.
- * Slot 0 is unused; the rest follow the engine's own reason order (malformed index, stale
- * source, pseudo-particle, no continuation, unusable record, no progress in a round). Zero on a
+ * Slot 0 is unused; the rest follow the engine's own reason order (malformed index,
+ * pseudo-particle, no continuation, unusable record, no progress in a round). Zero on a
  * host-routed call. */
-#define GRAV_PACKET_FAIL_REASON_SLOTS 7
+#define GRAV_PACKET_FAIL_REASON_SLOTS 6
 void gpu_gravtree_packet_failures(long long *out, int n);
 int  gpu_gravtree_packet_failure_reasons(void);
-/* Run totals on this rank: device gravity calls whose sources were brought current by the
- * discovery subset, and calls that fell back to drifting everything. */
-void gpu_gravtree_subset_drift_counts(long long *taken, long long *declined);
 
 /* GPU Ewald-correction walk. Called from gravity_tree() when Ewald_iter==1
  * (pure-tree periodic, BOX_PERIODIC && !GRAVITY_NOT_PERIODIC && !PMGRID).
