@@ -62,13 +62,14 @@ static void gx_walk_drift_tables_refresh(void)
 #include "../core/predict_functions.h"       /* box_wrap_position_to_primary_image */
 #include <Kokkos_Sort.hpp>
 #include <type_traits>
+#include <cstdarg>
 #include <stdexcept>
 
 /* TILE_PERIODIC_X/Y/Z defined in sfc_tiles.h (included via gpu_neighbor_list.h) */
 
-/* Persistent gas-only SIDX shared across density+symlist within a step.
- * Lifetime: built lazily on first gas (type_bitmask=1) ngb_list_build, reused
- * for all subsequent gas builds, freed by gpu_step_sidx_invalidate() after drift. */
+/* The kept indexes (gpu_neighbor_list.h): the gas index, whose owned segment is kept across sync points,
+ * and the all-types index, released at every sync point.  Both are built lazily by the first list build
+ * that uses them. */
 static gpu_spatial_index_t g_step_sidx{};
 static gpu_spatial_index_t g_step_sidx_alltypes{};
 
@@ -77,53 +78,9 @@ gpu_spatial_index_t *gpu_step_sidx_ptr(void) { return &g_step_sidx; }
 gpu_spatial_index_t *gpu_step_sidx_alltypes_ptr(void) { return &g_step_sidx_alltypes; }
 
 
-/* Dirty-index tracking for compact_xyzh.h field.
- *
- * Pre-tracker: a single global g_dirty_list/g_dirty_all pair was shared by
- * both g_step_sidx (gas-only) and g_step_sidx_alltypes. Both caches persist
- * across ghost-import-only changes, so one cache consuming and clearing the
- * shared global state would silently leave the other stale -- a physics-
- * correctness hole. Now: per-cache state via gpu_dirty_tracker.
- *
- * Caches register their dense particle-index range [base, base+count) on
- * build, unregister on free. Marks route to ALL caches whose range covers
- * the j (each cache has its own bitset). Refresh consumes only its own
- * cache's bitset.
- *
- * mark_h_dirty_all preserves global semantics: it sets all_dirty on every
- * registered cache (matching the old "unknown-scope mutation"). Per-cache
- * promote-to-all still fires when one cache's popcount exceeds threshold
- * inside the tracker. */
-
-void gpu_compact_xyzh_mark_h_dirty_all(void)
-{
-    gpu_dirty_tracker_mark_all_global();
-}
-
-void gpu_compact_xyzh_mark_h_dirty_idx(int i)
-{
-    if(i < 0) return;
-    int idx_arr[1] = { i };
-    gpu_dirty_tracker_mark_indices(idx_arr, 1);
-}
-
-void gpu_compact_xyzh_mark_h_dirty_range(int start, int end)
-{
-    gpu_dirty_tracker_mark_range(start, end);
-}
-
-void gpu_compact_xyzh_mark_h_dirty_indices(const int *indices, int n)
-{
-    gpu_dirty_tracker_mark_indices(indices, n);
-}
-
-/* Backwards-compat: any caller that doesn't know which indices it dirtied
- * conservatively forces a full-pool refresh on every cache. */
-void gpu_compact_xyzh_mark_h_dirty(void) { gpu_compact_xyzh_mark_h_dirty_all(); }
-
-/* SSOT mark helpers — see header for design.  The ghost-exchange supply cache
- * holds membership only and does not track kernel radii, so the GPU SIDX dirty
- * tracker is the sole consumer; a further cache registers here. */
+/* A radius was written (gpu_neighbor_list.h).  Each kept owned segment registers its source range
+ * with the dirty tracker, so a mark reaches every segment that holds the particle; the ghost-exchange
+ * supply cache holds membership only and needs none. */
 void gizmo_mark_kernel_radius_dirty_indices(const int *indices, int n)
 {
     if(!indices || n <= 0) return;
@@ -155,13 +112,13 @@ void gpu_sidx_notify_owned_changed(void)
  * or their motion is written -- so it is released, and the first sink call of the sync point rebuilds it. */
 void gpu_step_sidx_invalidate(void)
 {
-    if(g_step_sidx_alltypes.valid) gpu_spatial_index_free(&g_step_sidx_alltypes);
+    gpu_spatial_index_free(&g_step_sidx_alltypes);
 }
 
 void gpu_step_sidx_invalidate_full(void)
 {
-    if(g_step_sidx_alltypes.valid) gpu_spatial_index_free(&g_step_sidx_alltypes);
-    if(g_step_sidx.valid) gpu_spatial_index_free(&g_step_sidx);
+    gpu_spatial_index_free(&g_step_sidx_alltypes);
+    gpu_spatial_index_free(&g_step_sidx);
 }
 
 
@@ -186,44 +143,46 @@ double sidx_tile_looseness(const sfc_tile_t &tile)
     return w;
 }
 
-void gpu_spatial_index_free(gpu_spatial_index_t *idx)
+/* Release one segment.  Its own dirty-tracker registration goes with it, so releasing one segment never
+ * touches another's. */
+static void sidx_segment_free(gpu_index_segment_t *seg)
 {
     /* Ordering, not cleanup. kokkos_free does not synchronize, so releasing a
      * device allocation while a kernel may still be reading it is a
      * use-after-free. The fence lives HERE, with the release, so that no caller
      * can omit it -- this function is reached from the step loop, the
-     * decomposition boundary and the cached-index staleness guard, and putting
-     * the rule in any one of those leaves the next caller free to reintroduce
-     * the hazard. Skipped when there is nothing device-side to release. */
-    if(idx->d_compact_xyzh || idx->d_pool || idx->d_bvh || idx->d_tiles || idx->d_slot_of || idx->d_level_nodes ||
-       idx->d_shear_folds || idx->looseness) {
+     * decomposition boundary, the ghost cleanup and the cached-index staleness
+     * guard, and putting the rule in any one of those leaves the next caller free
+     * to reintroduce the hazard. Skipped when there is nothing device-side to release. */
+    if(seg->d_compact_xyzh || seg->d_pool || seg->d_bvh || seg->d_tiles || seg->d_slot_of || seg->d_level_nodes ||
+       seg->d_shear_folds || seg->looseness) {
         Kokkos::fence();
     }
-    if(idx->d_compact_xyzh) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(idx->d_compact_xyzh); idx->d_compact_xyzh = NULL;}
-    if(idx->d_pool) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(idx->d_pool); idx->d_pool = NULL;}
-    if(idx->d_bvh) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(idx->d_bvh); idx->d_bvh = NULL;}
-    if(idx->d_tiles) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(idx->d_tiles); idx->d_tiles = NULL;}
-    if(idx->d_slot_of) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(idx->d_slot_of); idx->d_slot_of = NULL;}
-    if(idx->d_level_nodes) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(idx->d_level_nodes); idx->d_level_nodes = NULL;}
-    if(idx->d_shear_folds) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(idx->d_shear_folds); idx->d_shear_folds = NULL;}
-    if(idx->h_level_offsets) {Kokkos::kokkos_free<Kokkos::HostSpace>(idx->h_level_offsets); idx->h_level_offsets = NULL;}
-    if(idx->looseness) {Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(idx->looseness); idx->looseness = NULL;}
-    idx->bvh_nnodes = 0;
-    idx->nlevels = 0;
-    idx->num_pool = 0;
-    idx->source_base = 0;
-    idx->source_count = 0;
-    idx->num_total = 0;
+    if(seg->d_compact_xyzh) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(seg->d_compact_xyzh);}
+    if(seg->d_pool) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(seg->d_pool);}
+    if(seg->d_bvh) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(seg->d_bvh);}
+    if(seg->d_tiles) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(seg->d_tiles);}
+    if(seg->d_slot_of) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(seg->d_slot_of);}
+    if(seg->d_level_nodes) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(seg->d_level_nodes);}
+    if(seg->d_shear_folds) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(seg->d_shear_folds);}
+    if(seg->h_level_offsets) {Kokkos::kokkos_free<Kokkos::HostSpace>(seg->h_level_offsets);}
+    if(seg->looseness) {Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(seg->looseness);}
+    if(seg->dirty_handle >= 0) {gpu_dirty_tracker_unregister(seg->dirty_handle);}
+    *seg = gpu_index_segment_t{};
+}
+
+void gpu_spatial_index_free(gpu_spatial_index_t *idx)
+{
+    sidx_segment_free(&idx->ghost);
+    sidx_segment_free(&idx->owned);
     idx->cache_tbm = -1;
     idx->cache_radius_policy = MODE_B_RADIUS_DEFAULT;
-    idx->ti_ref = 0;
-    idx->rows_are_positions = 0;
-    idx->rebuild_needed = 0;
-    idx->valid = 0;
-    if(idx->dirty_handle >= 0) {
-        gpu_dirty_tracker_unregister(idx->dirty_handle);
-        idx->dirty_handle = -1;
-    }
+}
+
+void gpu_sidx_ghost_pool_cleanup(void)
+{
+    sidx_segment_free(&g_step_sidx.ghost);
+    gpu_spatial_index_free(&g_step_sidx_alltypes);
 }
 
 
@@ -278,15 +237,15 @@ int sidx_widen(Box *b, const Src &m)
 }
 
 /* Re-establish, level by level from the leaves, that every node covers its children. */
-static void sidx_widen_all_levels(gpu_spatial_index_t *idx)
+static void sidx_widen_all_levels(gpu_index_segment_t *seg)
 {
-    const sfc_tile_t *tiles = idx->d_tiles;
-    tile_bvh_node_t *bvh = idx->d_bvh;
-    const int *level_nodes = idx->d_level_nodes;
-    for(int L = 0; L < idx->nlevels; L++) {
+    const sfc_tile_t *tiles = seg->d_tiles;
+    tile_bvh_node_t *bvh = seg->d_bvh;
+    const int *level_nodes = seg->d_level_nodes;
+    for(int L = 0; L < seg->nlevels; L++) {
         /* each level reads the one below it, so it waits for it */
         Kokkos::parallel_for("sidx_widen_level",
-                             Kokkos::RangePolicy<>(idx->h_level_offsets[L], idx->h_level_offsets[L + 1]),
+                             Kokkos::RangePolicy<>(seg->h_level_offsets[L], seg->h_level_offsets[L + 1]),
                              KOKKOS_LAMBDA(int q) {
             tile_bvh_node_t *node = &bvh[level_nodes[q]];
             if(node->left < 0) {sidx_widen(node, tiles[-(node->left + 1)]);}
@@ -294,7 +253,7 @@ static void sidx_widen_all_levels(gpu_spatial_index_t *idx)
         });
         Kokkos::fence();
     }
-    gizmo_gpu_check_last_error("sidx_widen_level", idx->nlevels);
+    gizmo_gpu_check_last_error("sidx_widen_level", seg->nlevels);
 }
 
 /* ======================================================================================================
@@ -581,41 +540,46 @@ struct SidxScratch {
     ~SidxScratch() {release_to(0);}
 };
 
-/* Allocate the arrays the index keeps, on the device.  Returns 0; 1 when one could not be had (the index
- * is then released and the report names the request). */
-static int sidx_alloc_kept(gpu_spatial_index_t *idx, int ntiles, int nnodes, int nslots, size_t n_slot_of,
-                           int nlevels, struct SidxBuildReport *report)
+/* Allocate the arrays the segment keeps, on the device: what every segment needs to be walked, and, for a
+ * maintained segment, what keeps its bounds true while it is kept.  Returns 0; 1 when one could not be had
+ * (the segment is then released and the report names the request). */
+static int sidx_alloc_kept(gpu_index_segment_t *seg, int maintained, int ntiles, int nnodes, int nslots,
+                           size_t n_slot_of, int nlevels, struct SidxBuildReport *report)
 {
-    struct {void **dst; size_t bytes; const char *label;} kept[] = {
-        {(void **)&idx->d_tiles, (size_t)ntiles * sizeof(sfc_tile_t), "ngl_sidx_dev_tiles"},
-        {(void **)&idx->d_bvh, (size_t)nnodes * sizeof(tile_bvh_node_t), "ngl_sidx_dev_bvh"},
-        {(void **)&idx->d_pool, (size_t)nslots * sizeof(int), "ngl_sidx_dev_pool"},
-        {(void **)&idx->d_compact_xyzh, (size_t)nslots * SIDX_ROW_WIDTH * sizeof(double), "ngl_sidx_dev_rows"},
-        {(void **)&idx->d_slot_of, n_slot_of * sizeof(int), "ngl_sidx_dev_slot_of"},
-        {(void **)&idx->d_level_nodes, (size_t)nnodes * sizeof(int), "ngl_sidx_dev_level_nodes"}};
+    struct {void **dst; size_t bytes; const char *label; int maintenance;} kept[] = {
+        {(void **)&seg->d_tiles, (size_t)ntiles * sizeof(sfc_tile_t), "ngl_sidx_dev_tiles", 0},
+        {(void **)&seg->d_bvh, (size_t)nnodes * sizeof(tile_bvh_node_t), "ngl_sidx_dev_bvh", 0},
+        {(void **)&seg->d_pool, (size_t)nslots * sizeof(int), "ngl_sidx_dev_pool", 0},
+        {(void **)&seg->d_compact_xyzh, (size_t)nslots * SIDX_ROW_WIDTH * sizeof(double), "ngl_sidx_dev_rows", 0},
+        {(void **)&seg->d_slot_of, n_slot_of * sizeof(int), "ngl_sidx_dev_slot_of", 1},
+        {(void **)&seg->d_level_nodes, (size_t)nnodes * sizeof(int), "ngl_sidx_dev_level_nodes", 1}};
     for(auto &k : kept) {
+        if(k.maintenance && !maintained) {continue;}
         *k.dst = gizmo_gpu_alloc_device(k.bytes, k.label);
-        if(!*k.dst) {report->bytes_failed = k.bytes; gpu_spatial_index_free(idx); return 1;}
+        if(!*k.dst) {report->bytes_failed = k.bytes; sidx_segment_free(seg); return 1;}
     }
+    if(!maintained) {return 0;}
 #if defined(BOX_SHEARING) && (BOX_SHEARING > 1)
-    idx->d_shear_folds = (int *) gizmo_gpu_alloc_device((size_t)nslots * 2 * sizeof(int), "ngl_sidx_dev_shear_folds");
-    if(!idx->d_shear_folds) {report->bytes_failed = (size_t)nslots * 2 * sizeof(int); gpu_spatial_index_free(idx); return 1;}
+    seg->d_shear_folds = (int *) gizmo_gpu_alloc_device((size_t)nslots * 2 * sizeof(int), "ngl_sidx_dev_shear_folds");
+    if(!seg->d_shear_folds) {report->bytes_failed = (size_t)nslots * 2 * sizeof(int); sidx_segment_free(seg); return 1;}
 #endif
-    idx->h_level_offsets = (int *) gizmo_gpu_alloc_host((size_t)(nlevels + 1) * sizeof(int), "ngl_sidx_host_level_offsets");
-    if(!idx->h_level_offsets) {report->bytes_failed = (size_t)(nlevels + 1) * sizeof(int); gpu_spatial_index_free(idx); return 1;}
-    idx->looseness = (double *) gizmo_gpu_alloc_shared(sizeof(double), "ngl_sidx_looseness");
-    if(!idx->looseness) {report->bytes_failed = sizeof(double); gpu_spatial_index_free(idx); return 1;}
+    seg->h_level_offsets = (int *) gizmo_gpu_alloc_host((size_t)(nlevels + 1) * sizeof(int), "ngl_sidx_host_level_offsets");
+    if(!seg->h_level_offsets) {report->bytes_failed = (size_t)(nlevels + 1) * sizeof(int); sidx_segment_free(seg); return 1;}
+    seg->looseness = (double *) gizmo_gpu_alloc_shared(sizeof(double), "ngl_sidx_looseness");
+    if(!seg->looseness) {report->bytes_failed = sizeof(double); sidx_segment_free(seg); return 1;}
     return 0;
 }
 
-/* Build the index over the members of src into idx.  kStageOnHost: run on the host with the working
- * space in the memory arena, then copy the index to the device once; otherwise run on the device and build
- * the index in place.  Returns 0; 1 when a member cannot be bounded; 2 when memory could not be had; 3 when
- * the build failed otherwise (report->failure says how).  On 1, 2 or 3 the index is left invalid. */
+/* Build a segment over the members of src into seg.  kStageOnHost: run on the host with the working
+ * space in the memory arena, then copy the segment to the device once; otherwise run on the device and
+ * build it in place.  maintained: keep what raises need (the slot map, the level schedule, the shear folds,
+ * the looseness); a segment that is never raised keeps only what a walk reads.  Returns 0; 1 when a member
+ * cannot be bounded; 2 when memory could not be had; 3 when the build failed otherwise (report->failure
+ * says how).  On 1, 2 or 3 the segment is left invalid. */
 template <class Exec, bool kStageOnHost, class Source>
 static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, integertime ti_ref,
                               const struct DriftKickTableView &tables, const struct SidxKeyFrame &frame,
-                              gpu_spatial_index_t *idx, struct SidxBuildReport *report)
+                              int maintained, gpu_index_segment_t *seg, struct SidxBuildReport *report)
 {
     using Mem = typename std::conditional<kStageOnHost, Kokkos::HostSpace, GIZMO_KOKKOS_DEVICE_SPACE>::type;
     using UV = Kokkos::MemoryTraits<Kokkos::Unmanaged>;
@@ -633,18 +597,18 @@ static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, 
                                 KOKKOS_LAMBDA(int o, int &c) {if(src.is_member(o)) {c++;}}, members_counted);
         const int ntiles_max = (members_counted + TILE_TARGET_SIZE - 1) / TILE_TARGET_SIZE + 1;   /* + the fresh tile outliers start */
         const int nslots_max = ntiles_max * TILE_TARGET_SIZE, nnodes_max = 2 * ntiles_max - 1;
-        const size_t n_slot_of = (size_t)(num_source > 0 ? num_source : 1);
-        const size_t n_folds_max = (size_t)nslots_max * 2;
+        const size_t n_slot_of = maintained ? (size_t)(num_source > 0 ? num_source : 1) : 0;
+        const size_t n_folds_max = maintained ? (size_t)nslots_max * 2 : 0;
         void *p_tiles = NULL, *p_bvh = NULL, *p_pool = NULL, *p_rows = NULL, *p_slot = NULL, *p_level = NULL, *p_folds = NULL;
         if(kStageOnHost) {
             p_tiles = scratch.take((size_t)ntiles_max * sizeof(sfc_tile_t), "ngl_sidx_stage_tiles");
             p_bvh = scratch.take((size_t)nnodes_max * sizeof(tile_bvh_node_t), "ngl_sidx_stage_bvh");
             p_pool = scratch.take((size_t)nslots_max * sizeof(int), "ngl_sidx_stage_pool");
             p_rows = scratch.take((size_t)nslots_max * SIDX_ROW_WIDTH * sizeof(double), "ngl_sidx_stage_rows");
-            p_slot = scratch.take(n_slot_of * sizeof(int), "ngl_sidx_stage_slot_of");
+            if(maintained) {p_slot = scratch.take(n_slot_of * sizeof(int), "ngl_sidx_stage_slot_of");}
             p_level = scratch.take((size_t)nnodes_max * sizeof(int), "ngl_sidx_stage_level_nodes");
 #if defined(BOX_SHEARING) && (BOX_SHEARING > 1)
-            p_folds = scratch.take(n_folds_max * sizeof(int), "ngl_sidx_stage_shear_folds");
+            if(maintained) {p_folds = scratch.take(n_folds_max * sizeof(int), "ngl_sidx_stage_shear_folds");}
 #endif
         }
         const int transients = scratch.mark();
@@ -689,7 +653,7 @@ static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, 
         }
         report->all_current = (tally_h[1] == 0);
         report->n_outside = tally_h[2]; report->n_outside_owned = tally_h[3];
-        if(tally_h[0] > 0) {report->refused = 1; gpu_spatial_index_free(idx); return 1;}
+        if(tally_h[0] > 0) {report->refused = 1; sidx_segment_free(seg); return 1;}
         /* 3. sort: only the key and the member ordinal move */
         if(num_members > 1) {
             Kokkos::Experimental::sort_by_key(Exec(), Kokkos::subview(key, std::make_pair(0, num_members)),
@@ -708,9 +672,12 @@ static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, 
         /* What the index keeps: on the device route allocated now and built in place; on the host route
          * already staged above, and copied once below. */
         if(!kStageOnHost) {
-            if(sidx_alloc_kept(idx, ntiles, shape.nnodes, nslots, n_slot_of, shape.nlevels, report)) {return 2;}
-            p_tiles = idx->d_tiles; p_bvh = idx->d_bvh; p_pool = idx->d_pool; p_rows = idx->d_compact_xyzh;
-            p_slot = idx->d_slot_of; p_level = idx->d_level_nodes; p_folds = idx->d_shear_folds;
+            if(sidx_alloc_kept(seg, maintained, ntiles, shape.nnodes, nslots, n_slot_of, shape.nlevels, report)) {return 2;}
+            p_tiles = seg->d_tiles; p_bvh = seg->d_bvh; p_pool = seg->d_pool; p_rows = seg->d_compact_xyzh;
+            p_slot = seg->d_slot_of; p_folds = seg->d_shear_folds;
+            /* the level schedule is kept by a maintained segment, a working array of the build otherwise */
+            p_level = maintained ? (void *)seg->d_level_nodes
+                                 : scratch.take((size_t)shape.nnodes * sizeof(int), "ngl_sidx_build_level_nodes");
         }
         Kokkos::View<sfc_tile_t*, Mem, UV> tiles((sfc_tile_t *)p_tiles, (size_t)ntiles);
         Kokkos::View<tile_bvh_node_t*, Mem, UV> bvh((tile_bvh_node_t *)p_bvh, (size_t)shape.nnodes);
@@ -741,7 +708,8 @@ static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, 
                 src.describe(o, policy, ti_ref, tables, growth, kernel_floor, m);
                 double *row = &rows((size_t)slot * SIDX_ROW_WIDTH);
                 row[0] = m.center[0]; row[1] = m.center[1]; row[2] = m.center[2]; row[3] = m.r; row[4] = m.r_drifted;
-                pool(slot) = src.global(o); slot_of(o) = slot;
+                pool(slot) = src.global(o);
+                if(slot_of.extent(0) > 0) {slot_of(o) = slot;}
                 if(shear_folds.extent(0) > 0) {
                     shear_folds(2 * (size_t)slot) = m.folds_up; shear_folds(2 * (size_t)slot + 1) = m.folds_down;
                 }
@@ -787,52 +755,59 @@ static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, 
         }
         gizmo_gpu_check_last_error("sidx_build_bvh_level", shape.nlevels);
         double looseness = 0;
-        Kokkos::parallel_reduce("sidx_build_looseness", Kokkos::RangePolicy<Exec>(0, ntiles),
-                                KOKKOS_LAMBDA(int t, double &w) {const double x = sidx_tile_looseness(tiles(t)); if(x > w) {w = x;}},
-                                Kokkos::Max<double>(looseness));
-        Exec().fence();
+        if(maintained) {
+            Kokkos::parallel_reduce("sidx_build_looseness", Kokkos::RangePolicy<Exec>(0, ntiles),
+                                    KOKKOS_LAMBDA(int t, double &w) {const double x = sidx_tile_looseness(tiles(t)); if(x > w) {w = x;}},
+                                    Kokkos::Max<double>(looseness));
+            Exec().fence();
+        }
         /* The build's transients go now; on the host route, before the index is allocated on the device and
          * the stage copied to it once (the stage goes when this returns). */
         scratch.release_to(transients);
         if(kStageOnHost) {
-            if(sidx_alloc_kept(idx, ntiles, shape.nnodes, nslots, n_slot_of, shape.nlevels, report)) {return 2;}
-            Kokkos::deep_copy(Kokkos::View<sfc_tile_t*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(idx->d_tiles, (size_t)ntiles), tiles);
-            Kokkos::deep_copy(Kokkos::View<tile_bvh_node_t*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(idx->d_bvh, (size_t)shape.nnodes), bvh);
-            Kokkos::deep_copy(Kokkos::View<int*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(idx->d_pool, (size_t)nslots), pool);
-            Kokkos::deep_copy(Kokkos::View<double*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(idx->d_compact_xyzh, (size_t)nslots * SIDX_ROW_WIDTH), rows);
-            Kokkos::deep_copy(Kokkos::View<int*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(idx->d_slot_of, n_slot_of), slot_of);
-            Kokkos::deep_copy(Kokkos::View<int*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(idx->d_level_nodes, (size_t)shape.nnodes), level_nodes);
-            if(idx->d_shear_folds) {
-                Kokkos::deep_copy(Kokkos::View<int*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(idx->d_shear_folds, n_folds), shear_folds);
+            if(sidx_alloc_kept(seg, maintained, ntiles, shape.nnodes, nslots, n_slot_of, shape.nlevels, report)) {return 2;}
+            Kokkos::deep_copy(Kokkos::View<sfc_tile_t*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(seg->d_tiles, (size_t)ntiles), tiles);
+            Kokkos::deep_copy(Kokkos::View<tile_bvh_node_t*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(seg->d_bvh, (size_t)shape.nnodes), bvh);
+            Kokkos::deep_copy(Kokkos::View<int*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(seg->d_pool, (size_t)nslots), pool);
+            Kokkos::deep_copy(Kokkos::View<double*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(seg->d_compact_xyzh, (size_t)nslots * SIDX_ROW_WIDTH), rows);
+            if(maintained) {
+                Kokkos::deep_copy(Kokkos::View<int*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(seg->d_slot_of, n_slot_of), slot_of);
+                Kokkos::deep_copy(Kokkos::View<int*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(seg->d_level_nodes, (size_t)shape.nnodes), level_nodes);
+            }
+            if(seg->d_shear_folds) {
+                Kokkos::deep_copy(Kokkos::View<int*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(seg->d_shear_folds, n_folds), shear_folds);
             }
         }
-        memcpy(idx->h_level_offsets, shape.level_offsets.data(), (size_t)(shape.nlevels + 1) * sizeof(int));
-        *idx->looseness = looseness;
+        if(maintained) {
+            memcpy(seg->h_level_offsets, shape.level_offsets.data(), (size_t)(shape.nlevels + 1) * sizeof(int));
+            *seg->looseness = looseness;
+            seg->nlevels = shape.nlevels;
+        }
         Kokkos::fence();
-        idx->ntiles = ntiles;
-        idx->bvh_nnodes = shape.nnodes;
-        idx->bvh_root = shape.nnodes - 1;
-        idx->nlevels = shape.nlevels;
-        idx->num_pool = nslots;
-        idx->source_base = src.base;
-        idx->source_count = num_source;
+        seg->ntiles = ntiles;
+        seg->bvh_nnodes = shape.nnodes;
+        seg->bvh_root = shape.nnodes - 1;
+        seg->num_pool = nslots;
+        seg->source_base = src.base;
+        seg->source_count = num_source;
     } catch(const std::exception &e) {
         /* Kokkos throws rather than returning null: an allocation of the device route's working space, or a
          * failure inside the sort or a copy.  Its own text says which. */
         snprintf(report->failure, sizeof(report->failure), "%s", e.what());
-        gpu_spatial_index_free(idx);
+        sidx_segment_free(seg);
         return 3;
     }
     return 0;
 }
 
-/* Build the gas (or any type-masked) index over particles [0, num_total), described at the current time.
- * Built on the host and copied to the device once; the device build is the same function run on the
- * device, to be chosen by the memory each would need once the owned and imported segments are separate. */
-void gpu_spatial_index_build(struct particle_data *P_shared, int num_total,
-                             int type_bitmask, gpu_spatial_index_t *idx,
-                             const char *caller_label,
-                             mode_b_radius_policy_t radius_policy)
+/* Build seg over the members of src, described at the current time: on the host, then copied to the device
+ * once (the device build is the same builder run on the device, to be chosen by the memory each route needs
+ * once that route is priced).  maintained: the segment will be kept and raised, so it keeps what raises need
+ * and registers its source range with the dirty tracker.  Returns 0; otherwise the segment is left invalid
+ * and the controlled stop has been requested here, naming the cause. */
+static int sidx_build_segment_now(const struct SidxParticleSource &src, int maintained,
+                                  mode_b_radius_policy_t radius_policy, const char *caller_label,
+                                  gpu_index_segment_t *seg, struct SidxBuildReport *report)
 {
     GIZMO_GPU_ENSURE_ALL_FRESH();
 
@@ -852,7 +827,7 @@ void gpu_spatial_index_build(struct particle_data *P_shared, int num_total,
         const int    wraps[3]   = { TILE_PERIODIC_X, TILE_PERIODIC_Y, TILE_PERIODIC_Z };
         for(int k = 0; k < 3; k++) {
             if(wraps[k] && !(box_len[k] > 0.0)) {
-                printf("gpu_spatial_index_build: axis %d is periodic but its box length is %g "
+                printf("spatial index build: axis %d is periodic but its box length is %g "
                        "(caller='%s'). Likely cause: this TU's AllDeviceMirror not synced from "
                        "host All. Confirm gizmo_gpu_sync_all() has run for this timestep.\n",
                        k, box_len[k], caller_label ? caller_label : "?");
@@ -874,48 +849,40 @@ void gpu_spatial_index_build(struct particle_data *P_shared, int num_total,
     for(int k = 0; k < 3; k++) {frame.corner[k] = DomainCorner[k];}
     frame.len = DomainLen;
 #endif
-    struct SidxBuildReport report;
-    const struct SidxParticleSource src = {P_shared, CellP, 0, num_total, ghost_get_num_local(), type_bitmask};
     const int rc = sidx_build_segment<Kokkos::DefaultHostExecutionSpace, true>(src, radius_policy, ti_ref, host_tables,
-                                                                               frame, idx, &report);
+                                                                               frame, maintained, seg, report);
     if(rc != 0) {
         char msg[400];
         const char *who = caller_label ? caller_label : "?";
         if(rc == 1) {
-            snprintf(msg, sizeof(msg), "gpu_spatial_index_build (caller '%s'): a member's clock is outside [0, now] or its "
+            snprintf(msg, sizeof(msg), "spatial index build (caller '%s'): a member's clock is outside [0, now] or its "
                      "position or velocity is not finite, so no search can bound where it is; spatial index left unbuilt", who);
             gizmo_request_controlled_stop(7740, msg, __FILE__, __LINE__, __FUNCTION__);
         } else if(rc == 2) {
-            snprintf(msg, sizeof(msg), "gpu_spatial_index_build (caller '%s'): could not allocate %.1f MB for %d particles; "
-                     "spatial index left unbuilt", who, (double)report.bytes_failed / (1024.0 * 1024.0), num_total);
+            snprintf(msg, sizeof(msg), "spatial index build (caller '%s'): could not allocate %.1f MB for %d particles; "
+                     "spatial index left unbuilt", who, (double)report->bytes_failed / (1024.0 * 1024.0), src.count);
             gizmo_request_controlled_stop(7712, msg, __FILE__, __LINE__, __FUNCTION__);
         } else {
-            snprintf(msg, sizeof(msg), "gpu_spatial_index_build (caller '%s'): the build failed (%s) for %d particles; "
-                     "spatial index left unbuilt", who, report.failure, num_total);
+            snprintf(msg, sizeof(msg), "spatial index build (caller '%s'): the build failed (%s) for %d particles; "
+                     "spatial index left unbuilt", who, report->failure, src.count);
             gizmo_request_controlled_stop(7712, msg, __FILE__, __LINE__, __FUNCTION__);
         }
-        return;
+        return rc;
     }
     /* A member of the rank's own outside the extent the domain was built on: the next step decomposes
      * (the drift latch), and meanwhile its own tile bounds it exactly. */
-    if(report.n_outside_owned > 0) {DomainExtentOutgrownLocal = 1;}
+    if(report->n_outside_owned > 0) {DomainExtentOutgrownLocal = 1;}
 
-    idx->num_total = num_total;
-    idx->cache_tbm = type_bitmask;
-    idx->cache_radius_policy = radius_policy;
-    idx->ghost_live_when_built       = ghost_pool_is_live();
-    idx->ghost_provenance_when_built = ghost_provenance_epoch();
-    idx->owned_epoch_when_built      = g_sidx_owned_epoch;
-    idx->ti_ref = ti_ref;
-    idx->rows_are_positions = report.all_current;
-    idx->rebuild_needed = 0;
-    idx->valid = 1;
-    /* Register this cache with the dirty tracker over [0, num_total). The rows
-     * were written from the live P[] under this cache's radius policy, and
-     * nothing between there and here can mutate it, so the range starts clean:
-     * the first refresh would recompute values it already holds. */
-    if(idx->dirty_handle >= 0) gpu_dirty_tracker_unregister(idx->dirty_handle);
-    idx->dirty_handle = gpu_dirty_tracker_register(0, num_total, 1);
+    seg->ti_ref = ti_ref;
+    seg->rows_are_positions = report->all_current;
+    seg->rebuild_needed = 0;
+    seg->valid = 1;
+    /* Register the source range with the dirty tracker. The rows were written from
+     * the live P[] under this index's radius policy, and nothing between there and
+     * here can mutate it, so the range starts clean: the first refresh would
+     * recompute values it already holds. */
+    if(maintained) {seg->dirty_handle = gpu_dirty_tracker_register(src.base, src.count, 1);}
+    return 0;
 }
 
 
@@ -934,19 +901,21 @@ struct SidxRaiseRecord {
     double u_min[3], u_max[3], rho;
 };
 
-/* Raise the kept index over particles list[0..n) (host indices; the first n particles of its source range when
- * list is null).
+/* Raise the kept owned segment of idx over particles list[0..n) (host indices; the first n particles of its
+ * source range when list is null).  Only an owned segment is raised: an imported particle's motion and
+ * radius do not change while it is imported.
  * MOTION re-reads each member's velocity range, after its velocity changed; REACH rewrites its row's reaches
  * from its current radius and raises the reach bands, after its radius changed.  A particle that is not a
  * member now -- another type (the index is then rebuilt), or no mass (no pair kernel takes it) -- is
  * skipped.
  * Returns 0; 1 when a member's motion is not finite, so nothing can bound it (the run is stopped); 2 when
- * the raise could not be staged.  Either way the index no longer bounds its members and is marked to be
- * rebuilt by the next list build -- never released here, since lists built from it may still be in use. */
+ * the raise could not be staged.  Either way the segment no longer bounds its members and is marked to be
+ * rebuilt by the next list build, which releases it. */
 static int sidx_raise_members(gpu_spatial_index_t *idx, const int *list, int n, int what)
 {
-    if(n <= 0 || !idx->valid) {return 0;}
-    const int source_base = idx->source_base, source_end = idx->source_base + idx->source_count;
+    gpu_index_segment_t *seg = &idx->owned;
+    if(n <= 0 || !seg->valid) {return 0;}
+    const int source_base = seg->source_base, source_end = seg->source_base + seg->source_count;
     const int type_bitmask = idx->cache_tbm;
     const mode_b_radius_policy_t policy = idx->cache_radius_policy;
     std::vector<SidxRaiseRecord> rec((size_t)n);
@@ -972,26 +941,26 @@ static int sidx_raise_members(gpu_spatial_index_t *idx, const int *list, int n, 
         r.j = j;
     }
     if(fault) {
-        idx->rebuild_needed = 1;
+        seg->rebuild_needed = 1;
         gizmo_request_controlled_stop(7740, "a particle kept in the neighbour index has a velocity that is not finite, "
                                       "so no search can bound where it is", __FILE__, __LINE__, __FUNCTION__);
         return 1;
     }
     SidxRaiseRecord *d_rec = (SidxRaiseRecord *) ngl_alloc_device((size_t) n * sizeof(SidxRaiseRecord), "sidx_raise_records");
-    if(!d_rec) {idx->rebuild_needed = 1; return 2;}
+    if(!d_rec) {seg->rebuild_needed = 1; return 2;}
     {
         Kokkos::View<const SidxRaiseRecord*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>> hv(rec.data(), (size_t) n);
         Kokkos::View<SidxRaiseRecord*, GIZMO_KOKKOS_DEVICE_SPACE, Kokkos::MemoryTraits<Kokkos::Unmanaged>> dv(d_rec, (size_t) n);
         Kokkos::deep_copy(dv, hv);
     }
-    const double touched_tiles = (n < idx->ntiles) ? (double) n : (double) idx->ntiles;
-    const int walk_paths = (touched_tiles * idx->nlevels <= SIDX_PATH_WALK_FACTOR * (double)(idx->ntiles + idx->bvh_nnodes));
-    sfc_tile_t *tiles = idx->d_tiles;
-    tile_bvh_node_t *bvh = idx->d_bvh;
-    const int *slot_of = idx->d_slot_of;
-    double *rows = idx->d_compact_xyzh;
-    double *looseness = idx->looseness;
-    const int *shear_folds = idx->d_shear_folds;
+    const double touched_tiles = (n < seg->ntiles) ? (double) n : (double) seg->ntiles;
+    const int walk_paths = (touched_tiles * seg->nlevels <= SIDX_PATH_WALK_FACTOR * (double)(seg->ntiles + seg->bvh_nnodes));
+    sfc_tile_t *tiles = seg->d_tiles;
+    tile_bvh_node_t *bvh = seg->d_bvh;
+    const int *slot_of = seg->d_slot_of;
+    double *rows = seg->d_compact_xyzh;
+    double *looseness = seg->looseness;
+    const int *shear_folds = seg->d_shear_folds;
     Kokkos::parallel_for("sidx_raise_members", n, KOKKOS_LAMBDA(int k) {
         const SidxRaiseRecord &r = d_rec[k];
         if(r.j < 0) {return;}
@@ -1020,7 +989,7 @@ static int sidx_raise_members(gpu_spatial_index_t *idx, const int *list, int n, 
     Kokkos::fence();
     gizmo_gpu_check_last_error("sidx_raise_members", n);
     Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(d_rec);
-    if(!walk_paths) {sidx_widen_all_levels(idx);}
+    if(!walk_paths) {sidx_widen_all_levels(seg);}
     return 0;
 }
 
@@ -1030,7 +999,7 @@ static int sidx_raise_members(gpu_spatial_index_t *idx, const int *list, int n, 
 void gpu_step_sidx_raise_motion(const int *idx_host, int n)
 {
     gpu_spatial_index_t *idx = &g_step_sidx;
-    if(!idx->valid || n <= 0 || !idx_host) {return;}
+    if(!idx->owned.valid || n <= 0 || !idx_host) {return;}
     GIZMO_GPU_ENSURE_ALL_FRESH();
     sidx_raise_members(idx, idx_host, n, SIDX_RAISE_MOTION);
 }
@@ -1055,6 +1024,19 @@ static void ngl_leave_csr_empty(gpu_neighbor_list_t *gnl, int num_active)
     }
     if(gnl->offsets) {for(int aa = 0; aa <= num_active; aa++) {gnl->offsets[aa] = 0;}}
     gnl->total_pairs = 0;
+}
+
+/* Hand back the empty list under a controlled stop this call requests itself, its message formatted
+ * from fmt.  The first stop requested stays the one reported. */
+static void ngl_stop_empty(gpu_neighbor_list_t *gnl, int num_active, int code, int line, const char *fmt, ...)
+{
+    char msg[400];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, args);
+    va_end(args);
+    gizmo_request_controlled_stop(code, msg, __FILE__, line, "gpu_ngb_list_build");
+    ngl_leave_csr_empty(gnl, num_active);
 }
 
 /* The per-active and per-pair arrays are the largest transients this loop asks for --
@@ -1084,13 +1066,15 @@ static void ngl_build_leave_empty(gpu_neighbor_list_t *gnl, int num_active,
 /* Keep, in each row, exactly the candidates the loop's pair test accepts: a member of the list's types
  * within R_i of query aa for ONEWAY, within max(R_i, j_radius_scale * r_j) for
  * SYMMETRIC, r_j being the member's reach under the loop's radius policy.  Every candidate must already
- * be current.  Rows keep their order and their members' order.  The compaction runs in place in the host
- * copy `ngb`: each row is trimmed on its own, then the kept prefixes move down in row order, which never
- * overwrites a row that has not moved yet; the result replaces the front of the device list. */
+ * be current.  Candidates from first_exact on (the imported particles) were found by an exact search, so
+ * they are kept as they are.  Rows keep their order and their members' order.  The compaction runs in
+ * place in the host copy `ngb`: each row is trimmed on its own, then the kept prefixes move down in row
+ * order, which never overwrites a row that has not moved yet; the result replaces the front of the device
+ * list. */
 static void ngl_trim_rows_to_exact(gpu_neighbor_list_t *gnl, std::vector<int> &ngb, int num_active,
                                    const double *q_pos, const double *q_radius, double radius_factor,
                                    int search_mode, int type_bitmask, mode_b_radius_policy_t radius_policy,
-                                   double j_radius_scale, const struct particle_data *Pp)
+                                   double j_radius_scale, const struct particle_data *Pp, int first_exact)
 {
     int64_t *off = gnl->offsets;
     std::vector<int64_t> kept((size_t)num_active);
@@ -1102,6 +1086,7 @@ static void ngl_trim_rows_to_exact(gpu_neighbor_list_t *gnl, std::vector<int> &n
         int64_t w = off[aa];
         for(int64_t n = off[aa]; n < off[aa + 1]; n++) {
             const int j = ngb[(size_t)n];
+            if(j >= first_exact) {ngb[(size_t)w++] = j; continue;}
             const struct particle_data &pj = Pp[j];
             if(!((1 << pj.Type) & type_bitmask)) {continue;}
             const double h_j = (search_mode == NGB_SEARCH_ONEWAY) ? 0.0
@@ -1126,6 +1111,46 @@ static void ngl_trim_rows_to_exact(gpu_neighbor_list_t *gnl, std::vector<int> &n
         Kokkos::View<int*, GIZMO_KOKKOS_DEVICE_SPACE, Kokkos::MemoryTraits<Kokkos::Unmanaged>> d(gnl->neighbors, (size_t)total);
         Kokkos::deep_copy(d, h);
     }
+}
+
+/* What a walk reads of one segment, and the frame it reads it in.  root < 0: the walk skips it. */
+struct SidxSegmentView {
+    const double *rows;
+    const sfc_tile_t *tiles;
+    int ntiles;
+    const int *pool;
+    const tile_bvh_node_t *bvh;
+    int root;
+    struct sfc_walk_frame frame;
+};
+
+static struct SidxSegmentView sidx_segment_view(const gpu_index_segment_t &seg, const struct sfc_walk_frame &frame, int walk)
+{
+    struct SidxSegmentView v;
+    v.rows = seg.d_compact_xyzh; v.tiles = seg.d_tiles; v.ntiles = seg.ntiles; v.pool = seg.d_pool; v.bvh = seg.d_bvh;
+    v.root = (walk && seg.valid) ? seg.bvh_root : -1;
+    v.frame = frame;
+    return v;
+}
+
+/* The one search of an index: the owned segment, then the ghost segment, each in its own frame, into one
+ * output.  Returns the TRUE number of neighbours; stores at most `capacity` of them, the owned ones first
+ * (the ghost search stores after them, into what capacity they left), so a list whose true count exceeds
+ * the capacity is re-searched in the same order into a larger output. */
+KOKKOS_INLINE_FUNCTION
+int sidx_search_segments(const struct SidxSegmentView &own, const struct SidxSegmentView &ghost,
+                         const double pos[3], double h, double j_radius_scale, int search_mode,
+                         int *store, int capacity)
+{
+    const int n_own = (own.root < 0) ? 0
+                    : search_neighbors_sfc_gpu(own.rows, pos, h, j_radius_scale, own.tiles, own.ntiles, own.pool,
+                                               search_mode, own.bvh, own.root, own.frame, store, capacity);
+    const int stored = (n_own < capacity) ? n_own : capacity;
+    const int n_ghost = (ghost.root < 0) ? 0
+                      : search_neighbors_sfc_gpu(ghost.rows, pos, h, j_radius_scale, ghost.tiles, ghost.ntiles, ghost.pool,
+                                                 search_mode, ghost.bvh, ghost.root, ghost.frame,
+                                                 store + stored, capacity - stored);
+    return n_own + n_ghost;
 }
 
 void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
@@ -1157,7 +1182,7 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
      * empty list and return without walking. The companion warning in
      * gpu_neighbor_list.h on gpu_step_sidx_alltypes_ptr documents this
      * invariant. */
-    if (cached_idx && cached_idx->valid && cached_idx->cache_tbm >= 0 &&
+    if (cached_idx && (cached_idx->owned.valid || cached_idx->ghost.valid) &&
         cached_idx->cache_tbm != type_bitmask) {
         fprintf(stderr,
             "gpu_ngb_list_build FATAL: caller='%s' type_bitmask=0x%x but cached "
@@ -1178,7 +1203,7 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
     /* The same refusal for a radius_policy mismatch: a cached row's reach is the
      * build-time policy's, so walking it under another policy would use the
      * wrong leaf-side reach and miss valid pairs. */
-    if (cached_idx && cached_idx->valid &&
+    if (cached_idx && (cached_idx->owned.valid || cached_idx->ghost.valid) &&
         cached_idx->cache_radius_policy != radius_policy) {
         fprintf(stderr,
             "gpu_ngb_list_build FATAL: caller='%s' radius_policy=0x%x but cached "
@@ -1235,53 +1260,73 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
         gpu_spatial_index_t *owned;
         ~ngl_call_index_release() {gpu_spatial_index_free(owned);}
     } local_idx_release = {&local_idx};
-    gpu_spatial_index_t *idx;
-    /* Invalidate the cached SIDX unless it still describes the same particles.
-     * num_total: the slot map was sized for the old count, so accessing beyond it
-     * is UB (ghost exchange redo, particle creation).  The ghost pool's liveness
-     * and import: a cleanup-and-reimport can land the SAME ghost count with
-     * different ghost contents, which no count test can see.  The owned epoch: a
-     * change of membership or a position written outside a drift likewise leaves
-     * rows that no longer describe the members.  A drift changes none of these: the kept index is read at the
-     * time of the search (sfc_tiles.h), so reuse across a drift is the common path. */
+    gpu_spatial_index_t *idx = cached_idx ? cached_idx : &local_idx;
+    const int maintained = (cached_idx != NULL);   /* a kept index is raised; one built for this call is not */
     const integertime t_now = gizmo_host_ti_current();
     const struct DriftKickTableView host_tables = drift_kick_table_view_host();
-    /* Whether every pool member is already at the time of this search.  The local
-     * particles by the full-drift certificate (move_particles drifts only the
-     * active set, so it does not advance it, which is what makes it a proof rather
-     * than a convention); the imported segment by its owners having advanced it
-     * before packing.  A new timestep advances All.Ti_Current, so a certificate
-     * from an earlier time simply stops matching. */
-    const int ghost_segment_current = (ghost_get_num_ghosts() == 0) ||
-                                      (ghost_pool_current_ti() == t_now);
-    const int pool_current = (gizmo_full_drift_ti() == t_now) && ghost_segment_current;
-    if(cached_idx && cached_idx->valid &&
-       (cached_idx->num_total          != num_total          ||
-        cached_idx->ghost_live_when_built       != ghost_pool_is_live()     ||
-        cached_idx->ghost_provenance_when_built != ghost_provenance_epoch() ||
-        cached_idx->owned_epoch_when_built      != g_sidx_owned_epoch       ||
-        cached_idx->ti_ref > t_now || cached_idx->rebuild_needed)) {
-        gpu_spatial_index_free(cached_idx);
+    /* The particles this call searches: the rank's own, [0, owned_end), and, while an import is live, the
+     * imported ones, [ghost_base, ghost_end).  A caller takes the imported particles by passing the whole
+     * count, or leaves them out by passing the count of its own (hii_fb searches only the rank's own gas,
+     * and the imported segment it leaves out stays as it is for the next caller).  ghost_base cannot move
+     * during this call: every layout change refuses a live import.  Only the particle storage holds
+     * imported particles: a caller searching an array of its own (group finding) has none. */
+    const int pool_live = ghost_pool_is_live() && (P_shared == P);
+    const int ghost_base = pool_live ? ghost_get_num_local() : num_total;
+    const int ghost_end = pool_live ? ghost_base + ghost_get_num_ghosts() : num_total;
+    const int owned_end = (num_total < ghost_base) ? num_total : ghost_base;
+    const int walk_ghosts = pool_live && (num_total > ghost_base);
+    if(walk_ghosts && num_total != ghost_end) {
+        ngl_stop_empty(gnl, num_active, 7741, __LINE__, "gpu_ngb_list_build (caller '%s'): asked for %d of the %d imported "
+                       "particles; a neighbour list covers all of them or none", caller_label ? caller_label : "?",
+                       num_total - ghost_base, ghost_end - ghost_base);
+        return;
     }
-    /* A kept index is rebuilt instead when a fresh one is the better search: every
-     * member is current, so a fresh index reads exactly and its list needs no trim;
+    /* Whether the members are already at the time of this search.  The rank's own
+     * particles by the full-drift certificate (move_particles drifts only the active
+     * set, so it does not advance it, which is what makes it a proof rather than a
+     * convention); the imported ones by their owners having advanced them before
+     * packing.  A new timestep advances All.Ti_Current, so a certificate from an
+     * earlier time simply stops matching. */
+    const int owned_current = (gizmo_full_drift_ti() == t_now);
+    const int ghosts_current = (ghost_pool_current_ti() == t_now);
+    const int pool_current = owned_current && (!walk_ghosts || ghosts_current);
+    struct SidxBuildReport report;
+
+    /* The owned segment.  Released unless it still describes the rank's own particles: the
+     * same range, and the owned epoch (a change of membership or a position written outside
+     * a drift, which no count can show).  A drift changes neither: the segment is read at the
+     * time of the search (sfc_tiles.h), so reuse across a drift is the common path, and an
+     * import or its cleanup does not touch it. */
+    gpu_index_segment_t *own = &idx->owned;
+    /* The all-types index holds sinks, stars and dark matter, whose positions and membership can be
+     * written in place between two of its searches (sink repositioning, accretion, mergers) without
+     * advancing the owned epoch; its owned segment is therefore rebuilt at every import, as the whole
+     * index was before it was split. */
+    const int owned_follows_import = (idx == &g_step_sidx_alltypes);
+    if(own->valid && (own->source_count != owned_end || own->owned_epoch_when_built != g_sidx_owned_epoch ||
+                      own->ti_ref > t_now || own->rebuild_needed ||
+                      (owned_follows_import && own->ghost_provenance_when_built != ghost_provenance_epoch()))) {
+        sidx_segment_free(own);
+    }
+    /* A kept segment is rebuilt instead when a fresh one is the better search: every
+     * member is current, so a fresh segment reads exactly and its list needs no trim;
      * or its boxes can have grown by more than their own size. */
-    if(cached_idx && cached_idx->valid && cached_idx->ti_ref < t_now) {
-        const double D_kept = get_drift_factor_impl(cached_idx->ti_ref, t_now, 1.0, &host_tables);
-        if(pool_current || !(*cached_idx->looseness * D_kept <= SIDX_MAX_BOX_GROWTH)) {
-            gpu_spatial_index_free(cached_idx);
+    if(own->valid && own->ti_ref < t_now) {
+        const double D_kept = get_drift_factor_impl(own->ti_ref, t_now, 1.0, &host_tables);
+        if(owned_current || !(*own->looseness * D_kept <= SIDX_MAX_BOX_GROWTH)) {
+            sidx_segment_free(own);
         }
     }
-    /* Bring a kept index's reaches up to date.  Every particle whose radius changed
+    /* Bring a kept segment's reaches up to date.  Every particle whose radius changed
      * since was marked dirty (gizmo_mark_kernel_radius_dirty_*); its row takes its
      * current reach and the bands above it are raised to cover it.  All-dirty, or
-     * a refresh that cannot be staged, rebuilds the index instead: a fresh index
-     * starts current.  Per-cache state means consuming-and-clearing this cache's
-     * bits leaves the other registered caches' bitsets untouched. */
-    if(cached_idx && cached_idx->valid && cached_idx->dirty_handle >= 0) {
-        const int handle = cached_idx->dirty_handle;
+     * a refresh that cannot be staged, rebuilds the segment instead: a fresh segment
+     * starts current.  Per-segment state means consuming-and-clearing this segment's
+     * bits leaves the other registered segments' bitsets untouched. */
+    if(own->valid && own->dirty_handle >= 0) {
+        const int handle = own->dirty_handle;
         if(gpu_dirty_tracker_is_all_dirty(handle)) {
-            gpu_spatial_index_free(cached_idx);
+            sidx_segment_free(own);
         } else if(gpu_dirty_tracker_popcount(handle) > 0) {
             /* Drain bitset -> host list -> raise. */
             std::vector<int> dirty_host;
@@ -1289,46 +1334,90 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
             gpu_dirty_tracker_consume(handle,
                 [](int j, void *ud){ ((std::vector<int> *)ud)->push_back(j); },
                 &dirty_host);
-            if(sidx_raise_members(cached_idx, dirty_host.data(), (int)dirty_host.size(), SIDX_RAISE_REACH)) {
-                gpu_spatial_index_free(cached_idx);
+            if(sidx_raise_members(idx, dirty_host.data(), (int)dirty_host.size(), SIDX_RAISE_REACH)) {
+                sidx_segment_free(own);
             }
         }
     }
-    if(cached_idx && cached_idx->valid) {
-        idx = cached_idx;
-    } else if(cached_idx) {
-        gpu_spatial_index_build(P_shared, num_total, type_bitmask, cached_idx, caller_label, radius_policy);
-        idx = cached_idx;
-    } else {
-        gpu_spatial_index_build(P_shared, num_total, type_bitmask, &local_idx, caller_label, radius_policy);
-        idx = &local_idx;
-    }
-    /* A build that ran out of memory, or met a member no search can bound, leaves
-     * the index invalid and has already asked for the stop, naming the cause.
-     * There is nothing to walk, so hand back the same empty list any other
-     * exhausted allocation here produces. */
-    if(!idx->valid) {
-        ngl_leave_csr_empty(gnl, num_active);
-        return;
+    if(!own->valid) {
+        /* A build that runs out of memory, or meets a member no search can bound, leaves
+         * the segment invalid and has already asked for the stop, naming the cause.
+         * There is nothing to walk, so hand back the same empty list any other
+         * exhausted allocation here produces. */
+        const struct SidxParticleSource src = {P_shared, CellP, 0, owned_end, owned_end, type_bitmask};
+        if(sidx_build_segment_now(src, maintained, radius_policy, caller_label, own, &report)) {
+            ngl_leave_csr_empty(gnl, num_active);
+            return;
+        }
+        own->owned_epoch_when_built = g_sidx_owned_epoch;
+        own->ghost_provenance_when_built = ghost_provenance_epoch();
+        idx->cache_tbm = type_bitmask;
+        idx->cache_radius_policy = radius_policy;
     }
 
-    /* How this search reads the index (sfc_walk_frame).  Exact when nothing can
-     * have moved since the rows were written: the index was built at this time
-     * from members that were all current then, and every member is current now.
-     * Every member's reach is its stored one when the pool is current (the rows
-     * were brought up to date above); otherwise it is its drifted reach. */
-    struct sfc_walk_frame frame;
-    frame.D = (idx->ti_ref < t_now) ? get_drift_factor_impl(idx->ti_ref, t_now, 1.0, &host_tables) : 0.0;
-    frame.exact = (idx->ti_ref == t_now) && pool_current && idx->rows_are_positions;
-    frame.reach_current = pool_current;
-    if(!(frame.D >= 0.0 && frame.D < 1.0e30)) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "gpu_ngb_list_build (caller '%s'): the drift interval since the neighbour index "
-                 "was built is %g, which bounds nothing; neighbour list left empty", caller_label ? caller_label : "?", frame.D);
-        gizmo_request_controlled_stop(7740, msg, __FILE__, __LINE__, __FUNCTION__);
-        ngl_leave_csr_empty(gnl, num_active);
+    /* The ghost segment: the imported particles, exact.  An imported particle is current
+     * when it arrives and stays so for as long as it is imported (Ti_Current advances only
+     * between sync points, and its owner writes its values back, not its position, radius
+     * or type), so the segment needs no raises and is released with the import
+     * (gpu_sidx_ghost_pool_cleanup).  Rebuilt when the import it was built over is not
+     * the live one, or the time is not the one it was built at. */
+    gpu_index_segment_t *ghost = &idx->ghost;
+    if(ghost->valid && (!pool_live || ghost->ghost_provenance_when_built != ghost_provenance_epoch() ||
+                        ghost->source_base != ghost_base || ghost->source_count != ghost_end - ghost_base ||
+                        ghost->ti_ref != t_now)) {
+        sidx_segment_free(ghost);
+    }
+    /* Searched exactly only while its owners' certificate holds; otherwise there is no exact
+     * search of the imported particles, kept or fresh. */
+    if(walk_ghosts && !ghosts_current) {
+        ngl_stop_empty(gnl, num_active, 7742, __LINE__, "gpu_ngb_list_build (caller '%s'): the imported particles are "
+                       "not certified to be at the time of this search, so no exact search of them exists; neighbour "
+                       "list left empty", caller_label ? caller_label : "?");
         return;
     }
+    if(walk_ghosts && !ghost->valid) {
+        /* Built aside and published only whole: a build that fails leaves no part of a
+         * segment visible, and the owned segment untouched. */
+        gpu_index_segment_t fresh;
+        const struct SidxParticleSource src = {P_shared, CellP, ghost_base, ghost_end - ghost_base, ghost_base, type_bitmask};
+        if(sidx_build_segment_now(src, 0, radius_policy, caller_label, &fresh, &report)) {
+            ngl_leave_csr_empty(gnl, num_active);
+            return;
+        }
+        if(!fresh.rows_are_positions) {
+            sidx_segment_free(&fresh);
+            ngl_stop_empty(gnl, num_active, 7742, __LINE__, "gpu_ngb_list_build (caller '%s'): an imported particle is "
+                           "not at the time of this search although its import was certified current; neighbour list "
+                           "left empty", caller_label ? caller_label : "?");
+            return;
+        }
+        fresh.ghost_provenance_when_built = ghost_provenance_epoch();
+        *ghost = fresh;
+        idx->cache_tbm = type_bitmask;
+        idx->cache_radius_policy = radius_policy;
+    }
+
+    /* How this search reads each segment (sfc_walk_frame).  The owned segment: exact when
+     * nothing can have moved since its rows were written -- built at this time from members
+     * that were all current then, and all current now; each member's reach is its stored
+     * one when they are current (the rows were brought up to date above), otherwise its
+     * drifted reach.  The ghost segment is always read exactly. */
+    struct sfc_walk_frame own_frame;
+    own_frame.D = (own->ti_ref < t_now) ? get_drift_factor_impl(own->ti_ref, t_now, 1.0, &host_tables) : 0.0;
+    own_frame.exact = (own->ti_ref == t_now) && owned_current && own->rows_are_positions;
+    own_frame.reach_current = owned_current;
+    struct sfc_walk_frame ghost_frame;
+    ghost_frame.D = 0.0;
+    ghost_frame.exact = 1;
+    ghost_frame.reach_current = 1;
+    if(!(own_frame.D >= 0.0 && own_frame.D < 1.0e30)) {
+        ngl_stop_empty(gnl, num_active, 7740, __LINE__, "gpu_ngb_list_build (caller '%s'): the drift interval since the "
+                       "neighbour index was built is %g, which bounds nothing; neighbour list left empty",
+                       caller_label ? caller_label : "?", own_frame.D);
+        return;
+    }
+    const struct SidxSegmentView own_view = sidx_segment_view(*own, own_frame, 1);
+    const struct SidxSegmentView ghost_view = sidx_segment_view(*ghost, ghost_frame, walk_ghosts);
 
     /* Active indices: always re-uploaded (changes per call) */
     size_t active_bytes = (size_t)((num_active > 0) ? num_active : 1) * sizeof(int);
@@ -1391,29 +1480,20 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
     Kokkos::fence();
     /* Fused single pass: BVH walk + write neighbors into per-particle scratchpad */
     {
-        sfc_tile_t *tiles = idx->d_tiles;
-        tile_bvh_node_t *bvh = idx->d_bvh;
-        int *pool = idx->d_pool;
         int *scratch = d_scratch;
         int *counts = d_counts;
-        int ntiles = idx->ntiles;
-        int bvh_root = idx->bvh_root;
         int smode = search_mode;
 
         double sr_fac = search_radius_factor;
         double j_rad_scale = j_kernel_radius_scale;
         const double *radii = d_radii;
         const double *src_pos = d_source_pos;
-        const double *rows = idx->d_compact_xyzh;
-        const struct sfc_walk_frame walk_frame = frame;
+        const struct SidxSegmentView own_walk = own_view, ghost_walk = ghost_view;
         Kokkos::parallel_for("ngb_fused", num_active, KOKKOS_LAMBDA(int aa) {
             double h_i = radii[aa] * sr_fac;
             double pos_i[3] = {src_pos[aa*3+0], src_pos[aa*3+1], src_pos[aa*3+2]};
-            int cnt = search_neighbors_sfc_gpu(rows, pos_i, h_i, j_rad_scale,
-                                               tiles, ntiles, pool, smode,
-                                               bvh, bvh_root, walk_frame,
-                                               &scratch[(size_t)aa * NGL_SCRATCH_STRIDE],
-                                               NGL_SCRATCH_STRIDE);
+            int cnt = sidx_search_segments(own_walk, ghost_walk, pos_i, h_i, j_rad_scale, smode,
+                                           &scratch[(size_t)aa * NGL_SCRATCH_STRIDE], NGL_SCRATCH_STRIDE);
             counts[aa] = cnt;
         });
         Kokkos::fence();
@@ -1472,22 +1552,16 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
 
     /* Compact: copy from per-particle scratchpad into dense CSR neighbors[]. */
     {
-        sfc_tile_t *tiles = idx->d_tiles;
-        tile_bvh_node_t *bvh = idx->d_bvh;
-        int *pool = idx->d_pool;
         int *scratch = d_scratch;
         int *counts = d_counts;
         int64_t *offsets = gnl->offsets;
         int *neighbors = gnl->neighbors;
-        int ntiles = idx->ntiles;
-        int bvh_root = idx->bvh_root;
         int smode = search_mode;
         double sr_fac = search_radius_factor;
         double j_rad_scale = j_kernel_radius_scale;
         const double *radii = d_radii;
         const double *src_pos = d_source_pos;
-        const double *rows = idx->d_compact_xyzh;
-        const struct sfc_walk_frame walk_frame = frame;
+        const struct SidxSegmentView own_walk = own_view, ghost_walk = ghost_view;
         Kokkos::parallel_for("ngb_compact", num_active, KOKKOS_LAMBDA(int aa) {
             int n = counts[aa];
             int64_t dst = offsets[aa];
@@ -1498,10 +1572,7 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
                 /* Overflow path: re-walk BVH writing directly into neighbors[] */
                 double h_i = radii[aa] * sr_fac;
                 double pos_i[3] = {src_pos[aa*3+0], src_pos[aa*3+1], src_pos[aa*3+2]};
-                search_neighbors_sfc_gpu(rows, pos_i, h_i, j_rad_scale,
-                                         tiles, ntiles, pool, smode,
-                                         bvh, bvh_root, walk_frame,
-                                         &neighbors[dst], 0x7fffffff);
+                sidx_search_segments(own_walk, ghost_walk, pos_i, h_i, j_rad_scale, smode, &neighbors[dst], n);
             }
         });
         Kokkos::fence();
@@ -1528,7 +1599,7 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
      * members that test accepts at their current positions and reaches. */
     const integertime time1 = t_now;
     const int need_drift = !pool_current;
-    const int need_trim = !frame.exact;
+    const int need_trim = !own_frame.exact;
     if(gnl->total_pairs > 0 && gnl->neighbors && (need_drift || need_trim)) {
         std::vector<int> ngb_host((size_t)gnl->total_pairs);
         gpu_ngb_copy_neighbors_to_host(gnl, ngb_host.data());
@@ -1538,9 +1609,8 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
              * already current and there is nothing to confirm per ghost. The pool's
              * stamp is compared against the time THIS call needs rather than trusted
              * on its own, so a pool carried over from an earlier time still gets
-             * checked particle by particle. */
-            const int ghost_start = num_total - ghost_get_num_ghosts();
-            const int ghosts_certified = (ghost_pool_current_ti() == time1);
+             * checked particle by particle.  The imported particles start at
+             * ghost_base whatever count the caller passed. */
             /* Collect the distinct members that are behind, then advance them in one
              * threaded pass, rather than calling drift_particle once per visit.
              *
@@ -1563,7 +1633,7 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
             for(int64_t idx_n = 0; idx_n < gnl->total_pairs; idx_n++) {
                 int j = ngb_host[idx_n];
                 if(j < 0 || j >= num_total) continue;
-                if(ghosts_certified && j >= ghost_start) continue;
+                if(ghosts_current && j >= ghost_base) continue;
                 if(pool_seen[(size_t)j] == pool_seen_gen) continue;
                 pool_seen[(size_t)j] = pool_seen_gen;
                 if(P[j].Ti_current != time1) {pool_behind.push_back(j);}
@@ -1585,7 +1655,8 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
         }
         if(need_trim) {
             ngl_trim_rows_to_exact(gnl, ngb_host, num_active, d_source_pos, d_radii, search_radius_factor,
-                                   search_mode, type_bitmask, radius_policy, j_kernel_radius_scale, P_shared);
+                                   search_mode, type_bitmask, radius_policy, j_kernel_radius_scale, P_shared,
+                                   walk_ghosts ? ghost_base : num_total);
         }
     }
     Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(d_radii);

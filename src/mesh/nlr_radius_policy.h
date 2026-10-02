@@ -89,8 +89,7 @@ typedef unsigned int mode_b_radius_policy_t;
 /* Legacy aggregation policy for sfc_tiles + ghost_exchange tile cache.
  * Returns P[j].KernelRadius for every type — byte-equivalent to the
  * pre-policy-threading code paths that read P[j].KernelRadius unconditionally.
- * This is the DEFAULT for gpu_spatial_index_build /
- * gpu_ngb_list_build so non-runner (ghost-exchange) callers see no behavior
+ * This is the DEFAULT for gpu_ngb_list_build so non-runner (ghost-exchange) callers see no behavior
  * change.  Runner Mode A passes Spec::radius_policy explicitly instead. */
 #define MODE_B_RADIUS_LEGACY_KERNEL_ALLTYPES \
     (MODE_B_RADIUS_GAS_KERNEL | MODE_B_RADIUS_NONGAS_KERNEL)

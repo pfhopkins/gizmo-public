@@ -36,41 +36,56 @@ struct gpu_neighbor_list_t {
 };
 
 
-/* Spatial index: tiles + BVH over the members of a particle pool (sfc_tiles.h).
-   It describes its members as of its reference time ti_ref, the time it was built,
-   and every walk reads it at the time of the search, so it can be KEPT while its
-   members drift: the gas index persists across sync points, its velocity bounds
-   raised when a member's velocity changes (gpu_step_sidx_raise_motion) and its reach
-   bands when a member's radius does (the dirty tracker below).  Reused across list
-   builds with different search radii. */
-struct gpu_spatial_index_t {
-    sfc_tile_t *d_tiles;
-    tile_bvh_node_t *d_bvh;
-    int *d_pool;
-    int ntiles;
-    int bvh_root;
-    int bvh_nnodes;
+/* One segment of a spatial index: tiles + BVH over the members of one particle range (sfc_tiles.h).
+   It describes its members as of its reference time ti_ref, the time it was built, and every walk
+   reads it at the time of the search, so it can be KEPT while its members drift.  The pool holds the
+   members' particle indices; the slot map, where a segment keeps one, is indexed from source_base. */
+struct gpu_index_segment_t {
+    sfc_tile_t *d_tiles = nullptr;
+    tile_bvh_node_t *d_bvh = nullptr;
+    int *d_pool = nullptr;
+    int ntiles = 0;
+    int bvh_root = -1;         /* -1: the segment has no members to walk */
+    int bvh_nnodes = 0;
     /* Member rows: d_compact_xyzh[slot*SIDX_ROW_WIDTH ...] for the member in pool slot
        `slot` -- its position at ti_ref, its reach at its own clock, and its reach once
        drifted (sfc_tiles.h).  DOUBLE: float absolute positions are invalid for GIZMO's
        dynamic range (see §37/§38). */
-    double *d_compact_xyzh;
-    int *d_slot_of;            /* [source_count] the pool slot of particle source_base + o, -1 if not a member */
-    int *d_level_nodes;        /* the BVH nodes by height, leaves first */
-    int *d_shear_folds;        /* [2 per slot] the x folds (up, down) that took each member to its primary-box
-                                  image, for its velocity range there; BOX_SHEARING > 1 only, else null */
-    int *h_level_offsets;      /* [nlevels+1] where each height starts in d_level_nodes (host) */
-    int nlevels;
-    double *looseness;         /* largest tile growth per unit drift interval (SharedSpace scalar) */
+    double *d_compact_xyzh = nullptr;
+    int num_pool = 0;          /* slots: the tiles' runs of TILE_TARGET_SIZE, including the unused end of a partial tile */
+    int source_base = 0;       /* the members were drawn from particles [source_base, source_base + source_count) */
+    int source_count = 0;
     integertime ti_ref = 0;    /* the reference time */
     int rows_are_positions = 0;/* every member was current at ti_ref: the rows are positions, not predictions */
-    int rebuild_needed = 0;    /* a raise could not be applied: the next list build rebuilds the index */
-    int num_total;  /* particle count when built; mismatch → invalidate */
-    int num_pool;   /* slots: the tiles' runs of TILE_TARGET_SIZE, including the unused end of a partial tile */
-    int source_base;  /* the members were drawn from particles [source_base, source_base + source_count); */
-    int source_count; /* the pool holds their particle indices, the slot map is indexed from source_base */
-    int valid;  /* 1 if built and usable */
-    int dirty_handle = -1; /* gpu_dirty_tracker handle; -1 when not registered */
+    int valid = 0;             /* 1 if built and usable */
+    /* What keeps a segment's bounds true while it is kept: present only on a segment that is raised
+       (the owned one).  The imported segment is exact at its build time and never outlives it. */
+    int *d_slot_of = nullptr;  /* [source_count] the pool slot of particle source_base + o, -1 if not a member */
+    int *d_level_nodes = nullptr;   /* the BVH nodes by height, leaves first */
+    int *d_shear_folds = nullptr;   /* [2 per slot] the x folds (up, down) that took each member to its primary-box
+                                       image, for its velocity range there; BOX_SHEARING > 1 only, else null */
+    int *h_level_offsets = nullptr; /* [nlevels+1] where each height starts in d_level_nodes (host) */
+    int nlevels = 0;
+    double *looseness = nullptr;    /* largest tile growth per unit drift interval (SharedSpace scalar) */
+    int rebuild_needed = 0;    /* a raise could not be applied: the next list build rebuilds the segment */
+    int dirty_handle = -1;     /* gpu_dirty_tracker handle over the source range; -1 when not registered */
+    /* What the segment was built over, beyond its range: the owned segment the owned epoch (a change of
+       membership or a position written outside a drift, which no count can show); the imported segment
+       the ghost exchange's import (a cleanup-and-reimport can land the same count with other contents). */
+    uint64_t owned_epoch_when_built = 0;
+    unsigned long long ghost_provenance_when_built = 0;
+};
+
+/* Spatial index over the rank's particles: an OWNED segment over its own particles and a GHOST
+   segment over the particles imported for the current neighbour exchange.  The owned segment of the
+   gas index is kept across sync points and imports, its bounds raised when a member's velocity or
+   radius changes; the ghost segment is built, exact, by the first list build that needs it after an
+   import and released when the imported particles are (gpu_sidx_ghost_pool_cleanup).  A walk
+   visits the owned segment, then the ghost segment, of one index.  Reused across list builds with
+   different search radii. */
+struct gpu_spatial_index_t {
+    gpu_index_segment_t owned;
+    gpu_index_segment_t ghost;
     /* Type bitmask used at the most recent build. The cached rows / pool only
      * include the originally-built types; later callers MUST pass the same tbm to
      * gpu_ngb_list_build. A mismatch (e.g. a gas-only caller with tbm=1 reusing an
@@ -87,50 +102,30 @@ struct gpu_spatial_index_t {
      * valid pairs).  Default MODE_B_RADIUS_DEFAULT matches the policy hydro Specs
      * use; runner Mode A passes Spec::radius_policy explicitly. */
     mode_b_radius_policy_t cache_radius_policy = MODE_B_RADIUS_DEFAULT;
-    /* The particles this index was built over, beyond their count. The COUNT alone
-     * cannot detect a cleanup-and-reimport that lands the same number of ghosts with
-     * different contents, nor a change of owned membership or a position written
-     * outside a drift. Reuse therefore requires the ghost pool's liveness and import
-     * (as the ghost exchange records them) and the owned epoch to match, as well as
-     * num_total. */
-    int ghost_live_when_built = 0;
-    unsigned long long ghost_provenance_when_built = 0;
-    uint64_t owned_epoch_when_built = 0;
 };
 
 
-/* Build spatial index (tiles + BVH) on CPU, copy to SharedSpace.
-   P_shared must be in SharedSpace (managed memory).
-   caller_label: short tag identifying which caller triggered a rebuild.
-   radius_policy: per-particle reach used to seed tile->hmax[_by_type] and the
-   rows' reaches — runner Mode A passes
-   Spec::radius_policy; non-runner callers (merge_split / radfb_local / twopoint /
-   turb_powerspectra / legacy symlist) inherit the default MODE_B_RADIUS_DEFAULT
-   so they share the gas-only step-persistent SIDX (gpu_step_sidx_ptr) that
-   runner-driven hydro Specs build under the same MODE_B_RADIUS_DEFAULT. */
-void gpu_spatial_index_build(struct particle_data *P_shared, int num_total,
-                             int type_bitmask, gpu_spatial_index_t *idx,
-                             const char *caller_label = "?",
-                             mode_b_radius_policy_t radius_policy = MODE_B_RADIUS_DEFAULT);
-
-/* Free spatial index SharedSpace memory. */
+/* Release both segments of an index. */
 void gpu_spatial_index_free(gpu_spatial_index_t *idx);
 
 /* Module-level persistent SIDX for gas-only (type_bitmask=1) neighbor builds.
- * Shared across density rounds + symlist, and KEPT across sync points: a drift
- * needs nothing (see gpu_spatial_index_t).  Rebuilt when its count or epochs no
- * longer match, and when a fresh index is the better search (gpu_ngb_list_build). */
+ * Shared across density rounds + symlist.  Its owned segment is KEPT across sync
+ * points and imports: a drift needs nothing (see gpu_spatial_index_t).  Rebuilt when
+ * its range or epoch no longer match, and when a fresh segment is the better search
+ * (gpu_ngb_list_build). */
 gpu_spatial_index_t *gpu_step_sidx_ptr(void);
 
 /* Module-level persistent SIDX for all-types (type_bitmask=0x3f) builds.
  * Specifically for the SINK_PARTICLE codepath (sink_env1, sink_feed,
- * sink_swk all use the same all-types pool with the same num_total).
+ * sink_swk all use the same all-types pool).
  * First sink call within a step builds it; subsequent sink calls hit the
  * cached BVH and rows, saving ~1.5s × 2 per step on sink-active steps.
  * IMPORTANT: callers MUST pass tbm=0x3f when using this cache. Mixing
  * type bitmasks against a shared cache will produce wrong answers (the
  * cached rows / pool only include the originally-built types).
- * Released at every sync point by gpu_step_sidx_invalidate(). */
+ * Released at every sync point by gpu_step_sidx_invalidate(): its owned segment
+ * is not raised, so it is kept only while nothing can move (Ti_Current advances
+ * only between sync points). */
 gpu_spatial_index_t *gpu_step_sidx_alltypes_ptr(void);
 
 /* A new sync point: releases the all-types index (the gas index is kept).
@@ -149,33 +144,12 @@ void gpu_step_sidx_raise_motion(const int *idx, int n);
  * and pool/tile assignments become stale. */
 void gpu_step_sidx_invalidate_full(void);
 
-/* Dirty-index API for the rows' reaches.
- *
- * A kept index's row holds each member's reach, nlr_particle_symmetric_radius(j)
- * under the index's policy, and its tile and node bands the largest reach below
- * them.  Whenever code mutates arena[j].KernelRadius (or imports a ghost slot that
- * overwrites it), it must register j as dirty: the next gpu_ngb_list_build over a
- * kept index rewrites those rows and raises the bands above them before it walks.
- *
- * Three primitives:
- *   _idx(i)               — single index dirty
- *   _range(start, end)    — half-open range dirty (e.g. ghost import)
- *   _indices(arr, n)      — vector of indices dirty (e.g. density h-iter sync)
- *   _all()                — full-pool dirty (fresh arena alloc, fallback)
- *
- * Internal state auto-promotes to "all dirty" when the dirty list grows past
- * a memory-budget threshold (refreshing a few million indices via list is no
- * faster than the full-pool refresh and uses more bookkeeping).
- *
- * Multi-rank guarantee: ghost imports MUST register the imported range so
- * symmetric searches that read h_j for ghost candidates see fresh values.
- *
- * Cleared by: full SIDX rebuild (gpu_spatial_index_build), refresh fire
- * inside gpu_ngb_list_build, or explicit call to _all(). */
-void gpu_compact_xyzh_mark_h_dirty_idx(int i);
-void gpu_compact_xyzh_mark_h_dirty_range(int start, int end);
-void gpu_compact_xyzh_mark_h_dirty_indices(const int *indices, int n);
-void gpu_compact_xyzh_mark_h_dirty_all(void);
+/* The imported particles are about to be released (ghost_exchange_cleanup).  The gas index releases
+ * its ghost segment and keeps its owned one; the all-types index, whose owned segment is rebuilt at
+ * every import (gpu_ngb_list_build), is released whole, so it is never reused past the import it was
+ * built under. */
+void gpu_sidx_ghost_pool_cleanup(void);
+
 /* The owned particles changed in a way a kept index's rows cannot show and the
  * particle count does not reveal: the decomposition re-laid them out
  * (domain_particle_layout_changed), particles were rearranged (merge/split), a
@@ -196,19 +170,12 @@ extern "C" {
 }
 #endif
 
-/* Backwards-compat alias for callers that haven't been updated yet (treats
- * any unknown mutation as "all dirty"). New code should use the index-aware
- * variants above. */
-void gpu_compact_xyzh_mark_h_dirty(void);
-
-/* SSOT helpers for "P[i].KernelRadius was just written" — call ONE function
- * after any KernelRadius mutation and BOTH the GPU SIDX dirty tracker AND
- * the host glt cache dirty tracker get marked. Future caches added to either
- * layer pick this up automatically.
- *
- * Order between the two underlying marks is irrelevant — neither is consumed
- * until the next gpu_ngb_list_build (GPU side) or next ghost_exchange_run
- * (host side); both happen before return. */
+/* "P[i].KernelRadius (or another input of its reach) was just written": call after any
+ * such write.  A kept owned segment holds each member's reach in its row and the largest
+ * reach below each tile and node; the next gpu_ngb_list_build over it rewrites the marked
+ * rows and raises the bands above them before it walks (a mark past a few million
+ * particles rebuilds the segment instead).  The imported segment needs no marks: an
+ * imported particle's radius does not change while it is imported. */
 void gizmo_mark_kernel_radius_dirty_indices(const int *indices, int n);
 void gizmo_mark_kernel_radius_dirty_range(int start, int end);
 

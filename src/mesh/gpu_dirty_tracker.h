@@ -11,9 +11,6 @@
  *    Bitset sized count bits, indexed by (j - base).
  *  - mark_indices(j[], n) walks every registered cache, range-routes per-j,
  *    sets bits in ALL caches whose range covers j. Same for mark_range.
- *  - mark_all_global() sets all_dirty on every registered cache (preserves
- *    the global-scope semantics of the old gpu_compact_xyzh_mark_h_dirty_all
- *    for unknown-scope mutations).
  *  - consume(handle, callback) iterates set bits via __builtin_ctzll,
  *    invokes callback(j) for each, clears that cache's bitset + all_dirty
  *    flag. Other caches' state is untouched.
@@ -58,11 +55,6 @@ void gpu_dirty_tracker_mark_indices(const int *indices, int n);
  * marking a large region (e.g. full-drift over [0, NumPart)) because
  * each cache's bitset can be set in O((end-start)/64) word writes. */
 void gpu_dirty_tracker_mark_range(int start, int end);
-
-/* Mark every registered cache's all_dirty flag (e.g. for unknown-scope
- * mutations). Preserves the global semantics of the old
- * gpu_compact_xyzh_mark_h_dirty_all. */
-void gpu_dirty_tracker_mark_all_global(void);
 
 /* Iterate set bits for one cache's bitset, calling callback(j) for each.
  * If the cache's all_dirty flag is set, callback fires for every j in

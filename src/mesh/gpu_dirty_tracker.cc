@@ -150,13 +150,6 @@ void gpu_dirty_tracker_mark_range(int start, int end)
     }
 }
 
-void gpu_dirty_tracker_mark_all_global(void)
-{
-    for(int h = 0; h < GPU_DIRTY_MAX_CACHES; h++) {
-        if(g_caches[h].valid) g_caches[h].all_dirty = 1;
-    }
-}
-
 void gpu_dirty_tracker_consume(gpu_dirty_handle_t handle,
                                void (*callback)(int j, void *userdata),
                                void *userdata)

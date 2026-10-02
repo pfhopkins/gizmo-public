@@ -36,7 +36,7 @@
 #include "../declarations/lifecycle_counters.h"
 #include "../core/proto.h"
 #include "../system/mpi_alltoallv_typed.h"
-#include "gpu_neighbor_list.h" /* gpu_compact_xyzh_mark_h_dirty_range */
+#include "gpu_neighbor_list.h" /* gpu_sidx_ghost_pool_cleanup */
 #include "sfc_tiles.h"           /* build_sfc_supply_pool, sfc_tile_t, tile_bvh_node_t */
 #include "neighbor_list.h"       /* NGB_SEARCH_ONEWAY, NGB_SEARCH_SYMMETRIC */
 #include "ghost_exchange_functions.h" /* gx_pair_accept_wrap_and_test: shared accept, wraps via the canonical macros */
@@ -1532,10 +1532,6 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
     NumGhostParticles = total_recv;
     NumPart += total_recv;
 
-    /* Mark dirty for compact_xyzh refresh (same as legacy). */
-    if(NumGhostParticles > 0) {
-        gpu_compact_xyzh_mark_h_dirty_range(NumPart_before_ghost, NumPart);
-    }
     /* Every rank advanced its outgoing slots to this same All.Ti_Current above,
        and the exchange is collective, so the pool just installed is current at
        that time -- but only if that advance actually happened. */
@@ -1656,14 +1652,9 @@ void ghost_exchange_hydro_oneway(double safety_factor)
 void ghost_exchange_cleanup(void)
 {
     if(NumPart_before_ghost < 0) return;
-    /* Ghost slots are about to leave scope (NumPart shrinks back to local).
-     * No dirty-state scrubbing is done here. Marks are per-cache: one landing
-     * outside a cache's registered index range is dropped at mark time, and a
-     * cache that WAS registered over these ghost slots is freed -- handle
-     * unregistered with it -- by the particle-count change on its next build.
-     * Either way no stale ghost-slot bit reaches compact_h_refresh. New ghost
-     * slots are marked dirty at import time (mark_h_dirty_range above), so
-     * symmetric h-reads on ghosts stay fresh. */
+    /* Ghost slots are about to leave scope (NumPart shrinks back to local): the
+     * neighbour indexes built over them go first (gpu_sidx_ghost_pool_cleanup). */
+    gpu_sidx_ghost_pool_cleanup();
     if(NumGhostParticles > GhostEpochHighWater) {GhostEpochHighWater = NumGhostParticles;}
     NumPart = NumPart_before_ghost;
     N_gas = N_gas_before_ghost;
@@ -1688,10 +1679,10 @@ void ghost_exchange_cleanup(void)
    (unchanged by a value refresh). This helper is ALWAYS in the refresh call path
    (never elided) so a backend with explicit host/device particle buffers (no
    unified-memory coherence) has ONE mandatory place to add an explicit
-   host->device ghost copy. Parity with import: import marks compact_xyzh h-dirty
-   and starts a new ghost import (which a kept index compares); a value refresh
-   changes neither Pos/h nor the slot set, so it does neither — but any explicit
-   device copy import gains MUST be mirrored here. */
+   host->device ghost copy. Parity with import: an import starts a new ghost
+   provenance (which the neighbour index's ghost segment is keyed on); a value
+   refresh changes neither Pos/h nor the slot set, so it does not -- but any
+   explicit device copy import gains MUST be mirrored here. */
 static inline void ghost_refresh_make_device_visible(int ghost_base, int ghost_count)
 {
     (void)ghost_base; (void)ghost_count;
