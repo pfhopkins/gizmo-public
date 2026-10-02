@@ -105,6 +105,31 @@ void gpu_sidx_notify_owned_changed(void)
     g_sidx_owned_epoch++;
 }
 
+/* The order peano_hilbert_order last left the rank's particles in, recorded with the layout change that
+ * followed it (gpu_sidx_notify_owned_changed): it holds while the owned epoch, the time and the particle
+ * count are the ones recorded, and the next layout change of any kind advances the epoch. */
+static struct {int valid; uint64_t owned_epoch; integertime ti; int num_part;} g_sidx_particles_ordered = {0, 0, 0, 0};
+
+void gpu_sidx_notify_owned_reordered(void)
+{
+    gpu_sidx_notify_owned_changed();
+    g_sidx_particles_ordered.valid = 1;
+    g_sidx_particles_ordered.owned_epoch = g_sidx_owned_epoch;
+    g_sidx_particles_ordered.ti = gizmo_host_ti_current();
+    g_sidx_particles_ordered.num_part = NumPart;
+}
+
+/* Whether the particles [0, owned_end) are still in the order that decomposition left them in, at this
+ * time.  That decomposition drifted every particle to this time, wrapped them into the box and measured
+ * the extent around them before ordering them, so each is current and inside the key extent: a segment
+ * built over them now needs no keys and no sort.  Order is a performance property of the tiles, never a
+ * correctness one. */
+static int sidx_particles_still_ordered(int owned_end, integertime t_now)
+{
+    return g_sidx_particles_ordered.valid && g_sidx_particles_ordered.owned_epoch == g_sidx_owned_epoch &&
+           g_sidx_particles_ordered.ti == t_now && g_sidx_particles_ordered.num_part == owned_end;
+}
+
 
 /* A new sync point.  The gas index is KEPT: it describes its members as of its reference time, and
  * every walk reads it at the time of the search (sfc_tiles.h), so a drift needs nothing here.  The
@@ -573,13 +598,16 @@ static int sidx_alloc_kept(gpu_index_segment_t *seg, int maintained, int ntiles,
 /* Build a segment over the members of src into seg.  kStageOnHost: run on the host with the working
  * space in the memory arena, then copy the segment to the device once; otherwise run on the device and
  * build it in place.  maintained: keep what raises need (the slot map, the level schedule, the shear folds,
- * the looseness); a segment that is never raised keeps only what a walk reads.  Returns 0; 1 when a member
+ * the looseness); a segment that is never raised keeps only what a walk reads.  presorted: the source is
+ * already in a spatially coherent order with every member current and inside the key extent
+ * (sidx_particles_still_ordered), so the members are tiled in source order with no keys and no sort; the
+ * fold still refuses a member no search can bound.  Returns 0; 1 when a member
  * cannot be bounded; 2 when memory could not be had; 3 when the build failed otherwise (report->failure
  * says how).  On 1, 2 or 3 the segment is left invalid. */
 template <class Exec, bool kStageOnHost, class Source>
 static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, integertime ti_ref,
                               const struct DriftKickTableView &tables, const struct SidxKeyFrame &frame,
-                              int maintained, gpu_index_segment_t *seg, struct SidxBuildReport *report)
+                              int maintained, int presorted, gpu_index_segment_t *seg, struct SidxBuildReport *report)
 {
     using Mem = typename std::conditional<kStageOnHost, Kokkos::HostSpace, GIZMO_KOKKOS_DEVICE_SPACE>::type;
     using UV = Kokkos::MemoryTraits<Kokkos::Unmanaged>;
@@ -628,37 +656,40 @@ static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, 
         if(num_members != members_counted) {throw std::runtime_error("index build: membership changed between its passes");}
         const size_t n_mem = (size_t)(num_members > 0 ? num_members : 1);
         Kokkos::View<int*, Mem, UV> member((int *)scratch.take(n_mem * sizeof(int), "ngl_sidx_build_members"), n_mem);
-        Kokkos::View<Morton128*, Mem, UV> key((Morton128 *)scratch.take(n_mem * sizeof(Morton128), "ngl_sidx_build_keys"), n_mem);
-        /* 2. keys: only the position is needed here */
-        Kokkos::parallel_for("sidx_build_keys", Kokkos::RangePolicy<Exec>(0, num_source), KOKKOS_LAMBDA(int o) {
-            if(!src.is_member(o)) {return;}
-            const int s = first_member(o);
-            member(s) = o;
-            double center[3], hw = 0.0, image[3], box_hw;
-            int current = 0, folds_up = 0, folds_down = 0;
-            if(src.position(o, ti_ref, tables, center, &hw, &current)) {
-                Kokkos::atomic_add(&tally(0), 1); key(s).hi = 0; key(s).lo = 0; return;
-            }
-            if(!current) {Kokkos::atomic_add(&tally(1), 1);}
-            sidx_member_image(center, hw, image, &box_hw, &folds_up, &folds_down);
-            key(s) = sidx_member_key(image, frame);
-            if(key(s).hi & SIDX_KEY_OUTSIDE) {Kokkos::atomic_add(&tally(2), 1); if(src.is_owned(o)) {Kokkos::atomic_add(&tally(3), 1);}}
+        Kokkos::parallel_for("sidx_build_member_list", Kokkos::RangePolicy<Exec>(0, num_source), KOKKOS_LAMBDA(int o) {
+            if(src.is_member(o)) {member(first_member(o)) = o;}
         });
         Exec().fence();
-        gizmo_gpu_check_last_error("sidx_build_keys", num_source);
-        int tally_h[4];
-        {
-            auto t = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), tally);
-            for(int q = 0; q < 4; q++) {tally_h[q] = t(q);}
-        }
-        report->all_current = (tally_h[1] == 0);
-        report->n_outside = tally_h[2]; report->n_outside_owned = tally_h[3];
-        if(tally_h[0] > 0) {report->refused = 1; sidx_segment_free(seg); return 1;}
-        /* 3. sort: only the key and the member ordinal move */
-        if(num_members > 1) {
-            Kokkos::Experimental::sort_by_key(Exec(), Kokkos::subview(key, std::make_pair(0, num_members)),
-                                              Kokkos::subview(member, std::make_pair(0, num_members)), Morton128Less{});
+        gizmo_gpu_check_last_error("sidx_build_member_list", num_source);
+        if(!presorted) {
+            Kokkos::View<Morton128*, Mem, UV> key((Morton128 *)scratch.take(n_mem * sizeof(Morton128), "ngl_sidx_build_keys"), n_mem);
+            /* 2. keys: only the position is needed here */
+            Kokkos::parallel_for("sidx_build_keys", Kokkos::RangePolicy<Exec>(0, num_members), KOKKOS_LAMBDA(int s) {
+                const int o = member(s);
+                double center[3], hw = 0.0, image[3], box_hw;
+                int current = 0, folds_up = 0, folds_down = 0;
+                if(src.position(o, ti_ref, tables, center, &hw, &current)) {
+                    Kokkos::atomic_add(&tally(0), 1); key(s).hi = 0; key(s).lo = 0; return;
+                }
+                sidx_member_image(center, hw, image, &box_hw, &folds_up, &folds_down);
+                key(s) = sidx_member_key(image, frame);
+                if(key(s).hi & SIDX_KEY_OUTSIDE) {Kokkos::atomic_add(&tally(2), 1); if(src.is_owned(o)) {Kokkos::atomic_add(&tally(3), 1);}}
+            });
             Exec().fence();
+            gizmo_gpu_check_last_error("sidx_build_keys", num_members);
+            int tally_h[4];
+            {
+                auto t = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), tally);
+                for(int q = 0; q < 4; q++) {tally_h[q] = t(q);}
+            }
+            report->n_outside = tally_h[2]; report->n_outside_owned = tally_h[3];
+            if(tally_h[0] > 0) {report->refused = 1; sidx_segment_free(seg); return 1;}
+            /* 3. sort: only the key and the member ordinal move */
+            if(num_members > 1) {
+                Kokkos::Experimental::sort_by_key(Exec(), Kokkos::subview(key, std::make_pair(0, num_members)),
+                                                  Kokkos::subview(member, std::make_pair(0, num_members)), Morton128Less{});
+                Exec().fence();
+            }
         }
         /* 4. tiles: members inside the extent fill tiles from slot 0; the rest start at a fresh tile */
         const int n_inside = num_members - report->n_outside;
@@ -705,7 +736,11 @@ static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, 
             Kokkos::parallel_for(Kokkos::TeamThreadRange(team, k0, (k1 > k0) ? k1 : k0), [&](int k) {
                 const int o = member(k), slot = t * TILE_TARGET_SIZE + (k - k0);
                 struct SidxMember m;
-                src.describe(o, policy, ti_ref, tables, growth, kernel_floor, m);
+                if(src.describe(o, policy, ti_ref, tables, growth, kernel_floor, m)) {
+                    /* its position or its motion cannot be bounded */
+                    Kokkos::atomic_add(&tally(0), 1); return;
+                }
+                if(!m.current) {Kokkos::atomic_add(&tally(1), 1);}
                 double *row = &rows((size_t)slot * SIDX_ROW_WIDTH);
                 row[0] = m.center[0]; row[1] = m.center[1]; row[2] = m.center[2]; row[3] = m.r; row[4] = m.r_drifted;
                 pool(slot) = src.global(o);
@@ -727,6 +762,11 @@ static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, 
         });
         Exec().fence();
         gizmo_gpu_check_last_error("sidx_build_fold", ntiles);
+        {   /* whether every member was already at ti_ref, and any member the fold could not bound */
+            auto t = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), tally);
+            report->all_current = (t(1) == 0);
+            if(t(0) > 0) {report->refused = 1; sidx_segment_free(seg); return 1;}
+        }
         /* 5. the BVH: its shape from the host, its bounds level by level from the leaves */
         {
             std::vector<tile_bvh_node_t> h_bvh((size_t)shape.nnodes);
@@ -805,7 +845,7 @@ static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, 
  * once that route is priced).  maintained: the segment will be kept and raised, so it keeps what raises need
  * and registers its source range with the dirty tracker.  Returns 0; otherwise the segment is left invalid
  * and the controlled stop has been requested here, naming the cause. */
-static int sidx_build_segment_now(const struct SidxParticleSource &src, int maintained,
+static int sidx_build_segment_now(const struct SidxParticleSource &src, int maintained, int presorted,
                                   mode_b_radius_policy_t radius_policy, const char *caller_label,
                                   gpu_index_segment_t *seg, struct SidxBuildReport *report)
 {
@@ -850,7 +890,7 @@ static int sidx_build_segment_now(const struct SidxParticleSource &src, int main
     frame.len = DomainLen;
 #endif
     const int rc = sidx_build_segment<Kokkos::DefaultHostExecutionSpace, true>(src, radius_policy, ti_ref, host_tables,
-                                                                               frame, maintained, seg, report);
+                                                                               frame, maintained, presorted, seg, report);
     if(rc != 0) {
         char msg[400];
         const char *who = caller_label ? caller_label : "?";
@@ -1345,7 +1385,10 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
          * There is nothing to walk, so hand back the same empty list any other
          * exhausted allocation here produces. */
         const struct SidxParticleSource src = {P_shared, CellP, 0, owned_end, owned_end, type_bitmask};
-        if(sidx_build_segment_now(src, maintained, radius_policy, caller_label, own, &report)) {
+        /* Only the gas index takes the order as it stands: every in-place write of a gas particle's
+         * position or membership advances the owned epoch, which is not so for the other types. */
+        const int presorted = (P_shared == P) && (type_bitmask == 1) && sidx_particles_still_ordered(owned_end, t_now);
+        if(sidx_build_segment_now(src, maintained, presorted, radius_policy, caller_label, own, &report)) {
             ngl_leave_csr_empty(gnl, num_active);
             return;
         }
@@ -1380,7 +1423,7 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
          * segment visible, and the owned segment untouched. */
         gpu_index_segment_t fresh;
         const struct SidxParticleSource src = {P_shared, CellP, ghost_base, ghost_end - ghost_base, ghost_base, type_bitmask};
-        if(sidx_build_segment_now(src, 0, radius_policy, caller_label, &fresh, &report)) {
+        if(sidx_build_segment_now(src, 0, 0, radius_policy, caller_label, &fresh, &report)) {
             ngl_leave_csr_empty(gnl, num_active);
             return;
         }

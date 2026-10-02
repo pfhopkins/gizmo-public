@@ -1078,7 +1078,7 @@ size_t my_fwrite(void *ptr, size_t size, size_t nmemb, FILE * stream);
 size_t my_fread(void *ptr, size_t size, size_t nmemb, FILE * stream);
 void mpi_printf(const char *fmt, ...);
 void open_outputfiles(void);
-void peano_hilbert_order(void);
+int peano_hilbert_order(void);   /* 1 if it ordered the particles */
 void predict(double time);
 void read_ic(char *fname);
 void input_source_filename(char *out, size_t n);   /* which file set this run reads its particles from (IC, or a snapshot when starting from one) */

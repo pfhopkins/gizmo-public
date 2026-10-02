@@ -31,12 +31,13 @@
  *
  *  Not needed for the GPU particle arena: it aliases P[] directly rather than
  *  holding a copy, so there is nothing in it to go stale. */
-static void domain_particle_layout_changed(const char *reason)
+static void domain_particle_layout_changed(const char *reason, int particles_ordered)
 {
     /* Epochs only: the neighbour indexes' memory was already returned at the entry
-     * of the decomposition, so an index built before this point is never reused. */
+     * of the decomposition, so an index built before this point is never reused.
+     * particles_ordered: this decomposition also left them in curve order. */
     ghost_exchange_supply_identity_changed(reason);
-    gpu_sidx_notify_owned_changed();
+    if(particles_ordered) {gpu_sidx_notify_owned_reordered();} else {gpu_sidx_notify_owned_changed();}
 }
 
 
@@ -650,6 +651,7 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
     }
     gizmo_exit_bad_stop_if_requested("domain:particle_type_check");
 
+    int particles_ordered = 0;
 #ifdef SUBFIND
     if(GrNr < 0)			/* we don't do it when SUBFIND is executed for a certain group */
 #endif
@@ -661,7 +663,7 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
      * a bounded interval of decompositions instead of on each one. */
     {
         if(!allow_peano_order_cadence || DomainCallsSincePeanoOrder >= MAX_DOMAIN_CALLS_BETWEEN_PEANO_ORDERS)
-          {peano_hilbert_order(); DomainCallsSincePeanoOrder = 0;}
+          {particles_ordered = peano_hilbert_order(); DomainCallsSincePeanoOrder = 0;}
         else
           {DomainCallsSincePeanoOrder++;}
     }
@@ -687,7 +689,7 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
   reconstruct_timebins();
   gpu_particles_arena_invalidate(); /* P[] reordered across ranks; arena stale */
   wakeup_sidecar_invalidate();      /* P[] reindexed across ranks → rebuild WakeupDirty from P[] next scan */
-  domain_particle_layout_changed("domain_Decomposition");
+  domain_particle_layout_changed("domain_Decomposition", particles_ordered);
   report_memory_ledger_on_growth("post-domain");  /* memory peak (persistent + tree); collective; prints only on growth */
   DomainExtentOutgrownLocal = 0;   /* the extent was just re-measured around every particle */
 }
@@ -970,7 +972,7 @@ void domain_Decomposition_light(int UseAllTimeBins, int do_particle_mergesplit_k
     gizmo_exit_bad_stop_if_requested("domain:treeallocate_light"); /* drain a tree-alloc UVM OOM (all-rank) before any tree use */
     reconstruct_timebins();
     wakeup_sidecar_invalidate();   /* light repartition rearranged + exchanged particles → rebuild WakeupDirty next scan */
-    domain_particle_layout_changed("domain_Decomposition_light");
+    domain_particle_layout_changed("domain_Decomposition_light", 0);
     report_memory_ledger_on_growth("post-domain-light");  /* same memory boundary as full decomposition; collective; growth-gated */
 }
 

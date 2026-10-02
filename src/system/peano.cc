@@ -287,9 +287,9 @@ static long coincident_pass(int do_repair, long nseen, long *nfailed)
     return ndup;
 }
 
-void peano_hilbert_order(void)
+int peano_hilbert_order(void)
 {
-  if(ghost_require_no_live_pool_for_layout_change("peano_hilbert_order")) {return;}
+  if(ghost_require_no_live_pool_for_layout_change("peano_hilbert_order")) {return 0;}
   int i; PRINT_STATUS("Begin Peano-Hilbert order...");
   static int first_ordering = 1;   /* the cross-block pass is input validation: first ordering only */
   long ndup_local = 0;
@@ -403,6 +403,7 @@ void peano_hilbert_order(void)
   first_ordering = 0;
 
     PRINT_STATUS(" ..Peano-Hilbert done");
+    return 1;
 }
 
 

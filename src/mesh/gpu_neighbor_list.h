@@ -162,6 +162,10 @@ void gpu_sidx_ghost_pool_cleanup(void);
  * Ghost import and cleanup need no call: the index keys its imported particles on
  * the ghost exchange's own record (ghost_pool_is_live, ghost_provenance_epoch). */
 void gpu_sidx_notify_owned_changed(void);
+/* The same layout change, made by a full decomposition that also ordered the particles along the
+ * space-filling curve: a gas segment built over them at this time, before anything changes them, takes
+ * that order instead of sorting. */
+void gpu_sidx_notify_owned_reordered(void);
 
 #ifdef __cplusplus
 extern "C" {
