@@ -157,21 +157,6 @@ struct MechFBSpec {
     static constexpr unsigned int            neighbor_type_mask = (1u << 0);   /* gas only */
     static constexpr mode_b_radius_policy_t  radius_policy      = MODE_B_RADIUS_DEFAULT;
 
-    /* Supply is gas-only (neighbor_type_mask above) and the supply-side reach is the
-     * gas kernel radius (MODE_B_RADIUS_DEFAULT = GAS_KERNEL), with a j-side scale of
-     * 1.0 (no symmetric_neighbor_radius_scale declared here). The per-type opener band
-     * is seeded per particle from the conservative source union capped at
-     * All.MaxKernelRadius and exchanged cross-rank on the nodes the export walk
-     * descends, so the type-0 band dominates the gas P[j].KernelRadius reach under the
-     * standing invariant that no gas kernel radius exceeds All.MaxKernelRadius (the
-     * drift clamps in predict.cc and the density-convergence maxsoft clamp).
-     * Unlike the all-types supply spec this makes no claim about non-gas radii: the
-     * active sources here are stars/sinks/grains, but they enter as QUERIES, staged
-     * explicitly as q_pos/q_h by gizmo_request_filtered_ghost_import, and are never
-     * supply. The safety factor is folded into the j-side reach by both the sender
-     * opener and the receiver walk, so it does not weaken the bound. */
-    static constexpr bool                    supply_band_dominated = true;
-
     /* Write policy. j-side writes happen via uses_ghost_writeback bundle
      * (orthogonal to write_pattern per WritePattern enum docstring). */
     static constexpr WritePattern   write_pattern   = WritePattern::ActiveReduceOnly;
@@ -189,7 +174,7 @@ struct MechFBSpec {
 
     /* Mode A CSR policy. mode_a_rebuild_csr_every_iter=false is LOAD-BEARING
      * (design §F): preserves legacy 1-CSR-shared-across-6-modes optimization. */
-    static constexpr double mode_a_csr_buffer_factor      = 1.3;
+    static constexpr double mode_a_csr_buffer_factor      = 1.0;   /* fixed radius across its iterations: no AdjustRadius */
     static constexpr bool   mode_a_rebuild_csr_every_iter = false;
 
     /* Single j-mask subgroup (gas-only). SupportsSubgroups OMITTED (default

@@ -288,7 +288,8 @@ struct IdentitySidecar {
  * type_bitmask MUST match the Spec's neighbor_type_mask. A mismatch
  * (e.g. gas-only Spec routing to the all-types cache) lets the walker
  * return wrong-type neighbors and triggers downstream drift/lazy-drift
- * aborts. gpu_ngb_list_build hard-aborts on mismatch via cache_tbm.
+ * aborts. gpu_ngb_list_build refuses a mismatch via cache_tbm (controlled
+ * stop, empty list).
  * ========================================================================== */
 
 enum class SidxCacheKind : int {
@@ -636,6 +637,21 @@ struct nlr_spec_needs_live_neighbours<Spec, std::void_t<decltype(Spec::needs_liv
 template <typename Spec>
 constexpr bool nlr_spec_needs_live_neighbours_v = nlr_spec_needs_live_neighbours<Spec>::value;
 
+/* Optional Spec::writes_neighbour_motion: the pair kernel changes a
+ * NEIGHBOUR's velocity (or another input of particle_motion_speed_bound).
+ * Every index that bounds particle motion -- the tree's nodes, the owned tile
+ * indexes -- must then be raised for the neighbours the loop wrote, on every
+ * path.  The runner marks each neighbour handed to the pair kernel (and each
+ * owner a reverse-writeback delta lands on) and raises the marked set once the
+ * loop is done.  Absent means false. */
+template <typename Spec, typename = void>
+struct nlr_spec_writes_neighbour_motion : std::false_type {};
+template <typename Spec>
+struct nlr_spec_writes_neighbour_motion<Spec, std::void_t<decltype(Spec::writes_neighbour_motion)>>
+    : std::integral_constant<bool, Spec::writes_neighbour_motion> {};
+template <typename Spec>
+constexpr bool nlr_spec_writes_neighbour_motion_v = nlr_spec_writes_neighbour_motion<Spec>::value;
+
 /* SFINAE detection of optional Spec::bind_active_to_eval_context.
  *
  * A Spec whose ActiveData carries rank-local context fields (rank-local
@@ -710,37 +726,6 @@ double nlr_spec_symmetric_j_radius_scale() {
         return Spec::symmetric_neighbor_radius_scale();
     } else {
         return 1.0;
-    }
-}
-
-/* nlr_spec_supply_band_dominated — optional Spec hook.
- *
- * A Spec whose supply-side reach is provably bounded by the per-type node band
- * the sender opener walks against declares:
- *
- *   static constexpr bool supply_band_dominated = true;
- *
- * Absent ⇒ false, which keeps that Spec's SYMMETRIC ghost import on the
- * broadcast path — today's behavior, and the safe answer when the bound is not
- * established. Only a proven Spec sets it, and the proof belongs in a comment
- * at the declaration. The runner threads this into the ghost_exchange spec, so
- * routed SYMMETRIC discovery is selected by this structural property alone and
- * never by which loop is calling. */
-template <typename Spec, typename = void>
-struct nlr_spec_has_supply_band_dominated : std::false_type {};
-
-template <typename Spec>
-struct nlr_spec_has_supply_band_dominated<
-    Spec,
-    std::void_t<decltype(Spec::supply_band_dominated)>>
-    : std::true_type {};
-
-template <typename Spec>
-constexpr bool nlr_spec_supply_band_dominated() {
-    if constexpr (nlr_spec_has_supply_band_dominated<Spec>::value) {
-        return Spec::supply_band_dominated;
-    } else {
-        return false;
     }
 }
 
@@ -831,30 +816,21 @@ constexpr bool nlr_spec_mode_a_rebuild_csr_every_iter_v =
     nlr_spec_mode_a_rebuild_csr_every_iter<Spec>::value;
 
 /* ------------------------------------------------------------------------- *
- * Active-source-in-pool contract (NGL source position/radius correctness).
+ * Active-source-in-pool declaration.
  *
- * INVARIANT: the cached SIDX `compact_xyzh` holds neighbor-POOL state (positions
- * in [0..2], h in [3]). It is authoritative SOURCE position/radius for an active
- * particle ONLY if that particle is a member of the cached pool (its type is in
- * the pool's type_bitmask). The Mode-A NULL source_positions/radii fast-path reads
- * compact_xyzh[active_index]; for a NON-pool active (e.g. a Type-5 sink doing a
- * gas-neighbor search in a GasOnly density loop) that slot is stale/unrefreshed on
- * a reused cache (incremental drift-refresh only touches pool members), giving a
- * wrong/non-deterministic source. (Fresh-built or AllTypes caches do not have this
- * problem; only cached GasOnly + non-gas active does.)
+ * gpu_ngb_list_build takes a query's position and radius, when the caller
+ * supplies none, from the query particle's own current state -- never from the
+ * cached SIDX rows, which describe pool members at the index's reference time --
+ * so an active source that is not a pool member (e.g. a Type-5 sink doing a
+ * gas-neighbor search in a GasOnly density loop) is searched from where it is.
  *
- * CONTRACT: every cached-SIDX Spec (sidx_cache_kind != None) MUST declare
+ * Every cached-SIDX Spec (sidx_cache_kind != None) declares
  *   static constexpr bool mode_a_active_sources_in_sidx_pool = <bool>;
- *     true  -> every active source is a pool member (gas-gas, or AllTypes pool):
- *              keep the compact fast-path (no per-active position copy).
+ *     true  -> every active source is a pool member (gas-gas, or AllTypes pool).
  *     false -> active sources may be non-pool (e.g. sink/star in a GasOnly loop):
- *              the runner stages explicit P[active_i].Pos (radii are already passed
- *              explicitly by the runner). compact_xyzh stays an acceleration
- *              structure only; source coords come from current particle state.
- * The static_assert in the runner bodies makes omission a COMPILE ERROR
- * (safe-by-default; a future non-pool-active GasOnly loop cannot silently inherit
- * the stale-source bug). A complementary runtime guard in gpu_ngb_list_build
- * catches direct (non-runner) callers that pass NULL with non-pool actives.
+ *              the runner stages explicit P[active_i].Pos itself (radii are
+ *              already passed explicitly by the runner).
+ * The static_assert in the runner bodies makes omission a COMPILE ERROR.
  * ------------------------------------------------------------------------- */
 
 /* "declared": does the Spec declare mode_a_active_sources_in_sidx_pool at all? */
@@ -897,7 +873,8 @@ constexpr bool nlr_spec_needs_explicit_source_positions_v =
 
 /* Stage current P[active_i].Pos into `storage` and return it as a source_positions
  * array (layout pos[k*3+axis]) for specs that need explicit positions; returns
- * nullptr (keep the compact fast-path) otherwise. ~3 doubles/active, host-side. */
+ * nullptr (the list builder takes each source's own position) otherwise.
+ * ~3 doubles/active, host-side. */
 template <typename Spec>
 static inline const double* nlr_stage_explicit_source_positions(
     const struct particle_data* P_host, const int* active_indices, int num_active,
@@ -1594,7 +1571,7 @@ const char *nlr_path_label(NeighborLoopPlan::Path path);
  *
  *   These invariants protect the lazy-drift architecture: Mode B reads
  *   owner-local args.P[j] / args.CellP[j] freely during evaluation and
- *   drifts only touched candidates via mode_b_lazy_drift_candidates. The
+ *   drifts only touched candidates via mode_b_drift_and_filter_candidates. The
  *   invariant is NO GLOBAL MUTATION, not no read. A full global drift in
  *   the prep layer would defeat lazy drift; the corridor enforcement
  *   prevents that regression.
@@ -1615,10 +1592,11 @@ const char *nlr_path_label(NeighborLoopPlan::Path path);
  *                        touched candidates)
  *
  * Lazy-drift contract inside Mode B:
- *   collect candidates pre-drift -> mode_b_lazy_drift_candidates(touched)
- *   -> evaluate pairs post-drift. drift_particle is per-particle and
- *   short-circuits on time1 == time0. Repeat candidates between queries
- *   in the same call are a fast no-op.
+ *   collect candidates pre-drift (every eligible particle under the opened
+ *   nodes) -> mode_b_drift_and_filter_candidates (drift, then keep exactly the
+ *   neighbours at current positions) -> evaluate pairs post-drift.
+ *   drift_particle is per-particle and short-circuits on time1 == time0, so
+ *   repeat candidates between queries in the same call are a fast no-op.
  *
  * radii lifetime: the runner stages a std::vector<double> radii of size
  * args.num_active and passes radii.data() to path-specific functions and
@@ -1804,8 +1782,8 @@ struct NlrIterDriver {
      * Allocated lazily on first Mode A iter dispatch; left empty on Mode B paths.
      * Lifecycle: arena_acquire ONCE per call (via acquire_arena_and_init_ctx_mode_a),
      * CSR built once per subgroup at iter 0, rebuilt on h-exceeds-buffer trigger,
-     * all freed in driver destructor (passing SIDX to gpu_ngb_list_free so the
-     * step-persistent SIDX cache survives — matches sink_env1/feed/swk idiom).
+     * all freed in driver destructor (the lists hold no index memory, so the
+     * step-persistent SIDX cache survives).
      *
      * CSR row-key invariant: mode_a_csr_offset_lookup[sg][slot]
      * is keyed on subgroup-slot-AT-BUILD-TIME, NOT on the (possibly compacted)

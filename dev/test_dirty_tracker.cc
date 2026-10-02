@@ -10,9 +10,8 @@
  *   3. duplicate indices dedup
  *   4. out-of-range marks ignored
  *   5. range boundary start/end correct
- *   6. mark_all_global marks every registered cache
- *   7. unregister/re-register does not leave stale handles
- *   8. threshold promotion behavior is per-cache, not global
+ *   6. unregister/re-register does not leave stale handles
+ *   7. threshold promotion behavior is per-cache, not global
  *
  * Each test prints "PASS" or "FAIL: ..."; exit code is non-zero if any failed. */
 
@@ -40,8 +39,8 @@ static void collect_cb(int j, void *ud) {
 
 static void test_overlap_two_caches() {
     fprintf(stderr, "test_overlap_two_caches: ");
-    gpu_dirty_handle_t h1 = gpu_dirty_tracker_register(0, 100);
-    gpu_dirty_handle_t h2 = gpu_dirty_tracker_register(50, 100); /* covers [50, 150) */
+    gpu_dirty_handle_t h1 = gpu_dirty_tracker_register(0, 100, 0);
+    gpu_dirty_handle_t h2 = gpu_dirty_tracker_register(50, 100, 0); /* covers [50, 150) */
     ASSERT_TRUE("h1 valid", h1 >= 0);
     ASSERT_TRUE("h2 valid", h2 >= 0);
 
@@ -73,7 +72,7 @@ static void test_overlap_two_caches() {
 
 static void test_dedup() {
     fprintf(stderr, "test_dedup: ");
-    gpu_dirty_handle_t h = gpu_dirty_tracker_register(0, 100);
+    gpu_dirty_handle_t h = gpu_dirty_tracker_register(0, 100, 0);
     std::vector<int> v;
     gpu_dirty_tracker_consume(h, collect_cb, &v); v.clear();
 
@@ -86,7 +85,7 @@ static void test_dedup() {
 
 static void test_out_of_range_ignored() {
     fprintf(stderr, "test_out_of_range_ignored: ");
-    gpu_dirty_handle_t h = gpu_dirty_tracker_register(0, 100); /* covers [0, 100) */
+    gpu_dirty_handle_t h = gpu_dirty_tracker_register(0, 100, 0); /* covers [0, 100) */
     std::vector<int> v;
     gpu_dirty_tracker_consume(h, collect_cb, &v); v.clear();
 
@@ -99,7 +98,7 @@ static void test_out_of_range_ignored() {
 
 static void test_range_boundaries() {
     fprintf(stderr, "test_range_boundaries: ");
-    gpu_dirty_handle_t h = gpu_dirty_tracker_register(50, 50); /* covers [50, 100) */
+    gpu_dirty_handle_t h = gpu_dirty_tracker_register(50, 50, 0); /* covers [50, 100) */
     std::vector<int> v;
     gpu_dirty_tracker_consume(h, collect_cb, &v); v.clear();
 
@@ -118,34 +117,10 @@ static void test_range_boundaries() {
     fprintf(stderr, "done\n");
 }
 
-static void test_mark_all_global() {
-    fprintf(stderr, "test_mark_all_global: ");
-    gpu_dirty_handle_t h1 = gpu_dirty_tracker_register(0, 100);
-    gpu_dirty_handle_t h2 = gpu_dirty_tracker_register(100, 100);
-    std::vector<int> v;
-    gpu_dirty_tracker_consume(h1, collect_cb, &v); v.clear();
-    gpu_dirty_tracker_consume(h2, collect_cb, &v); v.clear();
-
-    gpu_dirty_tracker_mark_all_global();
-    ASSERT_TRUE("h1 is_all_dirty", gpu_dirty_tracker_is_all_dirty(h1));
-    ASSERT_TRUE("h2 is_all_dirty", gpu_dirty_tracker_is_all_dirty(h2));
-    ASSERT_EQ("h1 popcount under all_dirty == count", 100, gpu_dirty_tracker_popcount(h1));
-    ASSERT_EQ("h2 popcount under all_dirty == count", 100, gpu_dirty_tracker_popcount(h2));
-
-    /* Consume h1; h2 should still be all_dirty. */
-    v.clear(); gpu_dirty_tracker_consume(h1, collect_cb, &v);
-    ASSERT_EQ("h1 consumed via all_dirty", 100, (int)v.size());
-    ASSERT_TRUE("h1 is_all_dirty=false after consume", !gpu_dirty_tracker_is_all_dirty(h1));
-    ASSERT_TRUE("h2 still all_dirty (untouched)", gpu_dirty_tracker_is_all_dirty(h2));
-
-    gpu_dirty_tracker_unregister(h1);
-    gpu_dirty_tracker_unregister(h2);
-    fprintf(stderr, "done\n");
-}
 
 static void test_unregister_re_register() {
     fprintf(stderr, "test_unregister_re_register: ");
-    gpu_dirty_handle_t h1 = gpu_dirty_tracker_register(0, 100);
+    gpu_dirty_handle_t h1 = gpu_dirty_tracker_register(0, 100, 0);
     int idx[1] = { 50 };
     std::vector<int> v;
     gpu_dirty_tracker_consume(h1, collect_cb, &v); v.clear();
@@ -159,7 +134,7 @@ static void test_unregister_re_register() {
     gpu_dirty_tracker_mark_indices(idx, 1);
 
     /* Re-register on same range. */
-    gpu_dirty_handle_t h2 = gpu_dirty_tracker_register(0, 100);
+    gpu_dirty_handle_t h2 = gpu_dirty_tracker_register(0, 100, 0);
     ASSERT_TRUE("re-register valid", h2 >= 0);
     /* Fresh registration: starts all_dirty (newborn cache); not stale from h1. */
     v.clear(); gpu_dirty_tracker_consume(h2, collect_cb, &v);
@@ -175,8 +150,8 @@ static void test_promote_per_cache() {
     fprintf(stderr, "test_promote_per_cache: ");
     /* Need range > 1M (G_DIRTY_PROMOTE_THRESHOLD) to trigger promote. */
     const int N = 2 * (1 << 20); /* 2M */
-    gpu_dirty_handle_t hbig   = gpu_dirty_tracker_register(0, N);
-    gpu_dirty_handle_t hsmall = gpu_dirty_tracker_register(0, 100);
+    gpu_dirty_handle_t hbig   = gpu_dirty_tracker_register(0, N, 0);
+    gpu_dirty_handle_t hsmall = gpu_dirty_tracker_register(0, 100, 0);
     std::vector<int> v;
     gpu_dirty_tracker_consume(hbig, collect_cb, &v); v.clear();
     gpu_dirty_tracker_consume(hsmall, collect_cb, &v); v.clear();
@@ -197,7 +172,6 @@ int main() {
     test_dedup();
     test_out_of_range_ignored();
     test_range_boundaries();
-    test_mark_all_global();
     test_unregister_re_register();
     test_promote_per_cache();
     if(g_fail) {

@@ -136,6 +136,9 @@ void refresh_old_acceleration_for_tree_opening(void)
     for(int i = 0; i < NumPart; i++) {P[i].OldAcc = P[i].OldAcc_LatestWalk;}
 }
 
+
+
+
 void gravity_tree(void)
 {
     /* initialize variables */
@@ -180,7 +183,18 @@ void gravity_tree(void)
         rearrange_particle_sequence();
         refresh_old_acceleration_for_tree_opening();
         gizmo_exit_bad_stop_if_requested("gravtree:before_treebuild"); CPU_Step[CPU_DRIFT] += measure_time(); /* sync before we do the treebuild */
-        if(force_treebuild(NumPart, NULL) == FORCE_TREE_NEEDS_OWNERSHIP_RESTORE)
+        int build_status = force_treebuild(NumPart, NULL);
+        if(build_status == FORCE_TREE_NEEDS_DOMAIN_REBUILD)
+        {
+            /* A particle has left the extent the domain was built on.  A full decomposition re-measures
+             * it, and drifts, wraps and re-lists every particle on the way.  The refinement pass is
+             * suppressed: this is a recovery, not the step's merge/split. */
+            domain_Decomposition(0, 0, 0, 1);
+            gravity_clear_pending_motion_bounds();   /* noted against the top tree just replaced */
+            build_status = force_treebuild(NumPart, NULL);
+            if(build_status == FORCE_TREE_NEEDS_DOMAIN_REBUILD) {endrun(91572);}
+        }
+        if(build_status == FORCE_TREE_NEEDS_OWNERSHIP_RESTORE)
         {
             /* Particles have drifted into top-leaves other ranks own, and the standing tree cannot
              * say where they were attached -- either because there is none, or because it could not
@@ -190,7 +204,7 @@ void gravity_tree(void)
              * recovery, not the step's merge/split, and running it here would refine twice. */
             if(ThisTask == 0) {printf("Tree build: restoring geometric particle ownership before rebuilding.\n"); fflush(stdout);}
             domain_Decomposition_light(0, 0);
-            if(force_treebuild(NumPart, NULL) == FORCE_TREE_NEEDS_OWNERSHIP_RESTORE) {endrun(91566);}
+            if(force_treebuild(NumPart, NULL) < 0) {endrun(91566);}
         }
         /* The tree just built is current by construction: the build set every
          * node's Ti_current to All.Ti_Current and refilled the whole SoA mirror,
@@ -212,6 +226,7 @@ void gravity_tree(void)
         report_memory_ledger_on_growth("post-treebuild");  /* after force_treebuild (LET exchange ran); rebuild-only all-rank boundary */
         TreeReconstructFlag = 0;
         TreeMomentsStaleFlag = 0;
+        TypePresenceMaskTrusted = 1;   /* the build recomputed the per-node type bits exactly */
         All.NumForcesSinceLastTreeBuild = 0;   /* the counter this build answers */
         PRINT_STATUS(" ..Tree construction done.");
     }
@@ -229,6 +244,7 @@ void gravity_tree(void)
             gizmo_exit_bad_stop_if_requested("gravtree:after_refresh_moments"); /* drain refresh bad-stop before any gravity walk */
             CPU_Step[CPU_TREEBUILD] += measure_time();
             TreeMomentsStaleFlag = 0;
+            TypePresenceMaskTrusted = 1;   /* the refresh recomputed the per-node type bits exactly */
         }
     }
 
@@ -528,7 +544,18 @@ gravity_walk_attempt:
                 gizmo_exit_bad_stop_if_requested("gravtree:before_repair_treebuild");
                 /* This rebuild stands on the tree just built here, whose attachments are intact, so it
                  * cannot ask for ownership to be restored -- and must not, with a walk in progress. */
-                if(force_treebuild(NumPart, NULL) < 0) {endrun(91567);}
+                /* A particle that left the domain extent during this pass would need a full decomposition,
+                 * which would reorder the particles under the walk, so this stops instead. */
+                const int repair_status = force_treebuild(NumPart, NULL);
+                if(repair_status == FORCE_TREE_NEEDS_DOMAIN_REBUILD)
+                {
+                    if(ThisTask == 0) {printf("Gravity: a particle drifted outside the domain extent during this step's gravity walk, and the "
+                                              "repair of the imported tree needs a tree built on it, which requires a full domain decomposition "
+                                              "that cannot run while the walk is in progress. Stopping. This needs a late crossing and a repair "
+                                              "in the same pass; a lower TreeRebuild_ActiveFraction makes repairs rarer.\n"); fflush(stdout);}
+                    endrun(91573);
+                }
+                else if(repair_status < 0) {endrun(91567);}
                 gizmo_exit_bad_stop_if_requested("gravtree:after_repair_treebuild");
                 if(gizmo_full_drift_ti() == All.Ti_Current) {gpu_gravity_tree_mark_born_current(All.Ti_Current);}
                 TreeMomentsStaleFlag = 0;   /* the build just refreshed every moment */

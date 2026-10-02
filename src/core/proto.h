@@ -130,6 +130,19 @@ GIZMO_GPU_FUNCTION static inline double MINMOD(double a, double b) {return (a>0)
 /* special version of MINMOD below: a is always the "preferred" choice, b the stability-required one. here we allow overshoot, just not opposite signage */
 GIZMO_GPU_FUNCTION static inline double MINMOD_G(double a, double b) {return a;}
 
+/* Whether a position lies outside the extent the domain was built on (DomainCorner, DomainLen). A Peano
+   key is the mantissa of (Pos-DomainCorner)/DomainLen + 1, which encodes the position only while that
+   sum is in [1,2) on every axis; outside it the key names some other cell. The test is put to the sum
+   the key is read from, not to the fraction, because rounding can carry a fraction just below 1 up to 2.
+   A non-finite coordinate, or no extent yet (DomainLen 0), counts as outside. */
+GIZMO_GPU_FUNCTION static inline int position_outside_domain_extent(double x, double y, double z,
+    double corner_x, double corner_y, double corner_z, double domain_len)
+{
+    if(!(domain_len > 0)) {return 1;}
+    const double key_x = (x - corner_x) / domain_len + 1.0, key_y = (y - corner_y) / domain_len + 1.0, key_z = (z - corner_z) / domain_len + 1.0;
+    return !(key_x >= 1.0 && key_x < 2.0 && key_y >= 1.0 && key_y < 2.0 && key_z >= 1.0 && key_z < 2.0);
+}
+
 /* Thermal soundspeed squared, and temperature, for a specific internal energy carried by something
    that is NOT a gas cell: a grain moving through gas, or a sink reporting on the gas around it.
    These callers hold an energy but have no cell of their own, so there is no composition to read,
@@ -681,6 +694,11 @@ void ghost_exchange_cleanup(void);
  * do not infer liveness from ghost_get_num_ghosts()==0, which also holds for a live
  * zero-ghost pool. */
 int ghost_pool_is_live(void);
+/* Local particles may be added, removed or reordered only while no ghost pool is live: imported ghosts
+ * occupy the slots just past the local particles.  Every function that changes the local layout calls
+ * this first and returns at once when it returns 1, having requested a controlled stop that names `who`.
+ * Liveness is entered and left collectively, so every rank answers alike. */
+int ghost_require_no_live_pool_for_layout_change(const char *who);
 /* Time every particle in the live ghost pool is current to, or -1 when there is
  * no such guarantee. Established only when the owners advanced their particles
  * before packing them; a consumer that reads -1 must keep testing each ghost's
@@ -728,20 +746,17 @@ integertime gizmo_host_ti_current(void);
 #ifdef __cplusplus
 extern "C" {
 #endif
-void ghost_exchange_local_tree_invalidate_drift(void);
-void ghost_exchange_local_tree_invalidate_full(void);
 /* Announce that the local particle set changed membership or order, so cached
  * supply pools keyed on it stop matching. Rank-local, O(1), frees nothing.
  * `reason` documents the call site. */
 void ghost_exchange_supply_identity_changed(const char *reason);
-void ghost_exchange_local_tree_mark_h_dirty_indices(const int *indices, int n);
-void ghost_exchange_local_tree_mark_h_dirty_range(int start, int end);
 #ifdef __cplusplus
 }
 #endif
 void find_next_sync_point_and_drift(void);
 void find_dt_displacement_constraint(double hfac);
 void process_wake_ups(void);
+int particles_woken_last(const int **idx);
 void set_units_sfr(void);
 int allocate_memory(int do_collective_preflight);   /* Never holds on OOM: requests a soft controlled-stop and returns nonzero; caller drains at its poll. do_collective_preflight selects the arena preflight's fit-check: =1 all-rank (read_ic, one Allreduce); =0 LOCAL only (restart subset/turn, no MPI). Returns 0 ok / 812 arena-OOM / 1 UVM-STL-OOM. */
 /* Move the persistent particle-storage arrays owned by allocate_memory() to new_maxpart, carrying the
@@ -1063,7 +1078,7 @@ size_t my_fwrite(void *ptr, size_t size, size_t nmemb, FILE * stream);
 size_t my_fread(void *ptr, size_t size, size_t nmemb, FILE * stream);
 void mpi_printf(const char *fmt, ...);
 void open_outputfiles(void);
-void peano_hilbert_order(void);
+int peano_hilbert_order(void);   /* 1 if it ordered the particles */
 void predict(double time);
 void read_ic(char *fname);
 void input_source_filename(char *out, size_t n);   /* which file set this run reads its particles from (IC, or a snapshot when starting from one) */
@@ -1307,12 +1322,9 @@ void apply_excision();
 #endif
 
 #ifdef DM_SIDM
-/* prob_of_interaction / g_geo / calculate_interact_kick moved to
+/* prob_of_interaction / calculate_interact_kick moved to
    sidm/sidm_helper_functions.h (KOKKOS_INLINE_FUNCTION). Only the
    host-only tabulation and initialization helpers remain here. */
-void init_geofactor_table(void);
-double geofactor_integ(double x, void * params);
-double geofactor_angle_integ(double u, void * params);
 void init_self_interactions();
 #ifdef GRAIN_COLLISIONS
 /* return_grain_cross_section_per_unit_mass / prob_of_grain_interaction moved

@@ -56,7 +56,6 @@ SidmScatterResult sidm_core_flux_compute_pair(
     struct particle_data *P,
     const KernelT &kernel,
     OutT &out,
-    const MyDouble *geofactor_table,
     const int *timebin_active,
     uint64_t rng_salt)
 {
@@ -86,13 +85,15 @@ SidmScatterResult sidm_core_flux_compute_pair(
         else if(kernel.dp[2] > 0)  {return r;}
     }
 
-    double h_si = 0.5 * (kernel.h_i + kernel.h_j);
+    /* Pairwise-mean mass: used by the momentum-conserving kick split below.
+       The scattering probability no longer needs it -- each side of the pair
+       now carries its own mass and kernel. */
     double m_si = 0.5 * (local.Mass + P[j].Mass);
     Vec3<double> dv_local = kernel.dv;
 #ifdef GRAIN_COLLISIONS
-    double prob = prob_of_grain_interaction_tab(local.Grain_CrossSection_PerUnitMass, local.Mass, kernel.r, h_si, dv_local, local.dtime, j, P, geofactor_table);
+    double prob = prob_of_grain_interaction(local.Mass, local.Grain_Size, kernel.r, kernel.h_i, kernel.h_j, dv_local, local.dtime, j, P);
 #else
-    double prob = prob_of_interaction_tab(m_si, kernel.r, h_si, dv_local, local.dtime, geofactor_table);
+    double prob = prob_of_interaction(local.Mass, P[j].Mass, kernel.r, kernel.h_i, kernel.h_j, dv_local, local.dtime);
 #endif
     if(prob > 0.2) { out.dtime_sidm = DMIN(out.dtime_sidm, local.dtime * (0.2 / prob)); }
 
@@ -143,7 +144,7 @@ SidmScatterResult sidm_core_flux_compute_pair(
 #endif
 #else
     (void)local; (void)j; (void)P; (void)kernel; (void)out;
-    (void)geofactor_table; (void)timebin_active; (void)rng_salt;
+    (void)timebin_active; (void)rng_salt;
 #endif /* DM_SIDM */
     return r;
 }

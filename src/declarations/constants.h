@@ -457,9 +457,9 @@
  * Slots marked "reserved" have no writer; they are kept so slot numbers, and
  * therefore the meaning of columns in existing logs, never shift. */
 #define CPU_NGB_BUILD         47  /* neighbor-list (CSR) construction, all callers */
-#define CPU_SIDX_REFRESH      48  /* post-drift spatial-index refresh (tile bboxes, BVH refit, device staging) */
+#define CPU_SIDX_REFRESH      48  /* sync-point spatial-index upkeep (release of the all-types index) */
 #define CPU_GHOSTIMPORT_SYMM  49  /* hydro-corridor SYMMETRIC ghost import (sub-row of ghost import) */
-#define CPU_GRAV_PRECOMP      50  /* reserved: never charged */
+#define CPU_MHD_MG            50  /* MHD divergence-cleaning global MG solve (took a reserved, never-charged slot, so no column moved) */
 #define CPU_FORCE_UPDATE_TREE 51  /* dynamic tree update on reused-tree steps (node drift + top-node kick exchange) */
 #define CPU_SINK_ENV          52  /* sink_environment GPU kernel + scatter */
 #define CPU_SINK_FEEDSWK      53  /* sink_feed + sink_swallow_and_kick combined */

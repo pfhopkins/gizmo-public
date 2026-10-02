@@ -664,6 +664,7 @@ struct SinkSwkSpec {
 
     static constexpr bool uses_ghost_write_detector = true;
     static constexpr bool uses_ghost_writeback      = true;
+    static constexpr bool writes_neighbour_motion = true;   /* a swallowing sink kicks the cells it drains */
 
     /* ghost_write_detector_begin/end: runner default (loop_name = "sink_swk"). */
     static void ghost_writeback_begin      (const struct neighbor_loop_args&,

@@ -129,12 +129,13 @@ struct AgsForceLocalIn {
 #if defined(DM_SIDM)
     double dtime_sidm;
     MyIDType ID;
-#ifdef GRAIN_COLLISIONS
-    double Grain_CrossSection_PerUnitMass;
 #endif
+/* Grain radius: the collision rate needs it for the pair cross-section and for
+   how many grains a particle stands for, and grain evolution tracks it. */
+#if defined(GRAIN_COLLISIONS) || (defined(GRAIN_EVOLUTION) && (GRAIN_EVOLUTION & 7))
+    double Grain_Size;
 #endif
 #if defined(GRAIN_EVOLUTION) && (GRAIN_EVOLUTION & 7)
-    double Grain_Size;
     double Composition[GRAIN_NUM_SPECIES];
 #endif
 };
@@ -238,13 +239,11 @@ struct AgsForceActiveState {
 
 /* DeviceContext extension. need_wakeup_uvm is sticky across all subgroups of
  * one toplevel call (same lifecycle as ags_density's).
- * geofactor_uvm mirrors GeoFactorTable on device for the SIDM probability
  * lookup. */
 struct AgsForceDeviceContext : NeighborLoopDeviceContextBase {
     int               *need_wakeup_uvm;    /* UVM, single int; sticky across iters/subgroups */
     unsigned char     *wakeup_dirty_base;  /* WakeupDirty sidecar base (global UVM); populate sets from WakeupDirty */
 #if defined(DM_SIDM)
-    MyDouble          *geofactor_uvm;      /* UVM, GEOFACTOR_TABLE_LENGTH entries */
 #endif
 };
 
@@ -290,11 +289,7 @@ static void ags_force_pair_kernel_body(const AgsForceActiveState& active,
     /* Pair-overlap filter on UN-inflated radii. Legacy:
      *   gravity/ags_force_gpu.cc:301-305 — SIDM uses r > h_i+h_j; non-SIDM
      *   uses r > h_i AND r > h_j (symmetric). */
-#if defined(DM_SIDM)
-    if(kernel.r > kernel.h_i + kernel.h_j) return;
-#else
     if(kernel.r > kernel.h_i && kernel.r > kernel.h_j) return;
-#endif
 
     kernel_hinv(kernel.h_j, &kernel.hinv_j, &kernel.hinv3_j, &kernel.hinv4_j);
     double u_i = kernel.r * kernel.hinv_i;
@@ -335,11 +330,10 @@ static void ags_force_pair_kernel_body(const AgsForceActiveState& active,
 #endif
 
 #if defined(DM_SIDM)
-    if(neighbor.geofactor) {
+    {
         SidmScatterResult sidm_r = sidm_core_flux_compute_pair(
             local, j, P_base, kernel, accum,
-            neighbor.geofactor, scalars.TimeBinActive,
-            scalars.rng_salt);
+            scalars.TimeBinActive, scalars.rng_salt);
         if(sidm_r.scattered) {
             if(sidm_r.set_wakeup_j) {
                 short int wakeup_val = (short int)(active.TimeBin + 1);
@@ -412,7 +406,7 @@ struct AgsForceSpec {
     using SupportsSubgroups = std::true_type;
 
     static constexpr int    max_iters                     = 1;
-    static constexpr double mode_a_csr_buffer_factor      = 2.0;
+    static constexpr double mode_a_csr_buffer_factor      = 1.0;   /* fixed radius: no AdjustRadius, max_iters=1 */
     static constexpr bool   mode_a_rebuild_csr_every_iter = false;
     static constexpr bool   actives_partition_by_subgroup = true;
 
@@ -428,7 +422,6 @@ struct AgsForceSpec {
         int                  *need_wakeup;
         unsigned char        *wakeup_dirty_base;  /* WakeupDirty sidecar base */
 #if defined(DM_SIDM)
-        const MyDouble       *geofactor;
 #endif
     };
 
@@ -441,6 +434,7 @@ struct AgsForceSpec {
 
     static constexpr bool uses_ghost_write_detector = true;
     static constexpr bool uses_ghost_writeback      = true;
+    static constexpr bool writes_neighbour_motion = true;   /* the self-interaction scatter kicks the neighbour */
 
     /* ghost_write_detector_begin/end: runner default (loop_name = "ags_force"). */
     static void ghost_writeback_begin      (const neighbor_loop_args&,
@@ -589,12 +583,11 @@ struct AgsForceSpec {
 #if defined(DM_SIDM)
         L.dtime_sidm = dctx.P[i].dtime_sidm;
         L.ID         = dctx.P[i].ID;
-#ifdef GRAIN_COLLISIONS
-        L.Grain_CrossSection_PerUnitMass = return_grain_cross_section_per_unit_mass_P(i, dctx.P);
 #endif
+#if defined(GRAIN_COLLISIONS) || (defined(GRAIN_EVOLUTION) && (GRAIN_EVOLUTION & 7))
+        L.Grain_Size = (double)dctx.P[i].Grain_Size;
 #endif
 #if defined(GRAIN_EVOLUTION) && (GRAIN_EVOLUTION & 7)
-        L.Grain_Size = (double)dctx.P[i].Grain_Size;
         for(int gs = 0; gs < GRAIN_NUM_SPECIES; gs++)
             L.Composition[gs] = (double)dctx.P[i].Composition[gs];
 #endif
@@ -629,7 +622,6 @@ struct AgsForceSpec {
         n.need_wakeup       = dctx.need_wakeup_uvm;
         n.wakeup_dirty_base = dctx.wakeup_dirty_base;
 #if defined(DM_SIDM)
-        n.geofactor         = dctx.geofactor_uvm;
 #endif
         return n;
     }

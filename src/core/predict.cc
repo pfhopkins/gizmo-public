@@ -156,8 +156,8 @@ void gizmo_full_drift_to(integertime time1)
        otherwise skip and costs nothing else -- the alternative is a false claim that
        suppresses the very scan that would notice it. */
     if(drift_particles_batch(NULL, NumPart, time1) == 0) {g_last_full_drift_Ti = time1;}
-    /* drift_particle just multiplied KernelRadius by exp(divv_fac/N) for every
-     * particle (predict.cc:160,229). Mark the whole pool h-dirty so the next
+    /* drift_particle just multiplied KernelRadius by kernel_radius_drift_factor for every
+     * particle. Mark the whole pool h-dirty so the next
      * NGL build / next ghost_exchange refreshes compact_xyzh.h from current P[].
      * Conservative: covers all types at once. (A future refinement could narrow
      * to only Type 0 + AGS-active types if profiling shows this is too eager.) */
@@ -221,76 +221,6 @@ void move_particles(integertime time1)
 
 
 
-/*! This function makes sure that all particle coordinates (Pos) are
- *  periodically mapped onto the interval [0, BoxSize].  After this function
- *  has been called, a new domain decomposition should be done, which will
- *  also force a new tree construction.
- */
-#ifdef BOX_PERIODIC
-void do_box_wrapping(void)
-{
-    int i, j;
-    double boxsize[3];
-    boxsize[0] = boxSize_X;
-    boxsize[1] = boxSize_Y;
-    boxsize[2] = boxSize_Z;
-    
-#ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic) private(j)
-#endif
-    for(i = 0; i < NumPart; i++)
-    {
-        for(j = 0; j < 3; j++)
-        {
-            while(P[i].Pos[j] < 0)
-            {
-                P[i].Pos[j] += boxsize[j];
-#ifdef BOX_SHEARING
-                if(j==0)
-                {
-                    P[i].Vel[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;
-                    P[i].dp[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset * P[i].Mass;
-                    if(P[i].Type==0)
-                    {
-                        CellP[i].VelPred[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;
-#if defined(HYDRO_MESHLESS_FINITE_VOLUME) // if have moving cells need to wrap them, too (if cells aren't moving, should never reach this wrap) //
-                        CellP[i].ParticleVel[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;
-#endif
-                    }
-#if (BOX_SHEARING > 1)
-                    /* if we're not assuming axisymmetry, we need to shift the coordinates for the shear flow at the boundary */
-                    P[i].Pos[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Pos_Offset;
-#endif
-                }
-#endif
-            }
-            
-            while(P[i].Pos[j] >= boxsize[j])
-            {
-                P[i].Pos[j] -= boxsize[j];
-#ifdef BOX_SHEARING
-                if(j==0)
-                {
-                    P[i].Vel[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;
-                    P[i].dp[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset * P[i].Mass;
-                    if(P[i].Type==0)
-                    {
-                        CellP[i].VelPred[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;
-#if defined(HYDRO_MESHLESS_FINITE_VOLUME) // if have moving cells need to wrap them, too (if cells aren't moving, should never reach this wrap) //
-                        CellP[i].ParticleVel[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;
-#endif
-                    }
-#if (BOX_SHEARING > 1)
-                    /* if we're not assuming axisymmetry, we need to shift the coordinates for the shear flow at the boundary */
-                    P[i].Pos[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Pos_Offset;
-#endif
-                }
-#endif
-            }
-        }
-    }
-}
-#endif
 
 
 
@@ -308,6 +238,54 @@ void do_box_wrapping(void)
 #define KOKKOS_INLINE_FUNCTION
 #include "predict_functions.h"
 
+/*! This function makes sure that all particle coordinates (Pos) are
+ *  periodically mapped onto the interval [0, BoxSize].  After this function
+ *  has been called, a new domain decomposition should be done, which will
+ *  also force a new tree construction.  The fold itself is
+ *  box_wrap_position_to_primary_image (predict_functions.h); here each x fold
+ *  also carries the shearing velocity offset into the velocities.
+ */
+#ifdef BOX_PERIODIC
+void do_box_wrapping(void)
+{
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic)
+#endif
+    for(int i = 0; i < NumPart; i++)
+    {
+        struct box_wrap_x_folds folds = box_wrap_position_to_primary_image(P[i].Pos);
+#ifdef BOX_SHEARING
+        for(int f = 0; f < folds.up_from_below; f++)
+        {
+            P[i].Vel[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;
+            P[i].dp[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset * P[i].Mass;
+            if(P[i].Type==0)
+            {
+                CellP[i].VelPred[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;
+#if defined(HYDRO_MESHLESS_FINITE_VOLUME) // if have moving cells need to wrap them, too (if cells aren't moving, should never reach this wrap) //
+                CellP[i].ParticleVel[BOX_SHEARING_PHI_COORDINATE] -= Shearing_Box_Vel_Offset;
+#endif
+            }
+        }
+        for(int f = 0; f < folds.down_from_above; f++)
+        {
+            P[i].Vel[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;
+            P[i].dp[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset * P[i].Mass;
+            if(P[i].Type==0)
+            {
+                CellP[i].VelPred[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;
+#if defined(HYDRO_MESHLESS_FINITE_VOLUME)
+                CellP[i].ParticleVel[BOX_SHEARING_PHI_COORDINATE] += Shearing_Box_Vel_Offset;
+#endif
+            }
+        }
+#else
+        (void)folds;
+#endif
+    }
+}
+#endif
+
 #undef KOKKOS_INLINE_FUNCTION
 #include "drift_particle_functions.h"
 
@@ -324,6 +302,15 @@ void drift_particle(int i, integertime time1)
             DriftTable_logTimeBegin, DriftTable_logTimeMax, All.Timebase_interval, All.ComovingIntegrationOn);
     struct EosTableView eos_tables = eos_tables_view();
     drift_particle_impl(i, time1, P, CellP, &tables, &eos_tables);
+    /* A particle drifted outside the domain extent would get a wrong Peano key from any tree build or
+       repartition that reuses this domain; ask for a full decomposition, which re-measures the extent. */
+    if(position_outside_domain_extent(P[i].Pos[0], P[i].Pos[1], P[i].Pos[2], DomainCorner[0], DomainCorner[1], DomainCorner[2], DomainLen))
+    {
+#ifdef _OPENMP
+#pragma omp atomic write
+#endif
+        DomainExtentOutgrownLocal = 1;
+    }
 }
 
 

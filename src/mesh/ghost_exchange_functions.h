@@ -16,7 +16,7 @@
  * nothing whatsoever about box geometry.
  *
  * SCOPE: geometry ONLY.  No supply-type mask, no source/destination
- * bookkeeping, no dedup, no matched[] write -- those are caller eligibility
+ * bookkeeping, no dedup, no send-set emission -- those are caller eligibility
  * concerns and stay outside these helpers (different callers share the accept
  * but differ on supply eligibility).
  *

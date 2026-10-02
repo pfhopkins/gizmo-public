@@ -142,7 +142,13 @@ void compute_hydro_densities_and_forces(void)
             double active_gas_fraction = (All.TotN_gas > 0) ? ((double)ngas_active_global / (double)All.TotN_gas) : 1.0;
             if(active_gas_fraction >= All.ActiveFractionForMGSweep) {
                 All.Flag_SkipMGSolve = 0;
+                const double t_mg_solve = my_second();
                 mg_gradient_correction_calc(); /* MG method: global sparse-matrix solve for exact div(B)=0 correction coefficients (Tu et al. 2026) */
+                /* The solve is charged to its own row rather than left in the gradient
+                 * residual.  It has to be charged SOMEWHERE: measure_time() discounts only
+                 * what a child bucket claims, so an unclaimed span of this size lands both
+                 * in the enclosing bracket and in the next residual, and is counted twice. */
+                cpu_charge_child(CPU_MHD_MG, timediff(t_mg_solve, my_second()));
             } else {
                 All.Flag_SkipMGSolve = 1;
                 if(ThisTask == 0) {PRINT_STATUS("Skipping MG global solve (active gas fraction %g < %g), using CG fallback for active cells", active_gas_fraction, All.ActiveFractionForMGSweep);}

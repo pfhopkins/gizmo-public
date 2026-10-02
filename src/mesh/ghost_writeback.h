@@ -81,7 +81,9 @@ struct ghost_writeback_callback {
     void (*pack_delta)(void *ctx, int g, int num_local, void *out_delta);
 
     /* Apply received delta to home particle. The delta encodes home_index
-     * (callback's contract). */
+     * (callback's contract), and it is the record's FIRST field: the apply
+     * loop reads it there to mark the owner as a motion target when the loop
+     * writes neighbour velocities. */
     void (*apply_delta)(void *ctx, const void *in_delta);
 
     /* Free per-bundle dynamic state. Called once during end_bundle on every

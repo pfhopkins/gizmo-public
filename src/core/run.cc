@@ -153,7 +153,18 @@ void run(void)
          * drifted to the sync point. */
         set_softenings();
         gizmo_full_drift_to(All.Ti_Current);
-        if(force_treebuild(NumPart, NULL) == FORCE_TREE_NEEDS_OWNERSHIP_RESTORE)
+        int build_status = force_treebuild(NumPart, NULL);
+        if(build_status == FORCE_TREE_NEEDS_DOMAIN_REBUILD)
+        {
+            /* A particle lies outside the extent the restored domain was built on: re-measure it with a
+             * full decomposition, without a refinement pass, and build on that. */
+            if(ThisTask == 0) {printf("Restart tree build: a particle lies outside the restored domain extent; doing a full domain decomposition first.\n"); fflush(stdout);}
+            domain_Decomposition(0, 0, 0, 1);
+            gravity_clear_pending_motion_bounds();   /* noted against the top tree just replaced */
+            build_status = force_treebuild(NumPart, NULL);
+            if(build_status == FORCE_TREE_NEEDS_DOMAIN_REBUILD) {endrun(91574);}
+        }
+        if(build_status == FORCE_TREE_NEEDS_OWNERSHIP_RESTORE)
         {
             /* The restart restored the domain assignment but not the tree, so there is no usable
              * attachment record for any particle that has since crossed a top-leaf boundary.  Hand
@@ -161,7 +172,7 @@ void run(void)
              * and rebuild. */
             if(ThisTask == 0) {printf("Restart tree build: restoring geometric particle ownership first.\n"); fflush(stdout);}
             domain_Decomposition_light(0, 0);
-            if(force_treebuild(NumPart, NULL) == FORCE_TREE_NEEDS_OWNERSHIP_RESTORE) {endrun(91568);}
+            if(force_treebuild(NumPart, NULL) < 0) {endrun(91568);}
         }
         /* Same proof as the main-step build in gravtree.cc: a full drift ran
          * immediately above, so this tree's node geometry describes this time and
@@ -246,6 +257,15 @@ void run(void)
         HermiteOnlyFlag = 0;
 #endif
         do_first_halfstep_kick();	/* half-step kick at beginning of timestep for synchronous particles */
+        /* The kept neighbour index follows the kicked velocities before anything drifts on them. Every
+           velocity change since the last kick -- the second half-kick and the end-of-step writers (winds,
+           cooling back-reaction, sink drag) -- was to these same synchronous particles. */
+        gpu_step_sidx_raise_motion(ActiveParticleList.data(), (int)ActiveParticleList.size());
+        {   /* and the particles a wake-up set moving differently (the gravity tree's bounds as well) */
+            const int *woken = NULL;
+            const int n_woken = particles_woken_last(&woken);
+            gizmo_motion_bound_raise(woken, n_woken);
+        }
         CPU_Step[CPU_KICKS] += measure_time();
 
         find_next_sync_point_and_drift();	/* find next synchronization point and drift particles to this time.
@@ -253,10 +273,10 @@ void run(void)
                                              * at the desired time.
                                              */
         CPU_Step[CPU_DRIFT] += measure_time();
-        {   /* drift-time refresh: incremental tile-bbox + BVH update, no SFC
-             * re-sort (gas SIDX persists across drifts; alltypes SIDX is
-             * full-freed since it's less hot). domain_decomp boundary below
-             * triggers the full rebuild via gpu_step_sidx_invalidate_full().
+        {   /* new sync point: the gas SIDX is kept across the drift (every walk
+             * reads it at the time of the search); the all-types SIDX is
+             * released. domain_decomp boundary below triggers the full rebuild
+             * via gpu_step_sidx_invalidate_full().
              *
              * Charged to its own bucket rather than left inside the enclosing
              * residual interval: its cost keys on the particle count, not on
@@ -270,14 +290,6 @@ void run(void)
             cpu_charge_child(CPU_SIDX_REFRESH,
                              cpu_minus_children(timediff(t_sidx_start, my_second()), child0_sidx));
         }
-        ghost_exchange_local_tree_invalidate_drift(); /* Bucket 3: drop the
-                                     * persistent local-tree cache used by request-driven
-                                     * ghost_exchange. Drift may have moved pool positions,
-                                     * so cached compact_xyzh/tiles are stale. Cheap (frees
-                                     * a few malloc buffers); next ghost_exchange of the
-                                     * step pays the rebuild once and amortizes across N
-                                     * physics calls within the step. */
-
         output_log_messages();	/* write some info to log-files */
         CPU_Step[CPU_LOGMSG] += measure_time();
 
@@ -298,7 +310,12 @@ void run(void)
            no longer there. */
         if(TreeReconstructFlag) {TreeReconstructFlag_local = 1;}
         MPI_Allreduce(&TreeReconstructFlag_local, &TreeReconstructFlag, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD); // if one process reconstructs the tree then everbody has to
+        /* A particle drifted outside the domain extent needs the full decomposition, which re-measures it.
+           Raised as 2 rather than 1 so the MAX reduction below also says whether this was the reason;
+           every reader of the flag only tests it for nonzero. */
+        if(DomainExtentOutgrownLocal) {DomainReconstructFlag = 2;}
         MPI_Allreduce(MPI_IN_PLACE, &DomainReconstructFlag, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+        if(DomainReconstructFlag == 2 && ThisTask == 0) {printf("Domain: a particle has drifted outside the extent the domain was built on; doing a full decomposition.\n"); fflush(stdout);}
         const int domain_cadence_reached = (GlobNumForceUpdate > All.DomainBuild_ActiveFraction * All.TotNumPart);
 #ifdef RANDOMIZE_GRAVTREE
         /* The randomization is a change of the domain frame: it moves DomainCorner and DomainLen,
@@ -343,6 +360,7 @@ void run(void)
                this loop: group finding raises it and then runs decompositions of its own, which
                would otherwise consume it and leave the tree storage it later frees unclaimed. */
             DomainReconstructFlag = 0;
+            gravity_clear_pending_motion_bounds();
             reconstructed_tree = 1;
         }
         else if(TreeReconstructFlag)
@@ -355,6 +373,7 @@ void run(void)
              * get their active list from reconstruct_timebins(), so neither call belongs above. */
             gizmo_full_drift_to(All.Ti_Current);
             make_list_of_active_particles();
+            gravity_clear_pending_motion_bounds();
             reconstructed_tree = 1;
         }
         else
@@ -369,6 +388,13 @@ void run(void)
                 const double t_tree_update_start = my_second();
                 const double child0_tree_update = CPU_ChildCharged;
                 force_update_tree();
+                /* Bounds raised outside the kick since the last update reach the
+                 * other ranks' copies of the top-level tree here, ahead of this
+                 * step's walks. A raise made LATER in a step reaches this rank's
+                 * own tree and tile indexes at once, but the other ranks' copies
+                 * only at the next flush: a loop later in that same step decides
+                 * its exports against the older bound. */
+                gravity_flush_pending_motion_bounds();
                 cpu_charge_child(CPU_FORCE_UPDATE_TREE,
                                  cpu_minus_children(timediff(t_tree_update_start, my_second()), child0_tree_update));
             }
@@ -1309,6 +1335,9 @@ void write_cpu_log(void)
 	      "   hydro_frc  %10.2f  %5.1f%%\n"
 	      "   hmaxupdate %10.2f  %5.1f%%\n"
           "   misc_hydro %10.2f  %5.1f%%\n"
+#ifdef MHD_MODIFIED_GRADIENT
+          "mhd_mg_solve  %10.2f  %5.1f%%\n"
+#endif
           "ghost import  %10.2f  %5.1f%%\n"
           "   gi_loops   %10.2f  %5.1f%%\n"
           "   gi_corridor%10.2f  %5.1f%%\n"
@@ -1389,6 +1418,9 @@ void write_cpu_log(void)
     All.CPU_Sum[CPU_HYDCOMPUTE], (All.CPU_Sum[CPU_HYDCOMPUTE]) / All.CPU_Sum[CPU_ALL] * 100,
     All.CPU_Sum[CPU_TREEHMAXUPDATE], (All.CPU_Sum[CPU_TREEHMAXUPDATE]) / All.CPU_Sum[CPU_ALL] * 100,
     All.CPU_Sum[CPU_DENSMISC], (All.CPU_Sum[CPU_DENSMISC]) / All.CPU_Sum[CPU_ALL] * 100,
+#ifdef MHD_MODIFIED_GRADIENT
+    All.CPU_Sum[CPU_MHD_MG], (All.CPU_Sum[CPU_MHD_MG]) / All.CPU_Sum[CPU_ALL] * 100,
+#endif
     All.CPU_Sum[CPU_GHOSTIMPORT] + All.CPU_Sum[CPU_GHOSTIMPORT_SYMM],
               (All.CPU_Sum[CPU_GHOSTIMPORT] + All.CPU_Sum[CPU_GHOSTIMPORT_SYMM]) / All.CPU_Sum[CPU_ALL] * 100,
     All.CPU_Sum[CPU_GHOSTIMPORT], (All.CPU_Sum[CPU_GHOSTIMPORT]) / All.CPU_Sum[CPU_ALL] * 100,

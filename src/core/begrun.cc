@@ -268,7 +268,6 @@ void begrun(void)
 #endif
 
 #if defined(DM_SIDM)
-    init_geofactor_table();
 #endif
 
 #if defined(CRFLUID_EVOLVE_SPECTRUM)

@@ -18,17 +18,7 @@
 #ifndef GPU_RECORDER_CLAIM_H
 #define GPU_RECORDER_CLAIM_H
 
-#include "../mesh/neighbor_list.h"   /* struct GxTouchedSet, gx_touched_owner_t -- plain data, no Kokkos */
-
-
-/* What a recording walk reports through `anomaly`.  Distinct values because the states are
- * distinct: one says the tree cannot be walked, one says a caller's own bookkeeping broke, one
- * says a claim arrived outside its owner's phase.  Zero means nothing was reported; callers test
- * against it and must not assume 1.  How fatal each is belongs to the caller, not to the code:
- * the fused walk stops the run on any of them. */
-#define GX_WALK_ANOMALY_MALFORMED_TREE       1  /* index in no class, or an unfilled view */
-#define GX_WALK_ANOMALY_TOUCHED_SET_FULL     2  /* touched-set list shorter than the set it recorded */
-#define GX_WALK_ANOMALY_RECORDER_OUT_OF_PHASE 3 /* a claim in an epoch its owner does not hold */
+#include "../mesh/neighbor_list.h"   /* struct GxTouchedSet, gx_touched_owner_t, the GX_WALK_ANOMALY_* codes -- plain data, no Kokkos */
 
 
 /* ============================================================================

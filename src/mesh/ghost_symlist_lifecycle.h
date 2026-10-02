@@ -108,8 +108,7 @@ static inline void gizmo_request_filtered_ghost_import(const char *caller_name,
                                                        const double *active_radii,
                                                        double safety,
                                                        mode_b_radius_policy_t radius_policy,
-                                                       double j_radius_scale,
-                                                       int supply_band_dominated)
+                                                       double j_radius_scale)
 {
     double t0 = my_second();
     move_particles(gizmo_host_ti_current());
@@ -136,8 +135,7 @@ static inline void gizmo_request_filtered_ghost_import(const char *caller_name,
         (const double (*)[3]) qpos,
         (const double *) qh,
         radius_policy,
-        j_radius_scale,
-        supply_band_dominated
+        j_radius_scale
     };
 
     double t1 = my_second();
@@ -172,13 +170,12 @@ static inline int gizmo_request_filtered_ghost_import_fresh(const char *caller_n
                                                            const double *active_radii,
                                                            double safety,
                                                            mode_b_radius_policy_t radius_policy,
-                                                           double j_radius_scale,
-                                                           int supply_band_dominated)
+                                                           double j_radius_scale)
 {
     ghost_exchange_cleanup();
     gizmo_request_filtered_ghost_import(caller_name, search_mode, supply_type_mask,
                                         active_indices, num_active, active_radii, safety,
-                                        radius_policy, j_radius_scale, supply_band_dominated);
+                                        radius_policy, j_radius_scale);
     return 1;
 }
 

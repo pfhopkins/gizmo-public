@@ -574,6 +574,11 @@ extern "C" void gpu_gravity_tree_alias_nextnode(int *Nextnode_host, int n)
 extern "C" struct gpu_gravity_tree_soa_t *gpu_gravity_tree_soa(void) {return soa_valid_ ? &soa_ : NULL;}
 extern "C" int gpu_gravity_tree_capacity(void)                       {return soa_capacity_;}
 extern "C" int gpu_gravity_tree_valid(void)                          {return soa_valid_;}
+extern "C" int gpu_gravity_tree_mirror_slot(int no)
+{
+    const int k = no - All.TreeNodeIndexBase;
+    return (k >= 0 && k < soa_capacity_) ? k : -1;
+}
 
 /* Snapshot Nodes_base[k].u.suns[0..7] for k in [0..n) into the
  * SoA's suns_backup buffer.  Called from force_treebuild_single right

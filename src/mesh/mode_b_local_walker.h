@@ -3,23 +3,21 @@
  * Mode B queries from a peer rank's local particle set without touching
  * GPU SIDX state.
  *
- * Two implementations behind one API:
- *   - mode_b_local_neighbor_walk()  — TREE-WALK path. Fast.
- *
- * Both return the same set of LOCAL real P[] indices intersecting the
- * spherical query (pos, h_q) with type/mode filter. Sorted ascending.
- *
  * Design constraints:
- *   - Walk uses Nodes[]/Nextnode[] for pruning. Node bounds come from
- *     force_drift_node(); they are conservative for current Ti_Current.
+ *   - Walk uses Nodes[]/Nextnode[] for pruning. Nodes are drifted to the current
+ *     time when the walk reaches them (force_drift_node), so their bounds hold
+ *     every member's current position.
  *   - Returned candidates are LOCAL real P[] indices in [0, num_local)
  *     where num_local = ghost_get_num_local(). Never LET pseudo nodes,
  *     never ghost imports.
- *   - Particle drift is the CALLER's responsibility. The walker does
- *     NOT drift P[j] before evaluating the predicate.
+ *   - A particle's own stored position may be behind the current time, so the
+ *     leaf records every particle that may be a neighbour once drifted: one
+ *     already current is tested exactly, one behind by the box its motion since
+ *     its last drift can reach and the radius a drift can grow it to.  The result
+ *     is a SUPERSET of the neighbours.  The caller drifts it and applies the exact test with
+ *     mode_b_drift_and_filter_candidates (a consumer of the raw list must test
+ *     each candidate against current positions itself).
  *   - Not thread-safe with concurrent particle drift / tree mutation.
- *   - Symmetric mode without per-node max-h tracking degenerates to
- *     "always open"; ONEWAY is the fast path.
  */
 
 #ifndef MODE_B_LOCAL_WALKER_H
@@ -45,7 +43,7 @@
 double mode_b_neighbor_symmetric_radius(int j, mode_b_radius_policy_t policy);
 
 /* Tree-walk path. Fast for spatially-localized queries. APPENDS local-
- * real-particle candidates (P[] indices) onto `out` via push_back; the
+ * real-particle candidates (P[] indices, a superset -- see above) onto `out` via push_back; the
  * caller passes a (typically `clear()`'d) vector and the walker grows it
  * geometrically as needed. Does NOT clear `out` itself (so callers may
  * accumulate across queries if desired). Does NOT sort.
@@ -166,23 +164,21 @@ void mode_b_walk_from_start_nodes(const double pos[3],
  * broadcast source path in neighbor_loop_runner.cc is now compile-time-dead cleanup
  * debt (targeted_export_ok hard-coded true), pending physical deletion. */
 
-/* Lazy-drift contract for Mode B (mirrors gpu_ngb_list_build:1542-1580).
- *
- * GPU NGL contract: candidate walk runs on whatever P[j].Pos state exists,
- * THEN drift_particle(j, All.Ti_Current) is called for each j in the CSR,
- * THEN the pair kernel reads drifted P[j]. The walk may see slightly stale
- * positions (h-slack absorbs that); the kernel always reads fresh.
- *
- * Mode B must honor the same contract. Walker collects candidates first;
- * call this helper to drift them; then run the pair kernel.
- *
- * Drifts each j in indices[] to current Ti via drift_particle(). Marks
- * kernel-radius dirty for the GPU SIDX tracker so the next gpu_ngb_list_build
- * call sees fresh compact_h. drift_particle's early-return on time1==time0
- * dedupes naturally.
+/* Lazy-drift contract for Mode B: the walk records candidates without reading their positions,
+ * this drifts each of them to the current time (drift_particle, which returns at once for one
+ * already current), marks their kernel radii dirty for the spatial index, and then keeps, in place
+ * and in walk order, exactly those satisfying the query (pos, h_q) at their current position and
+ * radius -- the same query, mask, mode, policy and reach scale the walk was given.  The pair kernel
+ * then reads drifted P[j] for an exact neighbour set.
  *
  * NOT thread-safe with concurrent drift / tree mutation. Caller serializes.
  */
-void mode_b_lazy_drift_candidates(const int *indices, int n);
+void mode_b_drift_and_filter_candidates(const double pos[3],
+                                        double h_q,
+                                        unsigned int type_mask,
+                                        int search_mode,
+                                        mode_b_radius_policy_t radius_policy,
+                                        double j_reach_scale,
+                                        std::vector<int>& cands);
 
 #endif /* MODE_B_LOCAL_WALKER_H */

@@ -30,6 +30,9 @@ typedef long long large_array_offset;
 typedef unsigned int large_array_offset;
 #endif
 static fftw_plan fft_velx_plan, fft_vely_plan, fft_velz_plan;
+#ifdef TURB_DIFF_DYNAMIC
+static fftw_plan fft_velbar_plan[3], fft_velhat_plan[3];
+#endif
 static fftw_plan fft_svelx_plan, fft_svely_plan, fft_svelz_plan;
 static fftw_plan fft_vrhox_plan, fft_vrhoy_plan, fft_vrhoz_plan;
 static fftw_plan fft_vortx_plan, fft_vorty_plan, fft_vortz_plan;
@@ -145,6 +148,18 @@ void powerspec_turb(int filenr)
   fft_velz_plan = fftw_mpi_plan_dft_r2c_3d(TURB_DRIVING_SPECTRUMGRID, TURB_DRIVING_SPECTRUMGRID, TURB_DRIVING_SPECTRUMGRID, 
 	  velfield[2], (fftw_complex *) velfield[2], 
 	  MPI_COMM_WORLD, FFTW_ESTIMATE | FFTW_MPI_TRANSPOSED_OUT); 
+
+#ifdef TURB_DIFF_DYNAMIC
+  for(i = 0; i < 3; i++)
+    {
+      fft_velbar_plan[i] = fftw_mpi_plan_dft_r2c_3d(TURB_DRIVING_SPECTRUMGRID, TURB_DRIVING_SPECTRUMGRID, TURB_DRIVING_SPECTRUMGRID,
+	  velbarfield[i], (fftw_complex *) velbarfield[i],
+	  MPI_COMM_WORLD, FFTW_ESTIMATE | FFTW_MPI_TRANSPOSED_OUT);
+      fft_velhat_plan[i] = fftw_mpi_plan_dft_r2c_3d(TURB_DRIVING_SPECTRUMGRID, TURB_DRIVING_SPECTRUMGRID, TURB_DRIVING_SPECTRUMGRID,
+	  velhatfield[i], (fftw_complex *) velhatfield[i],
+	  MPI_COMM_WORLD, FFTW_ESTIMATE | FFTW_MPI_TRANSPOSED_OUT);
+    }
+#endif
 
   fft_svelx_plan = fftw_mpi_plan_dft_r2c_3d(TURB_DRIVING_SPECTRUMGRID, TURB_DRIVING_SPECTRUMGRID, TURB_DRIVING_SPECTRUMGRID, 
 	  smoothedvelfield[0], (fftw_complex *) smoothedvelfield[0], 
@@ -270,9 +285,9 @@ void powerspec_turb(int filenr)
       CountModes[i] = 0;
     }
 
-  powerspec_turb_calc_and_bin_spectrum(velbarfield[0], 1);   /* only here the modes are counted */
-  powerspec_turb_calc_and_bin_spectrum(velbarfield[1], 0);
-  powerspec_turb_calc_and_bin_spectrum(velbarfield[2], 0);
+  powerspec_turb_calc_and_bin_spectrum(fft_velbar_plan[0], velbarfield[0], 1);   /* only here the modes are counted */
+  powerspec_turb_calc_and_bin_spectrum(fft_velbar_plan[1], velbarfield[1], 0);
+  powerspec_turb_calc_and_bin_spectrum(fft_velbar_plan[2], velbarfield[2], 0);
 
   powerspec_turb_collect();
 
@@ -287,9 +302,9 @@ void powerspec_turb(int filenr)
       CountModes[i] = 0;
     }
 
-  powerspec_turb_calc_and_bin_spectrum(velhatfield[0], 1);   /* only here the modes are counted */
-  powerspec_turb_calc_and_bin_spectrum(velhatfield[1], 0);
-  powerspec_turb_calc_and_bin_spectrum(velhatfield[2], 0);
+  powerspec_turb_calc_and_bin_spectrum(fft_velhat_plan[0], velhatfield[0], 1);   /* only here the modes are counted */
+  powerspec_turb_calc_and_bin_spectrum(fft_velhat_plan[1], velhatfield[1], 0);
+  powerspec_turb_calc_and_bin_spectrum(fft_velhat_plan[2], velhatfield[2], 0);
 
   powerspec_turb_collect();
 
@@ -467,6 +482,9 @@ void powerspec_turb(int filenr)
   fftw_destroy_plan(fft_svely_plan); 
   fftw_destroy_plan(fft_svelx_plan); 
 
+#ifdef TURB_DIFF_DYNAMIC
+  for(i = 0; i < 3; i++) {fftw_destroy_plan(fft_velhat_plan[i]); fftw_destroy_plan(fft_velbar_plan[i]);}
+#endif
   fftw_destroy_plan(fft_velz_plan); 
   fftw_destroy_plan(fft_vely_plan); 
   fftw_destroy_plan(fft_velx_plan); 
@@ -810,7 +828,7 @@ double powerspec_turb_obtain_fields(void)
             }
 
             if(total_pending > 0) {
-                gpu_ngb_list_free(&gnl, NULL);
+                gpu_ngb_list_free(&gnl);
                 gpu_particles_arena_invalidate();
             }
 
@@ -1003,38 +1021,38 @@ void powerspec_turb_calc_dispersion(void)
       double vsum = 0, vsum_all, vmean, vdisp = 0, vdisp_all;
 
       for(i=0; i < nslab_x;i++)
-  for(j=0; j< POWERSPEC_GRID; j++)
-    for(k=0; k< POWERSPEC_GRID; k++)
+  for(j=0; j< TURB_DRIVING_SPECTRUMGRID; j++)
+    for(k=0; k< TURB_DRIVING_SPECTRUMGRID; k++)
       {
-        int ip = POWERSPEC_GRID2 * (POWERSPEC_GRID * i + j) + k;
+        int ip = TURB_DRIVING_SPECTRUMGRID2 * (TURB_DRIVING_SPECTRUMGRID * i + j) + k;
         
         vsum += velbarfield[dim][ip];
       }
 
       MPI_Allreduce(&vsum, &vsum_all, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-      vmean = vsum_all / pow(POWERSPEC_GRID, 3);
+      vmean = vsum_all / pow(TURB_DRIVING_SPECTRUMGRID, 3);
 
       for(i=0; i < nslab_x;i++)
-  for(j=0; j< POWERSPEC_GRID; j++)
-    for(k=0; k< POWERSPEC_GRID; k++)
+  for(j=0; j< TURB_DRIVING_SPECTRUMGRID; j++)
+    for(k=0; k< TURB_DRIVING_SPECTRUMGRID; k++)
       {
-        int ip = POWERSPEC_GRID2 * (POWERSPEC_GRID * i + j) + k;
+        int ip = TURB_DRIVING_SPECTRUMGRID2 * (TURB_DRIVING_SPECTRUMGRID * i + j) + k;
 
         velbarfield[dim][ip] -= vmean;
       }
 
       for(i=0; i < nslab_x;i++)
-  for(j=0; j< POWERSPEC_GRID; j++)
-    for(k=0; k< POWERSPEC_GRID; k++)
+  for(j=0; j< TURB_DRIVING_SPECTRUMGRID; j++)
+    for(k=0; k< TURB_DRIVING_SPECTRUMGRID; k++)
       {
-        int ip = POWERSPEC_GRID2 * (POWERSPEC_GRID * i + j) + k;
+        int ip = TURB_DRIVING_SPECTRUMGRID2 * (TURB_DRIVING_SPECTRUMGRID * i + j) + k;
 
         vdisp += velbarfield[dim][ip] * velbarfield[dim][ip];
       }
 
       MPI_Allreduce(&vdisp, &vdisp_all, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-      velbar_disp[dim] = vdisp_all / pow(POWERSPEC_GRID, 3);
+      velbar_disp[dim] = vdisp_all / pow(TURB_DRIVING_SPECTRUMGRID, 3);
     }
 
   /* velhat */
@@ -1043,38 +1061,38 @@ void powerspec_turb_calc_dispersion(void)
       double vsum = 0, vsum_all, vmean, vdisp = 0, vdisp_all;
 
       for(i=0; i < nslab_x;i++)
-  for(j=0; j< POWERSPEC_GRID; j++)
-    for(k=0; k< POWERSPEC_GRID; k++)
+  for(j=0; j< TURB_DRIVING_SPECTRUMGRID; j++)
+    for(k=0; k< TURB_DRIVING_SPECTRUMGRID; k++)
       {
-        int ip = POWERSPEC_GRID2 * (POWERSPEC_GRID * i + j) + k;
+        int ip = TURB_DRIVING_SPECTRUMGRID2 * (TURB_DRIVING_SPECTRUMGRID * i + j) + k;
 
         vsum += velhatfield[dim][ip];
       }
 
       MPI_Allreduce(&vsum, &vsum_all, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-      vmean = vsum_all / pow(POWERSPEC_GRID, 3);
+      vmean = vsum_all / pow(TURB_DRIVING_SPECTRUMGRID, 3);
 
       for(i=0; i < nslab_x;i++)
-  for(j=0; j< POWERSPEC_GRID; j++)
-    for(k=0; k< POWERSPEC_GRID; k++)
+  for(j=0; j< TURB_DRIVING_SPECTRUMGRID; j++)
+    for(k=0; k< TURB_DRIVING_SPECTRUMGRID; k++)
       {
-        int ip = POWERSPEC_GRID2 * (POWERSPEC_GRID * i + j) + k;
+        int ip = TURB_DRIVING_SPECTRUMGRID2 * (TURB_DRIVING_SPECTRUMGRID * i + j) + k;
 
         velhatfield[dim][ip] -= vmean;
       }
 
       for(i=0; i < nslab_x;i++)
-  for(j=0; j< POWERSPEC_GRID; j++)
-    for(k=0; k< POWERSPEC_GRID; k++)
+  for(j=0; j< TURB_DRIVING_SPECTRUMGRID; j++)
+    for(k=0; k< TURB_DRIVING_SPECTRUMGRID; k++)
       {
-        int ip = POWERSPEC_GRID2 * (POWERSPEC_GRID * i + j) + k;
+        int ip = TURB_DRIVING_SPECTRUMGRID2 * (TURB_DRIVING_SPECTRUMGRID * i + j) + k;
 
         vdisp += velhatfield[dim][ip] * velhatfield[dim][ip];
       }
 
       MPI_Allreduce(&vdisp, &vdisp_all, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-      velhat_disp[dim] = vdisp_all / pow(POWERSPEC_GRID, 3);
+      velhat_disp[dim] = vdisp_all / pow(TURB_DRIVING_SPECTRUMGRID, 3);
     }
 #endif
   for(dim = 0; dim < 3; dim++)

@@ -114,6 +114,7 @@ struct moment_atomic_ops {
     template <class T> KOKKOS_INLINE_FUNCTION static void fmax(T *dst, T v) { atomic_max_fp<T>(dst, v); }
     KOKKOS_INLINE_FUNCTION static void add_long(long *dst, long v) { Kokkos::atomic_add(dst, v); }
     KOKKOS_INLINE_FUNCTION static void add_int (int  *dst, int  v) { Kokkos::atomic_add(dst, v); }
+    KOKKOS_INLINE_FUNCTION static void or_uint(unsigned int *dst, unsigned int v) { Kokkos::atomic_or(dst, v); }
 };
 
 /* ------------------------------------------------------------------ */
@@ -669,6 +670,10 @@ KOKKOS_INLINE_FUNCTION
 static moment_node_accum<MyGravFloat> mr_child_accum_(const mr_scratch_t& scr, int curr)
 {
     moment_node_accum<MyGravFloat> c = {};
+    /* The types this child holds.  They live in its bitflags rather than in a payload of their
+     * own, so unlike every other field they have to be read back from there -- without this the
+     * union stops one level above the leaves and every node higher up claims to hold nothing. */
+    c.type_mask = NODE_TYPE_PRESENCE(scr.bitflags(curr));
     c.mass    = scr.mass(curr);
     c.s       = scr.s(curr);
     c.vs      = scr.vs(curr);

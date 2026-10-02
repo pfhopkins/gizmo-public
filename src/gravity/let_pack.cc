@@ -1411,6 +1411,12 @@ static void pack_recurse(struct LETPackContext *pk, int no, int sib_terminator,
     w->remote_id = no;
     w->leaf_tag = LET_LEAF_TAG_NODE; w->leaf_type = 0; w->leaf_ags_zeta = 0; w->leaf_force_softening = 0; w->_pad1 = 0;  /* default: node */
     w->node = Nodes[no];     /* full struct copy including all #ifdef payloads */
+    /* The per-node type-presence bits mean "present and owned by the rank that holds this node",
+     * so they must not travel: on the receiver this node describes somebody else's particles, and
+     * the receiver's walks only ever look for its own.  Cleared here rather than on arrival so a
+     * foreign node can never be seen carrying them.  (The synthesized-leaf builders below assign
+     * their bitflags outright and so carry none already.) */
+    w->node.u.d.bitflags &= ~BITFLAG_TYPEPRESENT_MASK;
     w->extnode = Extnodes[no];
     /* Edge pointers default to the subtree-exit marker; EMIT overwrites sibling with a
      * wire index (or an encoded terminator resolved by RELABEL) and nextnode with the

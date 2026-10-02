@@ -43,6 +43,8 @@ void grain_promotion_parent_routine(void)
         grain_promotion_init_cellp(i);
 
         P[i].Type = 0;
+        force_tree_note_type_presence(i);  /* the element's type is final here, so tell the standing
+                                            * tree before anything walks it looking for that type */
         TimeBinCountGas[P[i].TimeBin]++;
         P[i].wakeup = -1; wakeup_sidecar_mark(i);
         NeedToWakeupParticles_local = 1;

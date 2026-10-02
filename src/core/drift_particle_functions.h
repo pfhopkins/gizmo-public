@@ -102,25 +102,15 @@ void drift_particle_impl(int i, integertime time1, struct particle_data *pp,
         particle_position_step(motion, dt_drift, fewbody_kick_dv);
     }
 
-    double divv_fac = pp[i].Particle_DivVel * dt_drift;
-    /* How far the predicted kernel radius may move in one drift.  The two directions
-       are not the same risk: growing follows the flow and simply predicts a larger
-       search, while shrinking can empty a kernel of the neighbours the next density
-       solve needs.  So growth carries the looser bound, which also tracks the
-       divergence it is approximating more closely than the old tight one did.  Adaptive
-       softening has used the loose bound on both sides for the same reason. */
-    double divv_fac_max_grow   = 4.0; /* was 0.3, more conservative, in older versions of the code, to prevent large jumps, but this leads to lower order and failures of the density guess more often */
-    double divv_fac_max_shrink = 1.5; /* was 0.3, more conservative, in older versions of the code, to prevent large jumps, but this leads to lower order and failures of the density guess more often */
-#ifdef AGS_KERNELRADIUS_CALCULATION_IS_ACTIVE
-    if(ags_density_isactive_P(i, pp) && pp[i].Type>0) {divv_fac_max_grow = 4; divv_fac_max_shrink = 4;}
-#endif
-    if(divv_fac > +divv_fac_max_grow)   divv_fac = +divv_fac_max_grow;
-    if(divv_fac < -divv_fac_max_shrink) divv_fac = -divv_fac_max_shrink;
-    
+    /* Predicted compression over this drift, capped by the rule the tree-node drift also
+       uses: divv_fac moves the predicted density, h_drift_fac every predicted radius. */
+    const double divv_fac    = kernel_radius_drift_log_change(pp[i].Particle_DivVel * dt_drift);
+    const double h_drift_fac = kernel_radius_drift_factor(pp[i].Particle_DivVel * dt_drift);
+
 #ifdef GRAIN_FLUID
     if((1 << pp[i].Type) & (GRAIN_PTYPES))
     {
-        pp[i].KernelRadius *= exp((double)divv_fac / ((double)NUMDIMS));
+        pp[i].KernelRadius *= h_drift_fac;
         if(pp[i].KernelRadius < All.MinKernelRadius) {pp[i].KernelRadius = All.MinKernelRadius;}
         if(pp[i].KernelRadius > All.MaxKernelRadius) {pp[i].KernelRadius = All.MaxKernelRadius;}
     }
@@ -130,7 +120,7 @@ void drift_particle_impl(int i, integertime time1, struct particle_data *pp,
     if(ags_density_isactive_P(i, pp) && (dt_drift>0)) /* particle is AGS-active */
     {
         double minsoft = ags_return_minsoft_P(i, pp), maxsoft = ags_return_maxsoft_P(i, pp);
-        pp[i].AGS_KernelRadius *= exp((double)divv_fac / ((double)NUMDIMS));
+        pp[i].AGS_KernelRadius *= h_drift_fac;
         if(pp[i].AGS_KernelRadius < minsoft) {pp[i].AGS_KernelRadius = minsoft;}
         if(pp[i].AGS_KernelRadius > maxsoft) {pp[i].AGS_KernelRadius = maxsoft;}
     } else {pp[i].AGS_KernelRadius = ForceSoftening_KernelRadius_P(i, pp);} /* non-AGS-active particles use fixed softening */
@@ -198,7 +188,7 @@ void drift_particle_impl(int i, integertime time1, struct particle_data *pp,
 #endif
             
 #if (HYDRO_FIX_MESH_MOTION > 0)
-            pp[i].KernelRadius *= exp((double)divv_fac / ((double)NUMDIMS));
+            pp[i].KernelRadius *= h_drift_fac;
             if(pp[i].KernelRadius < All.MinKernelRadius) {pp[i].KernelRadius = All.MinKernelRadius;}
             if(pp[i].KernelRadius > All.MaxKernelRadius) {pp[i].KernelRadius = All.MaxKernelRadius;}
 #ifdef ADAPTIVE_GRAVSOFT_FORALL

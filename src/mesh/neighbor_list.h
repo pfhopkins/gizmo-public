@@ -46,7 +46,7 @@ struct neighbor_list_t {
  * one query plus the start nodes the sender's walk reached on that peer.  A
  * (query,peer) needing more than NODELISTLENGTH nodes SPLITS into multiple
  * envelopes; the receiver walks each independently and dedups through the
- * matched bitmap, so a split costs an extra envelope and nothing else.
+ * send set, so a split costs an extra envelope and nothing else.
  *
  * Lives here rather than beside the host exchange code because both the host
  * receiver walk and the device receiver traversal consume it, and the device
@@ -80,6 +80,15 @@ struct gx_export_envelope_t {
  * standing for another rank's subtree.  Anything in the gap between the
  * particle slots and the node base belongs to no class at all and means the
  * tree is malformed. */
+/* What a walk reports when it cannot answer completely.  The caller stops the
+ * run; a walk that merely stopped stepping would return a short answer that
+ * looks complete.  Shared by the tree walk, the tile walk and the recorder claims
+ * (declarations/gpu_recorder_claim.h).  Zero means nothing was reported; callers
+ * test against it and must not assume 1. */
+#define GX_WALK_ANOMALY_MALFORMED_TREE        1  /* index in no class, an unfilled view, or an invalid motion bound */
+#define GX_WALK_ANOMALY_TOUCHED_SET_FULL      2  /* touched-set list shorter than the set it recorded */
+#define GX_WALK_ANOMALY_RECORDER_OUT_OF_PHASE 3  /* a claim in an epoch its owner does not hold */
+
 struct GxDeviceTreeView {
     const Vec3<MyFloat> *node_center;
     const MyFloat       *node_len;
@@ -117,8 +126,31 @@ struct GxDeviceTreeView {
      * on CUDA/HIP. `drift_tables_ok` says whether it was filled. */
     struct DriftKickTableView drift_tables{};
     int                       drift_tables_ok = 0;
+
+    /* Whether the per-node type-presence bits describe this tree.  A build or a moment refresh
+     * recomputes them exactly; between those, only monotone raises keep them true, and if one
+     * could not be applied this is cleared and a walk simply stops pruning on them.  Zero means
+     * "open every node geometry admits", which is what the walk did before the bits existed. */
+    int                       type_mask_trusted = 0;
 };
 
+
+/* The owned particles whose motion a loop changed, so that their bounds can be
+ * raised once the loop is done.  A pair kernel that writes a neighbour's
+ * velocity marks that neighbour here, immediately before the write, on every
+ * path (a device kernel, the host walker, the reverse writeback landing on the
+ * owner); the runner raises the marked set after the loop and clears it.
+ * Same shape as the touched set below, for the same reason: a generation
+ * stamp that is never cleared keeps the cost proportional to what was marked.
+ * Separate from the touched set, which is the drift's and is consumed
+ * differently. */
+struct GxMotionTargetSet {
+    unsigned int *seen     = nullptr;  /* [capacity] generation stamps */
+    int          *list     = nullptr;  /* [capacity] distinct marked local indices */
+    int          *counter  = nullptr;  /* [1] append cursor */
+    int           capacity = 0;
+    unsigned int  gen      = 0;
+};
 
 /* The distinct set of local particles a fused walk reaches, so that only those
  * have to be brought current rather than the whole rank.

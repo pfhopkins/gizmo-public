@@ -196,8 +196,9 @@ void gizmo_hydro_corridor_refresh_ghost_values(const char *stage)
     /* FULL PATH (also the fail-closed fallback): ghost teardown + re-import +
      * CSR rebuild, then REPUBLISH (the rebuild reallocates offsets/neighbors —
      * consumers re-fetch the view after every refresh; see hydro_corridor.h).
-     * Import side-effects (compact-xyzh h-dirty marks, SIDX notify) happen
-     * inside the re-import itself, so no side-effect list is maintained here. */
+     * Import side-effects (the new ghost provenance the neighbour index keys
+     * on) happen inside the re-import itself, so no side-effect list is
+     * maintained here. */
     const double gsl_safety = gizmo_ghost_safety_factor();
     gizmo_gradients_refresh_symlist(gsl_safety, gsl_safety, false);
 

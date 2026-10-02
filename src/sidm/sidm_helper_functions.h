@@ -1,13 +1,10 @@
 /* sidm_helper_functions.h — GPU-callable SIDM helper math:
- *   - g_geo                     geometric-factor spline (reads GeoFactorTable)
  *   - prob_of_interaction       per-pair SIDM scattering probability
  *   - calculate_interact_kick_rng  isotropic post-scatter kick using counter-RNG
  *
  * Each function is a pure KOKKOS_INLINE_FUNCTION: no internal references to
  * global state beyond All (available via the All_dev mirror on GPU), and no
- * GSL RNG. The tabulated geometric factor is threaded in as an explicit
- * pointer; callers pass `GeoFactorTable` (host) or the SharedSpace mirror
- * (device).
+ * GSL RNG.
  *
  * RNG migration: calculate_interact_kick used to call gsl_rng_uniform twice
  * (for cos_theta and phi). The new `_rng` variant takes a 64-bit key and a
@@ -22,6 +19,7 @@
 #define SIDM_HELPER_FUNCTIONS_H
 
 #include "../declarations/allvars.h"
+#include "../mesh/kernel.h"          /* kernel_main */
 #include "../declarations/gpu_rng.h"
 
 /* KOKKOS_INLINE_FUNCTION falls back to plain inline outside a GPU TU. */
@@ -32,36 +30,42 @@
 
 #ifdef DM_SIDM
 
-/* Geometric factor g_geo(r/h_si) evaluated against a caller-supplied lookup
-   table of length GEOFACTOR_TABLE_LENGTH. The table is populated by
-   init_geofactor_table() (host-only, uses GSL integration). */
-KOKKOS_INLINE_FUNCTION
-double g_geo_tab(double r_over_hsi, const MyDouble *GeoFactorTable_arr)
-{
-    double u = r_over_hsi / 2.0 * GEOFACTOR_TABLE_LENGTH;
-    int i = (int) u;
-    if(i >= GEOFACTOR_TABLE_LENGTH) i = GEOFACTOR_TABLE_LENGTH - 1;
-    double f;
-    if(i <= 1) {
-        f = 0.992318 + (GeoFactorTable_arr[0] - 0.992318) * u;
-    } else {
-        f = GeoFactorTable_arr[i - 1] + (GeoFactorTable_arr[i] - GeoFactorTable_arr[i - 1]) * (u - i);
-    }
-    return f;
-}
+/* Pair scattering probability.  Vec3 dV is the i-minus-j velocity difference
+   (code units, as the caller passes to the CPU tree-walk).
 
+   A particle scatters off the mass its PARTNER represents, so one side's rate
+   is m_j * W(r,h_i) times the cross-section per unit mass: the kernel share of
+   the partner's density at this separation.  Summed over a particle's
+   neighbours that returns the density it moves through, so the rate is
+   normalised by construction rather than through an overlap integral.
 
-/* Pair scattering probability. Vec3 dV is i-minus-j velocity difference
-   (code units, same as the caller passes to the CPU tree-walk). The
-   `_tab` suffix marks the table-taking variant used on GPU. */
+   One event covers both macro-particles, and each stands for a micro-particle
+   count proportional to its mass, so the pair rate is the count-weighted mean
+   of the two one-sided rates.  That is the reduced mass m_i*m_j/(m_i+m_j)
+   times the sum of the two kernels -- symmetric, so both members compute the
+   same probability and agree on whether they scatter, and for equal masses it
+   is the plain average.  Weighting by each side's OWN mass instead would halve
+   the rate a light tracer sees moving through heavy neighbours.
+
+   The kernel vanishes at r >= h, so the probability is non-zero exactly when
+   r < max(h_i,h_j): the ordinary symmetric-search criterion, with no widened
+   search radius and no separate overlap acceptance. */
 KOKKOS_INLINE_FUNCTION
-double prob_of_interaction_tab(double mass, double r, double h_si,
-                               const Vec3<double> &dV, double dt,
-                               const MyDouble *GeoFactorTable_arr)
+double prob_of_interaction(double m_i, double m_j, double r,
+                           double h_i, double h_j,
+                           const Vec3<double> &dV, double dt)
 {
     double dVmag = sqrt(dV[0]*dV[0] + dV[1]*dV[1] + dV[2]*dV[2]) / All.cf_atime;
-    double rho_eff = mass / (h_si*h_si*h_si) * All.cf_a3inv;
-    double cx_eff = All.DM_InteractionCrossSection * g_geo_tab(r/h_si, GeoFactorTable_arr);
+    double hinv_i = 1.0 / h_i, hinv3_i = hinv_i*hinv_i*hinv_i;
+    double hinv_j = 1.0 / h_j, hinv3_j = hinv_j*hinv_j*hinv_j;
+    double wk_i = 0, wk_j = 0, dwk_dummy = 0;
+    kernel_main(r * hinv_i, hinv3_i, hinv_i*hinv3_i, &wk_i, &dwk_dummy, -1);
+    kernel_main(r * hinv_j, hinv3_j, hinv_j*hinv3_j, &wk_j, &dwk_dummy, -1);
+    /* Comoving kernel (h is comoving), so the same a^-3 the density carries. */
+    double m_sum = m_i + m_j;
+    double m_red = (m_sum > 0) ? (m_i * m_j / m_sum) : 0;
+    double rho_eff = m_red * (wk_i + wk_j) * All.cf_a3inv;
+    double cx_eff = All.DM_InteractionCrossSection;
     double units = UNIT_SURFDEN_IN_CGS;
     if(All.DM_InteractionVelocityScale > 0) {
         double x = dVmag / All.DM_InteractionVelocityScale;

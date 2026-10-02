@@ -6,6 +6,8 @@
 #include "../declarations/allvars.h"
 #include "../core/proto.h"
 #include "../core/wakeup_sidecar.h"
+#include "../mesh/gpu_neighbor_list.h"   /* gizmo_motion_bound_raise */
+#include <vector>
 #include "../mesh/kernel.h"
 #include "mechanical_fb_types.h"  /* provides struct MechFBGasDelta */
 #include "galsf_gpu_decls.h"      /* mechfb_{alloc,free,run_iterative,fill_call_scalars} prototypes */
@@ -136,11 +138,15 @@ static struct MechFBGasDelta *LocalGasMechFBInfoTemp;
 /* subroutine to check for total kinetic energy change and thermal energy change after integrating the effects of all SNe over all cells, and coupling this to particles,  */
 void verify_and_assign_local_mechfb_integrals(void)
 {
+    /* The cells this pass kicks: their motion bounds are raised once at the
+     * end, so the neighbour indexes stay valid for the velocities they now have. */
+    std::vector<int> kicked;
     int j,k; for(j=0;j<N_gas;j++)
     {
         if(LocalGasMechFBInfoTemp[j].N_injected <= 0) {continue;} /* all mechanisms deposit non-zero mass, so skip if this is not >0*/
         if(P[j].Type==0 && P[j].Mass>0)
         {
+            kicked.push_back(j);
             double m0=P[j].Mass, dm=LocalGasMechFBInfoTemp[j].m_injected; P[j].Mass += dm; /* update mass */ if(P[j].Type==0) {CellP[j].Mass = P[j].Mass;}
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
             m0=CellP[j].MassTrue; CellP[j].MassTrue += dm; /* update conserved mass */
@@ -258,6 +264,7 @@ void verify_and_assign_local_mechfb_integrals(void)
          * Type!=0/Mass<=0, drained-but-not-applied) so no dirty cell survives. */
         mechfb_reset_one_gas_delta(LocalGasMechFBInfoTemp, j);
     }
+    if(!kicked.empty()) {gizmo_motion_bound_raise(kicked.data(), (int)kicked.size());}
     return;
 }
 

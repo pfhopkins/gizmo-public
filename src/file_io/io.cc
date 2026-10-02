@@ -55,6 +55,7 @@ void savepositions(int num)
 #endif
 
     rearrange_particle_sequence();
+    gizmo_exit_bad_stop_if_requested("io:after_rearrange"); /* a refused rearrange must not be followed by a write */
     All.NumForcesSinceLastTreeBuild = (long long) (1 + All.TreeRebuild_ActiveFraction * All.TotNumPart);    /* ensures that new tree will be constructed */
 
 

@@ -392,6 +392,7 @@ void update_internalenergy_for_galsf_effective_eos(int i, double tcool, double t
 /* parent routine for star formation. for 'effective equation of state' models for star-forming gas, this also updates their effective EOS parameters */
 void star_formation_parent_routine(void)
 {
+    if(ghost_require_no_live_pool_for_layout_change("star_formation_parent_routine")) {return;}
     int i, bin, flag, stars_spawned, tot_spawned, stars_converted, tot_converted, number_of_stars_generated;
     unsigned int bits; double dtime, mass_of_star, p, prob, rate_in_msunperyear, sfrrate, totsfrrate, sum_sm, total_sm, sm=0, rate, sum_mass_stars, total_sum_mass_stars;
 #if defined(SINK_SEED_FROM_LOCALGAS) || defined(SINGLE_STAR_SINK_DYNAMICS)
@@ -460,6 +461,7 @@ void star_formation_parent_routine(void)
                         if(P[i].FluidType == FLUID_DM) { P[i].Type = 3; } else /* dark fluid -> inert collisionless Type=3 */
 #endif
                         { P[i].Type = 5; }
+                        force_tree_note_type_presence(i);  /* the element's type is final here, so tell the standing tree before anything walks it looking for that type */
                         TimeBinCountGas[P[i].TimeBin]--;
                         num_sink_formed++;
                         Stars_converted++;
@@ -604,6 +606,7 @@ void star_formation_parent_routine(void)
                             if(P[i_star].FluidType == FLUID_DM) { P[i_star].Type = 3; } else /* dark fluid -> inert collisionless Type=3 */
 #endif
                             { P[i_star].Type = 5; }
+                            force_tree_note_type_presence(i_star);  /* the element's type is final here, so tell the standing tree before anything walks it looking for that type */
                             num_sink_formed++;
                             P[i_star].Sink_Mass = DMAX(All.SeedSinkMass, DMIN(0.5*P[i_star].Mass , 0.01/UNIT_MASS_IN_SOLAR)); // if desired to make this appreciable fraction of particle mass, please do so in params file
                             P[i_star].Sink_Formation_Mass = P[i_star].Mass; // save the mass we had at the time of sink formation, because we will use this later to understand how the sink has grown
@@ -681,6 +684,7 @@ void star_formation_parent_routine(void)
                         if(P[i_star].FluidType == FLUID_DM) { if(P[i_star].Type != 3) {P[i_star].Type = 3;} } else /* dark fluid -> inert collisionless Type=3 */
 #endif
                         { if(P[i_star].Type != 5) {P[i_star].Type = 4;} } // if we didn't set to type 5 above, default to type 4
+                        force_tree_note_type_presence(i_star);  /* the element's type is final here, so tell the standing tree before anything walks it looking for that type */
 
 #ifdef SINK_SEED_FROM_LOCALGAS
                     } /* closes else for decision to make a sink particle */

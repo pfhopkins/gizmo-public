@@ -56,15 +56,9 @@
 double AgsForceSpec::search_radius(const neighbor_loop_args& /*args*/,
                                     int /*active_slot*/, int i)
 {
-    /* SIDM inflates SEARCH radius 3x to widen the candidate j set; the
-     * per-pair physics filter (in the inline body) uses the un-inflated
-     * radii. Matches legacy gravity/ags_force_gpu.cc:170-181. */
-    double h = (double)P[i].AGS_KernelRadius;
-#if defined(DM_SIDM)
-    return 3.0 * h;
-#else
-    return h;
-#endif
+    /* The pair terms all vanish at r >= max(h_i,h_j), so the search radius is
+     * the particle's own reach: the symmetric walk supplies the h_j > h_i side. */
+    return (double)P[i].AGS_KernelRadius;
 }
 
 AgsForceSpec::CallScalars
@@ -85,31 +79,20 @@ void AgsForceSpec::populate_device_context(const neighbor_loop_args& args,
      * toplevel call. Lifecycle matches ags_density's need_wakeup_uvm. */
     ctx.need_wakeup_uvm = NULL;
 #if defined(DM_SIDM)
-    ctx.geofactor_uvm = NULL;
 #endif
     ctx.wakeup_dirty_base = WakeupDirty;   /* global UVM sidecar base; kernel marks WakeupDirty[j] on wakeup */
     ctx.need_wakeup_uvm = (int *) gizmo_gpu_alloc_shared(sizeof(int), NULL);
     /* Zeroed the moment it exists: cleanup_device_context reads it on every exit
      * path, including the failure return below. */
     if(ctx.need_wakeup_uvm) { *ctx.need_wakeup_uvm = 0; }
-#if defined(DM_SIDM)
-    /* GeoFactorTable mirror for the SIDM probability lookup. ~8 KB total
-     * (GEOFACTOR_TABLE_LENGTH doubles). */
-    ctx.geofactor_uvm = (MyDouble *) gizmo_gpu_alloc_shared(
-        GEOFACTOR_TABLE_LENGTH * sizeof(MyDouble), NULL);
-    if(!ctx.geofactor_uvm) { ctx.populate_failed = 1; }
-#endif
     if(!ctx.need_wakeup_uvm || ctx.populate_failed) {
         ctx.populate_failed = 1;
         gizmo_request_controlled_stop(7723,
-            "adaptive-softening forces: could not stage the wakeup flag or scattering table; "
+            "adaptive-softening forces: could not stage the wakeup flag; "
             "the forces are not computed",
             __FILE__, __LINE__, __FUNCTION__);
         return;
     }
-#if defined(DM_SIDM)
-    std::memcpy(ctx.geofactor_uvm, GeoFactorTable, GEOFACTOR_TABLE_LENGTH * sizeof(MyDouble));
-#endif
 
     /* CBE gradients are persistent on P[i].Gradients_CBE_basis_moments and
      * ghost-transported naturally by standard P[] import — no scratch
@@ -126,10 +109,6 @@ void AgsForceSpec::cleanup_device_context(const neighbor_loop_args& /*args*/,
         ctx.need_wakeup_uvm = nullptr;
     }
 #if defined(DM_SIDM)
-    if(ctx.geofactor_uvm) {
-        Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(ctx.geofactor_uvm);
-        ctx.geofactor_uvm = nullptr;
-    }
 #endif
 }
 

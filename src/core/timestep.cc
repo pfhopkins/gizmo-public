@@ -1072,9 +1072,9 @@ integertime get_timestep(int p,		/*!< particle index */
             double vsig_fac = P[p].AGS_vsig*All.cf_atime/sqrt(3.);
             Vec3<double> dV = {vsig_fac, vsig_fac, vsig_fac}; // convert signal vel to velocity dispersion for estimating rates
 #ifdef GRAIN_COLLISIONS
-            double p_dt = prob_of_grain_interaction_tab(return_grain_cross_section_per_unit_mass_P(p, P), P[p].Mass, 0., P[p].AGS_KernelRadius, dV, dt, p, P, GeoFactorTable); // probability of interacting with another grain super-particle well within kernel, assuming same mass, H, and V~signalvel, for current timestep dt
+            double p_dt = prob_of_grain_interaction(P[p].Mass, P[p].Grain_Size, 0., P[p].AGS_KernelRadius, P[p].AGS_KernelRadius, dV, dt, p, P); // probability of interacting with another grain super-particle well within kernel, assuming same mass, H, and V~signalvel, for current timestep dt
 #else
-            double p_dt = prob_of_interaction_tab(P[p].Mass, 0., P[p].AGS_KernelRadius, dV, dt, GeoFactorTable); // probability of interacting with another DM particle well within kernel, assuming same mass, H, and V~signalvel, for current timestep dt
+            double p_dt = prob_of_interaction(P[p].Mass, P[p].Mass, 0., P[p].AGS_KernelRadius, P[p].AGS_KernelRadius, dV, dt); // probability of interacting with another DM particle well within kernel, assuming same mass, H, and V~signalvel, for current timestep dt
 #endif
             if(p_dt > p_target) {dt *= p_target / p_dt;}
         }
@@ -1445,8 +1445,12 @@ void wakeup_sidecar_rebuild(void)
     WakeupDirtyValid = 1;
 }
 
+/* The particles the last process_wake_ups moved to a shorter step (particles_woken_last). */
+static std::vector<int> WokenParticles;
+
 void process_wake_ups(void)
 {
+    WokenParticles.clear();
 #ifdef FORCE_EQUAL_TIMESTEPS
     return; /* no wakeups if all particles are on the same timestep */
 #endif
@@ -1594,6 +1598,7 @@ void process_wake_ups(void)
 		P[i].TimeBin = bin;
         if(TimeBinActive[bin]) {NumForceUpdate++;}
 		n++;
+		WokenParticles.push_back(i);
 
 		/* The kick this particle already received covers past the time it is being woken to. Do NOT
 		   try to reverse it: re-deriving the increment with reversed bounds would only cancel the
@@ -1627,6 +1632,17 @@ void process_wake_ups(void)
     if(ThisTask == 0) {if(ntot > 0) {printf("%d%09d particles activated (in wakeup check).\n", (int) (ntot / 1000000000), (int) (ntot % 1000000000));}}
     NeedToWakeupParticles = 0;
     NeedToWakeupParticles_local = 0;
+}
+
+/* The particles the last process_wake_ups moved to a shorter step, and how many.  A wake-up changes how
+   fast a particle moves without kicking it through the active list: it re-freezes the particle's dilation
+   factor, and under the finite-volume kick, which runs by active bin, a particle woken into a bin active
+   now is kicked with the active set although ActiveParticleList was built before it woke.  So the motion
+   bounds that hold these particles are raised over them once the first half-kick has run. */
+int particles_woken_last(const int **idx)
+{
+    *idx = WokenParticles.data();
+    return (int)WokenParticles.size();
 }
 
 

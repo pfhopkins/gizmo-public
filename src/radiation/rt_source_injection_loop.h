@@ -283,6 +283,7 @@ struct RtSrcInjectionSpec {
     static constexpr SidxCacheKind  sidx_cache_kind = SidxCacheKind::GasOnly;
     static constexpr bool mode_a_active_sources_in_sidx_pool = false; /* non-pool active sources (sink/star/grain) -> runner stages explicit P[].Pos */
     static constexpr bool           uses_ghost_writeback      = true;
+    static constexpr bool writes_neighbour_motion = true;   /* the injected radiation momentum kicks the neighbour */
     static constexpr bool           uses_ghost_write_detector = true;
 
     /* Real precision bound (not algorithmic-parity floor): the pair kernel

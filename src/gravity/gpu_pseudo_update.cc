@@ -365,6 +365,7 @@ static double topnode_resum_node_(int no_abs,
     MyFloat hmax_per_type[6] = {};   /* per-type band, max over children (not in the shared moment kernel) */
     long count_particles = 0;
     int multiple_flag = 0;
+    unsigned int child_types = 0;   /* union of the types present below the children, rebuilt each pass */
 
 #ifdef GRAVTREE_CALCULATE_GAS_MASS_IN_NODE
     MyFloat gasmass = 0;
@@ -488,6 +489,12 @@ static double topnode_resum_node_(int no_abs,
         moment_node_accum<MyFloat> child = topnode_child_accum_(soa, pk);
         moment_accum_add_child_normalized<moment_plain_ops, MyFloat>(acc_ref, child);
 
+        /* Types present below this child.  Gathered here rather than through the moment kernel
+         * because acc_ref.bitflags is null at this venue, and re-derived from the children every
+         * time rather than accumulated onto what the node already held: this routine also runs on
+         * a reused tree, where the previous value can name a type that has since gone. */
+        child_types |= NODE_TYPE_PRESENCE(soa->bitflags[pk]);
+
         /* Per-type h band is host-AoS-only (not in the SoA moment kernel): max over
          * the 8 children's Extnodes bands.  The child is finalized here -- a topleaf
          * carries its cross-rank-applied band (force_exchange_pseudodata_complete), an
@@ -516,6 +523,12 @@ static double topnode_resum_node_(int no_abs,
 
     if(count_particles > 1) {multiple_flag = (1 << BITFLAG_MULTIPLEPARTICLES);}
 
+    /* A top-leaf another rank owns contributes nothing here: this rank holds no particles below it,
+     * so its own bits are clear, and the LET never writes any.  That is what keeps the field
+     * meaning "present AND owned here", which is what the device walks ask. */
+    const unsigned int child_types_field =
+        (child_types << BITFLAG_TYPEPRESENT_SHIFT) & BITFLAG_TYPEPRESENT_MASK;
+
     /* --- write SoA -------------------------------------------------- */
     /* Only ever upward.  This routine also runs on a tree that is being reused, whose lengths already
        carry the growth force_drift_node applied for how far the contents can have moved since the
@@ -532,8 +545,8 @@ static double topnode_resum_node_(int no_abs,
     soa->vmax[no_k]    = (MyGravFloat) vmax;
     soa->divVmax[no_k] = (MyGravFloat) divVmax;
     soa->maxsoft[no_k] = (MyGravFloat) maxsoft;
-    soa->bitflags[no_k] = (soa->bitflags[no_k] & ~(1u << BITFLAG_MULTIPLEPARTICLES))
-                        | (unsigned int) multiple_flag;
+    soa->bitflags[no_k] = (soa->bitflags[no_k] & ~((1u << BITFLAG_MULTIPLEPARTICLES) | BITFLAG_TYPEPRESENT_MASK))
+                        | (unsigned int) multiple_flag | child_types_field;
 #ifdef GRAVTREE_CALCULATE_GAS_MASS_IN_NODE
     soa->gasmass[no_k] = (MyGravFloat) gasmass;
 #endif
@@ -597,8 +610,8 @@ static double topnode_resum_node_(int no_abs,
     Nodes[no_abs].N_part       = count_particles;
     Nodes[no_abs].maxsoft      = maxsoft;
     Nodes[no_abs].u.d.bitflags = (Nodes[no_abs].u.d.bitflags
-                                   & ~(1u << BITFLAG_MULTIPLEPARTICLES))
-                                | (unsigned int) multiple_flag;
+                                   & ~((1u << BITFLAG_MULTIPLEPARTICLES) | BITFLAG_TYPEPRESENT_MASK))
+                                | (unsigned int) multiple_flag | child_types_field;
     Extnodes[no_abs].vs        = vs;
     Extnodes[no_abs].hmax      = hmax;
     for(int t = 0; t < 6; t++) Extnodes[no_abs].hmax_per_type[t] = hmax_per_type[t];
@@ -826,8 +839,8 @@ extern "C" int gpu_set_soa_nextnode(int abs_idx, int new_nextnode)
 {
     struct gpu_gravity_tree_soa_t *soa = gpu_gravity_tree_soa();
     if(!soa || !soa->nextnode) {return 1;}
-    int k = abs_idx - All.TreeNodeIndexBase;
-    if(k < 0 || k >= gpu_gravity_tree_capacity()) {return 1;}
+    const int k = gpu_gravity_tree_mirror_slot(abs_idx);
+    if(k < 0) {return 1;}
     soa->nextnode[k] = new_nextnode;
     return 0;
 }
@@ -840,8 +853,8 @@ extern "C" int gpu_set_soa_sibling(int abs_idx, int new_sibling)
 {
     struct gpu_gravity_tree_soa_t *soa = gpu_gravity_tree_soa();
     if(!soa || !soa->sibling) {return 1;}
-    int k = abs_idx - All.TreeNodeIndexBase;
-    if(k < 0 || k >= gpu_gravity_tree_capacity()) {return 1;}
+    const int k = gpu_gravity_tree_mirror_slot(abs_idx);
+    if(k < 0) {return 1;}
     soa->sibling[k] = new_sibling;
     return 0;
 }

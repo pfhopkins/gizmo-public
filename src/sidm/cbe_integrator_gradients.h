@@ -427,15 +427,9 @@ static void cbe_grad_bj_pair_kernel_body(const CBEGradActiveState& active,
     const double r   = sqrt(r2);
     const double h_j = (double)Pj.AGS_KernelRadius;
 
-    /* Pair-overlap filter mirrors AgsForceSpec exactly so the limiter sees
-     * every face the flux body will subsequently reconstruct. Legacy
-     * gravity/ags_force_loop.h:271-278: r <= h_i+h_j under DM_SIDM;
-     * r <= max(h_i, h_j) otherwise (symmetric). */
-#if defined(DM_SIDM)
-    if(r > h_i + h_j) return;
-#else
+    /* Pair filter mirrors AgsForceSpec so the limiter sees every face the flux
+     * body will subsequently reconstruct: the ordinary symmetric support. */
     if(r > h_i && r > h_j) return;
-#endif
 
     /* MFM face-position weight (matches the flux body's reconstruction:
      * psi_i = h_j/(h_i+h_j); face offset on i's side = -psi_i * dp). */

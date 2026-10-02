@@ -28,6 +28,33 @@
 #define BITFLAG_NODEHASBEENKICKED          8
 #define BITFLAG_INSIDE_LINKINGLENGTH       9
 
+/* Which particle TYPES are present below a node, one bit per type, packed into the spare high
+ * bits of the same bitflags word the topology flags use.  Stored shifted so it cannot collide
+ * with the single-bit flags above; NODE_TYPE_PRESENCE() hands it back in the (1u << Type)
+ * convention that ghost_exchange_spec.h and every loop's neighbor_type_mask already use, so a
+ * consumer compares the two directly.
+ *
+ * MEANING: a type is marked when a particle of that type OWNED BY THIS RANK sits below the node.
+ * NOT the global union -- the device neighbour walks never descend a foreign subtree and only
+ * visit owned leaves, so this is the question they ask, and it is tighter than the union would
+ * be.  Two places keep it that way: the LET wire copy clears these bits (so foreign nodes carry
+ * none), and the top-node re-sum clears them before re-ORing its local children.  A consumer
+ * that genuinely needs remote contents needs a different field, not a widening of this one.
+ *
+ * It may over-claim (a type that has since gone) -- that only costs a missed prune.  It must
+ * never under-claim, which is why every mutation is a monotone OR and only a build or moment
+ * refresh recomputes it exactly. */
+#define BITFLAG_TYPEPRESENT_SHIFT          16
+#define BITFLAG_TYPEPRESENT_MASK           (0x3Fu << BITFLAG_TYPEPRESENT_SHIFT)
+
+/* Read on both the host and inside the device tree walk.  Deliberately a macro rather than an
+ * annotated inline: the device annotations are themselves defined by whichever header happens to be
+ * reached first (vec3.h defines GIZMO_GPU_FUNCTION to nothing behind a bare #ifndef), so an
+ * annotated function here would quietly compile host-only in exactly the translation units that
+ * need it on the device.  A bit extract has no reason to carry that risk. */
+#define NODE_TYPE_PRESENCE(bitflags) \
+    ((((unsigned int) (bitflags)) >> BITFLAG_TYPEPRESENT_SHIFT) & 0x3Fu)
+
 void force_update_tree(void);
 void force_refresh_node_moments(void);
 
@@ -75,12 +102,34 @@ void force_dynamic_update_node(int no, int mode, MyFloat *minbound, MyFloat *max
 void force_update_hmax(void);
 void force_update_hmax_of_node(int no, int mode);
 void force_finish_kick_nodes(void);
+
+/* A particle's velocity was changed outside the kick (a feedback receiver, a
+ * swallowed cell's neighbour, a scattered dark matter particle): raise the
+ * motion bound of every node above each of idx[0..n), and remember the
+ * top-level nodes reached so their new bound reaches the other ranks at the
+ * next tree-update phase.  The kick itself does not come through here: it has
+ * its own route and exchange (force_kick_node / force_finish_kick_nodes). */
+void gravity_note_motion_bound(const int *idx, int n);
+/* All ranks, once per reused-tree step, after force_update_tree: every rank
+ * learns the raised bound of every top-level node any rank changed since the
+ * last flush, and applies it up its own copy of the chain.  Nothing else in
+ * the node moves: no momentum, no kick flag, no timestamp. */
+void gravity_flush_pending_motion_bounds(void);
+/* A rebuild sets every bound afresh, so whatever was pending is void. */
+void gravity_clear_pending_motion_bounds(void);
 int force_create_empty_nodes(int no, int topnode, int bits, peano1D x, peano1D y, peano1D z, int *nodecount, int *nextfree);
 int  force_exchange_pseudodata(void);          /* returns complete() status: nonzero = unmatched (caller skips dependent pseudo-update) */
 void force_exchange_pseudodata_issue(void);    /* split for non-blocking overlap with LET */
 int  force_exchange_pseudodata_complete(void); /* pair to _issue; nonzero = unmatched (pending==NULL) */
 void force_insert_pseudo_particles(void);
 void force_add_element_to_tree(int igas, int istar);
+
+/* Record that a particle of this particle's CURRENT type sits below every node from its father to
+ * the root, so the per-node type-presence bits stay true when a type changes or a particle is
+ * inserted while the tree is standing.  Call it wherever a particle's type becomes final and
+ * wherever one is added to a live tree; it is monotone and idempotent, so calling it more often
+ * than strictly needed can only over-claim, which is safe. */
+void force_tree_note_type_presence(int particle);
 
 void   force_costevaluate(void);
 int    force_getcost_single(void);
@@ -121,6 +170,11 @@ void   force_bump_hmax_refresh_generation(void);   /* called by force_update_hma
    leaves every particle in a top-leaf its own rank owns and so needs nothing retained.  Raised only
    for whole-tree builds. */
 #define FORCE_TREE_NEEDS_OWNERSHIP_RESTORE (-2)
+/* Returned instead of a node count when a particle lies outside the extent the domain was built on, so
+   its Peano key would name another cell.  Checked before any key is formed and before anything is freed;
+   the caller does a full decomposition, which re-measures the extent, and asks again.  Raised only for
+   whole-tree builds; takes precedence over FORCE_TREE_NEEDS_OWNERSHIP_RESTORE. */
+#define FORCE_TREE_NEEDS_DOMAIN_REBUILD (-4)
 
 int    force_treebuild(int npart, struct unbind_data *mp);
 

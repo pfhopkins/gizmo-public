@@ -11,6 +11,7 @@
 #include "../declarations/allvars.h"
 #include "../core/proto.h"
 #include "ghost_writeback.h"
+#include "gpu_neighbor_list.h"   /* the motion-target set the apply loop marks into */
 #include "../system/gpu_particles_arena.h"
 #include "../system/mpi_alltoallv_typed.h"
 
@@ -228,7 +229,14 @@ void ghost_writeback_end_bundle(const struct ghost_writeback_bundle *bundle)
             const size_t ds = cb->delta_size;
             int n_records = recv_count[c * NTask + t];
             for (int r = 0; r < n_records; r++) {
-                cb->apply_delta(cb->ctx, recv_buf + cb_base + (size_t)r * ds);
+                const void *rec = recv_buf + cb_base + (size_t)r * ds;
+                cb->apply_delta(cb->ctx, rec);
+                /* A loop that changes its neighbours' velocities has the runner
+                 * arm the motion-target set for its writeback: the owner this
+                 * delta landed on is then a particle whose bound must be raised.
+                 * Every delta record begins with its home index (the callbacks'
+                 * contract, ghost_writeback.h). */
+                if(gx_motion_target_armed()) {gx_motion_target_mark_host(*(const int *)rec);}
             }
             cb_base += (size_t)n_records * ds;
         }

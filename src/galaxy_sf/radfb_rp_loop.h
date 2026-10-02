@@ -453,6 +453,7 @@ struct RadFBRPSpec {
     static constexpr bool mode_a_active_sources_in_sidx_pool = false; /* non-pool active sources (sink/star/grain) -> runner stages explicit P[].Pos */
     static constexpr bool           uses_ghost_writeback      = true;
     static constexpr bool           uses_ghost_write_detector = true;
+    static constexpr bool           writes_neighbour_motion   = true;   /* the radiation-pressure kick lands on the neighbour's velocity */
 
     /* Iterative metadata. 2 iters strict (iter 0 = wt_sum aggregation;
      * iter 1 = kicks). after_iter returns Converged at iter 1 always.
@@ -466,7 +467,7 @@ struct RadFBRPSpec {
      * default false_type. Runner runtime-asserts single subgroup at
      * entry. NO actives_partition_by_subgroup (that's only for
      * multi-subgroup Specs like ags_density). Mirrors mechfb. */
-    static constexpr double mode_a_csr_buffer_factor      = 1.3;
+    static constexpr double mode_a_csr_buffer_factor      = 1.0;   /* two passes over ONE fixed list: no AdjustRadius */
 
     /* Default 1e-10 — the iter-0
      * wt_sum aggregation reads only Pj.Get_Particle_Size() which is not

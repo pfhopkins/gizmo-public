@@ -52,22 +52,13 @@
  * Out-of-line CBEGradSpec hooks.
  * ========================================================================== */
 
-/* search_radius — mirror AgsForceSpec exactly so the symmetric face set the
- * pass-1 limiter walks is a SUPERSET of the AgsForce flux pair set. The
- * pass-0 LSQ pair body internally re-narrows acceptance to r < h_i; widening
- * the search radius here does not perturb pass-0 math. Under DM_SIDM the
- * runner search uses the 3x-inflated radius (matching gravity/ags_force_loop.h
- * pattern); the per-pair physics filter (in the inline pair body) uses
- * un-inflated radii. */
+/* search_radius — mirrors AgsForceSpec so the symmetric face set the pass-1
+ * limiter walks is a SUPERSET of the AgsForce flux pair set. The pass-0 LSQ
+ * pair body internally re-narrows acceptance to r < h_i. */
 double CBEGradSpec::search_radius(const neighbor_loop_args& /*args*/,
                                    int /*active_slot*/, int i)
 {
-    const double h = (double)P[i].AGS_KernelRadius;
-#if defined(DM_SIDM)
-    return 3.0 * h;
-#else
-    return h;
-#endif
+    return (double)P[i].AGS_KernelRadius;
 }
 
 CBEGradSpec::CallScalars

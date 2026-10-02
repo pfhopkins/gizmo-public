@@ -31,13 +31,13 @@
  *
  *  Not needed for the GPU particle arena: it aliases P[] directly rather than
  *  holding a copy, so there is nothing in it to go stale. */
-static void domain_particle_layout_changed(const char *reason)
+static void domain_particle_layout_changed(const char *reason, int particles_ordered)
 {
-    /* Record the event first, so a consumer that only compares the epoch sees
-     * it regardless of what the cache-freeing calls below do. */
+    /* Epochs only: the neighbour indexes' memory was already returned at the entry
+     * of the decomposition, so an index built before this point is never reused.
+     * particles_ordered: this decomposition also left them in curve order. */
     ghost_exchange_supply_identity_changed(reason);
-    ghost_exchange_local_tree_invalidate_full();
-    gpu_step_sidx_invalidate_full();
+    if(particles_ordered) {gpu_sidx_notify_owned_reordered();} else {gpu_sidx_notify_owned_changed();}
 }
 
 
@@ -395,6 +395,11 @@ int domain_segments_per_rank_for_particles(long long total_particles)
 
 void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_mergesplit_key, int allow_peano_order_cadence)
 {
+    if(ghost_require_no_live_pool_for_layout_change("domain_Decomposition")) {return;}
+    /* The kept neighbour indexes will not be read again before the layout changes, so
+     * their memory is returned now, before this decomposition's own allocations and
+     * the tree allocation at its end. */
+    gpu_step_sidx_invalidate_full();
     int i, ret, retsum, diff, highest_bin_to_include; size_t bytes, all_bytes; double t0, t1;
     
     /* call first -before- a merge-split, to be sure particles are in the correct order in the tree */
@@ -646,6 +651,7 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
     }
     gizmo_exit_bad_stop_if_requested("domain:particle_type_check");
 
+    int particles_ordered = 0;
 #ifdef SUBFIND
     if(GrNr < 0)			/* we don't do it when SUBFIND is executed for a certain group */
 #endif
@@ -657,7 +663,7 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
      * a bounded interval of decompositions instead of on each one. */
     {
         if(!allow_peano_order_cadence || DomainCallsSincePeanoOrder >= MAX_DOMAIN_CALLS_BETWEEN_PEANO_ORDERS)
-          {peano_hilbert_order(); DomainCallsSincePeanoOrder = 0;}
+          {particles_ordered = peano_hilbert_order(); DomainCallsSincePeanoOrder = 0;}
         else
           {DomainCallsSincePeanoOrder++;}
     }
@@ -683,8 +689,9 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
   reconstruct_timebins();
   gpu_particles_arena_invalidate(); /* P[] reordered across ranks; arena stale */
   wakeup_sidecar_invalidate();      /* P[] reindexed across ranks → rebuild WakeupDirty from P[] next scan */
-  domain_particle_layout_changed("domain_Decomposition");
+  domain_particle_layout_changed("domain_Decomposition", particles_ordered);
   report_memory_ledger_on_growth("post-domain");  /* memory peak (persistent + tree); collective; prints only on growth */
+  DomainExtentOutgrownLocal = 0;   /* the extent was just re-measured around every particle */
 }
 
 
@@ -699,6 +706,8 @@ void domain_Decomposition(int UseAllTimeBins, int SaveKeys, int do_particle_merg
     same step. */
 void domain_Decomposition_light(int UseAllTimeBins, int do_particle_mergesplit_key)
 {
+    if(ghost_require_no_live_pool_for_layout_change("domain_Decomposition_light")) {return;}
+    gpu_step_sidx_invalidate_full();   /* as in domain_Decomposition: released before any allocation here */
     int i, no; size_t bytes; double t0, t1;
 
     /* fall back to full decomposition if persistent state is not available, or if
@@ -757,19 +766,12 @@ void domain_Decomposition_light(int UseAllTimeBins, int do_particle_mergesplit_k
        downstream can notice.  Only a full decomposition re-measures the extent, so check it here,
        after this step's drift and wrapping have settled the positions the keys will be built from,
        and before anything has been freed or rebuilt.  The test is the exact validity condition
-       rather than a padded one, so it fires only when a key would actually be wrong; a NaN
-       coordinate fails both comparisons and escalates too.  It is put to the sum the key is read
-       from and not to the fraction, because a fraction below 1 can still carry that sum up to 2
-       when it is rounded, and 2 has the mantissa of the first cell rather than the last. */
+       rather than a padded one, so it fires only when a key would actually be wrong. */
     int extent_outgrown_local = 0;
     for(i = 0; i < NumPart; i++)
     {
-        for(int k = 0; k < 3; k++)
-        {
-            double key_input = ((P[i].Pos[k] - DomainCorner[k]) / DomainLen) + 1.0;
-            if(!(key_input >= 1.0 && key_input < 2.0)) {extent_outgrown_local = 1;}
-        }
-        if(extent_outgrown_local) {break;}
+        if(position_outside_domain_extent(P[i].Pos[0], P[i].Pos[1], P[i].Pos[2], DomainCorner[0], DomainCorner[1], DomainCorner[2], DomainLen))
+            {extent_outgrown_local = 1; break;}
     }
     int extent_outgrown = 0;
     MPI_Allreduce(&extent_outgrown_local, &extent_outgrown, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
@@ -970,7 +972,7 @@ void domain_Decomposition_light(int UseAllTimeBins, int do_particle_mergesplit_k
     gizmo_exit_bad_stop_if_requested("domain:treeallocate_light"); /* drain a tree-alloc UVM OOM (all-rank) before any tree use */
     reconstruct_timebins();
     wakeup_sidecar_invalidate();   /* light repartition rearranged + exchanged particles → rebuild WakeupDirty next scan */
-    domain_particle_layout_changed("domain_Decomposition_light");
+    domain_particle_layout_changed("domain_Decomposition_light", 0);
     report_memory_ledger_on_growth("post-domain-light");  /* same memory boundary as full decomposition; collective; growth-gated */
 }
 
@@ -1444,6 +1446,7 @@ int domain_check_memory_bound(int multipledomains)
 
 void domain_exchange(void)
 {
+  if(ghost_require_no_live_pool_for_layout_change("domain_exchange")) {return;}
   long count_togo = 0, count_togo_gas = 0, count_get = 0, count_get_gas = 0;
   long *count, *count_gas, *offset, *offset_gas;
   long *count_recv, *count_recv_gas, *offset_recv, *offset_recv_gas;
@@ -3225,6 +3228,12 @@ peano1D domain_double_to_int(double d)
 }
 
 
+/* Margin domain_findExtent() puts around the particles, as a factor on the measured length.  Between two
+   full decompositions a particle may drift up to about half of it past the outermost particle -- in a
+   periodic box also past the box face, since positions are wrapped only at decompositions -- and keep a
+   valid Peano key.  One that goes further raises DomainExtentOutgrownLocal, and the next step decomposes. */
+static const double DOMAIN_EXTENT_PADDING_FACTOR = 1.01;
+
 /*! This routine finds the extent of the global domain grid.
  */
 void domain_findExtent(void)
@@ -3258,7 +3267,7 @@ void domain_findExtent(void)
   len = 0;
   for(j = 0; j < 3; j++) {if(xmax_glob[j] - xmin_glob[j] > len) {len = xmax_glob[j] - xmin_glob[j];}}
 
-  len *= 1.001;
+  len *= DOMAIN_EXTENT_PADDING_FACTOR;
 
   for(j = 0; j < 3; j++)
     {

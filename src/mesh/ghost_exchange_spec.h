@@ -5,11 +5,9 @@
  * The spec literal at the caller is the single source of truth for that
  * loop's (supply_type_mask, search_mode, query list). Editing those there
  * is the only edit needed to flip the call's physics. Dispatch keys only on
- * spec fields: an explicit query list (n_queries >= 0), search_mode ==
- * NGB_SEARCH_ONEWAY, or a SYMMETRIC spec with supply_band_dominated set
- * selects request-driven; every other SYMMETRIC caller uses
- * tile-overlap/broadcast. No per-caller special-casing lives in
- * ghost_exchange.cc.
+ * spec fields, and every search mode routes: the sender opens against the
+ * cross-rank per-type node band, which bounds any radius policy a spec can
+ * declare. No per-caller special-casing lives in ghost_exchange.cc.
  *
  * Written by Phil Hopkins (phopkins@caltech.edu) for GIZMO. */
 
@@ -76,17 +74,6 @@ struct ghost_exchange_spec_t {
     mode_b_radius_policy_t  radius_policy;
     double                  j_radius_scale;
 
-    /* Supply-band domination: 1 iff this spec's supply-side reach — under its
-     * own (radius_policy, j_radius_scale, safety_factor) — is provably bounded
-     * by the per-type node band the sender opener walks against. Only then is
-     * routed (request-driven) SYMMETRIC discovery COMPLETE; an unproven reach
-     * could exceed the band and silently under-import.
-     *
-     * 0 is the FAIL-CLOSED default in every sense that matters: a spec left at
-     * 0 keeps the broadcast path, i.e. exactly today's behavior. Never set 1
-     * without citing the bound at the call site. This is a STRUCTURAL property
-     * of the spec, never a caller identity — dispatch must not name callers. */
-    int                     supply_band_dominated;
 };
 
 #endif /* GHOST_EXCHANGE_SPEC_H */

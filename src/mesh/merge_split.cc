@@ -13,7 +13,7 @@
 #include "../declarations/allvars.h"
 #include "../declarations/multifluid_helpers.h"
 #include "../core/proto.h"
-#include "ghost_writeback.h"   /* ghost_get_num_local/num_ghosts (rearrange live-pool guard) */
+#include "ghost_writeback.h"   /* ghost_get_num_local/num_ghosts */
 #include "../core/wakeup_sidecar.h"
 #include "../mesh/kernel.h"
 #if defined(GALSF_ISMDUSTCHEM_MODEL)
@@ -22,6 +22,7 @@
 #include "../solids/ism_dust_chemistry_functions.h"
 #endif
 #include "../mesh/gpu_neighbor_list.h" /* gizmo_mark_kernel_radius_dirty_* */
+#include "../mesh/ghost_exchange_functions.h" /* gx_pair_accept_wrap_and_test: the canonical pair accept */
 #include "../system/gpu_particles_arena.h"
 
 #include <vector>
@@ -292,6 +293,7 @@ double target_mass_renormalization_factor_for_mergesplit(int i, int split_key)
 /*!   -- this subroutine is not openmp parallelized at present, so there's not any issue about conflicts over shared memory. if you make it openmp, make sure you protect the writes to shared memory here! -- */
 void merge_and_split_particles(void)
 {
+    if(ghost_require_no_live_pool_for_layout_change("merge_and_split_particles")) {return;}
     struct flags_merg_split {
         int flag; // 0 for nothing, -1 for clipping, 1 for merging, 2 for splitting, and 3 marked as merged
         int target_index;
@@ -471,6 +473,12 @@ void merge_and_split_particles(void)
             if (ms_src_kind[aa] == 1) {
                 target_for_merger = -1;
                 threshold_val = MAX_REAL_NUMBER;
+                /* The list holds candidates, not only neighbours: the merge target and the ambient
+                   average are taken over the source's own kernel, the radius the list was built with. */
+                const double h_src = ms_src_radii[aa];
+                auto in_source_kernel = [&](int j_c) {
+                    return gx_pair_accept_wrap_and_test((double)P[i].Pos[0] - P[j_c].Pos[0], (double)P[i].Pos[1] - P[j_c].Pos[1],
+                                                        (double)P[i].Pos[2] - P[j_c].Pos[2], h_src, 0.0, NGB_SEARCH_ONEWAY);};
 #ifdef SINK_WIND_SPAWN
                 const int is_spawned_i = (P[i].ID==All.SpawnedWindCellID && P[i].Type==0);
 #ifdef SINK_SPAWN_MERGE_WHEN_AMBIENT
@@ -482,6 +490,7 @@ void merge_and_split_particles(void)
                     for (int64_t na = nl_start; na < nl_end; na++) {
                         int j_amb = gnl_neighbors[na];
                         if ((j_amb < 0) || (j_amb == i) || (j_amb >= local_count)) {continue;}
+                        if (!in_source_kernel(j_amb)) {continue;}
                         if ((P[j_amb].Type != 0) || (P[j_amb].Mass <= 0)) {continue;}
                         if (P[j_amb].ID == All.SpawnedWindCellID) {continue;} /* ambient means non-spawned gas */
                         double w = P[j_amb].Mass;
@@ -497,6 +506,7 @@ void merge_and_split_particles(void)
                 for (int64_t nn = nl_start; nn < nl_end; nn++) {
                     j = gnl_neighbors[nn];
                     if (j >= local_count) continue; /* skip ghosts (local-only merge) */
+                    if (!in_source_kernel(j)) continue;
                     if (P[j].Type != P[i].Type) continue;
                     double m_eff = P[j].Mass; int do_allow_merger = 0;
                     if ((P[j].Mass >= P[i].Mass) && (P[i].Mass+P[j].Mass < All.MaxMassForParticleSplit)) {do_allow_merger = 1;}
@@ -595,7 +605,7 @@ void merge_and_split_particles(void)
         }
 
         if (num_src > 0) {
-            gpu_ngb_list_free(&gnl, NULL);
+            gpu_ngb_list_free(&gnl);
             gpu_particles_arena_invalidate();
         }
     }
@@ -661,6 +671,7 @@ void gizmo_reset_unmet_split_demand(void) {UnmetSplitDemand = 0;}
 
 int split_particle_i(int i, int n_particles_split, int i_nearest)
 {
+    if(ghost_require_no_live_pool_for_layout_change("split_particle_i")) {return 0;}
     double mass_of_new_particle;
     const int out_of_storage = ((P[i].Type==0) && (NumPart + n_particles_split + 1 >= (int)(REDUC_FAC_FOR_MEMORY_IN_DOMAIN*All.MaxPartGas)))
                                || (NumPart + n_particles_split + 1 >= (int)(REDUC_FAC_FOR_MEMORY_IN_DOMAIN*All.MaxPart));
@@ -1388,21 +1399,9 @@ void remove_particle_from_treewalk(int i){
  */
 void rearrange_particle_sequence(void)
 {
-    /* HARD INVARIANT: no live ghost pool. This routine reorders/compacts the
-       particle array via NumPart/N_gas-bounded loops and swap-with-last moves;
-       with imported ghosts materialized in [num_local, NumPart) it would scan
-       ghost slots into the gas block, "eliminate" zero-mass ghost copies
-       (corrupting TimeBinCount and the pool bookkeeping), and shrink NumPart
-       under the pool. Callers must tear ghosts down first. Pool liveness is
-       collective (imports/cleanups are collective), so every rank fails here
-       together. */
-    if(ghost_pool_is_live()) {
-        printf("FATAL: rearrange_particle_sequence called with a live ghost pool "
-               "(num_local=%d NumPart=%d nghost=%d) on task %d — caller lifecycle bug.\n",
-               ghost_get_num_local(), NumPart, ghost_get_num_ghosts(), ThisTask);
-        fflush(stdout);
-        endrun(7314);
-    }
+    /* With imported ghosts in [num_local, NumPart) this would scan ghost slots into the gas block,
+       "eliminate" zero-mass ghost copies and shrink NumPart under the pool. */
+    if(ghost_require_no_live_pool_for_layout_change("rearrange_particle_sequence")) {return;}
     int i, j, flag = 0, flag_sum, j_next;
     int count_elim, count_gaselim, count_sink_elim, tot_elim, tot_gaselim, tot_sink_elim;
     struct particle_data psave;
@@ -1569,7 +1568,7 @@ void rearrange_particle_sequence(void)
      * point independently, so a collective here would be both wrong and a
      * deadlock risk. The consumer decides what to rebuild; nothing is freed from
      * here. */
-    if(identity_changed) {ghost_exchange_supply_identity_changed("rearrange_particle_sequence"); gpu_sidx_notify_pool_changed();}
+    if(identity_changed) {ghost_exchange_supply_identity_changed("rearrange_particle_sequence"); gpu_sidx_notify_owned_changed();}
 
     MPI_Allreduce(&flag, &flag_sum, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     if(flag_sum) {reconstruct_timebins();}

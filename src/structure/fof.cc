@@ -1505,6 +1505,7 @@ void fof_make_sink_particles(void)
         
         P[import_indices[n]].Mass = CellP[import_indices[n]].Mass; /* sync mass before type conversion */
         P[import_indices[n]].Type = 5;    /* make it a sink particle particle */
+        force_tree_note_type_presence(import_indices[n]);  /* the element's type is final here, so tell the standing tree before anything walks it looking for that type */
 #ifdef GALSF
         P[import_indices[n]].StellarAge = All.Time; /* reset formation time to match BH formation */
 #endif

@@ -261,6 +261,67 @@ void node_motion_intervals(integertime time0, integertime time1, double dilation
 #endif
 }
 
+/* --- Widening a spatial bound for the motion of what it holds ----------------
+ * A node or tile records the box its members occupied when it was written, at
+ * time t_ref, and the largest speed any of them can have (vmax, from
+ * particle_motion_speed_bound, which already carries each member's own
+ * dilation).  By `now` a member can have travelled vmax * dt on the UNDILATED
+ * clock, so the box LENGTH grows by twice that -- the same rule
+ * force_drift_node applies eagerly to a tree node.  Every reader of such a
+ * bound widens through this one function, so a tree node opened on the device,
+ * a tile opened by the BVH walk, and a node advanced on the host cannot disagree
+ * about how far a box may have moved.
+ *
+ * Returns the growth of the LENGTH (a halfwidth grows by half of it).  Zero
+ * when t_ref is not before `now`, so a fresh bound is read as written. */
+KOKKOS_INLINE_FUNCTION
+double motion_bound_widening(double vmax, integertime t_ref, integertime ti_now,
+                             const struct DriftKickTableView *view)
+{
+    if(!(t_ref >= 0 && t_ref < ti_now)) {return 0.0;}   /* zero is a valid timestamp: >= 0, not > 0 */
+    return TREE_NODE_WIDENING_DELTA(vmax, get_drift_factor_impl(t_ref, ti_now, 1.0, view));
+}
+
+/* A non-finite or absurd widening is a defect in the bound, never a large
+ * number: falling back to the unwidened box would under-include silently, so
+ * every reader tests the value and reports rather than narrows.  NaN fails
+ * every comparison, hence the explicit form rather than a range check alone. */
+KOKKOS_INLINE_FUNCTION
+int motion_bound_widening_is_valid(double dl)
+{
+    return (dl >= 0.0) && (dl < 1.0e30);
+}
+
+/* The kernel radius a drift predicts follows the local compression: over an interval in
+ * which the volume changes by exp(DivVel*dt), the radius changes by the NUMDIMS-th root of
+ * that.  The exponent is capped so a prediction cannot move far from the last solved value,
+ * which also gives anything that bounds a radius across a drift one known limit.  The
+ * particle drift and the tree-node drift take their radius factor from here. */
+static constexpr double KERNEL_RADIUS_DRIFT_MAX_LOG_CHANGE = 0.3;
+
+/* The capped change in log-volume over the drift; the predicted density moves by its inverse. */
+KOKKOS_INLINE_FUNCTION
+double kernel_radius_drift_log_change(double divv_times_dt)
+{
+    if(divv_times_dt > +KERNEL_RADIUS_DRIFT_MAX_LOG_CHANGE) {return +KERNEL_RADIUS_DRIFT_MAX_LOG_CHANGE;}
+    if(divv_times_dt < -KERNEL_RADIUS_DRIFT_MAX_LOG_CHANGE) {return -KERNEL_RADIUS_DRIFT_MAX_LOG_CHANGE;}
+    return divv_times_dt;
+}
+
+/* The factor a radius (or a bound on radii) is multiplied by over the drift. */
+KOKKOS_INLINE_FUNCTION
+double kernel_radius_drift_factor(double divv_times_dt)
+{
+    return exp(kernel_radius_drift_log_change(divv_times_dt) / ((double)NUMDIMS));
+}
+
+/* The most one drift can grow a kernel radius by (before the radius floors are applied). */
+KOKKOS_INLINE_FUNCTION
+double kernel_radius_drift_max_growth_factor(void)
+{
+    return exp(KERNEL_RADIUS_DRIFT_MAX_LOG_CHANGE / ((double)NUMDIMS));
+}
+
 
 /* --- 4th-order Hermite integration -----------------------------------------
  * Which particles the Hermite integrator advances, and how a source that is not
@@ -382,6 +443,31 @@ KOKKOS_INLINE_FUNCTION int is_super_timestepped_sink(int i, const struct particl
 }
 #endif
 
+/* The velocity a particle's POSITION advances at: a finite-volume gas cell moves with its
+   mesh-generating point, everything else with its own velocity, and nothing moves at all when the
+   hydro is frozen.  This is the term drift_particle_impl applies, stated once so that the speed
+   bound below and anything that predicts where a particle will be cannot disagree about which
+   velocity moves it.  It is the BASE term only: the bound adds a super-timestepped sink's orbital
+   motion and the dilation factor on top, because those do not enter a straight-line prediction.
+   Curvilinear mesh motion (HYDRO_FIX_MESH_MOTION 2/3) turns this vector as the point moves; a
+   predictor may treat it as linear, since that motion assumes a radius of curvature far larger
+   than either the inter-particle spacing or the distance moved in a step. */
+KOKKOS_INLINE_FUNCTION
+Vec3<double> particle_drift_velocity(int i, const struct particle_data *pp, const struct gas_cell_data *cell)
+{
+#if defined(FREEZE_HYDRO)
+    (void)i; (void)pp; (void)cell;
+    return Vec3<double>{0, 0, 0};
+#else
+#if defined(HYDRO_MESHLESS_FINITE_VOLUME)
+    if(pp[i].Type == 0) {return Vec3<double>{(double)cell[i].ParticleVel[0], (double)cell[i].ParticleVel[1], (double)cell[i].ParticleVel[2]};}
+#else
+    (void)cell;
+#endif
+    return Vec3<double>{(double)pp[i].Vel[0], (double)pp[i].Vel[1], (double)pp[i].Vel[2]};
+#endif
+}
+
 /* The fastest a particle can move along any one coordinate axis, per unit of the UNDILATED drift
    interval.  A box measured when the particle was last drifted still contains it after it has
    grown by this speed times the interval since, which is what the gravity tree and the spatial
@@ -396,17 +482,8 @@ KOKKOS_INLINE_FUNCTION int is_super_timestepped_sink(int i, const struct particl
 KOKKOS_INLINE_FUNCTION
 double particle_motion_speed_bound(int i, const struct particle_data *pp, const struct gas_cell_data *cell)
 {
-    double vx = 0, vy = 0, vz = 0;
-#if !defined(FREEZE_HYDRO)
-    vx = (double)pp[i].Vel[0]; vy = (double)pp[i].Vel[1]; vz = (double)pp[i].Vel[2];
-#if defined(HYDRO_MESHLESS_FINITE_VOLUME)
-    if(pp[i].Type == 0) {vx = (double)cell[i].ParticleVel[0]; vy = (double)cell[i].ParticleVel[1]; vz = (double)cell[i].ParticleVel[2];}
-#else
-    (void)cell;
-#endif
-#else
-    (void)cell;
-#endif
+    const Vec3<double> v_drift = particle_drift_velocity(i, pp, cell);
+    double vx = v_drift[0], vy = v_drift[1], vz = v_drift[2];
     double ax = fabs(vx), ay = fabs(vy), az = fabs(vz);
     double bound = ax; if(ay > bound) {bound = ay;} if(az > bound) {bound = az;}
 #if defined(HYDRO_MESHLESS_FINITE_VOLUME) && ((HYDRO_FIX_MESH_MOTION == 2) || (HYDRO_FIX_MESH_MOTION == 3))
@@ -439,6 +516,208 @@ double particle_motion_speed_bound(int i, const struct particle_data *pp, const 
     }
 #endif
     return bound;
+}
+
+/* Where particle i will be once drifted to ti_now, for a search that reads particles which may not
+   have been.  Returns the centre of that position and a half-width around it, per axis:
+     CURRENT   -- drifted to ti_now already: the centre is its position, the half-width zero.
+     BOUNDED   -- behind: the centre is where the drift will put it and the half-width how far it
+                  can be from there, including MOTION_ENVELOPE_ROUNDING.
+     UNBOUNDED -- a clock that is negative or ahead of ti_now, a result that is not finite, or a
+                  centre past a special boundary the drift would move it back across: a search
+                  must keep it as a candidate and leave the drift to handle or reject that state,
+                  never narrow around it.
+   Over a drift a particle moves in a straight line at the level the code treats it: its own velocity
+   (the mesh velocity for a finite-volume cell), a super-timestepped sink's binary centre of mass,
+   and under dilation the nearest special particle's motion over the undilated remainder.  These are
+   the terms of the drift's position step (particle_position_step), computed by the same helpers, so an
+   ordinary particle's centre is exactly where the drift puts it and a search testing it needs no
+   allowance beyond rounding -- in particular none for bulk motion, which a bound built from the
+   particle's speed would charge to every particle of a moving flow.  What is left carries a residual:
+   a sink's orbit about its binary's centre of mass, bounded by the softened two-body speed; and a
+   curvilinear mesh cell, which advect_mesh_point_P turns along an arc.  That arc ends within
+   r_new |exp(i theta) - 1 - i theta| <= 2 r_new theta = 2 v_t dt of the straight line (theta = v_t dt /
+   r_new), and the branches that advance straight differ from it by nothing, so 2 |v| dt covers it. */
+/* The straight-line parts of how a drift over dt_drift moves particle i, shared by the drift's position
+   step (particle_position_step) and particle_motion_envelope so that the position a search predicts and the one the drift produces
+   come from the same arithmetic.  The displacement of a particle moving with its own velocity (the
+   mesh velocity for a finite-volume cell; a super-timestepped sink's binary uses its centre-of-mass
+   velocity below): */
+KOKKOS_INLINE_FUNCTION
+Vec3<double> drift_straight_displacement(int i, const struct particle_data *pp, const struct gas_cell_data *cell, double dt_drift)
+{
+    return particle_drift_velocity(i, pp, cell) * dt_drift;
+}
+
+#if (SINGLE_STAR_TIMESTEPPING > 0)
+/* A super-timestepped sink drifts with its binary's centre of mass; its orbit about it is added apart. */
+KOKKOS_INLINE_FUNCTION
+Vec3<double> super_timestepped_sink_com_velocity(int i, const struct particle_data *pp)
+{
+    return pp[i].Vel + pp[i].comp_dv * (pp[i].comp_Mass/(pp[i].Mass+pp[i].comp_Mass));
+}
+#endif
+
+/* How a drift moves particle i, on the particle's own (possibly dilated) drift clock: the velocity its
+   position advances at in a straight line, and the speed of whatever part of the motion is not one -- a
+   super-timestepped sink's orbit about its binary's centre of mass, and a curvilinear mesh cell's turn
+   (bounded by 2|v|, see particle_motion_envelope).  The drift's position terms are these, so the
+   predicted position and the drifted one agree bit for bit. */
+struct particle_straight_motion {
+    Vec3<double> velocity;
+    double residual_speed;
+};
+
+KOKKOS_INLINE_FUNCTION
+struct particle_straight_motion particle_straight_line_motion(int i, const struct particle_data *pp, const struct gas_cell_data *cell)
+{
+    struct particle_straight_motion m;
+    m.velocity = Vec3<double>{0, 0, 0};
+    m.residual_speed = 0.0;
+#if !defined(FREEZE_HYDRO)
+#if (SINGLE_STAR_TIMESTEPPING > 0)
+    if(is_super_timestepped_sink(i, pp))
+    {
+        m.velocity = super_timestepped_sink_com_velocity(i, pp);
+        m.residual_speed = (pp[i].comp_Mass/(pp[i].Mass+pp[i].comp_Mass)) * binary_relative_speed_bound(i, pp);
+        return m;
+    }
+#endif
+    m.velocity = particle_drift_velocity(i, pp, cell);
+#if defined(HYDRO_MESHLESS_FINITE_VOLUME) && ((HYDRO_FIX_MESH_MOTION == 2) || (HYDRO_FIX_MESH_MOTION == 3))
+    if(pp[i].Type == 0) {m.residual_speed = 2.0 * m.velocity.norm();}
+#endif
+#else
+    (void)i; (void)pp; (void)cell;
+#endif
+    return m;
+}
+
+/* What every drift does to a position after moving it: zero the unused dimensions, and under dilation
+   add back the nearest special particle's motion over the undilated remainder of the interval (dt_drift
+   carries the dilation, so only the motion relative to the surroundings is dilated). */
+KOKKOS_INLINE_FUNCTION
+void drift_position_finish(int i, const struct particle_data *pp, double dt_drift, Vec3<MyDouble> &pos)
+{
+#if (NUMDIMS==1)
+    pos[1] = pos[2] = 0;
+#endif
+#if (NUMDIMS==2)
+    pos[2] = 0;
+#endif
+#ifdef DILATION_FOR_STELLAR_KINEMATICS_ONLY
+    const double dilation = timestep_dilation_factor(i, pp); /* f = 1/a <= 1 */
+    if(dilation < 1.) {pos += pp[i].vel_of_nearest_special * (dt_drift * (1./dilation - 1.));}
+#else
+    (void)i; (void)pp; (void)dt_drift;
+#endif
+}
+
+/* Discovery tests a position the drift has not yet produced, possibly in different arithmetic from the
+   drift and from the exact test that follows it (a device kernel may fuse a multiply and an add into one
+   rounding where the host rounds twice).  Each of those few operations can move a coordinate by one
+   rounding of the largest magnitude involved, so every half-width carries this many roundings of that
+   scale -- outward only: it can add a candidate the exact test then rejects, never lose one. */
+static constexpr double MOTION_ENVELOPE_ROUNDINGS = 16.0;
+
+KOKKOS_INLINE_FUNCTION
+double motion_envelope_rounding_floor(const double center[3], double scale)
+{
+    double m = fabs(scale);
+    for(int k = 0; k < 3; k++) {if(fabs(center[k]) > m) {m = fabs(center[k]);}}
+    return MOTION_ENVELOPE_ROUNDINGS * 2.220446049250313e-16 * m;   /* DBL_EPSILON */
+}
+
+/* The allowance a leaf test adds to a half-width for its own comparison: the separation of the query
+   from the particle and its comparison with the reach are rounded at the scale of all three, which the
+   exact test that decides the pair may do differently (on another device, or in another form). */
+KOKKOS_INLINE_FUNCTION
+double motion_envelope_test_slack(const double center[3], const double query[3], double reach)
+{
+    double m = fabs(reach);
+    for(int k = 0; k < 3; k++) {if(fabs(query[k]) > m) {m = fabs(query[k]);}}
+    return motion_envelope_rounding_floor(center, m);
+}
+
+enum particle_motion_bound_state {
+    PARTICLE_MOTION_CURRENT   = 0,
+    PARTICLE_MOTION_BOUNDED   = 1,
+    PARTICLE_MOTION_UNBOUNDED = 2
+};
+
+KOKKOS_INLINE_FUNCTION
+int particle_motion_envelope(int i, const struct particle_data *pp, const struct gas_cell_data *cell,
+                             integertime ti_now, const struct DriftKickTableView *view,
+                             double center[3], double *half_width)
+{
+    center[0] = (double)pp[i].Pos[0]; center[1] = (double)pp[i].Pos[1]; center[2] = (double)pp[i].Pos[2];
+    *half_width = 0.0;
+    const integertime ti_i = pp[i].Ti_current;
+    if(ti_i == ti_now) {return PARTICLE_MOTION_CURRENT;}
+    if(ti_i < 0 || ti_i > ti_now) {return PARTICLE_MOTION_UNBOUNDED;}
+    const double dt_drift = get_drift_factor_impl(ti_i, ti_now, timestep_dilation_factor(i, pp), view);
+    const Vec3<MyDouble> pos0 = pp[i].Pos;
+    Vec3<MyDouble> pos = pos0;
+    double residual = 0.0;
+#if !defined(FREEZE_HYDRO)
+    const struct particle_straight_motion motion = particle_straight_line_motion(i, pp, cell);
+    pos += motion.velocity * dt_drift;
+    residual = motion.residual_speed * fabs(dt_drift);
+#endif
+    drift_position_finish(i, pp, dt_drift, pos);
+    for(int k = 0; k < 3; k++) {
+        center[k] = (double)pos[k];
+        if(!(center[k] - center[k] == 0.0)) {return PARTICLE_MOTION_UNBOUNDED;}   /* NaN or Inf, fast-math safe */
+    }
+    if(!(residual >= 0.0 && residual < 1.0e30)) {return PARTICLE_MOTION_UNBOUNDED;}
+    double moved = 0.0;
+    for(int k = 0; k < 3; k++) {const double d = fabs(center[k] - (double)pos0[k]); if(d > moved) {moved = d;}}
+    const double width = residual + motion_envelope_rounding_floor(center, moved);
+#if BOX_DEFINED_SPECIAL_XYZ_BOUNDARY_CONDITIONS_ARE_ACTIVE
+    {   /* the sides the drift acts on: reflect or outflow, lower (code 0 or -1) and upper (0 or 1) */
+        const double box_upper[3] = {boxSize_X, boxSize_Y, boxSize_Z};
+        for(int k = 0; k < NUMDIMS; k++) {
+            const int rf = special_boundary_condition_xyz_def_reflect[k], of = special_boundary_condition_xyz_def_outflow[k];
+            const int lower = (rf == 0 || rf == -1 || of == 0 || of == -1), upper = (rf == 0 || rf == 1 || of == 0 || of == 1);
+            if((lower && center[k] <= width) || (upper && center[k] >= box_upper[k] - width)) {return PARTICLE_MOTION_UNBOUNDED;}
+        }
+    }
+#endif
+    *half_width = width;
+    return PARTICLE_MOTION_BOUNDED;
+}
+
+/* How far a drift carries particle i per unit of the UNDILATED drift interval, so that one clock serves
+   every member of a spatial index whatever dilation each carries: over an undilated interval D the drift
+   moves it by u D in a straight line, to within residual_speed D.  These are particle_straight_line_motion's
+   terms put on the undilated clock -- the drift covers only the dilated fraction f of the interval, and
+   under DILATION_FOR_STELLAR_KINEMATICS_ONLY adds back the nearest special particle's motion over the rest
+   (drift_position_finish) -- so a position the drift produced at one time, moved by u D, is where the drift
+   puts the particle a drift interval D later.  u changes only when the particle is kicked or its motion is
+   written directly; a drift leaves it alone. */
+KOKKOS_INLINE_FUNCTION
+void particle_transport_velocity(int i, const struct particle_data *pp, const struct gas_cell_data *cell,
+                                 double u[3], double *residual_speed)
+{
+    const double f = timestep_dilation_factor(i, pp);
+    u[0] = u[1] = u[2] = 0.0;
+    *residual_speed = 0.0;
+#if !defined(FREEZE_HYDRO)
+    const struct particle_straight_motion m = particle_straight_line_motion(i, pp, cell);
+    for(int k = 0; k < 3; k++) {u[k] = f * m.velocity[k];}
+    *residual_speed = f * m.residual_speed;
+#else
+    (void)cell;
+#endif
+#ifdef DILATION_FOR_STELLAR_KINEMATICS_ONLY
+    if(f < 1.) {for(int k = 0; k < 3; k++) {u[k] += (1. - f) * (double)pp[i].vel_of_nearest_special[k];}}
+#endif
+#if (NUMDIMS == 1)
+    u[1] = u[2] = 0.0;
+#endif
+#if (NUMDIMS == 2)
+    u[2] = 0.0;
+#endif
 }
 
 
@@ -686,7 +965,7 @@ void particle_position_step(Motion &a, double dt_drift, Vec3<double> &fewbody_ki
     {
         /* The orbit integration reads the binary's stored state, so the centre-of-mass velocity does too. */
         Vec3<double> fewbody_drift_dx = {};
-        Vec3<double> COM_Vel = a.vel() + a.stored().comp_dv * (a.stored().comp_Mass/(a.stored().Mass+a.stored().comp_Mass)); //center of mass velocity
+        const Vec3<double> COM_Vel = super_timestepped_sink_com_velocity(a.i, a.particles()); //center of mass velocity
         a.pos() += COM_Vel * dt_drift; //center of mass drift
         odeint_super_timestep(a.i, dt_drift, fewbody_kick_dv, fewbody_drift_dx, Motion::fewbody_mode, a.particles()); // do_fewbody_drift
         a.fewbody_use_com_acceleration(); //Overwrite the acceleration with center of mass value
@@ -699,25 +978,9 @@ void particle_position_step(Motion &a, double dt_drift, Vec3<double> &fewbody_ki
     if(a.stored().Type==0) {advect_mesh_point_body(a, dt_drift);}
     else
 #endif
-    {a.pos() += a.vel() * dt_drift;}
+    {a.pos() += drift_straight_displacement(a.i, a.particles(), a.cell, dt_drift);}
 #endif // FREEZE_HYDRO clause
-#if (NUMDIMS==1)
-    a.pos()[1]=a.pos()[2]=0; // force zero-ing
-#endif
-#if (NUMDIMS==2)
-    a.pos()[2]=0; // force zero-ing
-#endif
-
-#ifdef DILATION_FOR_STELLAR_KINEMATICS_ONLY
-    double dilation = timestep_dilation_factor(a.i, a.particles()); /* f = 1/a <= 1 */
-    if(dilation < 1.) {
-        /* the drift above advanced the particle over only the fraction f of the raw interval, since
-           dt_drift already carries the f. add back the bulk motion over the remaining (1-f) of the
-           raw interval, so that only the motion relative to the surroundings is dilated */
-        double cfac = dt_drift * (1./dilation - 1.);
-        a.pos() += a.stored().vel_of_nearest_special * cfac;
-    }
-#endif
+    drift_position_finish(a.i, a.particles(), dt_drift, a.pos());   /* unused dimensions, dilation add-back */
 }
 
 /* A particle's position, velocity and mass at ti_to, predicted from its stored state (m starts

@@ -217,9 +217,14 @@ void gizmo_get_ewald_tables(const MyFloat **fcorrx_out, const MyFloat **fcorry_o
  *
  *  Why this exists: gpu_moment_refresh() writes the scalar Extnodes[no].hmax
  *  to AoS but not the per-type bands Extnodes[no].hmax_per_type[].  The GPU
- *  SoA intentionally does not carry per-type bands -- their only consumer is
- *  this host-side Mode B walker (mesh/mode_b_local_walker.cc) -- so the GPU
- *  moment path bypasses the host moment loop that would otherwise seed them.
+ *  SoA does not carry the per-type bands: their consumer is this host-side
+ *  Mode B walker (mesh/mode_b_local_walker.cc), whose SYMMETRIC opening needs
+ *  a per-type REACH.  The device walks ask a different question -- whether a
+ *  type is present below a node at all -- and answer it from the presence bits
+ *  packed into the node's bitflags word, which cost no extra storage and are
+ *  already mirrored.  Presence does not bound reach, so mirroring the bands
+ *  remains what a device SYMMETRIC walk would need.  Either way the GPU moment
+ *  path bypasses the host moment loop that would otherwise seed the bands.
  *  Without this pass every full force_treebuild and every
  *  force_refresh_node_moments would leave the bands at zero, and Mode B's
  *  SYMMETRIC walker reading zero bands would over-prune (collapse to ONEWAY)
@@ -382,7 +387,7 @@ int force_treebuild(int npart, struct unbind_data *mp)
      * exists: a retry frees the tree, taking Father[] and DomainNodeIndex with it.  Its result is
      * reused by every attempt -- positions, the top tree and the retained attachment do not change
      * while the build retries for a larger arena. */
-    long crossed_local = 0, unrecovered_local = 0;
+    long crossed_local = 0, unrecovered_local = 0, outside_extent_local = 0;
     /* Whether THIS rank is building its whole local tree.  The test is rank-local -- a group tree the
        halo finder builds can happen to hold as many members as a rank has particles -- so the
        reduction below carries it too, and a build that is not the whole tree everywhere keeps nothing
@@ -391,7 +396,7 @@ int force_treebuild(int npart, struct unbind_data *mp)
     if(whole_tree_local)
     {
         if(gpu_topology_prepare_retained_attachment(npart, force_tree_global_topology_valid(),
-                                                    &crossed_local, &unrecovered_local) != 0)
+                                                    &crossed_local, &unrecovered_local, &outside_extent_local) != 0)
         {
             printf("force_treebuild: task %d could not prepare retained top-leaf attachments\n", ThisTask);
             endrun(91564);
@@ -405,14 +410,24 @@ int force_treebuild(int npart, struct unbind_data *mp)
        build after a decomposition is unaffected.  "Unrecovered" is a valid standing tree that
        nevertheless cannot place a particle -- the tree and the particles disagree, and there is nothing
        to fall back to. */
-    long counts_local[3], counts_any[3];
+    long counts_local[4], counts_any[4];
     counts_local[0] = (crossed_local > 0 && !force_tree_global_topology_valid()) ? 1 : 0;
     counts_local[1] = unrecovered_local;
     counts_local[2] = whole_tree_local ? 0 : 1;
-    MPI_Allreduce(counts_local, counts_any, 3, MPI_LONG, MPI_MAX, MPI_COMM_WORLD);
+    counts_local[3] = outside_extent_local;
+    MPI_Allreduce(counts_local, counts_any, 4, MPI_LONG, MPI_MAX, MPI_COMM_WORLD);
     if(counts_any[2] > 0)
     {
         gpu_topology_forget_prepared();   /* not the whole tree somewhere: this build keeps nothing */
+    }
+    else if(counts_any[3] > 0)
+    {
+        /* A particle has left the extent the domain was built on, so no key this build could form for it
+           is right, and neither restoring ownership nor retaining attachments can fix that. */
+        if(ThisTask == 0)
+            {printf("Tree build: up to %ld particles per rank lie outside the extent the domain was built on; doing a full domain decomposition before building.\n", counts_any[3]); fflush(stdout);}
+        gpu_topology_forget_prepared();
+        return FORCE_TREE_NEEDS_DOMAIN_REBUILD;
     }
     else
     {
@@ -1235,7 +1250,12 @@ int force_exchange_pseudodata_complete(void)
                     Extnodes[no].vmax = DomainMoment[i].vmax;
                     Extnodes[no].divVmax = DomainMoment[i].divVmax;
                     Nodes[no].N_part = DomainMoment[i].N_part;
-                    Nodes[no].u.d.bitflags = (Nodes[no].u.d.bitflags & (~((1 << BITFLAG_MULTIPLEPARTICLES)))) | (DomainMoment[i].bitflags & ((1 << BITFLAG_MULTIPLEPARTICLES)));
+                    /* The type-presence bits mean "present AND owned here"; this top-leaf is
+                     * another rank's, so ours are cleared rather than imported.  The remote
+                     * multiple-particles bit is the only thing taken from the wire. */
+                    Nodes[no].u.d.bitflags = (Nodes[no].u.d.bitflags
+                                                & (~((1 << BITFLAG_MULTIPLEPARTICLES) | BITFLAG_TYPEPRESENT_MASK)))
+                                             | (DomainMoment[i].bitflags & ((1 << BITFLAG_MULTIPLEPARTICLES)));
                     Nodes[no].maxsoft = DomainMoment[i].maxsoft;
 #ifdef COSMIC_RAY_SUBGRID_LEBRON
                     Nodes[no].cr_injection = DomainMoment[i].cr_injection;
@@ -1648,6 +1668,61 @@ void force_flag_localnodes(void)
  *  (insertions between drifts at the same Ti_current would otherwise leave
  *  the SoA stale until the next full rebuild).
  */
+
+/*! Mark the type a particle now has on every node above it.
+ *
+ *  The per-node type-presence bits are recomputed exactly by a build or a moment refresh, but a
+ *  particle can change type, or join the tree, while that tree is still standing -- star formation
+ *  converts a gas element in place, FoF seeds a sink, a wind cell is spawned.  Nothing else in the
+ *  tree depends on a particle's type, so no existing signal covers this; the moments are untouched
+ *  by a conversion that preserves mass, which is why TreeMomentsStaleFlag does not fire for one.
+ *
+ *  The raise walks all the way to the root rather than stopping at the first ancestor that already
+ *  carries the bit.  Stopping early would assume the bits are consistent from that node upward --
+ *  which is the property this function exists to restore, so it cannot be relied on here.  Walking
+ *  the whole chain is what lets a single call repair an arbitrarily broken chain.  It is cheap
+ *  regardless: the test comes before the write, so an ancestor that already has the bit costs a
+ *  read, and only a genuinely missing one pays for a write.
+ *
+ *  Both the AoS node and its device mirror are written, since the walks read the mirror.
+ */
+
+void force_tree_note_type_presence(int particle)
+{
+    /* A type change moves the particle into or out of a kept neighbour index's pool (gas becoming a star
+     * or a sink, a grain becoming gas): that index no longer describes its pool and is rebuilt on next use. */
+    gpu_sidx_notify_owned_changed();
+    if(!force_tree_is_allocated() || particle < 0 || particle >= All.TreeParticleSlots) {return;}
+
+    const int type = (int) P[particle].Type;
+    if(type < 0 || type >= 6) {return;}
+    const unsigned int bit = (1u << ((unsigned int) type + BITFLAG_TYPEPRESENT_SHIFT));
+
+    int no = Father[particle];
+    if(no < 0)
+    {
+        /* The particle is in the tree's index range but hangs off nothing we can walk, so its type
+         * cannot be recorded.  Rather than leave a node claiming a type is absent when it is not,
+         * withdraw the prune until the next build or refresh rebuilds the bits exactly. */
+        TypePresenceMaskTrusted = 0;
+        return;
+    }
+
+    struct gpu_gravity_tree_soa_t *soa = gpu_gravity_tree_soa();
+
+    while(no >= 0)
+    {
+        /* Test each storage separately.  Short-circuiting on the AoS bit alone would turn a single
+         * skipped mirror write into a permanent one: the AoS bit is set, so every later raise stops
+         * here while the mirror the walks actually read still says the type is absent. */
+        const int k_soa = gpu_gravity_tree_mirror_slot(no);
+        const int has_mirror = (soa && soa->bitflags && k_soa >= 0);
+        if(!(Nodes[no].u.d.bitflags & bit)) {Nodes[no].u.d.bitflags |= bit;}
+        if(has_mirror && !(soa->bitflags[k_soa] & bit)) {soa->bitflags[k_soa] |= bit;}
+        no = Nodes[no].u.d.father;
+    }
+}
+
 void force_add_element_to_tree(int iparent, int ichild)
 {
     /* Both indices are written into the tree's particle-side arrays below, so both must be inside
@@ -1714,8 +1789,8 @@ void force_add_element_to_tree(int iparent, int ichild)
      * that exists, not by the index range it sits in. */
     {
         struct gpu_gravity_tree_soa_t *soa = gpu_gravity_tree_soa();
-        int k_soa = father - All.TreeNodeIndexBase;
-        if(soa && k_soa >= 0 && k_soa < MaxNodes + AllocatedForeignNodes) {
+        const int k_soa = gpu_gravity_tree_mirror_slot(father);
+        if(soa && k_soa >= 0) {
             if(soa->hmax) {soa->hmax[k_soa] = (MyGravFloat) new_hmax;}
             if(soa->vmax) {soa->vmax[k_soa] = (MyGravFloat) new_vmax;}
             /* ⛔ node_ti is deliberately NOT written here. It must pair with the
@@ -1725,6 +1800,12 @@ void force_add_element_to_tree(int iparent, int ichild)
                only over-widen); a fresher time is not. */
         }
     }
+
+    /* The child joins its parent's node, so that node and every node above it now hold a particle
+     * of the child's type.  Its type may still be provisional here -- star formation copies the gas
+     * element into the new slot and only settles the type further on -- so the sites that assign a
+     * final type call this as well; the raise is monotone, so the repeat can only over-claim. */
+    force_tree_note_type_presence(ichild);
 
     /* Each insertion stales the LET / pseudo-particle
      * moments shipped on the last full build.  Mass+CoM remain conserved at

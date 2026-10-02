@@ -20,9 +20,9 @@
  *
  *   nlr_symmetric_radius_from_fields(type, kr, ags_kr, fs, policy)
  *     KOKKOS_INLINE_FUNCTION (device-callable via the macro fallback pattern
- *     below).  Takes the relevant per-particle fields by value, so the
- *     compact_xyzh population kernel in gpu_neighbor_list.cc can call it
- *     inside a Kokkos lambda without dereferencing host structs from device.
+ *     below).  Takes the relevant per-particle fields by value, so a device
+ *     kernel can call it inside a Kokkos lambda without dereferencing host
+ *     structs from device.
  *     Callers MUST pass 0 for ags_kernel_radius when
  *     AGS_KERNELRADIUS_CALCULATION_IS_ACTIVE is undefined (the field doesn't
  *     exist on P[]); pass (double)P[j].AGS_KernelRadius otherwise.
@@ -89,8 +89,7 @@ typedef unsigned int mode_b_radius_policy_t;
 /* Legacy aggregation policy for sfc_tiles + ghost_exchange tile cache.
  * Returns P[j].KernelRadius for every type — byte-equivalent to the
  * pre-policy-threading code paths that read P[j].KernelRadius unconditionally.
- * This is the DEFAULT for build_sfc_tiles / gpu_spatial_index_build /
- * gpu_ngb_list_build so non-runner (ghost-exchange) callers see no behavior
+ * This is the DEFAULT for gpu_ngb_list_build so non-runner (ghost-exchange) callers see no behavior
  * change.  Runner Mode A passes Spec::radius_policy explicitly instead. */
 #define MODE_B_RADIUS_LEGACY_KERNEL_ALLTYPES \
     (MODE_B_RADIUS_GAS_KERNEL | MODE_B_RADIUS_NONGAS_KERNEL)
@@ -180,5 +179,68 @@ double nlr_particle_symmetric_radius_capped(const struct particle_data &p,
                                             (double)p.ForceSoftening,
                                             policy);
 }
+
+/* The largest symmetric radius a particle can have under this policy once drifted to the current time,
+ * however far behind it is.  A drift (drift_particle_impl) rescales KernelRadius and AGS_KernelRadius by
+ * at most `growth` (kernel_radius_drift_max_growth_factor) and then raises them to their floors --
+ * `kernel_floor` (All.MinKernelRadius) and `ags_minsoft` (ags_return_minsoft_P); a particle the AGS
+ * density does not solve for (ags_density_solves_for_P) gets its softening radius
+ * (ForceSoftening_KernelRadius_P); ForceSoftening is not changed.  The AGS inputs are read only when the
+ * policy has an AGS bit and AGS is compiled (pass 0 otherwise).  Every bound on a lagging particle's reach
+ * goes through this one rule, on host or device. */
+KOKKOS_INLINE_FUNCTION
+double nlr_symmetric_radius_after_drift_from_fields(int type, double kernel_radius, double force_softening,
+                                                    int ags_solves, double ags_kernel_radius,
+                                                    double ags_minsoft, double softening_kernel_radius,
+                                                    double growth, double kernel_floor,
+                                                    mode_b_radius_policy_t policy)
+{
+    double kr = kernel_radius * growth;
+    if(kr < kernel_floor) {kr = kernel_floor;}
+    double ags_kr = 0.0;
+#ifdef AGS_KERNELRADIUS_CALCULATION_IS_ACTIVE
+    if(policy & (MODE_B_RADIUS_GAS_AGS | MODE_B_RADIUS_NONGAS_AGS)) {
+        if(ags_solves) {
+            ags_kr = ags_kernel_radius * growth;
+            if(ags_kr < ags_minsoft) {ags_kr = ags_minsoft;}
+        } else {ags_kr = softening_kernel_radius;}
+#if defined(ADAPTIVE_GRAVSOFT_FORALL)
+        if((1 & ADAPTIVE_GRAVSOFT_FORALL) && (type == 0) && (kr > ags_kr)) {ags_kr = kr;}   /* the gas drift sets it to KernelRadius */
+#endif
+    }
+#else
+    (void)ags_solves; (void)ags_kernel_radius; (void)ags_minsoft; (void)softening_kernel_radius;
+#endif
+    return nlr_symmetric_radius_from_fields(type, kr, ags_kr, force_softening, policy);
+}
+
+/* The same for particle j, its inputs read from P_arr, with the growth and floor passed in.  Reads only.
+ * One body for host and device.  It is a template so that it can live here, where neither proto.h (which
+ * has no include guard) nor ags_functions.h is in scope: its calls take P_arr, so the accessors are found
+ * where it is used.  Every file that uses it must include both. */
+template <class ParticleArray>
+KOKKOS_INLINE_FUNCTION
+double nlr_particle_symmetric_radius_after_drift_P(int j, ParticleArray *P_arr, double growth, double kernel_floor,
+                                                   mode_b_radius_policy_t radius_policy)
+{
+    int ags_solves = 0;
+    double ags_kernel_radius = 0.0, ags_minsoft = 0.0, softening_kernel_radius = 0.0;
+#ifdef AGS_KERNELRADIUS_CALCULATION_IS_ACTIVE
+    if(radius_policy & (MODE_B_RADIUS_GAS_AGS | MODE_B_RADIUS_NONGAS_AGS)) {
+        ags_solves = ags_density_solves_for_P(j, P_arr);
+        ags_kernel_radius = (double)P_arr[j].AGS_KernelRadius;
+        ags_minsoft = ags_return_minsoft_P(j, P_arr);
+        softening_kernel_radius = ForceSoftening_KernelRadius_P(j, P_arr);
+    }
+#endif
+    return nlr_symmetric_radius_after_drift_from_fields((int)P_arr[j].Type, (double)P_arr[j].KernelRadius,
+                                                        (double)P_arr[j].ForceSoftening, ags_solves, ags_kernel_radius,
+                                                        ags_minsoft, softening_kernel_radius, growth, kernel_floor,
+                                                        radius_policy);
+}
+
+/* The host form, with this step's growth and floor.  Defined in mode_b_local_walker.cc. */
+double nlr_particle_symmetric_radius_after_drift(int j, struct particle_data *P_arr,
+                                                 mode_b_radius_policy_t radius_policy);
 
 #endif /* NLR_RADIUS_POLICY_H */

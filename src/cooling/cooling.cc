@@ -2828,6 +2828,7 @@ void gizmo_kokkos_finalize(void)
        finalizing with allocations still tracked is what this ordering avoids.
        This is the single chokepoint every shutdown path already routes through. */
     gx_touched_set_release();
+    gx_motion_target_release();
     gpu_node_dirty_release();
     Kokkos::finalize();
 }

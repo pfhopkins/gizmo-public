@@ -115,10 +115,13 @@ int gpu_topology_writeback_to_aos(int first_soa_idx, int last_soa_idx);
  * *n_unrecovered_out -- of those, how many no owned top-leaf could be recovered for.  Nonzero with a
  *                       valid standing tree means the tree and the particles disagree; it is a stop,
  *                       not a recoverable state.
+ * *n_outside_extent_out -- particles outside the extent the domain was built on.  Their keys would be
+ *                       wrong, so none is computed for them; nonzero asks for a full decomposition.
  *
  * Returns 0 on success. */
 int gpu_topology_prepare_retained_attachment(int npart, int topology_valid,
-                                             long *n_crossed_out, long *n_unrecovered_out);
+                                             long *n_crossed_out, long *n_unrecovered_out,
+                                             long *n_outside_extent_out);
 
 /* Drop a prepared plan, so a build the stage above does not cover cannot consume keys and attachments
  * computed for a different set of particles. */

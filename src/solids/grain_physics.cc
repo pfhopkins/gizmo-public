@@ -105,8 +105,8 @@ void apply_grain_dragforce(void)
        prob_of_grain_interaction_tab)
      - sidm/sidm_helper_functions.h (calculate_interact_kick_rng)
    KOKKOS_INLINE_FUNCTION forms that thread particle_data and the
-   GeoFactorTable as explicit args and use the counter-based gpu_rng.
-   CPU callers pass `GeoFactorTable` directly; the AGSForce GPU kernel
+   explicit args and use the counter-based gpu_rng.
+   The AGSForce GPU kernel
    passes a SharedSpace mirror. */
 #endif
 

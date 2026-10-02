@@ -99,45 +99,35 @@ int drift_particles_batch(const int *idx, int n_idx, integertime time1,
        immediately for the rest, so staging them would be copying a whole struct each
        way to do nothing. At the full-drift site this pass is O(NumPart) at a site that
        is already O(NumPart) by definition; the other sites filter a list they hold. */
+    /* The one allocation is made before the scan and caught: a caller may be inside a window with no
+       collectives, where an allocation failure has to become a controlled stop taken by every rank
+       rather than an exception that ends this one.  Each index writes its own slot -- the particle, or
+       -1 when it is already current -- so nothing grows inside the parallel region, whatever team size
+       OpenMP provides; a stable compaction then keeps the list in index order at any thread count. */
     std::vector<int> needs_drift;
-    needs_drift.reserve((size_t) n_idx);
+    try {needs_drift.resize((size_t) n_idx);}
+    catch(const std::bad_alloc &) {
+        printf("drift_particles_batch: task %d could not reserve the work list for %d particles\n", ThisTask, n_idx);
+        fflush(stdout);
+        gizmo_request_controlled_stop(7739, "drift_particles_batch: could not allocate its work list",
+                                      __FILE__, __LINE__, __FUNCTION__);
+        return drift_batch_status_();
+    }
+    int *slot = needs_drift.data();
+    /* Threaded above a handful of indices: the full-drift site hands over every particle, and reading
+       Ti_current out of the particle array is a strided pass over the whole of it, which is a large part
+       of what running the drift in bulk is meant to remove. */
 #ifdef _OPENMP
-    /* Threaded above a handful of indices: the full-drift site hands over every
-       particle, and reading Ti_current out of the particle array is a strided pass
-       over the whole of it, which is a large part of what running the drift in bulk
-       is meant to remove. Each thread collects its own contiguous static range and
-       the ranges are concatenated in thread order, so the compacted list is the same
-       list, in the same order, whatever the thread count. Below that a parallel
-       region and its per-thread vectors cost more than the scan they divide. */
-    if(n_idx >= 16)
-    {
-        const int n_threads = omp_get_max_threads();
-        std::vector<std::vector<int> > per_thread(n_threads);
-#pragma omp parallel
-        {
-            std::vector<int> &mine = per_thread[omp_get_thread_num()];
-            mine.reserve((size_t) n_idx / n_threads + 16);
-#pragma omp for schedule(static)
-            for(int k = 0; k < n_idx; k++)
-            {
-                const int i = idx ? idx[k] : k;
-                if(P[i].Ti_current != time1) {mine.push_back(i);}
-            }
-        }
-        for(int t = 0; t < n_threads; t++)
-        {
-            needs_drift.insert(needs_drift.end(), per_thread[t].begin(), per_thread[t].end());
-        }
-    }
-    else
+#pragma omp parallel for schedule(static) if(n_idx >= 16)
 #endif
+    for(int k = 0; k < n_idx; k++)
     {
-        for(int k = 0; k < n_idx; k++)
-        {
-            const int i = idx ? idx[k] : k;
-            if(P[i].Ti_current != time1) {needs_drift.push_back(i);}
-        }
+        const int i = idx ? idx[k] : k;
+        slot[k] = (P[i].Ti_current != time1) ? i : -1;
     }
+    int n_kept = 0;
+    for(int k = 0; k < n_idx; k++) {if(slot[k] >= 0) {slot[n_kept++] = slot[k];}}
+    needs_drift.resize((size_t) n_kept);
     const int n_need = (int) needs_drift.size();
     /* Hand back the compaction this routine already had to perform, so a caller
        with per-advanced-particle follow-up does not recompute it. memmove, not
@@ -196,9 +186,15 @@ int drift_particles_batch(const int *idx, int n_idx, integertime time1,
         struct particle_data *kp = P;
         struct gas_cell_data *kc = CellP;
         const int *kidx = idx_dev;
-        gizmo_gpu_kernel_launch("drift_particles_inplace", n_need, KOKKOS_LAMBDA(int k) {
+        const double dc0 = DomainCorner[0], dc1 = DomainCorner[1], dc2 = DomainCorner[2], dlen = DomainLen;
+        /* Counts the particles this drift moved outside the domain extent, the same test the host
+           drift makes; returned by the reduction, so no device flag has to be read back. */
+        const int n_outside_extent = gizmo_gpu_kernel_launch_count("drift_particles_inplace", n_need, KOKKOS_LAMBDA(int k, int &n_outside) {
             drift_particle_impl(kidx[k], time1, kp, kc, &tables, &eos_tables);
+            const int i = kidx[k];
+            if(position_outside_domain_extent(kp[i].Pos[0], kp[i].Pos[1], kp[i].Pos[2], dc0, dc1, dc2, dlen)) {n_outside++;}
         });
+        if(n_outside_extent > 0) {DomainExtentOutgrownLocal = 1;}
         Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(idx_dev);
         gpu_particles_arena_invalidate();   /* P/CellP mutated in place; arena stale */
         return drift_batch_status_();
@@ -229,9 +225,12 @@ int drift_particles_batch(const int *idx, int n_idx, integertime time1,
            so the kernel needs no extra gating for the non-gas slots. */
         struct particle_data *kp = batch.dev_P;
         struct gas_cell_data *kc = batch.dev_Cell;
-        gizmo_gpu_kernel_launch("drift_particles", batch.count, KOKKOS_LAMBDA(int j) {
+        const double dc0 = DomainCorner[0], dc1 = DomainCorner[1], dc2 = DomainCorner[2], dlen = DomainLen;
+        const int n_outside_extent = gizmo_gpu_kernel_launch_count("drift_particles", batch.count, KOKKOS_LAMBDA(int j, int &n_outside) {
             drift_particle_impl(j, time1, kp, kc, &tables, &eos_tables);
+            if(position_outside_domain_extent(kp[j].Pos[0], kp[j].Pos[1], kp[j].Pos[2], dc0, dc1, dc2, dlen)) {n_outside++;}
         }, batch_start);
+        if(n_outside_extent > 0) {DomainExtentOutgrownLocal = 1;}
 
         /* Synchronous by construction: the results are home before this returns, so
            the lazy-drift sites that early-return on Ti_current can never observe a

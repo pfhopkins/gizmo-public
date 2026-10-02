@@ -816,7 +816,13 @@ void ags_density(void)
     args.subgroups           = subgroups.data();
     args.ghost_safety_factor = ags_ghost_safety;
 
+    /* The runner span is the loop's compute; everything around it is the
+     * caller's own work and stays in the misc bucket. Same split density()
+     * reports. */
+    const double t_runner_start = my_second(); const double child0_runner = CPU_ChildCharged;
     run_neighbor_loop_iterative<AgsDensitySpec>(args);
+    const double t_runner = cpu_minus_children(timediff(t_runner_start, my_second()), child0_runner);
+    CPU_Step[CPU_AGSDENSCOMPUTE] += t_runner;
 
 #ifdef GIZMO_NLR_AGS_DEBUG_ID_TRACE
     for (int i : ActiveParticleList) ags_debug_trace_id_state("post_runner_pre_final", i);
@@ -863,10 +869,8 @@ void ags_density(void)
     /* (6) Timing accounting. */
     double t1 = my_second(); cpu_chain_sync(t1);
     double timeall = cpu_minus_children(timediff(t00_truestart, t1), child0_span);
-    /* NOT IN SCOPE: refined sub-accounting
-     * (timecomp/timewait/timecomm split) is a future follow-on. Lump
-     * everything in MISC for now — matches the legacy line 458 fallback. */
-    CPU_Step[CPU_AGSDENSMISC] += timeall;
+    /* The caller's own share: the whole call less the runner span charged above. */
+    CPU_Step[CPU_AGSDENSMISC] += timeall - t_runner;
 }
 
 #endif /* AGS_KERNELRADIUS_CALCULATION_IS_ACTIVE */

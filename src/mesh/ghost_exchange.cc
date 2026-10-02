@@ -29,13 +29,15 @@
 #include <string.h>
 #include <math.h>
 #include <limits.h>
+#include <stdint.h>
 #include <vector>
+#include <algorithm>
 #include "../declarations/allvars.h"
 #include "../declarations/lifecycle_counters.h"
 #include "../core/proto.h"
 #include "../system/mpi_alltoallv_typed.h"
-#include "gpu_neighbor_list.h" /* gpu_compact_xyzh_mark_h_dirty_range */
-#include "sfc_tiles.h"           /* build_sfc_tiles, build_tile_bvh, sfc_tile_t, tile_bvh_node_t */
+#include "gpu_neighbor_list.h" /* gpu_sidx_ghost_pool_cleanup */
+#include "sfc_tiles.h"           /* build_sfc_supply_pool, sfc_tile_t, tile_bvh_node_t */
 #include "neighbor_list.h"       /* NGB_SEARCH_ONEWAY, NGB_SEARCH_SYMMETRIC */
 #include "ghost_exchange_functions.h" /* gx_pair_accept_wrap_and_test: shared accept, wraps via the canonical macros */
 #include "ghost_writeback.h"     /* ghost_get_num_local (bounded fine-tree walk) */
@@ -117,27 +119,21 @@ static int *ghost_send_home_idx = NULL;     /* [ghost_send_home_count] exported 
 static int  ghost_send_home_count = 0;      /* == total_send at last import */
 static unsigned long long g_ghost_provenance_epoch = 0; /* import counter (see above) */
 
-/* Persistent local-tree cache (SIDX overlay) for the
- * request-driven ghost exchange path. Within a step, the local pool of
- * particles [0..NumPart_local) is stable across multiple ghost_exchange
- * calls (3-5 calls/step typical). Building tiles+BVH+compact_xyzh once per
- * call costs ~0.19s (gas) / ~0.65s (all-types) on the fire_m11i 6.2M/9.5M
- * pool. Caching them across calls saves N-1 of those builds per step.
+/* Persistent supply-pool cache for the request-driven ghost exchange.  Within
+ * a step the local pool [0..NumPart_local) is stable across the several
+ * ghost_exchange calls a step makes, so deriving membership once and reusing it
+ * saves N-1 scans of P[] per step.
  *
- * Invalidation is wired to the same hooks as gpu_step_sidx_invalidate_*:
- *   - run.cc post-drift            -> ghost_exchange_local_tree_invalidate_drift()
- *   - the decomposition itself     -> ghost_exchange_local_tree_invalidate_full()
- * Drift/h updates mark the cache for exact refit from P[] on the next hit;
- * domain decomposition and pool/ordering changes fully free it.
+ * Membership only: which particles are eligible supply, and the reverse map
+ * from a particle to its pool slot.  Nothing position-dependent is cached --
+ * the routed producer reads live positions -- so the entry stays valid as the
+ * particles move, and is keyed on the supply-identity epoch that every event
+ * changing pool membership already bumps.  NumPart and the eligible type mask
+ * are checked at use time as a defensive cross-check.
  *
- * Cache key (NumPart, safety_factor, eligible pool mask) is also checked
- * at use time as a defensive cross-check; pool/ordering changes force a
- * rebuild. Drift/h changes mark the cache for an exact refit from P[].
- *
- * Memory footprint: ~165MB (Type-0/cell pool, 6.2M pool) or ~250MB (all-types,
- * 9.5M pool) per rank. Tolerable on Vista host. Allocated via plain
- * malloc/free to avoid mymalloc-stack LIFO violation when the cache
- * outlives the function frame. */
+ * Allocated with plain malloc/free: the entry outlives the function frame, which
+ * would violate the mymalloc stack's LIFO ordering. */
+
 /* Membership/order epoch for the supply pool.  Rank-local and compared only for
  * equality: it answers "is the pool I cached still the same set, in the same
  * order?", nothing more.  Bumped ONLY where particles are created, eliminated,
@@ -152,88 +148,41 @@ extern "C" void ghost_exchange_supply_identity_changed(const char *reason)
     g_supply_identity_epoch++;
 }
 
-/* Which parts of the supply cache a consumer requires.  IDENTITY (pool,
- * pool_types, num_pool) is membership only: type-mask + positive mass, so it
- * stays valid as particles move.  GEOMETRY (compact_xyzh, tiles) carries
- * positions and the baked per-member reach, and is built only for the walkers
- * that need it.  A consumer that reads geometry without requesting it would
- * silently read NULL, so the request is mandatory and checked. */
-#define GX_POOL_IDENTITY  0x1u
-#define GX_POOL_GEOMETRY  0x2u
-
 struct ghost_local_tree_cache_t {
     int valid;
     int NumPart_when_built;
     /* Identity generation this entry's pool/j_to_pool were built against. */
     long long identity_epoch_when_built;
-    integertime Ti_when_built;
-    double safety_factor_when_built;
     unsigned int eligible_type_mask_when_built;
-    int needs_refit;
-    /* What this cache entry actually holds (GX_POOL_IDENTITY / GX_POOL_GEOMETRY).
-     * Geometry is skipped for calls whose producer never walks it, so `valid`
-     * alone does not imply tiles/bvh/compact_xyzh are present. */
-    unsigned int caps;
-    int ntiles;
     int num_pool;
-    int bvh_nnodes;
-    int bvh_root;
-    sfc_tile_t *tiles;            /* [ntiles] malloc */
     int *pool;                     /* [num_pool] malloc */
-    tile_bvh_node_t *bvh;          /* [bvh_nnodes] malloc */
-    float *compact_xyzh;           /* [num_pool*4] malloc; h field = supply-side policy * j_scale * safety baked in */
-    int *pool_types;               /* [num_pool] malloc */
     int *j_to_pool;                /* [NumPart_when_built] malloc, j -> pool_pos or -1 */
-    /* SSOT supply-side reach contract. These four fields, together with the
-     * (NumPart, safety, eligible_pool_mask) triple above, form the cache-key
-     * invariant: any mismatch on any of them forces a full rebuild (NOT a
-     * refit).  Ti and the needs_refit dirty bit continue to trigger
-     * glt_cache_refit_from_particles() instead of a rebuild — Ti is NOT a
-     * rebuild key: rebuilding every step would be exactly the work
-     * explosion this design is supposed to prevent. */
-    mode_b_radius_policy_t radius_policy_when_built;
-    double j_radius_scale_when_built;
+    unsigned char *mark;           /* [num_pool] calloc, the send set's per-peer dedup marker;
+                                      all zero between calls */
 };
-/* Designated initialisers: the positional form silently mis-assigns whenever a
- * field is added to the struct above. */
+/* Membership only: type mask + positive mass, so an entry stays valid as the
+ * particles move.  The routed producer reads live positions for everything
+ * position-dependent, which is why no geometry is cached beside this. */
 static struct ghost_local_tree_cache_t g_glt_cache = {
     .valid = 0,
     .NumPart_when_built = -1,
     .identity_epoch_when_built = -1,
-    .Ti_when_built = -1,
-    .safety_factor_when_built = 0.0,
     .eligible_type_mask_when_built = GHOST_TYPE_ALL,
-    .needs_refit = 0,
-    .caps = 0u,
-    .ntiles = 0,
     .num_pool = 0,
-    .bvh_nnodes = 0,
-    .bvh_root = 0,
-    .tiles = NULL,
     .pool = NULL,
-    .bvh = NULL,
-    .compact_xyzh = NULL,
-    .pool_types = NULL,
     .j_to_pool = NULL,
-    .radius_policy_when_built = MODE_B_RADIUS_LEGACY_KERNEL_ALLTYPES,
-    .j_radius_scale_when_built = 1.0,
+    .mark = NULL,
 };
 
 /* gx_policy_scaled_h — SSOT supply-side reach inside ghost_exchange.cc.
  *
- * Single helper used at every site that writes a per-particle supply h into
- * the ghost local-tree cache: fresh build (compact + tile bands via
- * build_sfc_tiles' scale_factor pathway), refit (glt_recompute_tile_), and
- * any future site that needs the supply-side reach.  The output is identical
- * to what build_sfc_tiles aggregates internally when called with
- *   (radius_policy, scale_factor = j_radius_scale * safety_factor)
- * so leaf compact h and BVH band hmax see the exact same supply-side reach
- * for every particle — closing the leaf-vs-band scale gap that would
- * otherwise let the BVH prune pairs the leaf would have accepted.
+ * The j-side reach this call searches with, for one particle, under the spec's
+ * radius policy and scale.  Used by the routed producer on both sides of the
+ * exchange, so sender and receiver agree on how far a supply particle reaches.
  *
  * Compile-flag gating on AGS_KernelRadius lives in nlr_radius_policy.h's
  * wrapper; never replicate the `#ifdef AGS_KERNELRADIUS_CALCULATION_IS_ACTIVE`
- * inside this TU. */
+ * here. */
 static inline double gx_policy_scaled_h(int j,
                                         mode_b_radius_policy_t radius_policy,
                                         double j_radius_scale,
@@ -243,314 +192,175 @@ static inline double gx_policy_scaled_h(int j,
            * j_radius_scale * safety_factor;
 }
 
-/* Bucket 3 narrow-refit machinery. Mirrors gpu_neighbor_list.cc's g_dirty_list
- * pattern for the GPU compact_xyzh refresh — same call sites populate both, but
- * different consumers (host ghost_exchange cache vs device GPU NL builder), so
- * the two lists have independent lifecycles.
- *
- *  - g_glt_dirty_all = true  : full refit needed (drift, fresh build seed, or
- *    list overflow promotion). Default = true so first refit is full.
- *  - g_glt_dirty_all = false : refresh only the indices in g_glt_dirty_list.
- *    Indices outside the cache pool (j_to_pool[j] == -1) are skipped cleanly.
- *
- * Promote-to-all threshold matches GPU side (1M indices). When the list grows
- * past that, narrow refit costs ~the same as full, so flip to dirty_all. */
-static const int G_GLT_DIRTY_PROMOTE_THRESHOLD = 1 << 20; /* 1M indices */
-static bool g_glt_dirty_all = true;
-static std::vector<int> g_glt_dirty_list;
-static inline void g_glt_dirty_clear_(void)
-{
-    g_glt_dirty_all = false;
-    g_glt_dirty_list.clear();
-}
-static inline void g_glt_dirty_mark_all_(void)
-{
-    g_glt_dirty_all = true;
-    g_glt_dirty_list.clear();
-}
-
 /* Diagnostic counters. */
 static long g_glt_cache_hits = 0;
 static long g_glt_cache_misses = 0;
-static long g_glt_cache_refits = 0;
-static long g_glt_cache_narrow_refits = 0;
 
 static void glt_cache_free(void)
 {
-    if(g_glt_cache.tiles)        { free(g_glt_cache.tiles);        g_glt_cache.tiles = NULL; }
-    if(g_glt_cache.pool)         { free(g_glt_cache.pool);         g_glt_cache.pool = NULL; }
-    if(g_glt_cache.bvh)          { free(g_glt_cache.bvh);          g_glt_cache.bvh = NULL; }
-    if(g_glt_cache.compact_xyzh) { free(g_glt_cache.compact_xyzh); g_glt_cache.compact_xyzh = NULL; }
-    if(g_glt_cache.pool_types)   { free(g_glt_cache.pool_types);   g_glt_cache.pool_types = NULL; }
-    if(g_glt_cache.j_to_pool)    { free(g_glt_cache.j_to_pool);    g_glt_cache.j_to_pool = NULL; }
+    if(g_glt_cache.pool)      { free(g_glt_cache.pool);      g_glt_cache.pool = NULL; }
+    if(g_glt_cache.j_to_pool) { free(g_glt_cache.j_to_pool); g_glt_cache.j_to_pool = NULL; }
+    if(g_glt_cache.mark)      { free(g_glt_cache.mark);      g_glt_cache.mark = NULL; }
     g_glt_cache.valid = 0;
     g_glt_cache.NumPart_when_built = -1;
     g_glt_cache.identity_epoch_when_built = -1;
-    g_glt_cache.Ti_when_built = -1;
-    g_glt_cache.safety_factor_when_built = 0.0;
     g_glt_cache.eligible_type_mask_when_built = GHOST_TYPE_ALL;
-    g_glt_cache.radius_policy_when_built = MODE_B_RADIUS_LEGACY_KERNEL_ALLTYPES;
-    g_glt_cache.j_radius_scale_when_built = 1.0;
-    g_glt_cache.needs_refit = 0;
-    g_glt_cache.caps = 0u;
-    g_glt_cache.ntiles = 0;
     g_glt_cache.num_pool = 0;
-    g_glt_cache.bvh_nnodes = 0;
-    g_glt_cache.bvh_root = 0;
-    /* Cache gone -> no narrow-refit basis remains; force full on next build. */
-    g_glt_dirty_mark_all_();
 }
 
-/* Drop ONLY the position/radius-dependent half, keeping pool/j_to_pool/num_pool.
- * Used when a caller needs geometry under a different radius policy or scale:
- * membership does not depend on those, so re-deriving it would be pure waste. */
-static void glt_cache_free_geometry_(void)
-{
-    if(g_glt_cache.tiles)        { free(g_glt_cache.tiles);        g_glt_cache.tiles = NULL; }
-    if(g_glt_cache.bvh)          { free(g_glt_cache.bvh);          g_glt_cache.bvh = NULL; }
-    if(g_glt_cache.compact_xyzh) { free(g_glt_cache.compact_xyzh); g_glt_cache.compact_xyzh = NULL; }
-    if(g_glt_cache.pool_types)   { free(g_glt_cache.pool_types);   g_glt_cache.pool_types = NULL; }
-    g_glt_cache.ntiles = 0;
-    g_glt_cache.bvh_nnodes = 0;
-    g_glt_cache.bvh_root = 0;
-    g_glt_cache.caps &= ~GX_POOL_GEOMETRY;
-}
-
-extern "C" void ghost_exchange_local_tree_invalidate_drift(void)
-{
-    if(g_glt_cache.valid) g_glt_cache.needs_refit = 1;
-    /* Drift is a pool-wide event (every particle's Pos may have changed):
-     * the narrow-refit fast path can't represent that, so promote to full. */
-    g_glt_dirty_mark_all_();
-}
-extern "C" void ghost_exchange_local_tree_invalidate_full(void)  { glt_cache_free(); }
-
-
-extern "C" void ghost_exchange_local_tree_mark_h_dirty_indices(const int *indices, int n)
-{
-    if(n <= 0 || !indices) return;
-    if(g_glt_dirty_all) return; /* already covered by full-refit promotion */
-    if((int)(g_glt_dirty_list.size() + (size_t)n) > G_GLT_DIRTY_PROMOTE_THRESHOLD) {
-        g_glt_dirty_mark_all_();
-        return;
-    }
-    g_glt_dirty_list.reserve(g_glt_dirty_list.size() + (size_t)n);
-    for(int k = 0; k < n; k++) {
-        int j = indices[k];
-        if(j >= 0) g_glt_dirty_list.push_back(j);
-    }
-    /* Mark cache for refit-on-next-hit even though it isn't fully invalidated.
-     * This wakes up the refit branch in the request-driven build path. */
-    if(g_glt_cache.valid) g_glt_cache.needs_refit = 1;
-}
-
-extern "C" void ghost_exchange_local_tree_mark_h_dirty_range(int start, int end)
-{
-    if(end <= start) return;
-    if(g_glt_dirty_all) return;
-    int n = end - start;
-    if((int)(g_glt_dirty_list.size() + (size_t)n) > G_GLT_DIRTY_PROMOTE_THRESHOLD) {
-        g_glt_dirty_mark_all_();
-        return;
-    }
-    g_glt_dirty_list.reserve(g_glt_dirty_list.size() + (size_t)n);
-    for(int j = start; j < end; j++) g_glt_dirty_list.push_back(j);
-    if(g_glt_cache.valid) g_glt_cache.needs_refit = 1;
-}
-
-/* Stage-3 producer mode (Step 5).  Selects HOW the matched ghost set is produced;
- * Stages 1-2 (route CSR -> Alltoall -> Alltoallv -> received queries) are shared
- * SSOT regardless of mode.  HOST_ONLY = host walk only; HOST_AND_DEVICE_VALIDATE =
- * host walk + device Stage-3 compared (the Step-4 oracle); DEVICE_ONLY_AUTHORITY =
- * production device Stage-3 with NO host walk / NO broadcast / NO compare (reserved
- * for the device-routed install arm; no caller uses it yet). */
-enum gx_producer_mode {
-    GX_PRODUCER_HOST_ONLY = 0,
-    GX_PRODUCER_HOST_AND_DEVICE_VALIDATE,
-    GX_PRODUCER_DEVICE_ONLY_AUTHORITY
+/* The send set: which local pool slots this rank sends to which peer.
+ *
+ * The receiver walks hand it the slots they accept, peer by peer in ascending
+ * order, a peer possibly over several calls.  It keeps each (peer, slot) once,
+ * and when a peer is finished sorts that peer's slots, so the set reads out in
+ * send order -- destination rank ascending, then pool index ascending -- with
+ * no pass over the pool.  Work and memory are proportional to what is sent, not
+ * to NTask x num_pool, which on a step sending a handful of particles is the
+ * difference between reading a few slots and reading hundreds of millions.
+ *
+ * Duplicates are caught by a marker over the pool that is set for the peer being
+ * filled and cleared again when that peer is finished, so it only ever holds one
+ * peer's slots and is all zero between calls.  It is kept with the pool cache and
+ * never cleared wholesale: clearing it per call would touch the whole pool on
+ * every call, however little is sent.
+ *
+ * Emission never communicates, so ranks may emit in different numbers of calls
+ * and from different receiver backends.  A failure is rank-local until the caller
+ * agrees it across ranks. */
+struct ghost_send_set {
+    int  *slots;              /* unique matches, each peer's run contiguous */
+    long  capacity, used;
+    long *start;              /* [NTask] where peer t's run begins in slots */
+    int  *count;              /* [NTask] how many slots peer t is sent */
+    int   ntask_allocated;
+    unsigned char *mark;      /* [num_pool] owned by the pool cache */
+    int   num_pool;
+    long  marks_outstanding;  /* marks set and not yet cleared; zero between calls */
+    int   peer;               /* peer being filled, -1 when none is */
+    int   last_peer;          /* highest peer begun this call, -1 before the first */
+    int   failed;
+    const int *j_to_pool;     /* [npart_bound] local particle -> pool slot, negative when not in the pool */
+    int   npart_bound;
 };
+static struct ghost_send_set g_send_set = {NULL, 0, 0, NULL, NULL, 0, NULL, 0, 0, -1, -1, 0, NULL, 0};
 
-/* Recompute one tile's lo/hi/hmax/hmax_by_type fully from current P[] over its
- * pool members.  Also rewrites compact_xyzh + pool_types for those members.
- * Used by both full and narrow refit paths. */
-static inline void glt_recompute_tile_(int t)
+/* Sort the finished peer's run into pool order and clear its marks. */
+static void gx_send_set_finish_peer(struct ghost_send_set *s)
 {
-    sfc_tile_t *tile = &g_glt_cache.tiles[t];
-    tile->hmax = 0;
-    for(int tt = 0; tt < TILE_NUM_PTYPES; tt++) tile->hmax_by_type[tt] = 0;
-    /* Empty tiles carry an INVERTED box so they stay neutral under the BVH's
-     * min/max union and always fail the sphere-overlap test; a zeroed box would
-     * stretch every ancestor to the coordinate origin and defeat pruning there. */
-    if(tile->count <= 0) {
-        for(int k = 0; k < 3; k++) { tile->lo[k] = MAX_REAL_NUMBER; tile->hi[k] = -MAX_REAL_NUMBER; }
-        return;
-    }
-    /* SSOT supply-side reach pulled from the cache's stored policy/scale.
-     * For runner-driven imports this carries the
-     * Spec's radius_policy + nlr_spec_symmetric_j_radius_scale<Spec>();
-     * for legacy ghost_exchange wrappers it carries
-     * MODE_B_RADIUS_LEGACY_KERNEL_ALLTYPES + 1.0 → byte-equivalent to the
-     * pre-policy code that read P[j].KernelRadius * safety_factor.
-     * Leaf compact_xyzh[p*4+3] and tile band hmax_by_type[] use the
-     * IDENTICAL gx_policy_scaled_h output → no leaf-vs-band scale gap. */
-    const mode_b_radius_policy_t policy = g_glt_cache.radius_policy_when_built;
-    const double j_scale = g_glt_cache.j_radius_scale_when_built;
-    const double safety  = g_glt_cache.safety_factor_when_built;
-    /* Eliminated elements (Mass <= 0) are excluded from the band and the bbox:
-     * the pool is mass-filtered when built, but a cached entry outlives a
-     * Mass->0 marking until rearrange_particle_sequence() compacts it away, and
-     * a dead slot's stale reach would otherwise widen what this rank advertises
-     * as supply.  Dropping it can only remove pairs WITH the dead element, which
-     * must not be discovered anyway; live pairs carry their own reach.  The leaf
-     * walk applies the same test, so leaf h and band hmax stay on one reach.
-     * The bbox is seeded from the first live member rather than the tile's first
-     * member, which may itself be dead. */
-    int seeded = 0;
-    for(int s = 0; s < tile->count; s++) {
-        int p = tile->first + s;
-        int j = g_glt_cache.pool[p];
-        int pt = (int)P[j].Type;
-        double h = gx_policy_scaled_h(j, policy, j_scale, safety);
-        g_glt_cache.compact_xyzh[p*4+0] = (float)P[j].Pos[0];
-        g_glt_cache.compact_xyzh[p*4+1] = (float)P[j].Pos[1];
-        g_glt_cache.compact_xyzh[p*4+2] = (float)P[j].Pos[2];
-        g_glt_cache.compact_xyzh[p*4+3] = (float)h;
-        g_glt_cache.pool_types[p] = pt;
-        if(P[j].Mass <= 0) continue;
-        if(!seeded) {
-            for(int k = 0; k < 3; k++) tile->lo[k] = tile->hi[k] = P[j].Pos[k];
-            seeded = 1;
-        } else {
-            for(int k = 0; k < 3; k++) {
-                if(P[j].Pos[k] < tile->lo[k]) tile->lo[k] = P[j].Pos[k];
-                if(P[j].Pos[k] > tile->hi[k]) tile->hi[k] = P[j].Pos[k];
-            }
-        }
-        if(h > tile->hmax) tile->hmax = h;
-        if(pt >= 0 && pt < TILE_NUM_PTYPES && h > tile->hmax_by_type[pt])
-            tile->hmax_by_type[pt] = h;
-    }
-    /* Every member dead: same inverted empty-tile box as count <= 0 above. */
-    if(!seeded) { for(int k = 0; k < 3; k++) { tile->lo[k] = MAX_REAL_NUMBER; tile->hi[k] = -MAX_REAL_NUMBER; } }
+    if(s->peer < 0) {return;}
+    int *run = s->slots + s->start[s->peer];
+    const int n = s->count[s->peer];
+    std::sort(run, run + n);
+    for(int k = 0; k < n; k++) {s->mark[run[k]] = 0;}
+    s->marks_outstanding -= n;
+    s->peer = -1;
 }
 
-/* Pull one BVH node's lo/hi/hmax/hmax_by_type from its children/leaf-tile.
- * BVH is in children-first order so calling this for indices 0..bvh_nnodes-1
- * in order updates internal nodes after their children. */
-static inline void glt_recompute_bvh_node_(int n)
+/* Clear whatever marks the unfinished peer holds and drop the output.  Finished
+ * peers have cleared their own marks already, so this restores the all-zero
+ * marker whenever it is called. */
+static void gx_send_set_abandon(struct ghost_send_set *s)
 {
-    tile_bvh_node_t *node = &g_glt_cache.bvh[n];
-    if(node->left < 0) {
-        int t = -(node->left + 1);
-        if(t < 0 || t >= g_glt_cache.ntiles) return;
-        sfc_tile_t *tile = &g_glt_cache.tiles[t];
-        for(int k = 0; k < 3; k++) { node->lo[k] = tile->lo[k]; node->hi[k] = tile->hi[k]; }
-        node->hmax = tile->hmax;
-        for(int tt = 0; tt < TILE_NUM_PTYPES; tt++) node->hmax_by_type[tt] = tile->hmax_by_type[tt];
-    } else {
-        tile_bvh_node_t *left = &g_glt_cache.bvh[node->left];
-        tile_bvh_node_t *right = &g_glt_cache.bvh[node->right];
-        for(int k = 0; k < 3; k++) {
-            node->lo[k] = DMIN(left->lo[k], right->lo[k]);
-            node->hi[k] = DMAX(left->hi[k], right->hi[k]);
-        }
-        node->hmax = DMAX(left->hmax, right->hmax);
-        for(int tt = 0; tt < TILE_NUM_PTYPES; tt++)
-            node->hmax_by_type[tt] = DMAX(left->hmax_by_type[tt], right->hmax_by_type[tt]);
+    if(s->peer >= 0) {
+        for(long k = s->start[s->peer]; k < s->used; k++) {s->mark[s->slots[k]] = 0;}
+        s->marks_outstanding -= s->count[s->peer];
+        s->peer = -1;
     }
+    free(s->slots);
+    s->slots = NULL;
+    s->capacity = s->used = 0;
+    s->failed = 1;
 }
 
-/* Find the tile containing pool position pp via binary search on tile->first.
- * Tiles are stored in ascending pool-position order; tile.first values are
- * monotonically non-decreasing.  Returns -1 on out-of-range. */
-static inline int glt_tile_of_pool_pos_(int pp)
+/* Returns 0, or nonzero with the set failed and nothing to abandon but its output. */
+static int gx_send_set_begin(struct ghost_send_set *s, unsigned char *mark, int num_pool,
+                             const int *j_to_pool, int npart_bound)
 {
-    int lo = 0, hi = g_glt_cache.ntiles - 1;
-    if(pp < 0 || g_glt_cache.ntiles <= 0) return -1;
-    if(pp < g_glt_cache.tiles[0].first) return -1;
-    while(lo < hi) {
-        int mid = (lo + hi + 1) / 2;
-        if(g_glt_cache.tiles[mid].first <= pp) lo = mid; else hi = mid - 1;
+    s->failed = 1;
+    s->peer = -1;
+    s->last_peer = -1;
+    s->used = 0;
+    if(s->marks_outstanding != 0 || s->slots != NULL) {
+        printf("ERROR: ghost send set on task %d was not left clean by the previous call: %ld marks "
+               "still set, output buffer %s\n", ThisTask, s->marks_outstanding,
+               s->slots ? "never taken or dropped" : "released");
+        fflush(stdout);
+        gizmo_request_controlled_stop(7735, "ghost_exchange: send set not clear at the start of a call",
+                                      __FILE__, __LINE__, __FUNCTION__);
+        return 1;
     }
-    /* Sanity: pp must lie within [first, first+count). */
-    sfc_tile_t *tile = &g_glt_cache.tiles[lo];
-    if(pp >= tile->first && pp < tile->first + tile->count) return lo;
-    return -1;
+    if(!mark) {return 1;}
+    if(s->ntask_allocated < NTask) {
+        free(s->start); free(s->count);
+        s->start = (long *) malloc((size_t)NTask * sizeof(long));
+        s->count = (int *)  malloc((size_t)NTask * sizeof(int));
+        if(!s->start || !s->count) {
+            free(s->start); free(s->count);
+            s->start = NULL; s->count = NULL; s->ntask_allocated = 0;
+            return 1;
+        }
+        s->ntask_allocated = NTask;
+    }
+    for(int t = 0; t < NTask; t++) {s->start[t] = 0; s->count[t] = 0;}
+    s->capacity = 256;
+    s->slots = (int *) malloc((size_t)s->capacity * sizeof(int));
+    if(!s->slots) {s->capacity = 0; return 1;}
+    s->mark = mark;
+    s->num_pool = num_pool;
+    s->j_to_pool = j_to_pool;
+    s->npart_bound = (j_to_pool != NULL) ? npart_bound : 0;
+    s->failed = 0;
+    return 0;
 }
 
-static void glt_cache_refit_from_particles(void)
+static int gx_send_set_grow(struct ghost_send_set *s)
 {
-    if(!g_glt_cache.valid || !g_glt_cache.tiles || !g_glt_cache.pool ||
-       !g_glt_cache.bvh || !g_glt_cache.compact_xyzh || !g_glt_cache.pool_types) return;
-
-    /* Narrow path: refresh only tiles touched by g_glt_dirty_list, then walk
-     * BVH bottom-up updating only ancestor nodes of those tiles. */
-    if(!g_glt_dirty_all && !g_glt_dirty_list.empty() && g_glt_cache.j_to_pool) {
-        int n_dirty = (int)g_glt_dirty_list.size();
-        int ntiles = g_glt_cache.ntiles;
-        int bvh_nnodes = g_glt_cache.bvh_nnodes;
-        int NumPart_b = g_glt_cache.NumPart_when_built;
-        unsigned char *tile_dirty = (unsigned char *) calloc((size_t)(ntiles > 0 ? ntiles : 1), 1);
-        unsigned char *node_dirty = (unsigned char *) calloc((size_t)(bvh_nnodes > 0 ? bvh_nnodes : 1), 1);
-
-        /* refresh compact_xyzh + pool_types for each dirty j; mark its tile dirty. */
-        for(int k = 0; k < n_dirty; k++) {
-            int j = g_glt_dirty_list[k];
-            if(j < 0 || j >= NumPart_b) continue;
-            int pp = g_glt_cache.j_to_pool[j];
-            if(pp < 0 || pp >= g_glt_cache.num_pool) continue;
-            int t = glt_tile_of_pool_pos_(pp);
-            if(t < 0) continue;
-            tile_dirty[t] = 1;
-        }
-
-        /* re-scan each touched tile fully (cheaper than tracking which
-         * member exactly; tile_size ~64, dirty_count typically ~few-hundred). */
-        for(int t = 0; t < ntiles; t++) {
-            if(tile_dirty[t]) glt_recompute_tile_(t);
-        }
-
-        /* BVH bottom-up single pass.  At each leaf, propagate
-         * tile_dirty[tile] -> node_dirty[n].  At each internal node, OR its
-         * children's flags; if dirty, recompute lo/hi/hmax/hmax_by_type from
-         * children.  Children-first ordering is guaranteed by build_bvh_recursive. */
-        for(int n = 0; n < bvh_nnodes; n++) {
-            tile_bvh_node_t *node = &g_glt_cache.bvh[n];
-            if(node->left < 0) {
-                int t = -(node->left + 1);
-                if(t >= 0 && t < ntiles && tile_dirty[t]) {
-                    node_dirty[n] = 1;
-                    glt_recompute_bvh_node_(n);
-                }
-            } else {
-                int L = node->left, R = node->right;
-                int dL = (L >= 0 && L < bvh_nnodes) ? node_dirty[L] : 0;
-                int dR = (R >= 0 && R < bvh_nnodes) ? node_dirty[R] : 0;
-                if(dL || dR) {
-                    node_dirty[n] = 1;
-                    glt_recompute_bvh_node_(n);
-                }
-            }
-        }
-
-        free(tile_dirty);
-        free(node_dirty);
-        g_glt_dirty_clear_();
-        g_glt_cache.Ti_when_built = All.Ti_Current;
-        g_glt_cache.needs_refit = 0;
-        g_glt_cache_narrow_refits++;
-        return;
-    }
-
-    /* Full path: scan every tile + every BVH node. */
-    for(int t = 0; t < g_glt_cache.ntiles; t++) glt_recompute_tile_(t);
-    for(int n = 0; n < g_glt_cache.bvh_nnodes; n++) glt_recompute_bvh_node_(n);
-    g_glt_dirty_clear_();
-    g_glt_cache.Ti_when_built = All.Ti_Current;
-    g_glt_cache.needs_refit = 0;
-    g_glt_cache_refits++;
+    if(s->capacity > LONG_MAX / 2) {return 1;}
+    const long new_capacity = 2 * s->capacity;
+    if((unsigned long)new_capacity > (unsigned long)(SIZE_MAX / sizeof(int))) {return 1;}
+    int *grown = (int *) realloc(s->slots, (size_t)new_capacity * sizeof(int));
+    if(!grown) {return 1;}
+    s->slots = grown;
+    s->capacity = new_capacity;
+    return 0;
 }
 
+int gx_send_set_emit(struct ghost_send_set *s, int peer, const int *slots, int n)
+{
+    if(s->failed) {return 1;}
+    /* A peer out of range, arriving out of order or a second time, or a slot
+     * outside the pool, can only come from a broken receiver: its slots would be
+     * sent out of order or split, or written outside the marker, which outlives
+     * the call.  Stop rather than build on it. */
+    int bad = (peer < 0 || peer >= NTask || n < 0 || (peer != s->peer && peer <= s->last_peer));
+    for(int k = 0; k < n && !bad; k++) {bad = ((unsigned)slots[k] >= (unsigned)s->num_pool);}
+    if(bad) {
+        printf("ERROR: ghost send set on task %d was handed %d slots for peer %d after peer %d (pool %d); "
+               "peers must arrive in ascending order, each in one run, with slots inside the pool\n",
+               ThisTask, n, peer, s->last_peer, s->num_pool);
+        fflush(stdout);
+        gizmo_request_controlled_stop(7734, "ghost_exchange: send set handed an invalid emission",
+                                      __FILE__, __LINE__, __FUNCTION__);
+        s->failed = 1;
+        return 1;
+    }
+    if(peer != s->peer) {
+        gx_send_set_finish_peer(s);
+        s->peer = peer;
+        s->last_peer = peer;
+        s->start[peer] = s->used;
+    }
+    for(int k = 0; k < n; k++) {
+        const int p = slots[k];
+        if(s->mark[p]) {continue;}
+        if(s->used == s->capacity && gx_send_set_grow(s) != 0) {s->failed = 1; return 1;}
+        s->mark[p] = 1;
+        s->marks_outstanding++;
+        s->slots[s->used++] = p;
+        s->count[peer]++;
+    }
+    return 0;
+}
 
 /* ---- Utility: walk TopNodes to find which leaf a particle belongs to ---- */
 static inline int ghost_toptree_leaf(peanokey key)
@@ -597,72 +407,35 @@ enum ghost_exchange_result {
 };
 
 static ghost_exchange_result ghost_exchange_request_driven_impl(const struct ghost_exchange_spec_t *spec);
-static ghost_exchange_result ghost_exchange_tile_overlap_impl(const struct ghost_exchange_spec_t *spec);
 
-/* Is this spec eligible for the walk-export routed producer (sender fine-tree
- * export + bounded receiver walk)?  Keyed on the SEARCH MODE and structural spec
- * fields only — never on a caller name, so every loop of a given class routes.
+/* Every spec uses the walk-export routed producer (sender fine-tree export +
+ * bounded receiver walk).  Kept as a named predicate because the two search
+ * modes reach that conclusion for different reasons, recorded here.
  *
- * ONEWAY: always eligible.  Its reach is the query's own radius, which the sender
- * knows exactly, so routing needs nothing from the supply side.  The traversal AND
- * export opener are both R_open = h_q (mode_b_local_walker.cc, the R_open branch
- * and the topleaf export re-test), and the accept ignores h_j entirely
- * (ghost_exchange_functions.h gx_pair_accept_wrap_and_test, ONEWAY branch).  Query h already
- * carries the spec safety factor, so a widened query cannot outgrow the opener.
- * KEEP THOSE THREE IN STEP: if ONEWAY accept ever gains an h_j term, or the opener
- * stops using h_q, this eligibility no longer holds and must be re-derived.
+ * ONEWAY: its reach is the query's own radius, which the sender knows exactly,
+ * so routing needs nothing from the supply side.  The traversal AND export
+ * opener are both R_open = h_q (mode_b_local_walker.cc, the R_open branch and
+ * the topleaf export re-test), and the accept ignores h_j entirely
+ * (ghost_exchange_functions.h gx_pair_accept_wrap_and_test, ONEWAY branch).
+ * Query h already carries the spec safety factor, so a widened query cannot
+ * outgrow the opener.  KEEP THOSE THREE IN STEP: if ONEWAY accept ever gains an
+ * h_j term, or the opener stops using h_q, this must be re-derived.
  *
- * SYMMETRIC: eligible only when the supply-side reach is bounded by the per-type
- * node band the sender opener walks against — otherwise a reach beyond the band
- * silently under-imports.  ONE structural condition:
- *   supply_band_dominated  the spec's reach is proven bounded by that band
- * A safety factor above 1 (TURB_DIFF_DYNAMIC) is NOT a disqualifier: both walks
- * scale the j-side reach they search with by the spec's safety factor, so their
- * reach equals the accept's at any safety and a widened query cannot outgrow the
- * opener.  Fails closed: anything unproven keeps the broadcast path it uses today.
- * Rank-uniform — search_mode and both fields are spec constants, identical on
- * every rank, so this never splits ranks across a collective. */
+ * SYMMETRIC: the supply-side reach is bounded by the per-type node band the
+ * sender opener walks against.  The band is seeded from the conservative union
+ * of every radius source a leaf policy can select
+ * (force_hmax_per_type_particle_radius, MODE_B_RADIUS_ALL_SOURCES), so it
+ * dominates any radius_policy a spec can declare -- which is why this is a
+ * property of the BAND, not of the loop.  A new radius-policy bit therefore
+ * extends that union; it never needs a per-loop claim here.  A safety factor
+ * above 1 (TURB_DIFF_DYNAMIC) is not a disqualifier either: both walks scale
+ * the j-side reach they search with by the spec's safety factor, so their reach
+ * equals the accept's at any safety.
+ * Rank-uniform -- search_mode is a spec constant, identical on every rank, so
+ * this never splits ranks across a collective. */
 static inline int gx_walk_export_eligible(const struct ghost_exchange_spec_t *spec)
 {
-    if(!spec) return 0;
-    if(spec->search_mode == NGB_SEARCH_ONEWAY) return 1;
-    /* safety_factor is NOT a disqualifier: the walk-export sender opener and
-     * receiver walk fold it into the j-side reach they search with, so their
-     * reach equals the accept's for any safety. Only an unproven supply band
-     * still forces broadcast. */
-    return spec->search_mode == NGB_SEARCH_SYMMETRIC
-           && spec->supply_band_dominated;
-}
-
-/* Announce, ONCE per caller per run, that a SYMMETRIC caller is on broadcast.
- * Once-only so a timing arm is never perturbed by per-call stdout; loud enough
- * that an unpromoted caller cannot hide in a log. */
-static void gx_report_symm_broadcast(const struct ghost_exchange_spec_t *spec)
-{
-    enum { GX_SYMM_REPORT_MAX = 64 };   /* > the number of SYMMETRIC specs in the tree */
-    static const char *seen[GX_SYMM_REPORT_MAX];
-    static int n_seen = 0;
-    static int table_full_reported = 0;
-    if(ThisTask != 0 || !spec) return;
-    const char *name = spec->caller_name ? spec->caller_name : "?";
-    /* compare by CONTENT: callers pass distinct string objects (spec literals,
-     * Spec::loop_name), so pointer identity would let one caller report twice. */
-    for(int k = 0; k < n_seen; k++) { if(strcmp(seen[k], name) == 0) return; }
-    if(n_seen >= GX_SYMM_REPORT_MAX) {
-        /* Never degrade to per-call printing: that would flood a log and perturb
-         * the very timing this report exists to keep honest. Say so once, then stop. */
-        if(!table_full_reported) {
-            table_full_reported = 1;
-            printf("GHOST_SYMM_BCAST caller=<table full at %d> reason=further_callers_unreported\n",
-                   GX_SYMM_REPORT_MAX);
-            fflush(stdout);
-        }
-        return;
-    }
-    seen[n_seen++] = name;
-    printf("GHOST_SYMM_BCAST caller=%s reason=%s\n", name,
-           "band_unproven");   /* the only remaining disqualifier */
-    fflush(stdout);
+    return spec != NULL;
 }
 
 static void ghost_exchange_impl(const struct ghost_exchange_spec_t *spec)
@@ -673,45 +446,11 @@ static void ghost_exchange_impl(const struct ghost_exchange_spec_t *spec)
      * declarations/lifecycle_counters.h. */
     g_ghost_import_counter++;
 
-    /* Dispatch policy: explicit-query callers (runner-issued specs,
-     * n_queries >= 0) use the request-driven path — tile-overlap cannot consume
-     * an explicit query list (it scans ActiveParticleList filtered by
-     * request_type_mask, so a spec with request_type_mask=0u + an explicit list
-     * would import zero ghosts).  Every ONEWAY request also uses request-driven,
-     * regardless of caller: routed ONEWAY discovery is a property of the search
-     * mode, not of any specific loop.  SYMMETRIC requests use request-driven when
-     * the spec proves supply-band domination (gx_walk_export_eligible); all other
-     * SYMMETRIC callers stay on tile-overlap/broadcast.  Which producer then
-     * supplies the matched set inside the request-driven path is a separate,
-     * likewise structural decision (same predicate). */
-    const int explicit_queries = (spec && spec->n_queries >= 0);
-    const int want_request_driven = explicit_queries
-                                    || (spec && spec->search_mode == NGB_SEARCH_ONEWAY)
-                                    || gx_walk_export_eligible(spec);
-    if(spec && spec->search_mode == NGB_SEARCH_SYMMETRIC && !gx_walk_export_eligible(spec))
-        gx_report_symm_broadcast(spec);
-    if(want_request_driven) {
-        ghost_exchange_request_driven_impl(spec);
-    } else {
-        ghost_exchange_result result = ghost_exchange_tile_overlap_impl(spec);
-        if(result != GHOST_EXCHANGE_COMPLETED) {
-            /* Tile admission failed: it could not fit particle slots (or its counts exceeded
-             * the int transport range) COLLECTIVELY — every rank returns the same
-             * result (Allreduce in the tile impl), so all ranks take this branch
-             * together. Drain any unrelated pending controlled-stop, then fall
-             * back to exact request-driven discovery (changes discovery only, not
-             * the downstream kernel). */
-            const char *reason = (result == GHOST_EXCHANGE_COUNT_RANGE_EXCEEDED)
-                                 ? "count_range" : "particle_capacity";
-            if(ThisTask == 0) {
-                printf("GHOST_ADMIT caller=%s attempted=tile selected=request_driven reason=%s\n",
-                       spec->caller_name ? spec->caller_name : "?", reason);
-                fflush(stdout);
-            }
-            gizmo_exit_bad_stop_if_requested("ghost_exchange:tile_fallback");
-            ghost_exchange_request_driven_impl(spec);
-        }
-    }
+    /* Every request is answered by request-driven discovery, whatever its search
+     * mode: ONEWAY opens on the query's own radius, SYMMETRIC on the per-type
+     * node band that bounds any radius policy.  Neither is a property of a
+     * specific loop, so there is nothing here to key on. */
+    ghost_exchange_request_driven_impl(spec);
 }
 
 /* Public entry for new-style callers that build their own spec literal at
@@ -724,51 +463,6 @@ extern "C" void ghost_exchange_run(const struct ghost_exchange_spec_t *spec)
     ghost_exchange_impl(spec);
 }
 
-/* Tile-build SSOT for the tile ghost-exchange pool: particles are chunked
- * GHOST_TILE_TARGET at a time in pool order, giving the pool + tiling + per-tile
- * supply hmax. Any second consumer of this tiling must use the same value or the
- * two disagree about which particles share a tile. */
-static constexpr int GHOST_TILE_TARGET = 64;
-
-/* Does particle i join the tile supply pool? Mass-positive + type in supply_mask. */
-static inline int ghost_tile_pool_includes(int i, unsigned int supply_mask)
-{
-    if(P[i].Mass <= 0) return 0;
-    if(!ghost_type_passes((int)P[i].Type, supply_mask)) return 0;
-    return 1;
-}
-
-/* Effective ghost search radius this rank must SUPPLY for particle j under the
- * tile-build rule. Typed callers use the bare KernelRadius (matches the legacy
- * ngb search; avoids conflating AGS / DM / wind kernels into the
- * hydro/sink/feedback radius). The all-types pool fans in the widest enabled
- * per-type kernel so ghost bboxes cover any active kernel. */
-static inline double ghost_tile_effective_radius(int j, unsigned int supply_mask)
-{
-    if(supply_mask != GHOST_TYPE_ALL) {
-        if(!ghost_type_passes((int)P[j].Type, supply_mask)) return 0.0;
-        return (double)P[j].KernelRadius;
-    }
-    double h = P[j].KernelRadius;
-#ifdef DM_DISPERSION_LOOP_ACTIVE
-    if(P[j].Type == 0 && j < N_gas) {
-        if((double)CellP[j].KernelRadiusDM > h) h = CellP[j].KernelRadiusDM;
-    }
-#endif
-#ifdef AGS_KERNELRADIUS_CALCULATION_IS_ACTIVE
-    if((double)P[j].AGS_KernelRadius > h) h = P[j].AGS_KernelRadius;
-#endif
-    return h;
-}
-
-/* Pure particle-slot fit predicate: do `required` total (local+ghost) particles
- * fit P[] and CellP[]? Policy (what to do on a miss) lives in the caller, NOT
- * here — keep this free of multi-space/budget logic.
- * Both capacities are tested because an imported ghost occupies P[j] and, when
- * the run has gas, CellP[j] at the same index: the received range is written to
- * CellP[NumPart..] whatever the ghost types are. The two capacities are equal by
- * construction (gizmo_set_gas_capacity_from_maxpart), so the gas test is
- * redundant today and states the requirement rather than assuming it. */
 static inline int ghost_particle_slots_fit(long long required)
 {
     if(required > (long long)All.MaxPart) {return 0;}
@@ -825,37 +519,164 @@ integertime ghost_pool_current_ti(void) { return g_ghost_pool_current_ti; }
  * stamp the callers publish rests on this having succeeded on EVERY rank, so a
  * caller that stamps regardless would assert a currency the pool does not have,
  * and the scan that would notice is the one the stamp suppresses. */
+/* The distinct particles behind a time, gathered from one or more index lists and
+ * then drifted together: begin, add each list, drift.  The batch drift threads over
+ * the particles it is handed, so each must appear once -- two threads advancing the
+ * same particle would drift it twice.  The stamp is generation-counted, so it never
+ * needs clearing between calls, and it is sized once to the particle count.
+ *
+ * The work list holds only the particles actually behind, so it is both the drift
+ * list and the h-dirty list.  drift_particle rescales KernelRadius, so a mark is owed
+ * for a particle that moved -- but marking every listed particle would drive the
+ * dirty tracker toward a full-pool refresh on the many steps where nothing was
+ * behind.
+ *
+ * begin and add return nonzero when their storage cannot grow; nothing has been
+ * drifted then, and a controlled stop is requested, because the particles these
+ * lists hold would otherwise be used behind the current time. */
+static std::vector<unsigned int> gx_behind_seen;
+static unsigned int gx_behind_seen_gen = 0;
+static std::vector<int> gx_behind_list;
+
+static int gx_drift_distinct_storage_failed(void)
+{
+    printf("ghost_exchange: task %d could not grow the list of particles to drift\n", ThisTask);
+    fflush(stdout);
+    gizmo_request_controlled_stop(7739, "ghost_exchange: could not allocate the drift work list",
+                                  __FILE__, __LINE__, __FUNCTION__);
+    return 1;
+}
+
+static int gx_drift_distinct_begin(void)
+{
+    try {
+        if(gx_behind_seen.size() < (size_t)NumPart) {gx_behind_seen.assign((size_t)NumPart, 0u);}
+    } catch(const std::bad_alloc &) {return gx_drift_distinct_storage_failed();}
+    if(++gx_behind_seen_gen == 0u) {std::fill(gx_behind_seen.begin(), gx_behind_seen.end(), 0u); gx_behind_seen_gen = 1u;}
+    gx_behind_list.clear();
+    return 0;
+}
+
+static int gx_drift_distinct_add(const int *idx, int n, integertime t_now)
+{
+    try {
+        for(int k = 0; k < n; k++) {
+            const int j = idx[k];
+            if(j < 0 || j >= NumPart) {continue;}
+            if(gx_behind_seen[(size_t)j] == gx_behind_seen_gen) {continue;}
+            gx_behind_seen[(size_t)j] = gx_behind_seen_gen;
+            if(P[j].Ti_current != t_now) {gx_behind_list.push_back(j);}
+        }
+    } catch(const std::bad_alloc &) {return gx_drift_distinct_storage_failed();}
+    return 0;
+}
+
+/* Returns 0 when every gathered particle stands at t_now, nonzero when the drift that
+ * would have advanced them did not complete -- see drift_particles_batch. */
+static int gx_drift_distinct_to_time(integertime t_now)
+{
+    if(gx_behind_list.empty()) {return 0;}
+    const int n_behind = (int)gx_behind_list.size();
+    const int *behind_idx = gx_behind_list.data();
+    const int drift_status = drift_particles_batch(behind_idx, n_behind, t_now);
+    gizmo_mark_kernel_radius_dirty_indices(behind_idx, n_behind);
+    return drift_status;
+}
+
 static int gx_certify_send_list_current(const int *home_idx, int n_slots, integertime t_now)
 {
     if(!home_idx || n_slots <= 0) {return 0;}
+    if(gx_drift_distinct_begin() != 0 || gx_drift_distinct_add(home_idx, n_slots, t_now) != 0) {return 1;}
+    return gx_drift_distinct_to_time(t_now);
+}
 
-    static std::vector<unsigned int> seen;
-    static unsigned int seen_gen = 0;
-    if((int)seen.size() < NumPart) {seen.assign((size_t)NumPart, 0u);}
-    if(++seen_gen == 0u) {std::fill(seen.begin(), seen.end(), 0u); seen_gen = 1u;}
-
-    /* Holds only the particles actually behind, so it is both the work list and
-     * the h-dirty list. drift_particle rescales KernelRadius, so a mark is owed
-     * for a particle that moved -- but marking every exported slot would drive
-     * the dirty tracker toward a full-pool refresh on the many steps where
-     * nothing was behind. */
-    static std::vector<int> behind;
-    behind.clear();
-    for(int k = 0; k < n_slots; k++) {
-        const int j = home_idx[k];
-        if(j < 0 || j >= NumPart) {continue;}
-        if(seen[(size_t)j] == seen_gen) {continue;}
-        seen[(size_t)j] = seen_gen;
-        if(P[j].Ti_current != t_now) {behind.push_back(j);}
+/* The receiver's half of discovery, shared by both backends.  A backend walks its
+ * envelopes and records, per envelope, the local particles that may be neighbours
+ * once drifted to the current time -- a superset, because a particle it did not
+ * drift may have moved since its position was stored.  This settles each row:
+ * drift the distinct candidates of the whole batch to the current time, keep
+ * exactly those the query accepts at their current position and radius, and hand
+ * their pool slots to the send set.  Accepting on stored positions instead would
+ * both miss particles that moved into reach and send ones that moved out of it.
+ *
+ * Nothing is emitted unless every candidate was drifted: storage that cannot grow,
+ * or a drift that did not complete, fails the batch before its first emission.
+ * Rows must arrive with peers in ascending order (the send set's contract); a row's
+ * candidates are compacted in place, so no second buffer is needed.  The accept
+ * pass and the emission pass are separate loops, so the first can be threaded on
+ * its own if it ever costs enough to matter. */
+int gx_send_set_accept_rows(struct ghost_send_set *s, struct gx_candidate_row *rows, long n_rows,
+                            int search_mode, mode_b_radius_policy_t radius_policy,
+                            double j_radius_scale, double safety_factor)
+{
+    if(s->failed) {return 1;}
+    const integertime t_now = All.Ti_Current;
+    /* The pool is reused only while it was built over exactly this particle set, and holds every
+       particle of positive mass; a candidate the walks could return is therefore always in it.  One
+       that is not, or a map of another size, means the cache is stale or the walk is malformed, and
+       dropping the candidate would silently narrow the answer -- so the run stops instead. */
+    if(!s->j_to_pool || s->npart_bound != NumPart) {
+        printf("ghost_exchange: task %d supply map covers %d particles, the rank holds %d\n", ThisTask, s->npart_bound, NumPart);
+        fflush(stdout);
+        gizmo_request_controlled_stop(7738, "ghost_exchange: receiver supply map does not match the particle set",
+                                      __FILE__, __LINE__, __FUNCTION__);
+        s->failed = 1;
+        return 1;
     }
-    if(behind.empty()) {return 0;}
 
-    const int n_behind = (int)behind.size();
-    const int *behind_idx = behind.data();
-    const int drift_status = drift_particles_batch(behind_idx, n_behind, t_now);
+    /* Every candidate must be a particle of this set with a supply-pool slot (above). */
+    for(long r = 0; r < n_rows; r++) {
+        const struct gx_candidate_row *row = &rows[r];
+        for(int c = 0; c < row->count; c++) {
+            const int j = row->local_index[c];
+            const int pp = (j >= 0 && j < NumPart) ? s->j_to_pool[j] : -1;
+            if(pp < 0 || pp >= s->num_pool) {
+                printf("ghost_exchange: task %d receiver candidate %d (of 0..%d) has no supply-pool slot\n", ThisTask, j, NumPart - 1);
+                fflush(stdout);
+                gizmo_request_controlled_stop(7738, "ghost_exchange: receiver candidate outside the supply pool",
+                                              __FILE__, __LINE__, __FUNCTION__);
+                s->failed = 1;
+                return 1;
+            }
+        }
+    }
 
-    gizmo_mark_kernel_radius_dirty_indices(behind_idx, n_behind);
-    return drift_status;
+    if(gx_drift_distinct_begin() != 0) {s->failed = 1; return 1;}
+    for(long r = 0; r < n_rows; r++) {
+        if(gx_drift_distinct_add(rows[r].local_index, rows[r].count, t_now) != 0) {s->failed = 1; return 1;}
+    }
+    if(gx_drift_distinct_to_time(t_now) != 0) {s->failed = 1; return 1;}
+
+    /* Exact acceptance at current positions; accepted pool slots replace the
+     * candidates at the front of each row.  Mass is tested again because the drift
+     * can remove a particle (an outflow boundary zeroes it).  Reach comes from THIS caller's spec, not
+     * from whatever policy the cached pool happened to be built under: pool
+     * membership is reused across differing radius policies, and only the tile/BVH/
+     * compact geometry may use the build-time policy, because its leaf h was baked
+     * with it. */
+    for(long r = 0; r < n_rows; r++) {
+        struct gx_candidate_row *row = &rows[r];
+        const struct gx_export_envelope_t *e = row->envelope;
+        int n_accepted = 0;
+        for(int c = 0; c < row->count; c++) {
+            const int j = row->local_index[c];
+            if(!(P[j].Mass > 0)) {continue;}
+            const double hj = gx_policy_scaled_h(j, radius_policy, j_radius_scale, safety_factor);
+            if(gx_pair_accept_wrap_and_test(e->pos[0] - (double)P[j].Pos[0],
+                                            e->pos[1] - (double)P[j].Pos[1],
+                                            e->pos[2] - (double)P[j].Pos[2],
+                                            e->h, hj, search_mode)) {
+                row->local_index[n_accepted++] = s->j_to_pool[j];
+            }
+        }
+        row->count = n_accepted;
+    }
+
+    for(long r = 0; r < n_rows; r++) {
+        if(rows[r].count > 0 &&
+           gx_send_set_emit(s, rows[r].peer, rows[r].local_index, rows[r].count) != 0) {return 1;}
+    }
+    return 0;
 }
 
 /* SSOT for the forward particle+cell transport: pack the exported slots and carry
@@ -1076,565 +897,6 @@ static void gx_pack_and_forward_particle_exchange(const int *send_home_idx,
     myfree(round_send_count);
 }
 
-static ghost_exchange_result ghost_exchange_tile_overlap_impl(const struct ghost_exchange_spec_t *spec)
-{
-    const double safety_factor = spec->safety_factor;
-    const unsigned int request_mask = spec->request_type_mask;
-    const unsigned int supply_mask  = spec->supply_type_mask;
-    const int  search_mode = spec->search_mode;
-    if(NTask <= 1) return GHOST_EXCHANGE_COMPLETED;
-    double t_ghost_start = my_second();
-
-    /* save current state for cleanup */
-    NumPart_before_ghost = NumPart;
-    N_gas_before_ghost = N_gas;
-    NumGhostParticles = 0;
-    /* Drop the previous pool's currency stamp at entry, so an import that
-     * returns early cannot leave a guarantee standing for a pool that no longer
-     * exists. */
-    g_ghost_pool_current_ti = -1;
-
-    int i, k, task;
-    int tile_target = GHOST_TILE_TARGET;
-
-    /* ================================================================
-       Step 1: Build SFC tiles from local particles.
-       Particles are already Peano-Hilbert sorted. Group into tiles of
-       ~tile_target particles, computing bbox and hmax per tile.
-       Uses malloc (not mymalloc) for tile metadata to avoid stack issues.
-       ================================================================ */
-    int local_ntiles = 0, num_pool = 0;
-
-    /* Count pool particles. supply_mask gates which Types may join the pool;
-     * removes tile-hmax pollution from non-supply types (e.g. DM init-time
-     * KernelRadius poisoning hydro tile bboxes). */
-    for(i = 0; i < NumPart; i++) {
-        if(!ghost_tile_pool_includes(i, supply_mask)) continue;
-        num_pool++;
-    }
-
-    /* Build pool index array */
-    int *pool = (int *) malloc((num_pool > 0 ? num_pool : 1) * sizeof(int));
-    int p = 0;
-    for(i = 0; i < NumPart; i++) {
-        if(!ghost_tile_pool_includes(i, supply_mask)) continue;
-        pool[p++] = i;
-    }
-
-    local_ntiles = (num_pool + tile_target - 1) / tile_target;
-    if(local_ntiles < 1) local_ntiles = 1;
-
-    /* Compact tile metadata for exchange. Two parallel bbox/hmax sets:
-     *   (lo, hi, hmax, count)         — over ALL particles in tile
-     *   (active_lo, active_hi, active_hmax, active_count) — over ACTIVE only
-     *
-     * The all-particle set governs what this rank can SUPPLY as ghosts (j may
-     * be inactive on its home rank but still a neighbor of an active i on a
-     * peer rank — WAKEUP-style semantics demand this).
-     *
-     * The active-only set governs what this rank actually NEEDS: only tiles
-     * containing at least one active particle drive remote-tile imports.
-     *
-     * Old code (pre-tile, tree-based ngb_treefind_variable_threads) iterated
-     * FirstActiveParticle and built per-rank exports off active i's search
-     * radius — the new tile path silently dropped that gating and was
-     * shipping ~all of the global pool on tiny-N steps. */
-    struct tile_meta_t {
-        double lo[3], hi[3], hmax;
-        int count;
-        double active_lo[3], active_hi[3], active_hmax;
-        int active_count;
-    };
-
-    tile_meta_t *local_meta = (tile_meta_t *) malloc(local_ntiles * sizeof(tile_meta_t));
-    int *tile_first = (int *) malloc(local_ntiles * sizeof(int)); /* index into pool[] */
-
-    /* Per-particle active flag — ActiveParticleList lookup at O(1). The active
-     * stats below restrict the tile's "what do I need from peers?" criterion
-     * to particles that will actually walk neighbors this step. Allocate as
-     * char rather than bool to keep the address-stable contract. */
-    char *is_active = (char *) calloc(NumPart > 0 ? NumPart : 1, sizeof(char));
-    for(size_t kk = 0; kk < ActiveParticleList.size(); kk++) {
-        int i_act = ActiveParticleList[kk];
-        if(i_act < 0 || i_act >= NumPart) continue;
-        /* request_mask gates which types' actives drive imports. */
-        if(!ghost_type_passes((int)P[i_act].Type, request_mask)) continue;
-        is_active[i_act] = 1;
-    }
-
-    for(int t = 0; t < local_ntiles; t++)
-    {
-        int start = t * tile_target;
-        int count = tile_target;
-        if(start + count > num_pool) count = num_pool - start;
-        if(count < 0) count = 0;
-        tile_first[t] = start;
-        local_meta[t].count = count;
-        local_meta[t].hmax = 0;
-        local_meta[t].active_count = 0;
-        local_meta[t].active_hmax = 0;
-        for(k = 0; k < 3; k++) {
-            local_meta[t].active_lo[k] = 0;  /* will be overwritten on first active */
-            local_meta[t].active_hi[k] = 0;
-        }
-        if(count <= 0) {
-            /* Rank owns no supply-pool particles for this mask -> empty sentinel
-             * tile. Zero bbox/hmax, NO pool[] access (pool may be a 1-elt stub).
-             * active_count=0 + hmax=0 means it neither needs nor supplies ghosts
-             * downstream. */
-            for(k = 0; k < 3; k++) { local_meta[t].lo[k] = 0; local_meta[t].hi[k] = 0; }
-            continue;
-        }
-
-        int j0 = pool[start];
-        for(k = 0; k < 3; k++) local_meta[t].lo[k] = local_meta[t].hi[k] = P[j0].Pos[k];
-        {double h0 = ghost_tile_effective_radius(j0, supply_mask); if(h0 > local_meta[t].hmax) local_meta[t].hmax = h0;}
-        if(is_active[j0]) {
-            local_meta[t].active_count = 1;
-            for(k = 0; k < 3; k++) local_meta[t].active_lo[k] = local_meta[t].active_hi[k] = P[j0].Pos[k];
-            double h0 = ghost_tile_effective_radius(j0, supply_mask);
-            local_meta[t].active_hmax = h0;
-        }
-
-        for(int s = 1; s < count; s++) {
-            int j = pool[start + s];
-            for(k = 0; k < 3; k++) {
-                if(P[j].Pos[k] < local_meta[t].lo[k]) local_meta[t].lo[k] = P[j].Pos[k];
-                if(P[j].Pos[k] > local_meta[t].hi[k]) local_meta[t].hi[k] = P[j].Pos[k];
-            }
-            double hj = ghost_tile_effective_radius(j, supply_mask);
-            if(hj > local_meta[t].hmax) local_meta[t].hmax = hj;
-            if(is_active[j]) {
-                if(local_meta[t].active_count == 0) {
-                    for(k = 0; k < 3; k++) local_meta[t].active_lo[k] = local_meta[t].active_hi[k] = P[j].Pos[k];
-                    local_meta[t].active_hmax = hj;
-                } else {
-                    for(k = 0; k < 3; k++) {
-                        if(P[j].Pos[k] < local_meta[t].active_lo[k]) local_meta[t].active_lo[k] = P[j].Pos[k];
-                        if(P[j].Pos[k] > local_meta[t].active_hi[k]) local_meta[t].active_hi[k] = P[j].Pos[k];
-                    }
-                    if(hj > local_meta[t].active_hmax) local_meta[t].active_hmax = hj;
-                }
-                local_meta[t].active_count++;
-            }
-        }
-    }
-    free(is_active);
-
-
-    /* ================================================================
-       Step 2: Gather tile metadata from all ranks.
-       Each rank sends its tile count and metadata to all ranks.
-       ================================================================ */
-    int *all_ntiles = (int *) malloc(NTask * sizeof(int));
-    MPI_Allgather(&local_ntiles, 1, MPI_INT, all_ntiles, 1, MPI_INT, MPI_COMM_WORLD);
-
-    int *tile_disp = (int *) malloc(NTask * sizeof(int));
-    int total_tiles = 0;
-    for(task = 0; task < NTask; task++) {
-        tile_disp[task] = total_tiles;
-        total_tiles += all_ntiles[task];
-    }
-
-    /* Exchange tile metadata using MPI_Allgatherv with MPI_BYTE */
-    tile_meta_t *all_meta = (tile_meta_t *) malloc(total_tiles * sizeof(tile_meta_t));
-    int *meta_counts = (int *) malloc(NTask * sizeof(int));
-    int *meta_disps = (int *) malloc(NTask * sizeof(int));
-    for(task = 0; task < NTask; task++) {
-        meta_counts[task] = all_ntiles[task] * sizeof(tile_meta_t);
-        meta_disps[task] = tile_disp[task] * sizeof(tile_meta_t);
-    }
-    MPI_Allgatherv(local_meta, local_ntiles * sizeof(tile_meta_t), MPI_BYTE,
-                   all_meta, meta_counts, meta_disps, MPI_BYTE, MPI_COMM_WORLD);
-    free(meta_counts); free(meta_disps);
-
-    if(ThisTask == 0) {
-        double hmax_min = 1e30, hmax_max = 0, hmax_sum = 0;
-        for(int t = 0; t < local_ntiles; t++) {
-            if(local_meta[t].hmax < hmax_min) hmax_min = local_meta[t].hmax;
-            if(local_meta[t].hmax > hmax_max) hmax_max = local_meta[t].hmax;
-            hmax_sum += local_meta[t].hmax;
-        }
-        PRINT_STATUS("Ghost exchange (tile-based): %d local tiles, %d total across %d ranks, tile hmax=[%.4g, %.4g] avg=%.4g",
-                     local_ntiles, total_tiles, NTask, hmax_min, hmax_max, hmax_sum / local_ntiles);
-    }
-
-
-    /* Diagnostic: number this ghost_exchange call to track progress in multi-call steps */
-    static int ghost_call_seq = 0;
-    ghost_call_seq++;
-    int this_call = ghost_call_seq;
-
-    /* ================================================================
-       Step 3: Per-task tile overlap check.
-       For each remote task, check which of its tiles overlap with any
-       of our tiles AND which of our tiles overlap with any of its tiles.
-       No global Allreduce — each rank independently computes per-task
-       recv and send lists using the symmetric overlap criterion.
-       ================================================================ */
-
-    /* Per-tile need flags: need_from[total_tiles] = do WE need this remote tile?
-       send_to[local_ntiles * NTask] = does task t need our tile lt?
-     *
-     * Asymmetric criterion:
-     *   need_from[rt]            = our active tiles' bbox vs rt's all-bbox
-     *   send_to[lt][task]        = task's active tiles' bbox vs our lt's all-bbox
-     * Active-aware on each rank's REQUEST side, all-particle on the SUPPLY
-     * side (a remote inactive j may still be a neighbor of an active i — see
-     * WAKEUP). Tile pairs where the request side has zero actives early-exit
-     * — that's where the tiny-N wins come from. */
-    int *need_from = (int *) calloc(total_tiles, sizeof(int));
-    int *send_to = (int *) calloc(local_ntiles * NTask, sizeof(int));
-    int my_tile_start = tile_disp[ThisTask];
-
-    /* Tile-pair overlap is a point against the Minkowski sum of the two boxes.
-     * The box wrap belongs to the canonical macro family (the former per-axis
-     * form here could not represent a shearing box's x-y coupling), so it lives
-     * in gx_boxpair_overlap_wrap_and_test; the exact clamped-gap acceptance
-     * this pass relies on is unchanged. */
-
-    /* Pass 1: need_from[rt] — driven by OUR active tiles. Outer loop over
-     * local tiles with active_count > 0 only (tiny-N: just a handful). */
-    for(int lt_idx = 0; lt_idx < local_ntiles; lt_idx++)
-    {
-        int lt = my_tile_start + lt_idx;
-        tile_meta_t *lm = &all_meta[lt];
-        if(lm->active_count == 0) continue;
-        double c_lo[3], c_hw[3];
-        for(k = 0; k < 3; k++) {
-            c_lo[k] = 0.5 * (lm->active_lo[k] + lm->active_hi[k]);
-            c_hw[k] = 0.5 * (lm->active_hi[k] - lm->active_lo[k]);
-        }
-        for(task = 0; task < NTask; task++)
-        {
-            if(task == ThisTask) continue;
-            int t_start = tile_disp[task];
-            int t_count = all_ntiles[task];
-            for(int rt_idx = 0; rt_idx < t_count; rt_idx++)
-            {
-                int rt = t_start + rt_idx;
-                if(need_from[rt]) continue;            /* already flagged by another lt */
-                tile_meta_t *rm = &all_meta[rt];
-                /* Search radius depends on caller mode:
-                 *   ONEWAY (density): r_ij < h_i — only the LOCAL active's h
-                 *     matters. Importing a remote tile because of its own
-                 *     particles' large h_j is incorrect for density.
-                 *   SYMMETRIC (gradients/sinks/etc.): r_ij < max(h_i, h_j) —
-                 *     remote h_j matters because j's kernel may reach back
-                 *     to i. */
-                double search_r = (search_mode == NGB_SEARCH_ONEWAY)
-                                    ? lm->active_hmax * safety_factor
-                                    : DMAX(lm->active_hmax, rm->hmax) * safety_factor;
-                if(search_r <= 0) continue;
-                double search_r2 = search_r * search_r;
-                double dc[3], hw_sum[3];
-                for(k = 0; k < 3; k++) {
-                    const double c_r  = 0.5 * (rm->lo[k] + rm->hi[k]);
-                    const double hw_r = 0.5 * (rm->hi[k] - rm->lo[k]);
-                    dc[k]     = c_lo[k] - c_r;
-                    hw_sum[k] = c_hw[k] + hw_r;
-                }
-                if(gx_boxpair_overlap_wrap_and_test(dc[0], dc[1], dc[2],
-                                                    hw_sum[0], hw_sum[1], hw_sum[2],
-                                                    search_r, search_r2)) need_from[rt] = 1;
-            }
-        }
-    }
-
-    /* Pass 2: derive send_to[lt][task] from peers' need_from directly.
-     *
-     * Earlier versions recomputed an "active-on-the-other-side" overlap test
-     * here. That's algebraically the same predicate as peer's pass 1 — but
-     * the two ranks running floating-point min-distance arithmetic on the
-     * same all_meta blob can disagree on a tile pair that lies right at the
-     * search-radius threshold. When they do, A says send_count[B]=N and B
-     * says recv_count[A]=N±1, and the downstream Alltoallv truncates with
-     * MPI_ERR_TRUNCATE. Killing the recompute entirely makes the two sides
-     * bit-identical by construction.
-     *
-     * Cost of the Allgather: total_tiles*NTask ints (~1.5 MB at 2 ranks ×
-     * 200k tiles, scales as O(NTask^2) — switch to Alltoall of per-rank
-     * slices if NTask grows past ~100). The pass-1 cost is unchanged: outer
-     * loop active-gated, ~handful of tiles on tiny-N. */
-    int *all_need_from = (int *) malloc((size_t)NTask * total_tiles * sizeof(int));
-    MPI_Allgather(need_from, total_tiles, MPI_INT,
-                  all_need_from, total_tiles, MPI_INT, MPI_COMM_WORLD);
-    for(task = 0; task < NTask; task++)
-    {
-        if(task == ThisTask) continue;
-        const int *peer_need = all_need_from + (size_t)task * total_tiles;
-        for(int lt_idx = 0; lt_idx < local_ntiles; lt_idx++) {
-            send_to[lt_idx * NTask + task] = peer_need[my_tile_start + lt_idx];
-        }
-    }
-    free(all_need_from);
-
-    /* ================================================================
-       Step 4: Compute per-task send/recv counts from overlap results.
-       ================================================================ */
-    int *recv_count = (int *) mymalloc("ghost_rc", NTask * sizeof(int));
-    int *send_count = (int *) mymalloc("ghost_sc", NTask * sizeof(int));
-    memset(recv_count, 0, NTask * sizeof(int));
-    memset(send_count, 0, NTask * sizeof(int));
-
-    for(task = 0; task < NTask; task++) {
-        if(task == ThisTask) continue;
-        /* Recv: remote tiles we need from this task */
-        for(int rt = tile_disp[task]; rt < tile_disp[task] + all_ntiles[task]; rt++) {
-            if(need_from[rt]) recv_count[task] += all_meta[rt].count;
-        }
-        /* Send: our tiles this task needs */
-        for(int lt = 0; lt < local_ntiles; lt++) {
-            if(send_to[lt * NTask + task]) send_count[task] += local_meta[lt].count;
-        }
-    }
-
-    /* Compute totals + displacements with CHECKED int64 accumulation. The MPI
-     * pack consumes int counts/displacements; a value exceeding INT_MAX cannot
-     * be represented and must NOT silently wrap into a false "fits" decision.
-     * Such a representation overflow is reported distinctly from a particle-slot
-     * overflow (the collective slot admission below). Per-peer counts are bounded by one
-     * rank's pool (<= INT_MAX); the prefix sums + totals are the overflow risk. */
-    int *recv_disp = (int *) mymalloc("ghost_rd", NTask * sizeof(int));
-    int *send_disp = (int *) mymalloc("ghost_sd", NTask * sizeof(int));
-    long long total_recv_ll = 0, total_send_ll = 0;
-    int count_range_ok = 1;
-    {
-        long long rdisp = 0, sdisp = 0;
-        for(task = 0; task < NTask; task++) {
-            if(rdisp <= INT_MAX) recv_disp[task] = (int)rdisp; else { recv_disp[task] = 0; count_range_ok = 0; }
-            if(sdisp <= INT_MAX) send_disp[task] = (int)sdisp; else { send_disp[task] = 0; count_range_ok = 0; }
-            rdisp += recv_count[task];
-            sdisp += send_count[task];
-        }
-        total_recv_ll = rdisp; total_send_ll = sdisp;
-        if(total_recv_ll > INT_MAX || total_send_ll > INT_MAX) count_range_ok = 0;
-    }
-    int total_recv = count_range_ok ? (int)total_recv_ll : 0;
-    int total_send = count_range_ok ? (int)total_send_ll : 0;
-
-    int tiles_needed = 0, tiles_sent = 0;
-    for(int rt = 0; rt < total_tiles; rt++) tiles_needed += need_from[rt];
-    for(int lt = 0; lt < local_ntiles; lt++) {
-        for(task = 0; task < NTask; task++) { if(send_to[lt * NTask + task]) { tiles_sent++; break; } }
-    }
-
-
-    /* Frees the pre-materialisation tile scratch ONLY (mymalloc LIFO, then
-     * malloc). ONE free list, shared by the fallback bail and the
-     * normal-completion cleanup; captures only scratch allocated up to here (the
-     * later packing allocs are freed explicitly by the normal path). It does NOT
-     * touch NumGhostParticles: on normal completion that field already holds the
-     * materialised ghost count and MUST survive (ghost-writeback / cleanup /
-     * cleanup reads it); the fallback bail resets it explicitly. */
-    auto tile_preflight_cleanup = [&]() {
-        myfree(send_disp); myfree(recv_disp);
-        myfree(send_count); myfree(recv_count);
-        free(send_to); free(need_from);
-        free(all_meta); free(tile_disp); free(all_ntiles);
-        free(tile_first); free(local_meta); free(pool);
-    };
-
-    /* === Admission: collective particle-slot fit ===
-     * Decide tile-vs-fallback BEFORE materialising any ghosts (NumPart unchanged
-     * to here). Two DISTINCT failure modes — a representation overflow must never
-     * masquerade as a capacity decision:
-     *   2 = COUNT_RANGE — int MPI count/displacement representation overflowed
-     *   1 = CAPACITY    — ghosts would not fit P[]/CellP[] (All.MaxPart)
-     * Either, on ANY rank, makes ALL ranks abandon tile (clean rollback) and
-     * fall back to exact request-driven discovery in the dispatcher. The Allreduce
-     * is a continuing-branch decision, distinct from the terminal controlled-stop
-     * poll (which still drains unrelated stops on the fit path below). */
-    int local_fail = (!count_range_ok) ? 2
-                   : (!ghost_particle_slots_fit((long long)NumPart + total_recv_ll)) ? 1 : 0;
-    int global_fail = 0;
-    MPI_Allreduce(&local_fail, &global_fail, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-    if(global_fail != 0) {
-        tile_preflight_cleanup();
-        NumGhostParticles = 0;   /* rollback: no ghosts materialised this call */
-        g_ghost_pool_current_ti = -1;
-        return (global_fail == 2) ? GHOST_EXCHANGE_COUNT_RANGE_EXCEEDED
-                                  : GHOST_EXCHANGE_PARTICLE_CAPACITY_EXCEEDED;
-    }
-    /* Tile fits on all ranks. Drain any UNRELATED pending controlled-stop
-     * (preserves the original all-rank poll) before materialising ghosts. */
-    gizmo_exit_bad_stop_if_requested("ghost_exchange:capacity");
-
-    /* ================================================================
-       Step 5: Pack particles from tiles needed by each task.
-       ================================================================ */
-    /* Record home index of each sent particle for ghost writeback */
-    int *send_home_idx = (int *) malloc((total_send > 0 ? total_send : 1) * sizeof(int));
-
-    int *task_offset = (int *) mymalloc("ghost_toff", NTask * sizeof(int));
-    memcpy(task_offset, send_disp, NTask * sizeof(int));
-    for(int off = 0; off < total_send; off++) {send_home_idx[off] = -1;}
-
-    for(task = 0; task < NTask; task++)
-    {
-        if(send_count[task] <= 0) continue;
-        for(int t = 0; t < local_ntiles; t++)
-        {
-            if(!send_to[t * NTask + task]) continue;
-            for(int s = 0; s < local_meta[t].count; s++)
-            {
-                if(task_offset[task] >= send_disp[task] + send_count[task]) break;
-                int j = pool[tile_first[t] + s];
-                int off = task_offset[task]++;
-                send_home_idx[off] = j; /* record home index for writeback + refresh provenance */
-            }
-        }
-    }
-    /* Advance the exported particles before copying them. The walk above only
-     * records which particle lands in each slot; a destination whose run stops
-     * early on its own guard leaves later slots at the -1 seeded before it, which
-     * the transport carries as they stand. */
-    const int send_list_current = gx_certify_send_list_current(send_home_idx, total_send, All.Ti_Current);
-
-    /* ================================================================
-       Step 6: Pack and exchange, in rounds the working memory can hold.
-       ================================================================ */
-    /* send_count/recv_count/send_disp/recv_disp are already in element units.
-     * gizmo_mpi_alltoallv_typed builds a contiguous MPI_Datatype per call so
-     * element-count int*'s drive the wire — dodging the 2.1 GB per-peer
-     * int-overflow that bites fire_m11i at >~6M parts/rank. */
-    gx_pack_and_forward_particle_exchange(send_home_idx, send_count, send_disp,
-                                          &P[NumPart], &CellP[NumPart],
-                                          recv_count, recv_disp);
-
-    /* Update counts */
-    NumGhostParticles = total_recv;
-    NumPart += total_recv;
-
-    /* Multi-rank correctness: ghost slots [NumPart_before_ghost, NumPart) just
-     * received fresh particle_data from remote ranks via MPI_Alltoallv. Their
-     * KernelRadius values overwrote whatever was in those local P[] slots
-     * (uninitialized or stale from prior step's ghost import). Any subsequent
-     * cached gpu_ngb_list_build reading compact_xyzh[j*4+3] for h_j on those
-     * slots would see stale values without this dirty-mark, silently missing
-     * symmetric neighbor pairs where r<h_ghost.  Single-rank runs hit this
-     * branch only when NumGhostParticles>0 (rare for true 1-rank), so this
-     * fix is functionally a multi-rank correctness guarantee. */
-    if(NumGhostParticles > 0) {
-        gpu_compact_xyzh_mark_h_dirty_range(NumPart_before_ghost, NumPart);
-    }
-    /* SIDX lifecycle notify: fires on every rank for every exchange completion,
-     * INCLUDING the count==0 / no-receive path. count==0 invalidates any
-     * cached ghost segment from a prior import (no stale-ghost survival). */
-    /* Every rank advanced its outgoing slots to this same All.Ti_Current above,
-       and the exchange is collective, so the pool just installed is current at
-       that time -- but only if that advance actually happened. */
-    if(send_list_current == 0) {g_ghost_pool_current_ti = All.Ti_Current;}
-    gpu_sidx_notify_ghost_imported(NumPart_before_ghost, NumGhostParticles);
-
-    /* ================================================================
-       Step 7: Build ghost provenance map for writeback.
-       Exchange home indices so each ghost knows its home rank + index.
-       ================================================================ */
-    {
-        /* Exchange home indices: send_home_idx[total_send] → recv_home_idx[total_recv] */
-        int *recv_home_idx = (int *) malloc((total_recv > 0 ? total_recv : 1) * sizeof(int));
-        gizmo_mpi_alltoallv_typed(send_home_idx, send_count, send_disp,
-                                  recv_home_idx, recv_count, recv_disp,
-                                  sizeof(int), MPI_COMM_WORLD);
-
-        /* Build per-ghost provenance: home_rank and home_index */
-        ghost_home_rank_map = (int *) malloc((total_recv > 0 ? total_recv : 1) * sizeof(int));
-        ghost_home_index_map = recv_home_idx; /* take ownership — freed in cleanup */
-        for(task = 0; task < NTask; task++) {
-            for(int g = 0; g < recv_count[task]; g++) {
-                ghost_home_rank_map[recv_disp[task] + g] = task;
-            }
-        }
-
-        /* Preserve comm maps for reverse Alltoallv (malloc copies of mymalloc'd arrays) */
-        ghost_wb_recv_count = (int *) malloc(NTask * sizeof(int));
-        ghost_wb_recv_disp  = (int *) malloc(NTask * sizeof(int));
-        ghost_wb_send_count = (int *) malloc(NTask * sizeof(int));
-        ghost_wb_send_disp  = (int *) malloc(NTask * sizeof(int));
-        memcpy(ghost_wb_recv_count, recv_count, NTask * sizeof(int));
-        memcpy(ghost_wb_recv_disp,  recv_disp,  NTask * sizeof(int));
-        memcpy(ghost_wb_send_count, send_count, NTask * sizeof(int));
-        memcpy(ghost_wb_send_disp,  send_disp,  NTask * sizeof(int));
-
-        /* Preserve send-side provenance for ghost_refresh_values() (take
-           ownership of send_home_idx; the free() below then no-ops on NULL). */
-        if(ghost_send_home_idx) free(ghost_send_home_idx);
-        ghost_send_home_idx   = send_home_idx;
-        ghost_send_home_count = total_send;
-        send_home_idx         = NULL;
-        g_ghost_provenance_epoch++;
-    }
-
-    double t_ghost_end = my_second();
-    double t_ghost_total = timediff(t_ghost_start, t_ghost_end);
-
-    if(ThisTask == 0) {
-        PRINT_STATUS("Ghost exchange: %d local + %d ghost = %d total (recv %d tiles, sent %d/%d) [%.4f s]",
-                     NumPart_before_ghost, NumGhostParticles, NumPart,
-                     tiles_needed, tiles_sent, local_ntiles, t_ghost_total);
-    }
-    /* Report a rank that is approaching the largest capacity this run may ever reach.  The test is
-     * against that ceiling and not against the current capacity: the current one is raised whenever
-     * an import does not fit, so running close to it is the intended state and saying so every time
-     * would be noise on every rank of every exchange.  Approaching the ceiling is the condition that
-     * actually ends a run, and it is reported once, because it is a property of the run rather than
-     * of the exchange that happened to notice it. */
-    if(All.MaxPartExpandable > 0 && NumPart > 0.8 * All.MaxPartExpandable) {
-        static int reported_near_ceiling = 0;
-        if(!reported_near_ceiling) {
-            reported_near_ceiling = 1;
-            PRINT_WARNING("Ghost exchange: task %d holds %d particles, %.0f%% of the %d it can ever hold. "
-                          "Local particles plus imported ghosts are approaching the ceiling fixed at startup; "
-                          "more ranks/nodes, or a smaller ghost-import demand, would relieve it.",
-                          ThisTask, NumPart, 100.0 * (double)NumPart / (double)All.MaxPartExpandable,
-                          All.MaxPartExpandable);
-        }
-    }
-
-    /* Cleanup: later packing allocs (mymalloc LIFO + malloc), then the shared
-     * preflight cleanup frees the discovery scratch (same free list the Stage-0A
-     * fallback bail uses). */
-    myfree(task_offset);
-    free(send_home_idx);
-    tile_preflight_cleanup();
-    return GHOST_EXCHANGE_COMPLETED;
-}
-
-
-/* ============================================================================
- * Request-driven ghost exchange.
- *
- * Replaces the tile-overlap candidate generator + whole-tile MPI payload of
- * ghost_exchange_tile_overlap_impl with:
- *   1. Each rank builds a list of compact query records {pos[3], h, _pad}
- *      for each LOCAL active particle matching spec->request_type_mask.
- *   2. Per-rank query counts via Allgather; queries themselves via Allgatherv.
- *   3. For each remote rank's queries, walk the LOCAL pool and apply the
- *      EXACT predicate per particle (r_ij < h_i for ONEWAY,
- *      r_ij < max(h_i, h_j) for SYMMETRIC). Mark matched local pool indices
- *      in a bitmask per peer rank to dedupe (same j matched by N queries
- *      ships once).
- *   4. Per-peer match list is the basis for Alltoallv pack.
- *   5. Alltoallv particle_data + gas_cell_data + home_idx (existing typed
- *      Alltoallv used for the legacy path).
- *   6. Install as ghosts (NumPart += total_recv, mark dirty for compact_xyzh,
- *      build ghost_home_*_map, save ghost_wb_* arrays).
- *
- * Killshot diagnostic on Vista (job 694703) showed the legacy path imports
- * with 99.97-100% waste — millions of particles imported per call, of which
- * <1000 are actual neighbors under the criterion that imported them. This
- * path's match step performs the EXACT predicate before pack, so per-call
- * waste is zero by construction (modulo a small over-supply factor from
- * ghosts that pass for one query but turn out unused after kernel).
- *
- * For now the local-pool walk is a flat O(N_local_tiles * N_remote_queries)
- * scan with bbox-vs-sphere prune at the tile level; per-particle accept at
- * the leaf. A BVH speedup is straightforward later (the all-particle BVH
- * already used by the GPU neighbor list can be reused) but not a
- * blocker here — even the flat scan is dominated by per-particle work for the
- * tiny-N case that motivates this restructure.
- * ============================================================================ */
 struct gx_query_t {
     double pos[3];
     double h;
@@ -1646,240 +908,49 @@ struct gx_query_t {
  * mesh/neighbor_list.h: the device receiver traversal compiles in another
  * translation unit and consumes the same records. */
 
-/* Host-only BVH bbox-vs-sphere overlap test. Mirrors bbox_overlaps_sphere_gpu
- * (mesh/sfc_tiles_functions.h). For each axis, take the periodic-shortened
- * gap between sphere center and bbox; if any gap exceeds search_r, prune.
- * Otherwise sum-of-squares vs search_r2 for the final accept. */
-static inline int gx_bbox_overlaps_sphere(const double bbox_lo[3], const double bbox_hi[3],
-                                          const double pos[3], double search_r, double search_r2)
-{
-    (void)search_r2;   /* the shared predicate squares the radius itself */
-    /* The box wrap is the canonical macro family's job, and it needs a centre
-     * separation rather than a lo/hi interval, so convert here.  Rounding the
-     * half-width UP (the larger of the two sides) keeps the test conservative
-     * under FP, which is what the direct point-to-interval form used to buy;
-     * over-opening costs a leaf test, under-opening drops a real neighbour. */
-    double c[3], hw[3];
-    for(int k = 0; k < 3; k++) {
-        c[k]  = 0.5 * (bbox_lo[k] + bbox_hi[k]);
-        double up = bbox_hi[k] - c[k], dn = c[k] - bbox_lo[k];
-        hw[k] = (up > dn) ? up : dn;
-    }
-    return gx_extended_overlap_wrap_and_test(c[0] - pos[0], c[1] - pos[1], c[2] - pos[2],
-                                             hw[0], hw[1], hw[2], search_r);
-}
-
-/* Host-only BVH walk for the request-driven path. Mirrors
- * search_neighbors_sfc_gpu's iterative stack-based walk. For each query,
- * traverses the local BVH, accepts at leaves with per-particle r_ij vs the
- * caller-specified predicate (ONEWAY or SYMMETRIC), marks matched pool
- * indices in match_bitmask. */
-/* Compute hmax_eff over the supply types only. Avoids the scalar-hmax
- * contamination where a particle of a type the caller didn't ask for poisons
- * the opener. Inlined; on a hot path. */
-static inline double gx_node_hmax_supply(const tile_bvh_node_t *node, unsigned int supply_mask)
-{
-    double m = 0;
-    for(int t = 0; t < TILE_NUM_PTYPES; t++) {
-        if((supply_mask & (1u << t)) == 0u) continue;
-        if(node->hmax_by_type[t] > m) m = node->hmax_by_type[t];
-    }
-    return m;
-}
-
-static void gx_walk_local_bvh(const float *compact_xyzh,
-                              const sfc_tile_t *tiles, int ntiles,
-                              const int *pool, int num_pool,
-                              const int *pool_types, /* [num_pool] — P[].Type per pool slot, for leaf supply-mask filter */
-                              unsigned int supply_mask,
-                              const tile_bvh_node_t *bvh, int bvh_root,
-                              const double pos_q[3], double h_q, int search_mode,
-                              char *match_bitmask /* size num_pool */,
-                              long *n_exact_hits /* optional (NULL in production): count EXACT matches
-                                                  * this call would produce, computing r2 even for
-                                                  * already-set slots so the per-query count is
-                                                  * unbiased by the dedup skip (over-route diagnostic) */)
-{
-    (void)ntiles;
-    int stack[TILE_BVH_STACK_SIZE];
-    int sp = 0;
-    stack[sp++] = bvh_root;
-    while(sp > 0) {
-        int node_idx = stack[--sp];
-        const tile_bvh_node_t *node = &bvh[node_idx];
-        /* OPENER criterion. ONEWAY: r_ij<h_q so search_r is just h_q (subtree
-         * h's irrelevant). SYMMETRIC: r_ij<max(h_q,h_j); search_r = max(h_q,
-         * subtree-max-h-of-supply-types). Per-type hmax filter avoids node
-         * hmax being dominated by a type the caller didn't ask for. */
-        double node_hmax_eff = gx_node_hmax_supply(node, supply_mask);
-        double search_r = (search_mode == NGB_SEARCH_ONEWAY)
-                            ? h_q
-                            : ((h_q > node_hmax_eff) ? h_q : node_hmax_eff);
-        if(search_r <= 0) continue;
-        double search_r2 = search_r * search_r;
-        if(!gx_bbox_overlaps_sphere(node->lo, node->hi, pos_q, search_r, search_r2)) continue;
-        if(node->left < 0) {
-            /* Leaf: per-particle accept against EXACT predicate. */
-            int tile_idx = -(node->left + 1);
-            const sfc_tile_t *tile = &tiles[tile_idx];
-            for(int s = 0; s < tile->count; s++) {
-                int pool_pos = tile->first + s;
-                if(pool_pos < 0 || pool_pos >= num_pool) continue;
-                int already = match_bitmask[pool_pos];
-                if(already && !n_exact_hits) continue;   /* already matched: skip unless the caller wants unbiased hit counts */
-                /* Supply-mask filter at leaf: skip particles of a type the
-                 * caller didn't ask for (no-op when tree was built with the
-                 * same mask, but required when tree is shared across callers). */
-                if(pool_types) {
-                    int pt = pool_types[pool_pos];
-                    if(pt < 0 || pt >= TILE_NUM_PTYPES) continue;
-                    if((supply_mask & (1u << (unsigned)pt)) == 0u) continue;
-                }
-                /* Geometric accept is the shared SSOT predicate; supply-mask
-                 * filter + dedup bookkeeping stay caller-side (above/here).
-                 * BOTH position AND reach are DOUBLE: P[j].Pos (float absolute
-                 * coordinates are invalid for GIZMO's dynamic range) and the double
-                 * gx_policy_scaled_h reach (the node/tile hmax the opener prunes with
-                 * is built from this same double reach, so the opener conservatively
-                 * dominates the leaf — a float leaf h would let the opener under-prune
-                 * boundary pairs).  Recompute here for the host path; the production
-                 * GPU path needs a double h cache to avoid the per-candidate recompute.
-                 * The pool walked here is always g_glt_cache's, so its build-time
-                 * policy/scale/safety reproduce the cached double reach exactly. */
-                int j_neighbor = pool[pool_pos];
-                /* The pool is mass-filtered when it is built, but this pool is
-                 * cached across calls and an entry outlives a Mass->0 marking
-                 * until rearrange_particle_sequence() compacts it away.  Zero mass
-                 * is the code's marker for an eliminated element, which must never
-                 * be offered as a ghost source, so re-check it here instead of
-                 * trusting build time.  Ahead of the reach recompute so a dead
-                 * slot costs one compare. */
-                if(P[j_neighbor].Mass <= 0) continue;
-                double hj_dbl = gx_policy_scaled_h(j_neighbor, g_glt_cache.radius_policy_when_built,
-                                                   g_glt_cache.j_radius_scale_when_built,
-                                                   g_glt_cache.safety_factor_when_built);
-                if(gx_pair_accept_wrap_and_test(pos_q[0] - (double)P[j_neighbor].Pos[0],
-                                                pos_q[1] - (double)P[j_neighbor].Pos[1],
-                                                pos_q[2] - (double)P[j_neighbor].Pos[2],
-                                                h_q, hj_dbl, search_mode)) {
-                    if(n_exact_hits) (*n_exact_hits)++;
-                    if(!already) match_bitmask[pool_pos] = 1;
-                }
-            }
-        } else {
-            if(sp + 2 > TILE_BVH_STACK_SIZE) break;  /* defensive — shouldn't happen */
-            stack[sp++] = node->left;
-            stack[sp++] = node->right;
-        }
-    }
-}
-
-
-
-/* Broadcast discovery walk. Walks every remote rank's
- * queries (from the Allgatherv'd all_queries) against the pre-built local supply
- * snapshot and returns the per-peer match bitmask matched[t*num_pool+p] that the
- * shared pack/install steps consume.  Pure local walk over already-exchanged
- * queries -- no routing, no collectives.  CALLER OWNS the returned buffer (free
- * it).  The walk-export producer returns the identical layout, so the install
- * path stays shared between the two. */
-static char *compute_matched_broadcast(
-    const struct gx_query_t *all_queries, const int *q_disps, const int *all_q_counts,
-    const float *h_compact_xyzh, const sfc_tile_t *h_tiles, int ntiles,
-    const int *h_pool, int num_pool, const int *h_pool_types, unsigned int supply_mask,
-    const tile_bvh_node_t *h_bvh, int bvh_root, int search_mode)
-{
-    /* Per-peer match bitmask over pool indices (dedup multiple queries → one ghost). */
-    char *matched = (char *) calloc((size_t)NTask * (size_t)(num_pool > 0 ? num_pool : 1), sizeof(char));
-    for(int t = 0; t < NTask; t++) {
-        if(t == ThisTask) continue;
-        int q_start = q_disps[t];
-        int q_count = all_q_counts[t];
-        char *match_for_t = matched + (size_t)t * (size_t)num_pool;
-        for(int qi = 0; qi < q_count; qi++) {
-            const struct gx_query_t *q = &all_queries[q_start + qi];
-            /* q->h already includes safety_factor (set at query-build time).
-             * compact_xyzh[*4+3] also includes safety_factor. So leaf r² check
-             * uses inflated radii on both sides of max(h_q, h_j). */
-            gx_walk_local_bvh(h_compact_xyzh, h_tiles, ntiles, h_pool, num_pool,
-                              h_pool_types, supply_mask,
-                              h_bvh, bvh_root,
-                              q->pos, q->h, search_mode,
-                              match_for_t, NULL);
-        }
-    }
-    return matched;
-}
-
-/* Lazy, idempotent collective broadcast of the local query lists to all ranks
- * (the legacy Step-2 Allgather/Allgatherv).  Safe to call multiple times: no-op
- * once *available.  MUST be called collectively (all ranks together).  Fills the
- * three malloc'd arrays (caller frees) + total_queries.  Enables the late
- * fallback: if routed discovery fails AFTER Step 2 was skipped, all ranks return
- * to the same point and run this collectively before the broadcast walk. */
-static void ensure_broadcast_queries(int *available,
-                                     const struct gx_query_t *local_queries, int n_local_queries,
-                                     int **all_q_counts_io, int **q_disps_io,
-                                     struct gx_query_t **all_queries_io, int *total_queries_io)
-{
-    if(*available) return;
-    int *all_q_counts = (int *) malloc(NTask * sizeof(int));
-    MPI_Allgather(&n_local_queries, 1, MPI_INT, all_q_counts, 1, MPI_INT, MPI_COMM_WORLD);
-    int *q_disps = (int *) malloc(NTask * sizeof(int));
-    int total_queries = 0;
-    for(int t = 0; t < NTask; t++) { q_disps[t] = total_queries; total_queries += all_q_counts[t]; }
-    struct gx_query_t *all_queries = (struct gx_query_t *)
-        malloc((size_t)(total_queries > 0 ? total_queries : 1) * sizeof(struct gx_query_t));
-    int *q_byte_counts = (int *) malloc(NTask * sizeof(int));
-    int *q_byte_disps  = (int *) malloc(NTask * sizeof(int));
-    for(int t = 0; t < NTask; t++) {
-        q_byte_counts[t] = all_q_counts[t] * (int)sizeof(struct gx_query_t);
-        q_byte_disps[t]  = q_disps[t]      * (int)sizeof(struct gx_query_t);
-    }
-    MPI_Allgatherv(local_queries, n_local_queries * (int)sizeof(struct gx_query_t), MPI_BYTE,
-                   all_queries, q_byte_counts, q_byte_disps, MPI_BYTE, MPI_COMM_WORLD);
-    free(q_byte_counts); free(q_byte_disps);
-    *all_q_counts_io = all_q_counts; *q_disps_io = q_disps;
-    *all_queries_io = all_queries;   *total_queries_io = total_queries;
-    *available = 1;
-}
-
 /* Walk-export routed producer — the discovery path for every spec that passes
  * gx_walk_export_eligible().  Sender: per local query mode_b_walk_and_export -> per-peer
  * NodeList -> fixed-size envelopes -> Alltoallv.  Receiver: mode_b_walk_from_start_nodes
  * (resume from the exported NodeList) -> gx_pair_accept_wrap_and_test (the ghost-exchange SSOT predicate)
- * -> matched[t*num_pool+p] bitmap, the same layout the shared Steps 4-6 install consume.
+ * -> the send set (which local pool slots go to which peer), which Steps 4-6 install from.
  * MODE-GENERIC (search_mode is passed through): this is the install target for both search
  * modes, so ONEWAY and SYMMETRIC discover on ONE substrate rather than two.
  *
  * COLLECTIVE-SAFE (C MPI buffers): every C allocation preceding a collective — the index
- * arrays before the Alltoall, the envelope buffers before the Alltoallv, the matched bitmap
+ * arrays before the Alltoall, the envelope buffers before the Alltoallv, the send set's growth
  * — is Allreduce-checked, so a NULL on ANY rank makes ALL ranks return the same status and
  * ranks never diverge across a collective.  NOT covered: the C++ containers
  * (ModeBExportSink, the per-peer envelope vectors) throw std::bad_alloc rank-locally rather
  * than returning NULL, so an allocation failure there aborts that rank instead of returning
- * a uniform status.  Returns a caller-owned matched bitmap on GX_WALK_EXPORT_OK, else NULL.
+ * a uniform status.  On GX_WALK_EXPORT_OK the send set is finished and holds the result; on
+ * any other status it holds nothing and its marker is clear.
  *
  * THREADING (host): the sender-query loop and the received-envelope walk are both
  * `omp parallel for` — per-thread export sink and per-thread send buffers on the sender,
  * pre-sized per-envelope candidate slots on the receiver, so each thread writes only its own
  * index.  The walker's lazy node drift is the one shared mutation and is serialized under
- * critical(_modebdrift_).  Merge, accept and bitmap set run serially afterwards, which keeps
+ * critical(_modebdrift_).  The candidates' drift is threaded over distinct particles
+ * (gx_send_set_accept_rows); merge, accept and send-set emission run serially, which keeps
  * the resulting SET order-independent and therefore deterministic across thread counts.
  *
  * MEMORY SHAPE: the threaded receiver materializes one candidate list per received envelope
  * before the serial accept pass.  That is bounded by the exported envelope volume, which is
  * measured sparse; a pathologically clustered geometry with very large tot_r would grow it,
  * so it is a known scaling watch-point rather than a fixed bound. */
-enum { GX_WALK_EXPORT_OK = 0, GX_WALK_EXPORT_UNAVAILABLE = 1, GX_WALK_EXPORT_ALLOC_FAIL = 2 };
+/* RECEIVER_FAIL: some rank's receiver could not build its send set -- it could not
+ * grow, or it met a state that has already requested its own stop, printed by the
+ * rank that met it. */
+enum { GX_WALK_EXPORT_OK = 0, GX_WALK_EXPORT_UNAVAILABLE = 1, GX_WALK_EXPORT_ALLOC_FAIL = 2,
+       GX_WALK_EXPORT_RECEIVER_FAIL = 3 };
 struct gx_walk_export_result {
-    int status;   /* GX_WALK_EXPORT_OK / _UNAVAILABLE / _ALLOC_FAIL, uniform across ranks */
+    int status;   /* a GX_WALK_EXPORT_* value, uniform across ranks */
 };
 
-static char *compute_matched_walk_export(
+static void gx_walk_export_discover(
     const struct ghost_exchange_spec_t *spec,
     const struct gx_query_t *local_queries, int n_local_queries,
     int num_pool, unsigned int supply_mask, int search_mode,
+    struct ghost_send_set *send_set,
     struct gx_walk_export_result *res)
 {
     if(res) memset(res, 0, sizeof(*res));
@@ -1896,7 +967,7 @@ static char *compute_matched_walk_export(
     int ok_local = (All.TreeNodeIndexBase > 0 && Nodes != NULL && Nextnode != NULL) ? 1 : 0;
     int ok_all = 0;
     MPI_Allreduce(&ok_local, &ok_all, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
-    if(!ok_all) { if(res) res->status = GX_WALK_EXPORT_UNAVAILABLE; return NULL; }
+    if(!ok_all) { if(res) res->status = GX_WALK_EXPORT_UNAVAILABLE; return; }
 
     /* (b) SENDER: build per-peer envelope lists (export is a byproduct of the walk).
      * THREADED, following the same shape the runner uses: the topleaf map is built once
@@ -1966,11 +1037,11 @@ static char *compute_matched_walk_export(
         int a_ok_local = 0, a_ok_all = 0;
         MPI_Allreduce(&a_ok_local, &a_ok_all, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
         free(sc); free(sd); free(rc); free(rd);
-        if(res) res->status = GX_WALK_EXPORT_ALLOC_FAIL; return NULL;
+        if(res) res->status = GX_WALK_EXPORT_ALLOC_FAIL; return;
     } else {
         int a_ok_local = 1, a_ok_all = 0;
         MPI_Allreduce(&a_ok_local, &a_ok_all, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
-        if(!a_ok_all) { free(sc); free(sd); free(rc); free(rd); if(res) res->status = GX_WALK_EXPORT_ALLOC_FAIL; return NULL; }
+        if(!a_ok_all) { free(sc); free(sd); free(rc); free(rd); if(res) res->status = GX_WALK_EXPORT_ALLOC_FAIL; return; }
     }
     /* Per-peer counts are bounded by this rank's query set, but the prefix sums and
      * totals are not: the typed Alltoallv below consumes int displacements, so a value
@@ -2005,7 +1076,7 @@ static char *compute_matched_walk_export(
             }
             free(sc); free(sd); free(rc); free(rd);
             if(res) res->status = GX_WALK_EXPORT_UNAVAILABLE;
-            return NULL;
+            return;
         }
     }
     struct gx_export_envelope_t *sendbuf = (struct gx_export_envelope_t *) malloc((size_t)(tot_s > 0 ? tot_s : 1) * sizeof(struct gx_export_envelope_t));
@@ -2014,50 +1085,51 @@ static char *compute_matched_walk_export(
     int buf_ok_local = (sendbuf && recv) ? 1 : 0, buf_ok_all = 0;
     MPI_Allreduce(&buf_ok_local, &buf_ok_all, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
     if(!buf_ok_all) { free(sendbuf); free(recv); free(sc); free(sd); free(rc); free(rd);
-                      if(res) res->status = GX_WALK_EXPORT_ALLOC_FAIL; return NULL; }
+                      if(res) res->status = GX_WALK_EXPORT_ALLOC_FAIL; return; }
     for(int t = 0; t < NTask; t++)
         if(sc[t] > 0) memcpy(sendbuf + sd[t], send[t].data(), (size_t)sc[t] * sizeof(struct gx_export_envelope_t));
     gizmo_mpi_alltoallv_typed(sendbuf, sc, sd, recv, rc, rd,
                               sizeof(struct gx_export_envelope_t), MPI_COMM_WORLD);
     free(sendbuf); free(sc); free(sd);
 
-    /* (d) matched bitmap — collective before the RECEIVER walk (the caller reduces over the
-     * compare, so a NULL here on one rank would diverge the caller's Allreduce). */
-    char *matched_walk_export = (char *) calloc((size_t)NTask * (size_t)(num_pool > 0 ? num_pool : 1), 1);
-    int m_ok_local = (matched_walk_export != NULL) ? 1 : 0, m_ok_all = 0;
-    MPI_Allreduce(&m_ok_local, &m_ok_all, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
-    if(!m_ok_all) { free(matched_walk_export); free(recv); free(rc); free(rd);
-                    if(res) res->status = GX_WALK_EXPORT_ALLOC_FAIL; return NULL; }
-
-    /* (e) RECEIVER: bounded resume-walk from the exported NodeList -> SSOT accept -> bitmap.
-     * Two interchangeable backends produce the SAME bitmap; the set is
-     * order-independent (a bit is set or it is not), so which one ran is not
-     * observable downstream.
+    /* (d) RECEIVER: bounded resume-walk from the exported NodeList -> SSOT accept -> send set.
+     * Two interchangeable backends feed the same send set, which keeps each (peer, slot)
+     * once and reads out in send order, so which one ran is not observable downstream.
      *
      * The device traversal is tried first and answers whenever the tree mirror
      * is current.  It declines rank-locally otherwise, and this window holds no
      * collectives, so a rank that declines simply does the work itself and no
      * other rank needs to agree.  Declining is for an unusable device tree state
      * or an allocation failure -- never for a disagreement, which would be a bug
-     * to fix rather than to route around. */
+     * to fix rather than to route around.  A decline happens before the device has
+     * emitted anything; a failure after it has emitted is not a decline, because the
+     * host walk cannot run over a half-filled set, so it fails this rank instead. */
+    int receiver_ok = (gx_send_set_begin(send_set, g_glt_cache.mark, num_pool,
+                                         g_glt_cache.j_to_pool, g_glt_cache.NumPart_when_built) == 0);
     int receiver_done_on_device = 0;
-    if(tot_r > 0) {
+    if(receiver_ok && tot_r > 0) {
         std::vector<int> envelope_peer((size_t)tot_r, -1);
         for(int t = 0; t < NTask; t++) {
             for(int r = 0; r < rc[t]; r++) {envelope_peer[(size_t)rd[t] + r] = t;}
         }
-        receiver_done_on_device =
-            (gx_device_receiver_walk(recv, tot_r, envelope_peer.data(),
-                                     supply_mask, search_mode,
-                                     spec->radius_policy, walker_j_reach_scale,
-                                     g_glt_cache.j_to_pool, g_glt_cache.NumPart_when_built,
-                                     num_pool, matched_walk_export) == 0);
+        const int device_outcome =
+            gx_device_receiver_walk(recv, tot_r, envelope_peer.data(),
+                                    supply_mask, search_mode,
+                                    spec->radius_policy, spec->j_radius_scale, spec->safety_factor,
+                                    g_glt_cache.j_to_pool, g_glt_cache.NumPart_when_built,
+                                    num_pool, send_set);
+        if(device_outcome == GX_RECEIVER_COMPLETED) {
+            receiver_done_on_device = 1;
+        } else if(device_outcome != GX_RECEIVER_DECLINED || send_set->used != 0 || send_set->peer >= 0) {
+            receiver_ok = 0;
+        }
     }
     /* Host backend.  THREADED: the WALK (dominant cost) runs per received envelope into a pre-sized
      * per-envelope cand slot — each thread writes ONLY its own index (no shared write), walker
-     * race-safe.  The ACCEPT + bitmap set run SERIALLY afterward (cheap), which keeps the
-     * matched_walk_export bitmap race-free. */
-    if(!receiver_done_on_device) {
+     * race-safe.  The walk records what may be a neighbour once drifted; the shared accept
+     * then drifts those candidates (threaded) and accepts and emits SERIALLY (cheap), peer by
+     * peer in ascending order, which is the order the send set requires. */
+    if(receiver_ok && !receiver_done_on_device) {
         std::vector<std::vector<int>> per_recv_cands((size_t)(tot_r > 0 ? tot_r : 0));
 #ifdef _OPENMP
 #pragma omp parallel for schedule(dynamic, 16)
@@ -2070,41 +1142,52 @@ static char *compute_matched_walk_export(
                                          spec->radius_policy, e->nodes, e->n_nodes,
                                          cvk, walker_j_reach_scale);
         }
-        for(int t = 0; t < NTask; t++) {
-            if(t == ThisTask) continue;
-            char *mf = matched_walk_export + (size_t)t * num_pool;
-            for(int r = 0; r < rc[t]; r++) {
-                const long k = (long)rd[t] + r;
-                const struct gx_export_envelope_t *e = &recv[k];
-                const std::vector<int> &cvk = per_recv_cands[k];
-                for(size_t c = 0; c < cvk.size(); c++) {
-                    int j = cvk[c];
-                    if(j < 0 || j >= g_glt_cache.NumPart_when_built) continue;
-                    int pp = g_glt_cache.j_to_pool ? g_glt_cache.j_to_pool[j] : -1;
-                    if(pp < 0 || pp >= num_pool) continue;
-                    /* Reach comes from THIS caller's spec, not from whatever policy
-                     * the cached pool happened to be built under.  The sender walk
-                     * above already uses the spec, so taking it from the cache here
-                     * would let a caller inherit another caller's j-side reach now
-                     * that pool membership is reused across differing radius
-                     * policies.  Only the tile/BVH/compact geometry may use the
-                     * build-time policy, because its leaf h was baked with it. */
-                    double hj_dbl = gx_policy_scaled_h(j, spec->radius_policy,
-                                                       spec->j_radius_scale,
-                                                       spec->safety_factor);
-                    if(gx_pair_accept_wrap_and_test(e->pos[0] - (double)P[j].Pos[0],
-                                                    e->pos[1] - (double)P[j].Pos[1],
-                                                    e->pos[2] - (double)P[j].Pos[2],
-                                                    e->h, hj_dbl, search_mode)) {
-                        mf[pp] = 1;   /* idempotent: set semantics, duplicates are a no-op */
-                    }
+        /* One row per envelope, pointing into its own candidate list, in ascending
+         * peer order.  The shared accept drifts the distinct candidates of every row
+         * together, then accepts at current positions. */
+        std::vector<struct gx_candidate_row> rows;
+        try {rows.reserve((size_t)tot_r);} catch(const std::bad_alloc &) {receiver_ok = 0;}
+        if(receiver_ok) {
+            for(int t = 0; t < NTask; t++) {
+                if(t == ThisTask) continue;
+                for(int r = 0; r < rc[t]; r++) {
+                    const long k = (long)rd[t] + r;
+                    std::vector<int> &cvk = per_recv_cands[k];
+                    struct gx_candidate_row row = {&recv[k], t, cvk.data(), (int)cvk.size()};
+                    rows.push_back(row);
                 }
             }
+            if(gx_send_set_accept_rows(send_set, rows.data(), (long)rows.size(), search_mode,
+                                       spec->radius_policy, spec->j_radius_scale, spec->safety_factor) != 0) {receiver_ok = 0;}
         }
     }
     free(recv); free(rc); free(rd);
+    if(receiver_ok) {
+        gx_send_set_finish_peer(send_set);
+        /* Every peer is finished, so every mark must be cleared again; one left set
+         * would silently drop that slot for some peer on a later call. */
+        if(send_set->marks_outstanding != 0) {
+            printf("ERROR: ghost send set on task %d finished with %ld marks still set\n",
+                   ThisTask, send_set->marks_outstanding);
+            fflush(stdout);
+            gizmo_request_controlled_stop(7735, "ghost_exchange: send set finished with its marker not clear",
+                                          __FILE__, __LINE__, __FUNCTION__);
+            receiver_ok = 0;
+        }
+    }
+    if(!receiver_ok) {gx_send_set_abandon(send_set);}
+
+    /* The send set grows as it is filled, so whether it could be built is known only
+     * now.  Agree it here, where every rank arrives whichever backend it used, before
+     * the count and payload exchanges that follow. */
+    int receiver_ok_all = 0;
+    MPI_Allreduce(&receiver_ok, &receiver_ok_all, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    if(!receiver_ok_all) {
+        if(receiver_ok) {gx_send_set_abandon(send_set);}
+        if(res) res->status = GX_WALK_EXPORT_RECEIVER_FAIL;
+        return;
+    }
     if(res) res->status = GX_WALK_EXPORT_OK;
-    return matched_walk_export;
 }
 
 /* Non-finite test that survives fast-math (isnan/isfinite may fold to false under
@@ -2202,19 +1285,7 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
     }
     gizmo_exit_bad_stop_if_requested("ghost_exchange:query_finite");
 
-    /* === Step 2: LAZY query distribution === The broadcast Allgather/
-     * Allgatherv now runs on demand via ensure_broadcast_queries(): SKIPPED in
-     * routed-production mode, run up-front for the oracle / when routed is
-     * unavailable, and as a collective LATE fallback if routed fails after the
-     * skip.  Declarations only here; the gather (if any) happens after the
-     * supply-snapshot build below, alongside the routed-vs-broadcast selection. */
-    int   *all_q_counts = NULL;
-    int   *q_disps      = NULL;
-    struct gx_query_t *all_queries = NULL;
-    int    total_queries = 0;
-    int    bcast_queries_available = 0;
-
-    /* === Step 3: per-rank, walk local BVH against each remote rank's queries ===
+        /* === Step 3: per-rank, walk local BVH against each remote rank's queries ===
      *
      * Build a host-side SFC tile + BVH index over the supply-mask-filtered pool.
      * For each remote query, walk the BVH (O(log N + matches) per query, vs the
@@ -2229,151 +1300,33 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
      *
      * Bucket 3 (SIDX overlay): the local tree (tiles, pool, bvh,
      * compact_xyzh, pool_types) is cached across calls within a step.
-     * Cache invalidated via ghost_exchange_local_tree_invalidate_*()
-     * hooks at drift / domain_decomp boundaries (run.cc). Within a step
-     * the pool is stable, so 2nd..Nth calls skip this whole stanza. */
+     * Membership is keyed on the supply-identity epoch, which every event that
+     * changes who is in the pool already bumps, so within a step the pool is
+     * stable and 2nd..Nth calls skip this whole stanza. */
 
-    sfc_tile_t *h_tiles = NULL;
     int *h_pool = NULL;
     int num_pool = 0;
-    int ntiles = 0;
-    tile_bvh_node_t *h_bvh = NULL;
-    int bvh_nnodes = 0;
-    int bvh_root = 0;
-    float *h_compact_xyzh = NULL;
-    int *h_pool_types = NULL;
     int from_cache = 0;
     /* All particle types are eligible as ghost sources. */
     unsigned int desired_pool_mask = GHOST_TYPE_ALL;
-    /* Tile/BVH/compact geometry is built ONLY for a call that actually walks it.
-     * The walk-export producer discovers through the tree and reads nothing
-     * position-dependent from this cache (it needs pool membership to index the
-     * matched set, and takes its supply band from Extnodes), so when it is the
-     * authority the geometry would be built and never read.  Structural, keyed on
-     * the same predicate as producer selection — no caller names. */
-    /* ONE predicate drives BOTH what the cache holds and which producers may run
-     * below: geometry is skipped exactly when no consumer of it can execute.
-     * Keep this as the single definition — a second, weaker copy of the test
-     * here would let a run that does reach the broadcast walk walk NULL tiles. */
-    const int walk_export_only    = gx_walk_export_eligible(spec);
-    const unsigned int wanted_caps = GX_POOL_IDENTITY | (walk_export_only ? 0u : GX_POOL_GEOMETRY);
-    /* TWO validities, because the cache holds two payloads with different
-     * dependencies.  IDENTITY (pool, j_to_pool, num_pool) is membership and order:
-     * it depends on {NumPart, type mask, epoch} and on nothing positional, so it
-     * survives drift and survives a caller arriving with a different radius policy.
-     * GEOMETRY (tiles, bvh, compact_xyzh, pool_types) additionally depends on
-     * {safety, radius_policy, j_radius_scale} and on live positions/h, so it is
-     * rebuilt on a policy change and REFIT (not rebuilt) on drift.
-     *
-     * Keeping these separate is the point: rebuilding the identity map costs a
-     * full pass over the local particles, and callers within a step differ in
-     * radius policy far more often than the particle set changes.
-     *
-     * Mask is compared for EXACT equality, not coverage. Reuse across a narrowed
+    /* Mask is compared for EXACT equality, not coverage. Reuse across a narrowed
      * mask is unproven here — a narrower request would also make in-place Type
      * changes membership-relevant, which the epoch does not track — so anything
      * other than the all-types pool falls through to a full rebuild. */
     const int mask_reusable = (desired_pool_mask == GHOST_TYPE_ALL);
     const int identity_valid = (g_glt_cache.valid
-                       && (g_glt_cache.caps & GX_POOL_IDENTITY)
-                       && g_glt_cache.pool && g_glt_cache.j_to_pool
+                       && g_glt_cache.pool && g_glt_cache.j_to_pool && g_glt_cache.mark
                        && mask_reusable
                        && g_glt_cache.eligible_type_mask_when_built == desired_pool_mask
                        && g_glt_cache.NumPart_when_built == NumPart
                        && g_glt_cache.identity_epoch_when_built == g_supply_identity_epoch);
-    const int geometry_valid = (identity_valid
-                       && (g_glt_cache.caps & GX_POOL_GEOMETRY)
-                       && g_glt_cache.safety_factor_when_built == safety_factor
-                       && g_glt_cache.radius_policy_when_built == spec->radius_policy
-                       && g_glt_cache.j_radius_scale_when_built == spec->j_radius_scale);
-    const int want_geometry = (wanted_caps & GX_POOL_GEOMETRY) ? 1 : 0;
-    int cache_match = identity_valid && (!want_geometry || geometry_valid);
-    int geometry_rebuilt = 0;
+    int cache_match = identity_valid;
 
-    /* Identity still good, geometry stale or absent: rebuild geometry ONLY, over
-     * the pool we already hold.  This is the case a single fused key could not
-     * express, and it is the common one — successive callers in a step share the
-     * particle set and differ only in radius policy. */
-    if(identity_valid && want_geometry && !geometry_valid) {
-        glt_cache_free_geometry_();
-        sfc_tile_t *g_tiles = NULL;
-        int g_ntiles = build_sfc_tiles_from_pool(P, g_glt_cache.pool, g_glt_cache.num_pool,
-                                                 TILE_TARGET_SIZE, &g_tiles,
-                                                 spec->radius_policy,
-                                                 spec->j_radius_scale * safety_factor);
-        tile_bvh_node_t *g_bvh = NULL;
-        int g_bvh_nnodes = build_tile_bvh(g_tiles, g_ntiles, &g_bvh);
-        size_t gz_tiles   = (size_t)(g_ntiles > 0 ? g_ntiles : 1) * sizeof(sfc_tile_t);
-        size_t gz_bvh     = (size_t)(g_bvh_nnodes > 0 ? g_bvh_nnodes : 1) * sizeof(tile_bvh_node_t);
-        size_t gz_compact = (size_t)(g_glt_cache.num_pool > 0 ? g_glt_cache.num_pool : 1) * 4 * sizeof(float);
-        size_t gz_types   = (size_t)(g_glt_cache.num_pool > 0 ? g_glt_cache.num_pool : 1) * sizeof(int);
-        sfc_tile_t      *gc_tiles   = (sfc_tile_t *)      malloc(gz_tiles);
-        tile_bvh_node_t *gc_bvh     = (tile_bvh_node_t *) malloc(gz_bvh);
-        float           *gc_compact = (float *)           malloc(gz_compact);
-        int             *gc_types   = (int *)             malloc(gz_types);
-        if(!gc_tiles || !gc_bvh || !gc_compact || !gc_types) {
-            /* Same fail-closed shape as the full rebuild below: this producer is the
-             * only supplier, so drop the whole entry and let the full path re-decide
-             * rather than publishing a half-built one. */
-            free(gc_tiles); free(gc_bvh); free(gc_compact); free(gc_types);
-            if(g_bvh)   myfree(g_bvh);
-            if(g_tiles) myfree(g_tiles);
-            glt_cache_free();
-        } else {
-            if(g_ntiles > 0)      memcpy(gc_tiles, g_tiles, (size_t)g_ntiles * sizeof(sfc_tile_t));
-            if(g_bvh_nnodes > 0)  memcpy(gc_bvh,   g_bvh,   (size_t)g_bvh_nnodes * sizeof(tile_bvh_node_t));
-            for(int p = 0; p < g_glt_cache.num_pool; p++) {
-                int j = g_glt_cache.pool[p];
-                gc_compact[p*4+0] = (float)P[j].Pos[0];
-                gc_compact[p*4+1] = (float)P[j].Pos[1];
-                gc_compact[p*4+2] = (float)P[j].Pos[2];
-                gc_compact[p*4+3] = (float)gx_policy_scaled_h(j, spec->radius_policy,
-                                                              spec->j_radius_scale, safety_factor);
-                gc_types[p] = (int)P[j].Type;
-            }
-            if(g_bvh)   myfree(g_bvh);
-            if(g_tiles) myfree(g_tiles);
-            g_glt_cache.tiles        = gc_tiles;
-            g_glt_cache.bvh          = gc_bvh;
-            g_glt_cache.compact_xyzh = gc_compact;
-            g_glt_cache.pool_types   = gc_types;
-            g_glt_cache.ntiles       = g_ntiles;
-            g_glt_cache.bvh_nnodes   = g_bvh_nnodes;
-            g_glt_cache.bvh_root     = g_bvh_nnodes - 1;
-            g_glt_cache.safety_factor_when_built  = safety_factor;
-            g_glt_cache.radius_policy_when_built  = spec->radius_policy;
-            g_glt_cache.j_radius_scale_when_built = spec->j_radius_scale;
-            g_glt_cache.Ti_when_built = All.Ti_Current;
-            g_glt_cache.needs_refit = 0;
-            g_glt_cache.caps |= GX_POOL_GEOMETRY;
-            /* Geometry was just seeded from current P[]; marks predating it are
-             * obsolete, exactly as after a full build. */
-            g_glt_dirty_clear_();
-            cache_match = 1;
-            geometry_rebuilt = 1;
-        }
-    }
     if(cache_match) {
-        h_tiles        = g_glt_cache.tiles;
         h_pool         = g_glt_cache.pool;
         num_pool       = g_glt_cache.num_pool;
-        ntiles         = g_glt_cache.ntiles;
-        h_bvh          = g_glt_cache.bvh;
-        bvh_nnodes     = g_glt_cache.bvh_nnodes;
-        bvh_root       = g_glt_cache.bvh_root;
-        h_compact_xyzh = g_glt_cache.compact_xyzh;
-        h_pool_types   = g_glt_cache.pool_types;
         from_cache = 1;
-        /* A geometry-only rebuild reused the pool but did real build work, so it is
-         * not a hit. Counting it as one would overstate the cache and hide the very
-         * cost this split exists to measure. */
-        if(geometry_rebuilt) g_glt_cache_misses++; else g_glt_cache_hits++;
-        /* Refit refreshes position-dependent geometry only; an identity-only
-         * entry has none and its membership does not move with the particles. */
-        if((g_glt_cache.caps & GX_POOL_GEOMETRY)
-           && (g_glt_cache.needs_refit || g_glt_cache.Ti_when_built != All.Ti_Current)) {
-            glt_cache_refit_from_particles();
-        }
+        g_glt_cache_hits++;
     } else {
         /* RANK-LOCAL BRANCH — NO MPI CALLS IN HERE.  cache_match keys on rank-local
          * NumPart, so ranks enter this independently; any collective placed here
@@ -2386,49 +1339,21 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
         /* Free any stale entry before rebuild (cache key changed). */
         if(g_glt_cache.valid) glt_cache_free();
 
-        /* Fresh build via existing mymalloc path; we copy the result into
+        /* Fresh build via the existing mymalloc path; the result is copied into
          * malloc-backed cache buffers so it can outlive this function frame
          * without violating mymalloc LIFO ordering. */
-        sfc_tile_t *tmp_tiles = NULL;
         int *tmp_pool = NULL;
-        int tmp_num_pool = 0;
-        /* Tile bands and leaf compact h are computed from the IDENTICAL
-         * supply-side reach: nlr_particle_symmetric_radius(P[j], spec->radius_policy)
-         * * spec->j_radius_scale * safety_factor.  build_sfc_tiles bakes the
-         * scale into tile->hmax / tile->hmax_by_type[]; the loop below bakes it
-         * into c_compact[p*4+3] via gx_policy_scaled_h.  No leaf-vs-band scale
-         * gap, no BVH-prune-misses-pairs failure mode. */
-        int tmp_ntiles = 0;
-        tile_bvh_node_t *tmp_bvh = NULL;
-        int tmp_bvh_nnodes = 0;
-        if(wanted_caps & GX_POOL_GEOMETRY) {
-            tmp_ntiles = build_sfc_tiles(P, NumPart, (int)desired_pool_mask, TILE_TARGET_SIZE,
-                                         &tmp_tiles, &tmp_pool, &tmp_num_pool,
-                                         spec->radius_policy,
-                                         spec->j_radius_scale * safety_factor);
-            tmp_bvh_nnodes = build_tile_bvh(tmp_tiles, tmp_ntiles, &tmp_bvh);
-        } else {
-            /* Membership only — same selection, none of the position-dependent work. */
-            tmp_num_pool = build_sfc_supply_pool(P, NumPart, (int)desired_pool_mask, &tmp_pool);
-        }
-        int tmp_bvh_root = tmp_bvh_nnodes - 1;
+        int tmp_num_pool = build_sfc_supply_pool(P, NumPart, (int)desired_pool_mask, &tmp_pool);
 
         /* Allocate persistent cache buffers + copy. */
-        size_t sz_tiles   = (size_t)(tmp_ntiles > 0 ? tmp_ntiles : 1) * sizeof(sfc_tile_t);
-        size_t sz_pool    = (size_t)(tmp_num_pool > 0 ? tmp_num_pool : 1) * sizeof(int);
-        size_t sz_bvh     = (size_t)(tmp_bvh_nnodes > 0 ? tmp_bvh_nnodes : 1) * sizeof(tile_bvh_node_t);
-        size_t sz_compact = (size_t)(tmp_num_pool > 0 ? tmp_num_pool : 1) * 4 * sizeof(float);
-        size_t sz_types   = (size_t)(tmp_num_pool > 0 ? tmp_num_pool : 1) * sizeof(int);
-        const int with_geometry = (wanted_caps & GX_POOL_GEOMETRY) ? 1 : 0;
-        sfc_tile_t      *c_tiles   = with_geometry ? (sfc_tile_t *)      malloc(sz_tiles)   : NULL;
-        int             *c_pool    =                 (int *)             malloc(sz_pool);
-        tile_bvh_node_t *c_bvh     = with_geometry ? (tile_bvh_node_t *) malloc(sz_bvh)     : NULL;
-        float           *c_compact = with_geometry ? (float *)           malloc(sz_compact) : NULL;
-        int             *c_types   =                 (int *)             malloc(sz_types);
-        /* Reverse map j -> pool_pos (-1 if j is not in this build's pool). Sized
-         * to NumPart_when_built; bounds-checked at narrow-refit lookup time. */
+        size_t sz_pool = (size_t)(tmp_num_pool > 0 ? tmp_num_pool : 1) * sizeof(int);
+        int   *c_pool  = (int *) malloc(sz_pool);
+        /* Reverse map j -> pool_pos (-1 if j is not in this build's pool). */
         size_t sz_jtop = (size_t)(NumPart > 0 ? NumPart : 1) * sizeof(int);
-        int             *c_jtop    = (int *)             malloc(sz_jtop);
+        int   *c_jtop  = (int *) malloc(sz_jtop);
+        /* The send set's dedup marker, one byte per pool slot.  Zeroed here, once per
+         * pool, and kept zero between calls by the send set itself. */
+        unsigned char *c_mark = (unsigned char *) calloc((size_t)(tmp_num_pool > 0 ? tmp_num_pool : 1), 1);
         /* An allocation failure here would otherwise be a segfault: the buffers are
          * written unconditionally just below, and this producer is now the only
          * supplier, so there is nothing to fall back to.  The request is RANK-LOCAL
@@ -2436,207 +1361,85 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
          * rank-local NumPart), so a collective here would deadlock whenever ranks
          * disagree about rebuilding.  The matching drain runs just past the branch,
          * where every rank converges and before anything reads the pool. */
-        if(!c_pool || !c_types || !c_jtop
-           || (with_geometry && (!c_tiles || !c_bvh || !c_compact))) {
-            printf("ERROR: supply-cache allocation failed on task %d (num_pool=%d NumPart=%d geometry=%d)\n",
-                   ThisTask, tmp_num_pool, NumPart, with_geometry);
+        if(!c_pool || !c_jtop || !c_mark) {
+            printf("ERROR: supply-cache allocation failed on task %d (num_pool=%d NumPart=%d)\n",
+                   ThisTask, tmp_num_pool, NumPart);
             fflush(stdout);
-            free(c_tiles); free(c_pool); free(c_bvh); free(c_compact); free(c_types); free(c_jtop);
-            c_tiles = NULL; c_pool = NULL; c_bvh = NULL; c_compact = NULL; c_types = NULL; c_jtop = NULL;
-            if(tmp_bvh)   myfree(tmp_bvh);
-            if(tmp_tiles) myfree(tmp_tiles);
-            if(tmp_pool)  myfree(tmp_pool);
+            free(c_pool); free(c_jtop); free(c_mark);
+            c_pool = NULL; c_jtop = NULL; c_mark = NULL;
+            if(tmp_pool) myfree(tmp_pool);
             gizmo_request_controlled_stop(7724, "ghost_exchange: supply-cache allocation failed",
                                           __FILE__, __LINE__, __FUNCTION__);
             cache_alloc_failed = 1;
         }
         if(!cache_alloc_failed) {
         for(int j = 0; j < NumPart; j++) c_jtop[j] = -1;
-        if(tmp_ntiles > 0)     memcpy(c_tiles, tmp_tiles, (size_t)tmp_ntiles * sizeof(sfc_tile_t));
-        if(tmp_num_pool > 0)   memcpy(c_pool,  tmp_pool,  (size_t)tmp_num_pool * sizeof(int));
-        if(tmp_bvh_nnodes > 0) memcpy(c_bvh,   tmp_bvh,   (size_t)tmp_bvh_nnodes * sizeof(tile_bvh_node_t));
+        if(tmp_num_pool > 0) memcpy(c_pool, tmp_pool, (size_t)tmp_num_pool * sizeof(int));
         for(int p = 0; p < tmp_num_pool; p++) {
             int j = tmp_pool[p];
-            if(with_geometry) {
-                c_compact[p*4+0] = (float)P[j].Pos[0];
-                c_compact[p*4+1] = (float)P[j].Pos[1];
-                c_compact[p*4+2] = (float)P[j].Pos[2];
-                /* SSOT: leaf compact h uses the SAME formula as build_sfc_tiles'
-                 * per-particle aggregation above (= gx_policy_scaled_h).  Result:
-                 * leaf h_j == tile band band's contribution from this particle. */
-                c_compact[p*4+3] = (float)gx_policy_scaled_h(j, spec->radius_policy,
-                                                            spec->j_radius_scale,
-                                                            safety_factor);
-            }
-            c_types[p] = (int)P[j].Type;
             if(j >= 0 && j < NumPart) c_jtop[j] = p;
         }
 
-        /* Free mymalloc temps in LIFO order. */
-        if(tmp_bvh)   myfree(tmp_bvh);
-        if(tmp_tiles) myfree(tmp_tiles);
-        if(tmp_pool)  myfree(tmp_pool);
+        /* Free the mymalloc temp. */
+        if(tmp_pool) myfree(tmp_pool);
 
-        /* Install in cache. */
-        g_glt_cache.tiles = c_tiles;
-        g_glt_cache.pool  = c_pool;
-        g_glt_cache.bvh   = c_bvh;
-        g_glt_cache.compact_xyzh = c_compact;
-        g_glt_cache.pool_types   = c_types;
-        g_glt_cache.j_to_pool    = c_jtop;
-        g_glt_cache.ntiles    = tmp_ntiles;
-        g_glt_cache.num_pool  = tmp_num_pool;
-        g_glt_cache.bvh_nnodes = tmp_bvh_nnodes;
-        g_glt_cache.bvh_root  = tmp_bvh_root;
+        g_glt_cache.pool = c_pool;
+        g_glt_cache.j_to_pool = c_jtop;
+        g_glt_cache.mark = c_mark;
+        g_glt_cache.num_pool = tmp_num_pool;
         g_glt_cache.NumPart_when_built = NumPart;
         g_glt_cache.identity_epoch_when_built = g_supply_identity_epoch;
-        g_glt_cache.Ti_when_built = All.Ti_Current;
-        g_glt_cache.safety_factor_when_built = safety_factor;
-        g_glt_cache.radius_policy_when_built = spec->radius_policy;
-        g_glt_cache.j_radius_scale_when_built = spec->j_radius_scale;
-        /* Fresh build seeded compact_xyzh from current P[]; any pre-existing
-         * dirty marks are obsolete.  Next refresh decides full vs narrow from
-         * marks accumulated AFTER this point. */
-        g_glt_dirty_clear_();
         g_glt_cache.eligible_type_mask_when_built = desired_pool_mask;
-        g_glt_cache.needs_refit = 0;
-        g_glt_cache.caps = wanted_caps;
         g_glt_cache.valid = 1;
         }   /* end fill+install (skipped when the cache allocation failed) */
 
-        h_tiles = c_tiles; h_pool = c_pool; num_pool = tmp_num_pool;
-        ntiles = tmp_ntiles; h_bvh = c_bvh; bvh_nnodes = tmp_bvh_nnodes;
-        bvh_root = tmp_bvh_root;
-        h_compact_xyzh = c_compact; h_pool_types = c_types;
+        h_pool = c_pool; num_pool = tmp_num_pool;
     }
     /* Both branches converge here, so this poll is reached by every rank: it drains a
      * rank-local supply-cache allocation failure into an all-rank controlled stop
      * BEFORE anything below dereferences the pool. */
     gizmo_exit_bad_stop_if_requested("ghost_exchange:supply_cache_alloc");
-    (void)bvh_nnodes;
-
-    /* Periodic flags / box sizes for the BVH walker. */
 
 
-    /* Matched producer selection: for ONEWAY callers the routed top-leaf
-     * discovery installs when top-leaf geometry is collectively available;
-     * broadcast is the fail-closed path for any spec that is not routing-eligible.
-     * Broadcast query gather is LAZY (ensure_broadcast_queries) — skipped when
-     * routed installs. */
-    /* Routed set from the walk-export producer, built further below so it reads the same
-     * supply-cache snapshot as the rest of this call. */
-    char *matched_walk_export = NULL;
+    /* The routed walk-export producer (sender export + bounded receiver walk,
+     * collective-safe) fills the send set, reading the same g_glt_cache snapshot as
+     * the rest of this call.  Membership comes from the SSOT accept
+     * (gx_pair_accept_wrap_and_test), so the only way the set can differ from a full
+     * walk is routing COVERAGE, which the per-type node band establishes for every
+     * radius policy.
+     *
+     * It is the only producer.  If it could not build the set there is no substrate
+     * left that is known to be correct: the walks that once served as fallbacks read
+     * cached geometry which has been measured producing wrong densities where that
+     * geometry went stale, so reviving one would trade a visible failure for a silent
+     * one.  Stop instead.  The producer status is rank-uniform, so all ranks stop
+     * together.  The dominant failure mode is allocation under memory pressure; the
+     * recovery that fits it is a retry at reduced import padding inside this
+     * producer, which does not exist yet -- until it does, the honest outcome is this
+     * stop. */
+    struct ghost_send_set *send_set = &g_send_set;
     struct gx_walk_export_result walk_export_res;
-    memset(&walk_export_res, 0, sizeof(walk_export_res));
-
-    char *matched = NULL;
-    int   used_routed = 0;
-
-
-    /* walk_export_only (defined with the cache capabilities above) means: no consumer of the
-     * tile/BVH geometry runs on this call, so the broadcast walk is skipped and the
-     * geometry was never built.  On producer failure there is no geometry-based
-     * fallback left, which is why that case is a controlled stop rather than a
-     * silent switch to a walk whose inputs are absent.  Rank-uniform (spec
-     * constants), so ranks never split across the collectives below. */
-    if(!walk_export_only) {
-        /* Collective broadcast gather + walk.  (walk_export_only SKIPS this
-         * — that path installs at the producer below and its failure is caught by the controlled
-         * stop before Step 4, so matched is never NULL entering the count/pack loops.) */
-        ensure_broadcast_queries(&bcast_queries_available, local_queries, n_local_queries,
-                                 &all_q_counts, &q_disps, &all_queries, &total_queries);
-        matched = compute_matched_broadcast(all_queries, q_disps, all_q_counts,
-                                            h_compact_xyzh, h_tiles, ntiles,
-                                            h_pool, num_pool, h_pool_types, supply_mask,
-                                            h_bvh, bvh_root, search_mode);
-        /* Broadcast is the safety path — its alloc failing is terminal.  Drain
-         * COLLECTIVELY here, BEFORE Step 4 dereferences matched: a per-rank NULL
-         * must become an all-rank controlled stop, never a NULL walk/segfault. */
-        int bcast_fail_local = (matched == NULL) ? 1 : 0;
-        int bcast_fail_any   = 0;
-        MPI_Allreduce(&bcast_fail_local, &bcast_fail_any, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-        if(bcast_fail_any) {
-            if(bcast_fail_local) {
-                printf("ERROR: request-driven broadcast matched alloc failed on task %d.\n", ThisTask);
-                gizmo_request_controlled_stop(7705, "ghost_exchange (request-driven): broadcast matched alloc failed",
-                                              __FILE__, __LINE__, __FUNCTION__);
-            }
-            gizmo_exit_bad_stop_if_requested("ghost_exchange:broadcast_matched_alloc");
-        }
-    }
-
-    /* An eligible SYMM spec installs the routed set BELOW this print, so used_routed is
-     * not yet set for it; report the path that will actually be used or the parity grep
-     * reads "bcast" on a routed call. A producer failure after this point prints
-     * GX_R1_FALLBACK, which already invalidates the run as a routed timing arm. */
-    const char *qdist = (used_routed || gx_walk_export_eligible(spec)) ? "routed" : "bcast";
-
-    /* Walk-export discovery: produce the routed set (sender export + bounded receiver
-     * walk, collective-safe) and INSTALL it for an eligible spec via the shared
-     * ownership-transfer.  Placed here so it reads the SAME g_glt_cache snapshot as the
-     * rest of this call.  Membership comes from the SSOT accept (gx_pair_accept_wrap_and_test), so the
-     * only way this set can differ from a full walk is routing COVERAGE, which is what
-     * the per-spec supply-band domination proof establishes. */
-    const int walk_export_install = gx_walk_export_eligible(spec);
-    if(walk_export_install && NTask > 1) {
-        matched_walk_export = compute_matched_walk_export(spec, local_queries, n_local_queries,
-                                                  num_pool, supply_mask, search_mode,
-                                                  &walk_export_res);
-        /* Install via the shared ownership-transfer, so Steps 4-6 are reached by exactly
-         * one path whichever producer supplied the set. */
-        if(matched_walk_export && walk_export_res.status == GX_WALK_EXPORT_OK) {
-            if(matched) free(matched);
-            matched = matched_walk_export; matched_walk_export = NULL;
-            used_routed = 1;
-        } else if(ThisTask == 0) {
-            /* Report what ACTUALLY happens next, which depends on whether a reference
-             * set exists.  In production (walk_export_only) none does, so the stop below
-             * fires.  Under diag the broadcast walk ran, so the call continues on that
-             * set -- correct physics, but NOT the routed substrate, so the run is not a
-             * valid routed arm either way.
-             * The GX_R1_FALLBACK token is kept only because the current run-validity
-             * checks grep for it; it does not describe the mechanism.  Rename it to match
-             * the surrounding names, or fold it into the general import-failure
-             * reporting, once nothing greps for the old spelling. */
-            printf("[GX_R1_FALLBACK call=%d caller=%s reason=producer_status_%d -> %s; INVALID as a routed arm]\n",
-                   this_call, (spec->caller_name ? spec->caller_name : "?"), walk_export_res.status,
-                   walk_export_only ? "controlled stop (no correctness-proven fallback)"
-                                    : "continuing on the broadcast reference set");
+    gx_walk_export_discover(spec, local_queries, n_local_queries,
+                            num_pool, supply_mask, search_mode,
+                            send_set, &walk_export_res);
+    if(walk_export_res.status != GX_WALK_EXPORT_OK) {
+        if(ThisTask == 0) {
+            printf("[ghost_exchange call=%d caller=%s: walk-export producer status %d, no send set built]\n",
+                   this_call, (spec->caller_name ? spec->caller_name : "?"), walk_export_res.status);
             fflush(stdout);
         }
-        free(matched_walk_export); matched_walk_export = NULL;
-    }
-
-    /* An eligible caller skipped the broadcast walk, so if the walk-export producer
-     * did not install (UNAVAILABLE/ALLOC_FAIL) there is no set to install and no
-     * substrate left that is known to be correct.  The tile/BVH and broadcast walks
-     * both read the same cached geometry, which has been measured producing wrong
-     * densities on a decomposition where the cached geometry went stale, so falling
-     * back to either would trade a visible failure for a silent one.  Stop instead.
-     * walk_export_only and the producer status are rank-uniform, so all ranks stop together.
-     * The dominant failure mode is envelope allocation under memory pressure; the
-     * recovery that fits it is a retry at reduced import padding inside this producer,
-     * which does not exist yet — until it does, the honest outcome is this stop. */
-    if(walk_export_only && matched == NULL) {
         gizmo_request_controlled_stop(7723,
             "ghost_exchange: walk-export producer unavailable and no correctness-proven fallback exists",
             __FILE__, __LINE__, __FUNCTION__);
         gizmo_exit_bad_stop_if_requested("ghost_exchange:walk_export_unavailable");
     }
 
-    /* === Step 4: per-peer counts + index list === */
+    /* === Step 4: per-peer counts === */
     int *send_count = (int *) mymalloc("gx_rd_sc", NTask * sizeof(int));
     int *recv_count = (int *) mymalloc("gx_rd_rc", NTask * sizeof(int));
     int *send_disp  = (int *) mymalloc("gx_rd_sd", NTask * sizeof(int));
     int *recv_disp  = (int *) mymalloc("gx_rd_rd", NTask * sizeof(int));
-    for(int t = 0; t < NTask; t++) { send_count[t] = 0; recv_count[t] = 0; }
-    for(int t = 0; t < NTask; t++) {
-        if(t == ThisTask) continue;
-        char *match_for_t = matched + (size_t)t * (size_t)num_pool;
-        int s = 0;
-        for(int p = 0; p < num_pool; p++) if(match_for_t[p]) s++;
-        send_count[t] = s;
-    }
+    for(int t = 0; t < NTask; t++) { send_count[t] = send_set->count[t]; recv_count[t] = 0; }
     MPI_Alltoall(send_count, 1, MPI_INT, recv_count, 1, MPI_INT, MPI_COMM_WORLD);
     /* CHECKED int64 totals + prefix displacements (same rationale as the tile
      * impl). Request-driven is the last-resort Mode-A discovery — there is NO
@@ -2683,7 +1486,14 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
      * P[]/CellP[], fail HONESTLY via the collective controlled-stop poll below.
      * This stays the ONE predicate that decides whether the append may happen: if
      * the growth above was refused or failed, it is this guard that stops the run. */
-    if(!count_range_ok) {
+    if(send_set->used != total_send_ll) {
+        /* Step 5 hands the send set's slots over as the send list, one per send
+         * position; a different length would pack past it or leave positions unset. */
+        printf("ERROR: request-driven ghost exchange on task %d: the send set holds %ld slots but the per-peer "
+               "counts send %lld.\n", ThisTask, send_set->used, total_send_ll);
+        gizmo_request_controlled_stop(7736, "ghost_exchange (request-driven): send set length disagrees with its counts",
+                                      __FILE__, __LINE__, __FUNCTION__);
+    } else if(!count_range_ok) {
         printf("ERROR: request-driven ghost exchange counts exceed int MPI transport range on task %d.\n", ThisTask);
         gizmo_request_controlled_stop(7703, "ghost_exchange (request-driven): ghost count/displacement exceeds int MPI transport range", __FILE__, __LINE__, __FUNCTION__);
     } else if(!ghost_particle_slots_fit((long long)NumPart + total_recv_ll)) {
@@ -2696,40 +1506,23 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
      * collective pack/exchange. Every rank reaches this unconditionally. */
     gizmo_exit_bad_stop_if_requested("ghost_exchange:capacity_rd");
 
-    /* === Step 5: work out which local slot fills each send position === */
-    int *send_home_idx = (int *) malloc((total_send > 0 ? total_send : 1) * sizeof(int));
-    /* Two integer-only streams over the match bitmap instead of one that also
-     * carries the payload copy.  Packing while streaming meant every particle_data
-     * + gas_cell_data copy was interleaved with a walk over an NTask x num_pool
-     * bitmap that is almost entirely zero, so the pack paid the sparse walk's
-     * memory behaviour; the destination offsets also had to be tracked per rank
-     * as the walk went.  Here the walk only records which pool slots match, and
-     * the pack then runs over that dense list.
-     * Send order is unchanged -- destination rank ascending, then pool index
-     * ascending, each rank's run based at send_disp[t] -- so the packed buffers
-     * are identical to what the interleaved walk produced. */
-    int *send_pool_slot = (int *) malloc((total_send > 0 ? total_send : 1) * sizeof(int));
-    if(!send_pool_slot) {
-        printf("ERROR: request-driven ghost exchange send-slot list allocation failed on task %d.\n", ThisTask);
-        gizmo_request_controlled_stop(7726, "ghost_exchange (request-driven): send-slot list allocation failed",
-                                      __FILE__, __LINE__, __FUNCTION__);
+    /* === Step 5: work out which local particle fills each send position ===
+     * The send set already lists each peer's pool slots in send order -- destination
+     * rank ascending, then pool index ascending -- in one contiguous run per peer,
+     * starting where send_disp[t] says, so mapping it through the pool in place IS
+     * the send list.  It is trimmed to its length first: it outlives this call as
+     * the refresh provenance, and growth by doubling can leave it up to twice that. */
+    int *send_home_idx = send_set->slots;
+    if(send_set->capacity > (long)total_send) {
+        int *fitted = (int *) realloc(send_home_idx, (size_t)(total_send > 0 ? total_send : 1) * sizeof(int));
+        if(fitted) {send_home_idx = fitted;}
     }
-    gizmo_exit_bad_stop_if_requested("ghost_exchange:send_slot_alloc_rd");
-    for(int t = 0; t < NTask; t++) {
-        if(t == ThisTask) continue;
-        char *match_for_t = matched + (size_t)t * (size_t)num_pool;
-        int *dst = send_pool_slot + send_disp[t];
-        int  k = 0;
-        for(int p = 0; p < num_pool; p++) if(match_for_t[p]) dst[k++] = p;
-    }
-    for(int off = 0; off < total_send; off++) {
-        int j = h_pool[send_pool_slot[off]];
-        send_home_idx[off] = j;
-    }
+    send_set->slots = NULL;
+    send_set->capacity = send_set->used = 0;
+    for(int off = 0; off < total_send; off++) {send_home_idx[off] = h_pool[send_home_idx[off]];}
     /* Advance the exported particles before copying them, so nothing goes on the
      * wire behind the time its receiver will read it at. */
     const int send_list_current = gx_certify_send_list_current(send_home_idx, total_send, All.Ti_Current);
-    free(send_pool_slot);
 
     /* === Step 6: pack and Alltoallv particles + cells, then home_idx === */
     gx_pack_and_forward_particle_exchange(send_home_idx, send_count, send_disp,
@@ -2739,16 +1532,10 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
     NumGhostParticles = total_recv;
     NumPart += total_recv;
 
-    /* Mark dirty for compact_xyzh refresh (same as legacy). */
-    if(NumGhostParticles > 0) {
-        gpu_compact_xyzh_mark_h_dirty_range(NumPart_before_ghost, NumPart);
-    }
-    /* SIDX lifecycle notify: see comment in tile-overlap impl. Unconditional. */
     /* Every rank advanced its outgoing slots to this same All.Ti_Current above,
        and the exchange is collective, so the pool just installed is current at
        that time -- but only if that advance actually happened. */
     if(send_list_current == 0) {g_ghost_pool_current_ti = All.Ti_Current;}
-    gpu_sidx_notify_ghost_imported(NumPart_before_ghost, NumGhostParticles);
 
     /* Home-index exchange + provenance maps. */
     int *recv_home_idx = (int *) malloc((total_recv > 0 ? total_recv : 1) * sizeof(int));
@@ -2792,18 +1579,12 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
            The all-rank query total exists only on the broadcast path, where the queries are
            gathered; it is reported when it is real and omitted when it is not, rather than
            printed as a placeholder. */
-        char all_rank_queries[64];
-        all_rank_queries[0] = '\0';
-        if(!used_routed) {
-            snprintf(all_rank_queries, sizeof(all_rank_queries), ", %d across all ranks", total_queries);
-        }
-        PRINT_STATUS("Ghost exchange (request-driven, %s, %s, qdist=%s): rank 0 holds %d local + %d ghost "
-                     "from %d queries%s; supply pool %d  [%.4f s]",
+        PRINT_STATUS("Ghost exchange (request-driven, %s, %s): rank 0 holds %d local + %d ghost "
+                     "from %d queries; supply pool %d  [%.4f s]",
                      (spec->caller_name ? spec->caller_name : "?"),
                      (search_mode == NGB_SEARCH_ONEWAY ? "ONEWAY" : "SYMMETRIC"),
-                     (used_routed ? "routed" : "bcast"),
                      NumPart_before_ghost, NumGhostParticles,
-                     n_local_queries, all_rank_queries, num_pool, t_ghost_total);
+                     n_local_queries, num_pool, t_ghost_total);
     }
 
     /* Diagnostic: ghost composition + import-waste ratio (should be ~0% for
@@ -2819,8 +1600,7 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
     myfree(recv_count);
     myfree(send_count);
     free(send_home_idx);
-    free(matched);
-    free(all_queries); free(q_disps); free(all_q_counts); free(local_queries);
+    free(local_queries);
     (void)from_cache;
     return GHOST_EXCHANGE_COMPLETED;
 }
@@ -2837,39 +1617,28 @@ static ghost_exchange_result ghost_exchange_request_driven_impl(const struct gho
  * — see ghost_symlist_lifecycle.h. */
 void ghost_exchange(double safety_factor)
 {
-    /* supply_band_dominated=1: this spec's reach is P[j].KernelRadius (the legacy
-     * all-types policy) for every type, times safety_factor (checked <= 1 at
-     * dispatch). The per-type opener band is seeded per particle from the
-     * conservative source union capped at All.MaxKernelRadius (ForceSoftening
-     * uncapped; force_hmax_per_type_particle_radius) and exchanged cross-rank on
-     * the nodes the export walk descends — so under the standing invariant that
-     * no P[].KernelRadius of any type exceeds All.MaxKernelRadius (drift clamps
-     * in predict.cc; the density-convergence maxsoft clamp; the sink accretion-
-     * radius cap in ags_rkern.cc), the band dominates this reach per type.
-     * Any future physics path that writes a non-gas KernelRadius must preserve
-     * that invariant or routed discovery under-imports. */
+    /* Reach is P[j].KernelRadius (the legacy all-types policy) for every type,
+     * times safety_factor. The per-type opener band is seeded from the
+     * conservative source union (force_hmax_per_type_particle_radius) and
+     * exchanged cross-rank on the nodes the export walk descends, so it bounds
+     * this reach per type. */
     struct ghost_exchange_spec_t sp = {GHOST_TYPE_ALL, GHOST_TYPE_ALL, NGB_SEARCH_SYMMETRIC, safety_factor, "all_types", -1, NULL, NULL,
-                                       MODE_B_RADIUS_LEGACY_KERNEL_ALLTYPES, 1.0, 1};
+                                       MODE_B_RADIUS_LEGACY_KERNEL_ALLTYPES, 1.0};
     ghost_exchange_impl(&sp);
 }
 void ghost_exchange_hydro(double safety_factor)
 {
-    /* supply_band_dominated=1: gas-only supply at the legacy all-types kernel
-     * radius. Every KernelRadius is held at or below MaxKernelRadius (density
-     * sink setup clamps it; ags_return_maxsoft clamps the drift path), which is
-     * exactly the quantity the per-type node band is built from — so the band is
-     * a valid upper bound on this spec's reach and routed discovery is complete.
-     * safety_factor is checked separately at dispatch (a >1 factor widens the
-     * query beyond the band until the opener scales with it). */
+    /* Gas-only supply at the legacy all-types kernel radius, which the per-type
+     * node band is built from, so the band bounds this spec's reach. */
     struct ghost_exchange_spec_t sp = {GHOST_TYPE_0, GHOST_TYPE_0, NGB_SEARCH_SYMMETRIC, safety_factor, "hydro_symmetric", -1, NULL, NULL,
-                                       MODE_B_RADIUS_LEGACY_KERNEL_ALLTYPES, 1.0, 1};
+                                       MODE_B_RADIUS_LEGACY_KERNEL_ALLTYPES, 1.0};
     ghost_exchange_impl(&sp);
 }
 void ghost_exchange_hydro_oneway(double safety_factor)
 {
-    /* ONEWAY routes on search mode alone; the flag is unread here. */
+    /* ONEWAY opens on the query's own radius; the supply side bounds nothing here. */
     struct ghost_exchange_spec_t sp = {GHOST_TYPE_0, GHOST_TYPE_0, NGB_SEARCH_ONEWAY, safety_factor, "hydro_oneway", -1, NULL, NULL,
-                                       MODE_B_RADIUS_LEGACY_KERNEL_ALLTYPES, 1.0, 0};
+                                       MODE_B_RADIUS_LEGACY_KERNEL_ALLTYPES, 1.0};
     ghost_exchange_impl(&sp);
 }
 
@@ -2883,18 +1652,9 @@ void ghost_exchange_hydro_oneway(double safety_factor)
 void ghost_exchange_cleanup(void)
 {
     if(NumPart_before_ghost < 0) return;
-    /* Ghost slots are about to leave scope (NumPart shrinks back to local).
-     * No dirty-state scrubbing is done here. Marks are per-cache: one landing
-     * outside a cache's registered index range is dropped at mark time, and a
-     * cache that WAS registered over these ghost slots is freed -- handle
-     * unregistered with it -- by the particle-count change on its next build.
-     * Either way no stale ghost-slot bit reaches compact_h_refresh. New ghost
-     * slots are marked dirty at import time (mark_h_dirty_range above), so
-     * symmetric h-reads on ghosts stay fresh. */
-    /* SIDX lifecycle notify BEFORE NumPart shrinks. Called whether or not
-     * NumGhostParticles>0 — a cleanup from the no-ghost-imported state is
-     * a valid signal that bumps the epoch. */
-    gpu_sidx_notify_ghost_cleanup();
+    /* Ghost slots are about to leave scope (NumPart shrinks back to local): the
+     * neighbour indexes built over them go first (gpu_sidx_ghost_pool_cleanup). */
+    gpu_sidx_ghost_pool_cleanup();
     if(NumGhostParticles > GhostEpochHighWater) {GhostEpochHighWater = NumGhostParticles;}
     NumPart = NumPart_before_ghost;
     N_gas = N_gas_before_ghost;
@@ -2919,9 +1679,10 @@ void ghost_exchange_cleanup(void)
    (unchanged by a value refresh). This helper is ALWAYS in the refresh call path
    (never elided) so a backend with explicit host/device particle buffers (no
    unified-memory coherence) has ONE mandatory place to add an explicit
-   host->device ghost copy. Parity with import: import marks compact_xyzh h-dirty
-   + notifies SIDX; a value refresh changes neither Pos/h nor the slot set, so it
-   does neither — but any explicit device copy import gains MUST be mirrored here. */
+   host->device ghost copy. Parity with import: an import starts a new ghost
+   provenance (which the neighbour index's ghost segment is keyed on); a value
+   refresh changes neither Pos/h nor the slot set, so it does not -- but any
+   explicit device copy import gains MUST be mirrored here. */
 static inline void ghost_refresh_make_device_visible(int ghost_base, int ghost_count)
 {
     (void)ghost_base; (void)ghost_count;
@@ -2977,6 +1738,18 @@ unsigned long long ghost_provenance_epoch(void) { return g_ghost_provenance_epoc
    Used by the neighbor-loop runner to enforce the caller-owned-pool contract
    for external-CSR consumers (see neighbor_loop_runner.h). */
 int ghost_pool_is_live(void) { return (NumPart_before_ghost >= 0) ? 1 : 0; }
+
+int ghost_require_no_live_pool_for_layout_change(const char *who)
+{
+    if(NumPart_before_ghost < 0) {return 0;}
+    char msg[256];
+    snprintf(msg, sizeof(msg), "%s would add, remove or reorder local particles while a ghost pool is live "
+             "(local %d, NumPart %d, ghosts %d): imported ghosts occupy the slots past the local particles",
+             who ? who : "?", NumPart_before_ghost, NumPart, NumGhostParticles);
+    printf("%s (task %d)\n", msg, ThisTask); fflush(stdout);
+    gizmo_request_controlled_stop(7314, msg, __FILE__, __LINE__, __FUNCTION__);
+    return 1;
+}
 int ghost_get_num_ghosts(void) { return NumGhostParticles; }
 int ghost_get_epoch_high_water(void)
 {
