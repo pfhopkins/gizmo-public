@@ -73,18 +73,9 @@ size_t force_treewalk_workspace_bytes_per_thread(int cap);
 int force_treeevaluate_ewald_correction(int target, int *exportflag, int *exportnodecount, int *exportindex);
 void force_drift_node(int no, integertime time1);
 
-/*! Single home for the host-vs-device routing decision of the gravity walk and the
- *  dynamic tree update. Two independent reasons to answer yes, and BOTH are part of the
- *  contract:
- *    - this rank has fewer than All.GravityHostWalkBelowActive active candidates, so the
- *      host walk (which drifts nodes lazily as it opens them) is cheaper than the device
- *      walk plus the all-node drift it requires;
- *    - a host lazy drift has ALREADY happened at the current time, in which case the host
- *      keeps ownership for the rest of the time step whatever the count says. The device
- *      sweep skips nodes already at its target time and so cannot refresh their mirror,
- *      so once any node is drifted lazily, no device walk may run at that time again.
- *  The second clause is what keeps a repeated same-time evaluation (a Hermite correction
- *  pass, the opening-criterion re-walk) from reading stale node geometry. */
+/*! Host-vs-device routing of the gravity walk: yes when this rank has fewer than
+ *  All.GravityHostWalkBelowActive active candidates. A count policy only; the dynamic tree
+ *  update routes on its own count and guard in force_update_tree. */
 int gravity_walk_route_to_host(long long n_local_active);
 
 /*! Time at which a host lazy node drift was last actually performed on this rank

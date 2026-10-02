@@ -239,11 +239,11 @@ void gpu_gravity_tree_invalidate_currency(void);
 /* THE question a device consumer of node geometry should ask: is that geometry
  * current at `ti`?  True if the drift sweep certified it OR the tree was built
  * current at it, AND the mirror those records describe still exists.  Asking
- * only whether the drift sweep ran would instead ask whether the GRAVITY WALK
- * happened to sweep this step, which is false in many configurations where the
- * geometry is perfectly current -- SELFGRAVITY_OFF, gravity routed to the host
- * by GravityHostWalkBelowActive, or ADAPTIVE_TREEFORCE_UPDATE shrinking the
- * candidate count that routing tests. */
+ * only whether the drift sweep ran would miss a tree freshly built at `ti`, which
+ * is fully current with no sweep at all.  The converse does not hold: a host tree
+ * update (TreeUpdateHostBelowActive) on a reused tree advances only the nodes its
+ * active elements reach, so after one only those nodes are current and this
+ * answers false. */
 int gpu_gravity_tree_nodes_current_at(integertime ti);
 
 /* ============================================================================

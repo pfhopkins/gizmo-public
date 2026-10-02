@@ -319,6 +319,7 @@ void begrun(void)
       All.NeighborLoopModeBThresholdSum = all.NeighborLoopModeBThresholdSum;
       All.NeighborLoopModeBThresholdMax = all.NeighborLoopModeBThresholdMax;
       All.GravityHostWalkBelowActive = all.GravityHostWalkBelowActive;
+      All.TreeUpdateHostBelowActive = all.TreeUpdateHostBelowActive;
       /* The rest of this block is the same kind of thing: how accurately or how often something is
        * computed, rather than what is being computed.  A physical coefficient is deliberately not
        * here -- changing one mid-run either changes the problem or, worse, changes what the data
@@ -1814,6 +1815,10 @@ void read_parameter_file(char *fname)
         addr[nt] = &All.GravityHostWalkBelowActive;
         id[nt++] = INT;
 
+        strcpy(tag[nt], "TreeUpdateHostBelowActive");
+        addr[nt] = &All.TreeUpdateHostBelowActive;
+        id[nt++] = INT;
+
 
 #ifdef SUBFIND
       strcpy(tag[nt], "DesLinkNgb");
@@ -2818,7 +2823,8 @@ void read_parameter_file(char *fname)
                 if(strcmp("DesNumNgb",tag[i])==0) {*((double *)addr[i])=(0.5*(KERNEL_NMIN+KERNEL_NMAX)); printf("Tag %s (%s) not set in parameter file: you did not set a target effective neighbor number for the interaction kernel. Trying to set a reasonable guess of =%g based on the kernel specified, but PLEASE CHECK that this is intended and experiment with different values or set your own for safety. \n",tag[i],alternate_tag[i],All.DesNumNgb); continue;}
                 if(strcmp("NeighborLoopModeBThresholdSum",tag[i])==0) {*((int *)addr[i])=-1; continue;} /* unset -> each loop uses its Spec::modeb_threshold_sum */
                 if(strcmp("NeighborLoopModeBThresholdMax",tag[i])==0) {*((int *)addr[i])=-1; continue;} /* unset -> each loop uses its Spec::modeb_threshold_max */
-                if(strcmp("GravityHostWalkBelowActive",tag[i])==0) {*((int *)addr[i])=10000; printf("Tag %s (%s) not set in parameter file: defaulting to run the gravity walk and the dynamic tree update on the host below %d RANK-LOCAL active candidates per step (0 would disable this and always use the device path). \n",tag[i],alternate_tag[i],All.GravityHostWalkBelowActive); continue;}
+                if(strcmp("GravityHostWalkBelowActive",tag[i])==0) {*((int *)addr[i])=10000; printf("Tag %s (%s) not set in parameter file: defaulting to run the gravity walk on the host below %d RANK-LOCAL active candidates per step (0 would disable this and always use the device path). \n",tag[i],alternate_tag[i],All.GravityHostWalkBelowActive); continue;}
+                if(strcmp("TreeUpdateHostBelowActive",tag[i])==0) {*((int *)addr[i])=10000; printf("Tag %s (%s) not set in parameter file: defaulting to run the dynamic tree update on the host below %d RANK-LOCAL elements due a force update per step (0 would disable this and use the device path whenever it is allowed). \n",tag[i],alternate_tag[i],All.TreeUpdateHostBelowActive); continue;}
 #ifdef AGS_KERNELRADIUS_CALCULATION_IS_ACTIVE
                 if(strcmp("AGS_DesNumNgb",tag[i])==0) {*((double *)addr[i])=(0.5*(KERNEL_NMIN+KERNEL_NMAX)); printf("Tag %s (%s) not set in parameter file: you did not set a target effective neighbor number for the adaptive-gravity (non-fluid) interaction kernel. Trying to set a reasonable guess (=%g) based on the kernel specified, but PLEASE CHECK that this is intended and experiment with different values or set your own for safety. \n",tag[i],alternate_tag[i],All.AGS_DesNumNgb); continue;}
 #endif
@@ -3238,6 +3244,10 @@ void read_parameter_file(char *fname)
     if(All.GravityHostWalkBelowActive < 0)
     {
         if(ThisTask==0) {printf("GravityHostWalkBelowActive must be >= 0 (0 = no count-based host routing, positive = rank-local active-candidate count below which the host walk is used)\n");} endrun(1);
+    }
+    if(All.TreeUpdateHostBelowActive < 0)
+    {
+        if(ThisTask==0) {printf("TreeUpdateHostBelowActive must be >= 0 (0 = no count-based host routing, positive = rank-local force-update count below which the host tree update is used)\n");} endrun(1);
     }
     if((All.ErrTolForceAcc<=0)||(All.ErrTolForceAcc>=0.01))
     {
