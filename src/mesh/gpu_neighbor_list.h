@@ -55,7 +55,7 @@ struct gpu_spatial_index_t {
        drifted (sfc_tiles.h).  DOUBLE: float absolute positions are invalid for GIZMO's
        dynamic range (see §37/§38). */
     double *d_compact_xyzh;
-    int *d_slot_of;            /* [num_total] each particle's pool slot, -1 if not a member */
+    int *d_slot_of;            /* [source_count] the pool slot of particle source_base + o, -1 if not a member */
     int *d_level_nodes;        /* the BVH nodes by height, leaves first */
     int *d_shear_folds;        /* [2 per slot] the x folds (up, down) that took each member to its primary-box
                                   image, for its velocity range there; BOX_SHEARING > 1 only, else null */
@@ -67,6 +67,8 @@ struct gpu_spatial_index_t {
     int rebuild_needed = 0;    /* a raise could not be applied: the next list build rebuilds the index */
     int num_total;  /* particle count when built; mismatch → invalidate */
     int num_pool;   /* slots: the tiles' runs of TILE_TARGET_SIZE, including the unused end of a partial tile */
+    int source_base;  /* the members were drawn from particles [source_base, source_base + source_count); */
+    int source_count; /* the pool holds their particle indices, the slot map is indexed from source_base */
     int valid;  /* 1 if built and usable */
     int dirty_handle = -1; /* gpu_dirty_tracker handle; -1 when not registered */
     /* Type bitmask used at the most recent build. The cached rows / pool only

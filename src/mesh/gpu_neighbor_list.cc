@@ -211,6 +211,8 @@ void gpu_spatial_index_free(gpu_spatial_index_t *idx)
     idx->bvh_nnodes = 0;
     idx->nlevels = 0;
     idx->num_pool = 0;
+    idx->source_base = 0;
+    idx->source_count = 0;
     idx->num_total = 0;
     idx->cache_tbm = -1;
     idx->cache_radius_policy = MODE_B_RADIUS_DEFAULT;
@@ -418,6 +420,26 @@ int sidx_describe_member(int j, struct particle_data *P, const struct gas_cell_d
     return 0;
 }
 
+/* Where an index's members come from: the particles [base, base + count) of P[], read where they live.  A
+ * member is named by its ordinal o in that range -- the slot map is indexed by ordinal -- and by its global
+ * particle index base + o everywhere else (the pool, the neighbour lists).  Particles below owned_end are the
+ * rank's own. */
+struct SidxParticleSource {
+    struct particle_data *P;
+    const struct gas_cell_data *cells;
+    int base, count, owned_end, type_bitmask;
+    KOKKOS_INLINE_FUNCTION int global(int o) const {return base + o;}
+    KOKKOS_INLINE_FUNCTION int is_member(int o) const {return sfc_pool_member(&P[base + o], type_bitmask);}
+    KOKKOS_INLINE_FUNCTION int is_owned(int o) const {return base + o < owned_end;}
+    KOKKOS_INLINE_FUNCTION int position(int o, integertime ti_ref, const struct DriftKickTableView &tables,
+                                        double center[3], double *hw, int *current) const
+    {return sidx_member_position(base + o, P, cells, ti_ref, tables, center, hw, current);}
+    KOKKOS_INLINE_FUNCTION int describe(int o, mode_b_radius_policy_t policy, integertime ti_ref,
+                                        const struct DriftKickTableView &tables, double growth, double kernel_floor,
+                                        struct SidxMember &m) const
+    {return sidx_describe_member(base + o, P, cells, policy, ti_ref, tables, growth, kernel_floor, m);}
+};
+
 /* Widen a box (a tile or a node) to cover `s`, its position bounds as well as what sidx_widen covers. */
 template <class Box, class Src>
 KOKKOS_INLINE_FUNCTION
@@ -586,19 +608,19 @@ static int sidx_alloc_kept(gpu_spatial_index_t *idx, int ntiles, int nnodes, int
     return 0;
 }
 
-/* Build the index over particles [0, num_total) into idx.  kStageOnHost: run on the host with the working
+/* Build the index over the members of src into idx.  kStageOnHost: run on the host with the working
  * space in the memory arena, then copy the index to the device once; otherwise run on the device and build
  * the index in place.  Returns 0; 1 when a member cannot be bounded; 2 when memory could not be had; 3 when
  * the build failed otherwise (report->failure says how).  On 1, 2 or 3 the index is left invalid. */
-template <class Exec, bool kStageOnHost>
-static int sidx_build_segment(struct particle_data *P, struct gas_cell_data *cells, int num_total, int num_owned,
-                              int type_bitmask, mode_b_radius_policy_t policy, integertime ti_ref,
+template <class Exec, bool kStageOnHost, class Source>
+static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, integertime ti_ref,
                               const struct DriftKickTableView &tables, const struct SidxKeyFrame &frame,
                               gpu_spatial_index_t *idx, struct SidxBuildReport *report)
 {
     using Mem = typename std::conditional<kStageOnHost, Kokkos::HostSpace, GIZMO_KOKKOS_DEVICE_SPACE>::type;
     using UV = Kokkos::MemoryTraits<Kokkos::Unmanaged>;
     const double growth = kernel_radius_drift_max_growth_factor(), kernel_floor = All.MinKernelRadius;
+    const int num_source = src.count;
     report->refused = 0; report->all_current = 1; report->n_outside = 0; report->n_outside_owned = 0;
     report->bytes_failed = 0; report->failure[0] = 0;
     SidxScratch<kStageOnHost> scratch;
@@ -607,11 +629,11 @@ static int sidx_build_segment(struct particle_data *P, struct gas_cell_data *cel
          * BEFORE the build's transients: the arena is a stack, and the transients (above the stage) are then
          * released before the index is allocated on the device. */
         int members_counted = 0;
-        Kokkos::parallel_reduce("sidx_build_count", Kokkos::RangePolicy<Exec>(0, num_total),
-                                KOKKOS_LAMBDA(int i, int &c) {if(sfc_pool_member(&P[i], type_bitmask)) {c++;}}, members_counted);
+        Kokkos::parallel_reduce("sidx_build_count", Kokkos::RangePolicy<Exec>(0, num_source),
+                                KOKKOS_LAMBDA(int o, int &c) {if(src.is_member(o)) {c++;}}, members_counted);
         const int ntiles_max = (members_counted + TILE_TARGET_SIZE - 1) / TILE_TARGET_SIZE + 1;   /* + the fresh tile outliers start */
         const int nslots_max = ntiles_max * TILE_TARGET_SIZE, nnodes_max = 2 * ntiles_max - 1;
-        const size_t n_slot_of = (size_t)(num_total > 0 ? num_total : 1);
+        const size_t n_slot_of = (size_t)(num_source > 0 ? num_source : 1);
         const size_t n_folds_max = (size_t)nslots_max * 2;
         void *p_tiles = NULL, *p_bvh = NULL, *p_pool = NULL, *p_rows = NULL, *p_slot = NULL, *p_level = NULL, *p_folds = NULL;
         if(kStageOnHost) {
@@ -626,40 +648,40 @@ static int sidx_build_segment(struct particle_data *P, struct gas_cell_data *cel
 #endif
         }
         const int transients = scratch.mark();
-        /* 1. members, compacted in particle order */
-        const size_t n_scan = (size_t)num_total + 1;
+        /* 1. members, compacted in source order, as ordinals */
+        const size_t n_scan = (size_t)num_source + 1;
         Kokkos::View<int*, Mem, UV> first_member((int *)scratch.take(n_scan * sizeof(int), "ngl_sidx_build_scan"), n_scan);
         Kokkos::View<int*, Mem, UV> tally((int *)scratch.take(4 * sizeof(int), "ngl_sidx_build_tally"), 4);   /* refused, not current, outside, outside owned */
         Kokkos::deep_copy(tally, 0);
-        Kokkos::parallel_scan("sidx_build_members", Kokkos::RangePolicy<Exec>(0, num_total),
-                              KOKKOS_LAMBDA(int i, int &acc, const bool final) {
-            if(final) {first_member(i) = acc;}
-            if(sfc_pool_member(&P[i], type_bitmask)) {acc++;}
-            if(final && i == num_total - 1) {first_member(num_total) = acc;}
+        Kokkos::parallel_scan("sidx_build_members", Kokkos::RangePolicy<Exec>(0, num_source),
+                              KOKKOS_LAMBDA(int o, int &acc, const bool final) {
+            if(final) {first_member(o) = acc;}
+            if(src.is_member(o)) {acc++;}
+            if(final && o == num_source - 1) {first_member(num_source) = acc;}
         });
         int num_members = 0;
-        if(num_total > 0) {Kokkos::deep_copy(num_members, Kokkos::subview(first_member, (size_t)num_total));}
+        if(num_source > 0) {Kokkos::deep_copy(num_members, Kokkos::subview(first_member, (size_t)num_source));}
         if(num_members != members_counted) {throw std::runtime_error("index build: membership changed between its passes");}
         const size_t n_mem = (size_t)(num_members > 0 ? num_members : 1);
         Kokkos::View<int*, Mem, UV> member((int *)scratch.take(n_mem * sizeof(int), "ngl_sidx_build_members"), n_mem);
         Kokkos::View<Morton128*, Mem, UV> key((Morton128 *)scratch.take(n_mem * sizeof(Morton128), "ngl_sidx_build_keys"), n_mem);
         /* 2. keys: only the position is needed here */
-        Kokkos::parallel_for("sidx_build_keys", Kokkos::RangePolicy<Exec>(0, num_total), KOKKOS_LAMBDA(int i) {
-            if(!sfc_pool_member(&P[i], type_bitmask)) {return;}
-            const int s = first_member(i);
-            member(s) = i;
+        Kokkos::parallel_for("sidx_build_keys", Kokkos::RangePolicy<Exec>(0, num_source), KOKKOS_LAMBDA(int o) {
+            if(!src.is_member(o)) {return;}
+            const int s = first_member(o);
+            member(s) = o;
             double center[3], hw = 0.0, image[3], box_hw;
             int current = 0, folds_up = 0, folds_down = 0;
-            if(sidx_member_position(i, P, cells, ti_ref, tables, center, &hw, &current)) {
+            if(src.position(o, ti_ref, tables, center, &hw, &current)) {
                 Kokkos::atomic_add(&tally(0), 1); key(s).hi = 0; key(s).lo = 0; return;
             }
             if(!current) {Kokkos::atomic_add(&tally(1), 1);}
             sidx_member_image(center, hw, image, &box_hw, &folds_up, &folds_down);
             key(s) = sidx_member_key(image, frame);
-            if(key(s).hi & SIDX_KEY_OUTSIDE) {Kokkos::atomic_add(&tally(2), 1); if(i < num_owned) {Kokkos::atomic_add(&tally(3), 1);}}
+            if(key(s).hi & SIDX_KEY_OUTSIDE) {Kokkos::atomic_add(&tally(2), 1); if(src.is_owned(o)) {Kokkos::atomic_add(&tally(3), 1);}}
         });
         Exec().fence();
-        gizmo_gpu_check_last_error("sidx_build_keys", num_total);
+        gizmo_gpu_check_last_error("sidx_build_keys", num_source);
         int tally_h[4];
         {
             auto t = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), tally);
@@ -668,7 +690,7 @@ static int sidx_build_segment(struct particle_data *P, struct gas_cell_data *cel
         report->all_current = (tally_h[1] == 0);
         report->n_outside = tally_h[2]; report->n_outside_owned = tally_h[3];
         if(tally_h[0] > 0) {report->refused = 1; gpu_spatial_index_free(idx); return 1;}
-        /* 3. sort: only the key and the member index move */
+        /* 3. sort: only the key and the member ordinal move */
         if(num_members > 1) {
             Kokkos::Experimental::sort_by_key(Exec(), Kokkos::subview(key, std::make_pair(0, num_members)),
                                               Kokkos::subview(member, std::make_pair(0, num_members)), Morton128Less{});
@@ -714,12 +736,12 @@ static int sidx_build_segment(struct particle_data *P, struct gas_cell_data *cel
             sfc_tile_t *tile = &tiles(t);
             Kokkos::single(Kokkos::PerTeam(team), [&]() {tile->count = (k1 > k0) ? k1 - k0 : 0;});
             Kokkos::parallel_for(Kokkos::TeamThreadRange(team, k0, (k1 > k0) ? k1 : k0), [&](int k) {
-                const int j = member(k), slot = t * TILE_TARGET_SIZE + (k - k0);
+                const int o = member(k), slot = t * TILE_TARGET_SIZE + (k - k0);
                 struct SidxMember m;
-                sidx_describe_member(j, P, cells, policy, ti_ref, tables, growth, kernel_floor, m);
+                src.describe(o, policy, ti_ref, tables, growth, kernel_floor, m);
                 double *row = &rows((size_t)slot * SIDX_ROW_WIDTH);
                 row[0] = m.center[0]; row[1] = m.center[1]; row[2] = m.center[2]; row[3] = m.r; row[4] = m.r_drifted;
-                pool(slot) = j; slot_of(j) = slot;
+                pool(slot) = src.global(o); slot_of(o) = slot;
                 if(shear_folds.extent(0) > 0) {
                     shear_folds(2 * (size_t)slot) = m.folds_up; shear_folds(2 * (size_t)slot + 1) = m.folds_down;
                 }
@@ -792,6 +814,8 @@ static int sidx_build_segment(struct particle_data *P, struct gas_cell_data *cel
         idx->bvh_root = shape.nnodes - 1;
         idx->nlevels = shape.nlevels;
         idx->num_pool = nslots;
+        idx->source_base = src.base;
+        idx->source_count = num_source;
     } catch(const std::exception &e) {
         /* Kokkos throws rather than returning null: an allocation of the device route's working space, or a
          * failure inside the sort or a copy.  Its own text says which. */
@@ -851,9 +875,9 @@ void gpu_spatial_index_build(struct particle_data *P_shared, int num_total,
     frame.len = DomainLen;
 #endif
     struct SidxBuildReport report;
-    const int rc = sidx_build_segment<Kokkos::DefaultHostExecutionSpace, true>(
-        P_shared, CellP, num_total, ghost_get_num_local(), type_bitmask, radius_policy, ti_ref, host_tables, frame,
-        idx, &report);
+    const struct SidxParticleSource src = {P_shared, CellP, 0, num_total, ghost_get_num_local(), type_bitmask};
+    const int rc = sidx_build_segment<Kokkos::DefaultHostExecutionSpace, true>(src, radius_policy, ti_ref, host_tables,
+                                                                               frame, idx, &report);
     if(rc != 0) {
         char msg[400];
         const char *who = caller_label ? caller_label : "?";
@@ -910,7 +934,8 @@ struct SidxRaiseRecord {
     double u_min[3], u_max[3], rho;
 };
 
-/* Raise the kept index over particles list[0..n) (host indices; every particle 0..n-1 when list is null).
+/* Raise the kept index over particles list[0..n) (host indices; the first n particles of its source range when
+ * list is null).
  * MOTION re-reads each member's velocity range, after its velocity changed; REACH rewrites its row's reaches
  * from its current radius and raises the reach bands, after its radius changed.  A particle that is not a
  * member now -- another type (the index is then rebuilt), or no mass (no pair kernel takes it) -- is
@@ -921,7 +946,8 @@ struct SidxRaiseRecord {
 static int sidx_raise_members(gpu_spatial_index_t *idx, const int *list, int n, int what)
 {
     if(n <= 0 || !idx->valid) {return 0;}
-    const int num_total = idx->num_total, type_bitmask = idx->cache_tbm;
+    const int source_base = idx->source_base, source_end = idx->source_base + idx->source_count;
+    const int type_bitmask = idx->cache_tbm;
     const mode_b_radius_policy_t policy = idx->cache_radius_policy;
     std::vector<SidxRaiseRecord> rec((size_t)n);
     int fault = 0;
@@ -930,10 +956,10 @@ static int sidx_raise_members(gpu_spatial_index_t *idx, const int *list, int n, 
 #endif
     for(int k = 0; k < n; k++) {
         SidxRaiseRecord &r = rec[(size_t)k];
-        const int j = list ? list[k] : k;
+        const int j = list ? list[k] : source_base + k;
         r.j = -1; r.type = -1; r.r = 0; r.r_drifted = 0; r.rho = 0;
         for(int d = 0; d < 3; d++) {r.u_min[d] = MAX_REAL_NUMBER; r.u_max[d] = -MAX_REAL_NUMBER;}
-        if(j < 0 || j >= num_total) {continue;}
+        if(j < source_base || j >= source_end) {continue;}
         const int type = (int)P[j].Type;
         if(type < 0 || type >= TILE_NUM_PTYPES || !sfc_pool_member(&P[j], type_bitmask)) {continue;}
         if((what & SIDX_RAISE_MOTION) && sfc_member_motion_range(j, P, CellP, r.u_min, r.u_max, &r.rho)) {fault |= 1; continue;}
@@ -969,7 +995,7 @@ static int sidx_raise_members(gpu_spatial_index_t *idx, const int *list, int n, 
     Kokkos::parallel_for("sidx_raise_members", n, KOKKOS_LAMBDA(int k) {
         const SidxRaiseRecord &r = d_rec[k];
         if(r.j < 0) {return;}
-        const int slot = slot_of[r.j];
+        const int slot = slot_of[r.j - source_base];
         if(slot < 0) {return;}
         struct SidxRaise m;
         for(int d = 0; d < 3; d++) {m.u_min[d] = r.u_min[d]; m.u_max[d] = r.u_max[d];}
