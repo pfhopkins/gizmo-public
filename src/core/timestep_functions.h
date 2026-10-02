@@ -445,7 +445,7 @@ KOKKOS_INLINE_FUNCTION int is_super_timestepped_sink(int i, const struct particl
 
 /* The velocity a particle's POSITION advances at: a finite-volume gas cell moves with its
    mesh-generating point, everything else with its own velocity, and nothing moves at all when the
-   hydro is frozen.  This is the term drift_particle_impl applies, stated once so that the speed
+   hydro is frozen.  This is the term the drift's position step (particle_position_step) applies, stated once so that the speed
    bound below and anything that predicts where a particle will be cannot disagree about which
    velocity moves it.  It is the BASE term only: the bound adds a super-timestepped sink's orbital
    motion and the dilation factor on top, because those do not enter a straight-line prediction.
@@ -472,7 +472,7 @@ Vec3<double> particle_drift_velocity(int i, const struct particle_data *pp, cons
    interval.  A box measured when the particle was last drifted still contains it after it has
    grown by this speed times the interval since, which is what the gravity tree and the spatial
    index rely on to search among particles that have not been brought current.  Follows the
-   position update in drift_particle_impl term by term -- the mesh velocity moves a finite-volume
+   drift's position step (particle_position_step) term by term -- the mesh velocity moves a finite-volume
    cell, a super-timestepped sink adds its orbital motion about the binary's centre of mass, and
    under dilation the drift covers only the dilated fraction of the interval while the nearest
    special particle's motion is added back over the rest -- so a change to how a particle moves

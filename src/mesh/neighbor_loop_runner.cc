@@ -41,6 +41,7 @@
 #include "neighbor_loop_runner.h"
 #include "gpu_neighbor_list.h"
 #include "device_tree_walk.h"          /* the one device traversal; Mode D enters it from the root */
+#include "../declarations/gpu_recorder_claim.h"   /* gx_touched_set_claim_in, the fused walk's touched-set claim */
 #include "kernel.h"  /* MUST precede sink_env1_loop.h (kernel_main, NEAREST_XYZ) */
 #include "ghost_writeback.h"             /* ghost_get_num_local */
 #include "ghost_symlist_lifecycle.h"     /* gizmo_request_filtered_ghost_import_fresh, ghost_exchange_cleanup */

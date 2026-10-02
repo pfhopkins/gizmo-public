@@ -90,7 +90,6 @@
 /* The anomaly codes a walk reports through `anomaly` are declared with the tree view in
  * neighbor_list.h, because the tile walk and the recorder claims report the same states.
  * Every one of them is fatal to the walk's caller, which stops the run. */
-#include "../declarations/gpu_recorder_claim.h"   /* the touched-set claim */
 
 /* Which entry point a walk is using.  See the entry discussion at the top of
  * this file; the two forms correspond to the host walker's start node and

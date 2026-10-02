@@ -124,19 +124,20 @@ void force_update_tree(void)
  * Indexing follows forcetree.cc:1441: slot k = no - All.TreeNodeIndexBase, valid
  * for local nodes (k < MaxNodes) and installed foreign ones, bounded by the mirror
  * that exists rather than by the index range it sits in. */
-static inline void force_soa_raise_vmax(int no, MyFloat vmax_aos)
+static inline int force_soa_raise_vmax(int no, MyFloat vmax_aos)   /* returns the mirror slot, or -1 when there is none */
 {
     struct gpu_gravity_tree_soa_t *soa = gpu_gravity_tree_soa();
-    if(!soa || !soa->vmax) {return;}
+    if(!soa || !soa->vmax) {return -1;}
     /* ⛔ Bound by the mirror that EXISTS. MaxNodes + AllocatedForeignNodes is the
        INDEX range; the allocation can be smaller (gpu_neighbor_list.cc declines a
        walk precisely when capacity < that sum), and writing past it corrupts the
        neighbouring SoA arrays -- which surfaces as the LET walk resolving
        structure the import does not carry, nowhere near this line. */
     const int k = gpu_gravity_tree_mirror_slot(no);
-    if(k < 0) {return;}
+    if(k < 0) {return -1;}
     const MyGravFloat v = (MyGravFloat) vmax_aos;
     if(soa->vmax[k] < v) {soa->vmax[k] = v;}
+    return k;
 }
 
 /* The same raise for a node that has just been kicked, which also marks the mirror as holding a
@@ -145,10 +146,9 @@ static inline void force_soa_raise_vmax(int no, MyFloat vmax_aos)
  * impulse to read, and the node's kick time was not stamped. */
 static inline void force_soa_mark_kick(int no, MyFloat vmax_aos)
 {
-    force_soa_raise_vmax(no, vmax_aos);
+    const int k = force_soa_raise_vmax(no, vmax_aos);
     struct gpu_gravity_tree_soa_t *soa = gpu_gravity_tree_soa();
-    const int k = gpu_gravity_tree_mirror_slot(no);
-    if(!soa || !soa->vmax || !soa->bitflags || k < 0) {return;}
+    if(k < 0 || !soa->bitflags) {return;}
     soa->bitflags[k] |= (1u << BITFLAG_NODEHASBEENKICKED);
 }
 
@@ -315,7 +315,7 @@ void gravity_clear_pending_motion_bounds(void)
 static inline void raise_node_motion_bound(int no, MyFloat vmax)
 {
     if(Extnodes[no].vmax < vmax) {Extnodes[no].vmax = vmax;}
-    force_soa_raise_vmax(no, Extnodes[no].vmax);
+    (void) force_soa_raise_vmax(no, Extnodes[no].vmax);
 }
 
 void gravity_note_motion_bound(const int *idx, int n)
