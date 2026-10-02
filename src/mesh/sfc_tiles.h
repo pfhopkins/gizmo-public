@@ -1,7 +1,7 @@
 /* sfc_tiles.h — SFC-ordered tile spatial index for neighbor finding and ghost exchange.
  *
- * Tiles are contiguous groups of ~TILE_TARGET_SIZE particles in Peano-Hilbert
- * order. Each tile stores a bounding box and max kernel radius (hmax).
+ * Tiles are runs of TILE_TARGET_SIZE members in Morton order (built in gpu_neighbor_list.cc).
+ * Each tile stores a bounding box and max kernel radius (hmax).
  * This provides finer spatial granularity than the top-level tree leaves
  * (~100-1000 leaves) while being cheaper than per-particle checks.
  *
@@ -50,7 +50,8 @@
 #endif
 
 /* The index describes its members as of one REFERENCE TIME, the time it was built.  Each member has a row
- * of SIDX_ROW_WIDTH doubles: where the drift puts it at that time (particle_motion_envelope, x,y,z), its
+ * of SIDX_ROW_WIDTH doubles: where the drift puts it at that time (particle_motion_envelope, x,y,z,
+ * unwrapped -- the position the pair test reads; the tile and BVH boxes hold its primary-box image), its
  * reach at its own clock, and the most that reach can be once it is drifted, from whatever clock
  * (nlr_particle_symmetric_radius_after_drift, never below the reach itself).  A tile or BVH node bounds its
  * members by a box around those positions, the range of velocities they can advance at from there, a
@@ -73,10 +74,9 @@ struct sfc_tile_t {
     double hw;                        /* largest member half-width at the reference time */
 };
 
-/* BVH node over SFC tiles. Built bottom-up from SFC-sorted tiles via
- * recursive midpoint subdivision. Enables O(log ntiles) spatial pruning
- * for neighbor search, critical for zoom-in sims with h/box ~ 10^-6.
- * Nodes are emitted children first, so every node's index is above its
+/* BVH node over the tiles: a midpoint split of the tile range, bounds the union of the children.
+ * Enables O(log ntiles) spatial pruning for neighbor search, critical for zoom-in sims with
+ * h/box ~ 10^-6.  Nodes are numbered children first, so every node's index is above its
  * children's and the root is the last node. */
 struct tile_bvh_node_t {
     double lo[3], hi[3];                  /* bounding box of subtree at the reference time */
@@ -87,11 +87,6 @@ struct tile_bvh_node_t {
     int left, right;                      /* children: >= 0 = internal node index, < 0 = -(tile_index+1) for leaf */
     int parent;                           /* -1 at the root */
 };
-
-/* Build BVH over tiles. Returns number of nodes; root is at index (nodes - 1).
- * bvh_out: allocated array of nodes (caller frees via myfree).  Sets each
- * tile's bvh_leaf and each node's parent. */
-int build_tile_bvh(sfc_tile_t *tiles, int ntiles, tile_bvh_node_t **bvh_out);
 
 /* The range of velocities member j can advance at from now on, per unit undilated drift interval, and its
  * residual speed: its transport velocity (particle_transport_velocity), both ends of the range.  Along an
@@ -131,46 +126,20 @@ struct sfc_walk_frame {
     int exact;
 };
 
-/* Build SFC tiles from particles in P[0..num_total-1].
- * Only includes particles matching type_bitmask with Mass > 0.
- * Particles must already be Peano-Hilbert sorted (from peano_hilbert_order()).
- *
- * Returns number of tiles. Caller must call free_sfc_tiles() when done.
- * pool_indices_out: allocated array of particle indices in SFC order (pool only)
- * tiles_out: allocated array of tiles
- * num_pool_out: number of particles in the pool
- *
- * radius_policy: per-particle reach for the rows and for tile->hmax /
- * tile->hmax_by_type[], applied via nlr_particle_symmetric_radius; the spatial
- * index passes the policy of the loop it serves, so its bands and rows are that
- * loop's pair reach.
- */
-/* Supply-pool membership: the particles eligible to be shipped as ghosts, in
- * P[] order (SFC-sorted, so the pool inherits that ordering).  Membership is
- * type-mask + positive mass ONLY — no positions, no radii — so a pool built
- * once stays valid while particles move.  Membership has a single definition,
- * shared by this and by build_sfc_tiles(); callers that need the pool WITHOUT
- * tile/BVH geometry call this directly.  Returns num_pool and, when
+/* Index membership: the particles of the types in type_bitmask with positive mass.  Membership has a
+ * single definition, shared by the spatial index build (gpu_neighbor_list.cc) and the ghost supply pool;
+ * it reads no position and no radius, so a pool built once stays valid while particles move. */
+KOKKOS_INLINE_FUNCTION
+int sfc_pool_member(const struct particle_data *p, int type_bitmask)
+{
+    if(!((1 << p->Type) & type_bitmask)) return 0;
+    if(p->Mass <= 0) return 0;
+    return 1;
+}
+
+/* The supply pool: the members of P[0..num_total), in P[] order.  Returns num_pool and, when
  * pool_indices_out is non-NULL, a mymalloc'd index array the caller owns. */
-/* Tile t covers pool slots [t*TILE_TARGET_SIZE, (t+1)*TILE_TARGET_SIZE): a
- * member's tile follows from its slot, which is what lets a raise find it. */
 int build_sfc_supply_pool(struct particle_data *P, int num_total,
                           int type_bitmask, int **pool_indices_out);
-
-/* ti_ref is the index's reference time and `tables` the drift tables that reach it.  rows_out receives,
- * per pool slot, the member's row (SIDX_ROW_WIDTH doubles, see above; mymalloc'd,
- * allocated after the tiles, so freed before them).  Returns the number of tiles, or -1 when a member's
- * motion cannot be bounded (a clock behind zero or past ti_ref, or a position or velocity that is not
- * finite): the arrays are then released and the index must not be built.  *all_current_out is 1 when
- * every member was already at ti_ref, so the rows are the members' positions and not predictions. */
-int build_sfc_tiles(struct particle_data *P, int num_total,
-                    int type_bitmask, int target_tile_size,
-                    sfc_tile_t **tiles_out, int **pool_indices_out,
-                    int *num_pool_out, double **rows_out,
-                    integertime ti_ref, const struct DriftKickTableView *tables,
-                    int *all_current_out,
-                    mode_b_radius_policy_t radius_policy);
-
-void free_sfc_tiles(sfc_tile_t *tiles, int *pool_indices);
 
 #endif /* SFC_TILES_H */

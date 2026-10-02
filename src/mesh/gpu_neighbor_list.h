@@ -57,6 +57,8 @@ struct gpu_spatial_index_t {
     double *d_compact_xyzh;
     int *d_slot_of;            /* [num_total] each particle's pool slot, -1 if not a member */
     int *d_level_nodes;        /* the BVH nodes by height, leaves first */
+    int *d_shear_folds;        /* [2 per slot] the x folds (up, down) that took each member to its primary-box
+                                  image, for its velocity range there; BOX_SHEARING > 1 only, else null */
     int *h_level_offsets;      /* [nlevels+1] where each height starts in d_level_nodes (host) */
     int nlevels;
     double *looseness;         /* largest tile growth per unit drift interval (SharedSpace scalar) */
@@ -64,7 +66,7 @@ struct gpu_spatial_index_t {
     int rows_are_positions = 0;/* every member was current at ti_ref: the rows are positions, not predictions */
     int rebuild_needed = 0;    /* a raise could not be applied: the next list build rebuilds the index */
     int num_total;  /* particle count when built; mismatch → invalidate */
-    int num_pool;
+    int num_pool;   /* slots: the tiles' runs of TILE_TARGET_SIZE, including the unused end of a partial tile */
     int valid;  /* 1 if built and usable */
     int dirty_handle = -1; /* gpu_dirty_tracker handle; -1 when not registered */
     /* Type bitmask used at the most recent build. The cached rows / pool only

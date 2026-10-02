@@ -57,6 +57,12 @@ static void gx_walk_drift_tables_refresh(void)
 #include "device_tree_walk.h"          /* the one device tree traversal */
 #include "../gravity/forcetree.h"       /* BITFLAG_TOPLEVEL, force_host_lazy_drift_ti */
 #include "../gravity/gpu_gravity_tree.h" /* node SoA + drift certification */
+#include "../gravity/gpu_morton_functions.h" /* Morton128 keys for the index build */
+#include "../gravity/ags_functions.h"        /* the AGS inputs of the after-drift reach rule */
+#include "../core/predict_functions.h"       /* box_wrap_position_to_primary_image */
+#include <Kokkos_Sort.hpp>
+#include <type_traits>
+#include <stdexcept>
 
 /* TILE_PERIODIC_X/Y/Z defined in sfc_tiles.h (included via gpu_neighbor_list.h) */
 
@@ -159,30 +165,6 @@ void gpu_step_sidx_invalidate_full(void)
 }
 
 
-/* An index that could not be built must not be left looking usable: the walk reads
- * its tiles, BVH and rows directly. Release what was built and leave the index
- * marked invalid, which is the signal every consumer already tests, so the caller
- * can hand back an empty neighbour list. gpu_spatial_index_free fences before
- * releasing device memory, so nothing is released under a running kernel. The
- * four host build buffers are arena allocations, released in reverse order
- * exactly as the success path does. */
-static void sidx_build_leave_invalid(gpu_spatial_index_t *idx, int num_total,
-                                     tile_bvh_node_t *h_bvh, double *h_rows, sfc_tile_t *h_tiles, int *h_pool,
-                                     const char *what, size_t bytes)
-{
-    myfree(h_bvh);
-    myfree(h_rows);
-    myfree(h_tiles);
-    myfree(h_pool);
-    gpu_spatial_index_free(idx);
-    char msg[256];
-    snprintf(msg, sizeof(msg),
-             "gpu_spatial_index_build: could not allocate %s (%.1f MB) for %d particles; "
-             "spatial index left unbuilt",
-             what, (double) bytes / (1024.0 * 1024.0), num_total);
-    gizmo_request_controlled_stop(7712, msg, __FILE__, __LINE__, __FUNCTION__);
-}
-
 /* How far a tile's box can grow per unit drift interval, relative to its own size or reach.  Once that
  * growth times the interval since the index was built passes SIDX_MAX_BOX_GROWTH, searching the kept
  * index costs more than rebuilding it.  Performance only: a value that lags a raise delays a rebuild and
@@ -204,190 +186,6 @@ double sidx_tile_looseness(const sfc_tile_t &tile)
     return w;
 }
 
-void gpu_spatial_index_build(struct particle_data *P_shared, int num_total,
-                             int type_bitmask, gpu_spatial_index_t *idx,
-                             const char *caller_label,
-                             mode_b_radius_policy_t radius_policy)
-{
-    GIZMO_GPU_ENSURE_ALL_FRESH();
-
-#if defined(BOX_PERIODIC)
-    /* Hard guard on the box lengths the wrap depends on.  The device predicates
-     * image through the canonical macros, which read the boxSize_ and boxHalf_
-     * lengths from
-     * this TU's AllDeviceMirror; if that mirror is unsynced they read zero,
-     * every wrapped separation collapses, the per-axis prunes go dead and the
-     * BVH silently degenerates into an exhaustive scan.  Fail loud at the call
-     * site so a regression in the mirror sync can never quietly cost the index.
-     * (Previously this checked the per-axis flags/box_sizes copies; those are
-     * gone with that API, but the failure mode belongs to the globals and is
-     * unchanged, so the guard now reads them directly.) */
-    {
-        const double box_len[3] = { boxSize_X, boxSize_Y, boxSize_Z };
-        const int    wraps[3]   = { TILE_PERIODIC_X, TILE_PERIODIC_Y, TILE_PERIODIC_Z };
-        for(int k = 0; k < 3; k++) {
-            if(wraps[k] && !(box_len[k] > 0.0)) {
-                printf("gpu_spatial_index_build: axis %d is periodic but its box length is %g "
-                       "(caller='%s'). Likely cause: this TU's AllDeviceMirror not synced from "
-                       "host All. Confirm gizmo_gpu_sync_all() has run for this timestep.\n",
-                       k, box_len[k], caller_label ? caller_label : "?");
-                fflush(stdout);
-                endrun(913004);
-            }
-        }
-    }
-#endif
-
-    /* Build SFC tiles + BVH on CPU.  Every member is described as of now, the index's reference time,
-     * where the drift puts it then (sfc_tiles.h); the build drifts nothing. */
-    const integertime ti_ref = gizmo_host_ti_current();
-    const struct DriftKickTableView host_tables = drift_kick_table_view_host();
-    sfc_tile_t *h_tiles;
-    int *h_pool;
-    int num_pool;
-    double *h_rows;
-    int all_current = 1;
-    int ntiles = build_sfc_tiles(P_shared, num_total, type_bitmask, TILE_TARGET_SIZE,
-                                 &h_tiles, &h_pool, &num_pool, &h_rows,
-                                 ti_ref, &host_tables, &all_current, radius_policy);
-    if(ntiles < 0) {
-        gpu_spatial_index_free(idx);
-        char msg[256];
-        snprintf(msg, sizeof(msg),
-                 "gpu_spatial_index_build (caller '%s'): a member's clock is outside [0, now] or its position "
-                 "or velocity is not finite, so no search can bound where it is; spatial index left unbuilt",
-                 caller_label ? caller_label : "?");
-        gizmo_request_controlled_stop(7740, msg, __FILE__, __LINE__, __FUNCTION__);
-        return;
-    }
-    idx->ntiles = ntiles;
-
-    tile_bvh_node_t *h_bvh;
-    int bvh_nnodes = build_tile_bvh(h_tiles, ntiles, &h_bvh);
-    idx->bvh_root = bvh_nnodes - 1;
-
-    /* The order a raise that touches most of the index widens it in: nodes by height, leaves first.
-     * Every node's index is above its children's, so one forward pass sets the heights. */
-    std::vector<int> height((size_t)(bvh_nnodes > 0 ? bvh_nnodes : 1), 0);
-    int nlevels = 0;
-    for(int nd = 0; nd < bvh_nnodes; nd++) {
-        height[nd] = (h_bvh[nd].left < 0) ? 0 : 1 + std::max(height[h_bvh[nd].left], height[h_bvh[nd].right]);
-        if(height[nd] + 1 > nlevels) {nlevels = height[nd] + 1;}
-    }
-    std::vector<int> level_offsets((size_t)nlevels + 1, 0), level_nodes((size_t)(bvh_nnodes > 0 ? bvh_nnodes : 1), 0);
-    for(int nd = 0; nd < bvh_nnodes; nd++) {level_offsets[height[nd] + 1]++;}
-    for(int L = 0; L < nlevels; L++) {level_offsets[L + 1] += level_offsets[L];}
-    {
-        std::vector<int> cursor(level_offsets.begin(), level_offsets.end() - 1);
-        for(int nd = 0; nd < bvh_nnodes; nd++) {level_nodes[cursor[height[nd]]++] = nd;}
-    }
-    double looseness = 0;
-    for(int t = 0; t < ntiles; t++) {const double w = sidx_tile_looseness(h_tiles[t]); if(w > looseness) {looseness = w;}}
-
-    /* Allocate kernel-read-path arrays in DEVICE_SPACE (CudaSpace HBM on GPU
-     * builds, falls back to SharedSpace elsewhere).  This eliminates HMM/TLB-
-     * miss overhead on the small-N kernel hot path where one thread does
-     * ~1000s of scattered reads through bvh/tiles/pool/rows — that
-     * scattered-UVM-access pattern is the suspected source of the residual
-     * 1.4s "fused_fnc" floor on 1-active-particle calls.  The host build arrays
-     * are transferred via Kokkos::deep_copy through unmanaged-View wrappers
-     * (cudaMemcpy under the hood on CUDA builds). */
-    int bvh_size = (2 * ntiles - 1);
-    if(bvh_size < 1) bvh_size = 1;
-    int pool_size = (num_pool > 0) ? num_pool : 1;
-    /* Sized to at least one element, as bvh_size and pool_size already are: a type
-     * mask that matches nothing would otherwise ask for zero bytes, and a request
-     * for none of something cannot be distinguished from a refusal. */
-    size_t sidx_tiles_bytes = (size_t)((ntiles > 0) ? ntiles : 1) * sizeof(sfc_tile_t);
-    size_t sidx_bvh_bytes   = (size_t) bvh_size * sizeof(tile_bvh_node_t);
-    size_t sidx_pool_bytes  = (size_t) pool_size * sizeof(int);
-    /* Rows are DOUBLE (positions x,y,z; reach in slot 3): float ABSOLUTE positions are invalid for
-     * GIZMO's ~1e11 dynamic range and must NOT decide neighbour inclusion (see §37/§38). */
-    size_t sidx_rows_bytes  = (size_t) pool_size * SIDX_ROW_WIDTH * sizeof(double);
-    size_t sidx_slot_bytes  = (size_t)((num_total > 0) ? num_total : 1) * sizeof(int);
-    size_t sidx_level_bytes = (size_t) bvh_size * sizeof(int);
-    size_t sidx_offs_bytes  = (size_t)(nlevels + 1) * sizeof(int);
-    idx->d_tiles = (sfc_tile_t *) gizmo_gpu_alloc_device(sidx_tiles_bytes, "ngl_sidx_dev_tiles");
-    if(!idx->d_tiles) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_rows, h_tiles, h_pool, "the device tile array", sidx_tiles_bytes); return;}
-    idx->d_bvh = (tile_bvh_node_t *) gizmo_gpu_alloc_device(sidx_bvh_bytes, "ngl_sidx_dev_bvh");
-    if(!idx->d_bvh) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_rows, h_tiles, h_pool, "the device tile BVH", sidx_bvh_bytes); return;}
-    idx->d_pool = (int *) gizmo_gpu_alloc_device(sidx_pool_bytes, "ngl_sidx_dev_pool");
-    if(!idx->d_pool) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_rows, h_tiles, h_pool, "the device tile membership pool", sidx_pool_bytes); return;}
-    idx->d_compact_xyzh = (double *) gizmo_gpu_alloc_device(sidx_rows_bytes, "ngl_sidx_dev_rows");
-    if(!idx->d_compact_xyzh) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_rows, h_tiles, h_pool, "the device member rows", sidx_rows_bytes); return;}
-    idx->d_slot_of = (int *) gizmo_gpu_alloc_device(sidx_slot_bytes, "ngl_sidx_dev_slot_of");
-    if(!idx->d_slot_of) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_rows, h_tiles, h_pool, "the device particle-to-slot map", sidx_slot_bytes); return;}
-    idx->d_level_nodes = (int *) gizmo_gpu_alloc_device(sidx_level_bytes, "ngl_sidx_dev_level_nodes");
-    if(!idx->d_level_nodes) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_rows, h_tiles, h_pool, "the device BVH level schedule", sidx_level_bytes); return;}
-    idx->h_level_offsets = (int *) gizmo_gpu_alloc_host(sidx_offs_bytes, "ngl_sidx_host_level_offsets");
-    if(!idx->h_level_offsets) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_rows, h_tiles, h_pool, "the BVH level offsets", sidx_offs_bytes); return;}
-    idx->looseness = (double *) gizmo_gpu_alloc_shared(sizeof(double), "ngl_sidx_looseness");
-    if(!idx->looseness) {sidx_build_leave_invalid(idx, num_total, h_bvh, h_rows, h_tiles, h_pool, "the looseness scalar", sizeof(double)); return;}
-
-    /* Stage host buffers into device memory.  On non-CUDA builds DEVICE_SPACE
-     * == SharedSpace and Kokkos::deep_copy reduces to a memcpy. */
-    {
-        using UV = Kokkos::MemoryTraits<Kokkos::Unmanaged>;
-        Kokkos::View<sfc_tile_t*,        Kokkos::HostSpace, UV>            h_tiles_v(h_tiles, ntiles);
-        Kokkos::View<sfc_tile_t*,        GIZMO_KOKKOS_DEVICE_SPACE, UV>    d_tiles_v(idx->d_tiles, ntiles);
-        Kokkos::View<tile_bvh_node_t*,   Kokkos::HostSpace, UV>            h_bvh_v(h_bvh, bvh_nnodes);
-        Kokkos::View<tile_bvh_node_t*,   GIZMO_KOKKOS_DEVICE_SPACE, UV>    d_bvh_v(idx->d_bvh, bvh_nnodes);
-        Kokkos::View<int*,               Kokkos::HostSpace, UV>            h_pool_v(h_pool, num_pool);
-        Kokkos::View<int*,               GIZMO_KOKKOS_DEVICE_SPACE, UV>    d_pool_v(idx->d_pool, num_pool);
-        Kokkos::View<double*,            Kokkos::HostSpace, UV>            h_rows_v(h_rows, (size_t) num_pool * SIDX_ROW_WIDTH);
-        Kokkos::View<double*,            GIZMO_KOKKOS_DEVICE_SPACE, UV>    d_rows_v(idx->d_compact_xyzh, (size_t) num_pool * SIDX_ROW_WIDTH);
-        Kokkos::View<int*,               Kokkos::HostSpace, UV>            h_level_v(level_nodes.data(), bvh_nnodes);
-        Kokkos::View<int*,               GIZMO_KOKKOS_DEVICE_SPACE, UV>    d_level_v(idx->d_level_nodes, bvh_nnodes);
-        Kokkos::deep_copy(d_tiles_v, h_tiles_v);
-        Kokkos::deep_copy(d_bvh_v,   h_bvh_v);
-        Kokkos::deep_copy(d_pool_v,  h_pool_v);
-        Kokkos::deep_copy(d_rows_v,  h_rows_v);
-        Kokkos::deep_copy(d_level_v, h_level_v);
-    }
-    memcpy(idx->h_level_offsets, level_offsets.data(), (size_t)(nlevels + 1) * sizeof(int));
-    *idx->looseness = looseness;
-
-    /* Each particle's pool slot, or -1: how a raise or a reach refresh handed particle indices finds the
-     * member's row and tile. */
-    {
-        int *slot_of = idx->d_slot_of;
-        const int *pool = idx->d_pool;
-        Kokkos::parallel_for("sidx_slot_of_clear", num_total, KOKKOS_LAMBDA(int i) {slot_of[i] = -1;});
-        Kokkos::parallel_for("sidx_slot_of_fill", num_pool, KOKKOS_LAMBDA(int s) {slot_of[pool[s]] = s;});
-        Kokkos::fence();
-        gizmo_gpu_check_last_error("sidx_slot_of", num_total);
-    }
-
-    /* Free the transient mymalloc'd build buffers in proper LIFO order
-     * (build_tile_bvh allocated h_bvh last; build_sfc_tiles allocated
-     * h_pool, then h_tiles, then h_rows). */
-    myfree(h_bvh);
-    myfree(h_rows);
-    myfree(h_tiles);
-    myfree(h_pool);
-
-    idx->bvh_nnodes = bvh_nnodes;
-    idx->nlevels = nlevels;
-    idx->num_pool = num_pool;
-    idx->num_total = num_total;
-    idx->cache_tbm = type_bitmask;
-    idx->cache_radius_policy = radius_policy;
-    idx->ghost_live_when_built       = ghost_pool_is_live();
-    idx->ghost_provenance_when_built = ghost_provenance_epoch();
-    idx->owned_epoch_when_built      = g_sidx_owned_epoch;
-    idx->ti_ref = ti_ref;
-    idx->rows_are_positions = all_current;
-    idx->rebuild_needed = 0;
-    idx->valid = 1;
-    /* Register this cache with the dirty tracker over [0, num_total). The rows
-     * were written from the live P[] under this cache's radius policy, and
-     * nothing between there and here can mutate it, so the range starts clean:
-     * the first refresh would recompute values it already holds. */
-    if(idx->dirty_handle >= 0) gpu_dirty_tracker_unregister(idx->dirty_handle);
-    idx->dirty_handle = gpu_dirty_tracker_register(0, num_total, 1);
-
-}
-
 void gpu_spatial_index_free(gpu_spatial_index_t *idx)
 {
     /* Ordering, not cleanup. kokkos_free does not synchronize, so releasing a
@@ -398,7 +196,7 @@ void gpu_spatial_index_free(gpu_spatial_index_t *idx)
      * the rule in any one of those leaves the next caller free to reintroduce
      * the hazard. Skipped when there is nothing device-side to release. */
     if(idx->d_compact_xyzh || idx->d_pool || idx->d_bvh || idx->d_tiles || idx->d_slot_of || idx->d_level_nodes ||
-       idx->looseness) {
+       idx->d_shear_folds || idx->looseness) {
         Kokkos::fence();
     }
     if(idx->d_compact_xyzh) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(idx->d_compact_xyzh); idx->d_compact_xyzh = NULL;}
@@ -407,6 +205,7 @@ void gpu_spatial_index_free(gpu_spatial_index_t *idx)
     if(idx->d_tiles) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(idx->d_tiles); idx->d_tiles = NULL;}
     if(idx->d_slot_of) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(idx->d_slot_of); idx->d_slot_of = NULL;}
     if(idx->d_level_nodes) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(idx->d_level_nodes); idx->d_level_nodes = NULL;}
+    if(idx->d_shear_folds) {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(idx->d_shear_folds); idx->d_shear_folds = NULL;}
     if(idx->h_level_offsets) {Kokkos::kokkos_free<Kokkos::HostSpace>(idx->h_level_offsets); idx->h_level_offsets = NULL;}
     if(idx->looseness) {Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(idx->looseness); idx->looseness = NULL;}
     idx->bvh_nnodes = 0;
@@ -496,6 +295,606 @@ static void sidx_widen_all_levels(gpu_spatial_index_t *idx)
     gizmo_gpu_check_last_error("sidx_widen_level", idx->nlevels);
 }
 
+/* ======================================================================================================
+ * Building a segment of the index.
+ *
+ * One builder for every route, templated on where it runs: the host (its working space in the memory
+ * arena, then one copy of the finished index to the device) or the device (built in place).  The steps:
+ *   1. the members of the source range, compacted in particle order by a prefix sum;
+ *   2. one key per member: its position at the reference time, in its primary-box image, on the Morton
+ *      curve, with members outside the key extent in a class of their own after the rest;
+ *   3. members and keys sorted together (only the 16-byte key and the member index move);
+ *   4. one team per tile folds its members, recomputing each from the particle data, into the rows, the
+ *      membership pool and the tile bounds;
+ *   5. the BVH: its shape depends only on the number of tiles (midpoint split of the tile range), and its
+ *      bounds are the union of its children, level by level from the leaves.
+ * Two positions per member, for two jobs.  The ROW is where the drift puts it, unwrapped -- the position
+ * the pair test reads, so an exact frame's list is exact.  The tile and BVH boxes hold its primary-box
+ * IMAGE, so a tile stays compact however many of its members have crossed a box face since the last
+ * wrapping; the walk tests boxes and rows through the canonical wrap either way.  Members outside the
+ * key extent start at a fresh tile, so they never widen the tile of a member inside it.
+ * ====================================================================================================== */
+
+/* Where member j is at the reference time ti_ref, unwrapped: the drift's position (particle_motion_envelope)
+ * and how far from it the member can be.  A member the envelope will not predict because a reflecting or
+ * outflow wall may turn it round is bounded instead by its speed from where it stands.  Returns 1 when its
+ * clock cannot be advanced to ti_ref or its position is not finite: no search can bound it. */
+KOKKOS_INLINE_FUNCTION
+int sidx_member_position(int j, const struct particle_data *P, const struct gas_cell_data *cells, integertime ti_ref,
+                         const struct DriftKickTableView &tables, double center[3], double *hw, int *current)
+{
+    const integertime ti_j = P[j].Ti_current;
+    if(ti_j < 0 || ti_j > ti_ref) {return 1;}
+    const int motion = particle_motion_envelope(j, P, cells, ti_ref, &tables, center, hw);
+    if(motion == PARTICLE_MOTION_UNBOUNDED) {
+        const double dl = motion_bound_widening(particle_motion_speed_bound(j, P, cells), ti_j, ti_ref, &tables);
+        if(!motion_bound_widening_is_valid(dl)) {return 1;}
+        for(int k = 0; k < 3; k++) {center[k] = (double)P[j].Pos[k];}
+        *hw = 0.5 * dl + motion_envelope_rounding_floor(center, 0.5 * dl);
+    }
+    for(int k = 0; k < 3; k++) {if(!(center[k] - center[k] == 0.0)) {return 1;}}   /* NaN or Inf, fast-math safe */
+    *current = (motion == PARTICLE_MOTION_CURRENT);
+    return 0;
+}
+
+/* The primary-box image of a member's unwrapped position, and the half-width its box needs there: its own,
+ * plus the rounding of the fold, at the largest scale the fold worked at -- the unwrapped and the folded
+ * coordinates, the box lengths and the shearing offset -- never at the folded result alone, which can be
+ * tiny where the fold rounded at the box length. */
+KOKKOS_INLINE_FUNCTION
+void sidx_member_image(const double center[3], double hw, double image[3], double *box_hw, int *folds_up, int *folds_down)
+{
+    Vec3<MyDouble> img = {{center[0], center[1], center[2]}};
+    const struct box_wrap_x_folds folds = box_wrap_position_to_primary_image(img);
+    *folds_up = folds.up_from_below; *folds_down = folds.down_from_above;
+    int moved = 0;
+    for(int k = 0; k < 3; k++) {image[k] = img[k]; if(image[k] != center[k]) {moved = 1;}}
+    *box_hw = hw;
+    if(moved) {
+        double scale = hw;
+        for(int k = 0; k < 3; k++) {if(fabs(center[k]) > scale) {scale = fabs(center[k]);}}
+#if defined(BOX_PERIODIC)
+        if(boxSize_X > scale) {scale = boxSize_X;}
+        if(boxSize_Y > scale) {scale = boxSize_Y;}
+        if(boxSize_Z > scale) {scale = boxSize_Z;}
+#endif
+#if defined(BOX_SHEARING) && (BOX_SHEARING > 1)
+        if(fabs(Shearing_Box_Pos_Offset) > scale) {scale = fabs(Shearing_Box_Pos_Offset);}
+#endif
+        *box_hw += motion_envelope_rounding_floor(image, scale);
+    }
+}
+
+/* A member's velocity range must hold its motion in both frames the index reads it in: unwrapped, where the
+ * leaf moves its row, and in its primary-box image, where its tile's box moves.  The two differ only in a
+ * shearing box with a position offset (BOX_SHEARING > 1): there the image of a member folded across an x face
+ * moves, along the shearing coordinate, at its velocity shifted by the shearing velocity offset once per fold,
+ * up folds first -- the shift the box wrapping gives the velocity itself (do_box_wrapping).  So the range is
+ * widened to cover the shifted velocity as well. */
+KOKKOS_INLINE_FUNCTION
+void sidx_image_velocity_union(double u_lo[3], double u_hi[3], int folds_up, int folds_down)
+{
+#if defined(BOX_SHEARING) && (BOX_SHEARING > 1)
+    const int k = BOX_SHEARING_PHI_COORDINATE;
+    double lo = u_lo[k], hi = u_hi[k];
+    for(int f = 0; f < folds_up; f++) {lo -= Shearing_Box_Vel_Offset; hi -= Shearing_Box_Vel_Offset;}
+    for(int f = 0; f < folds_down; f++) {lo += Shearing_Box_Vel_Offset; hi += Shearing_Box_Vel_Offset;}
+    if(lo < u_lo[k]) {u_lo[k] = lo;}
+    if(hi > u_hi[k]) {u_hi[k] = hi;}
+#else
+    (void)u_lo; (void)u_hi; (void)folds_up; (void)folds_down;
+#endif
+}
+
+/* What the index holds about one member at its reference time ti_ref. */
+struct SidxMember {
+    double center[3];       /* the row: unwrapped, where the drift puts it at ti_ref */
+    double hw;              /* how far from there it can be */
+    double image[3];        /* its primary-box image, which its tile's box holds */
+    double box_hw;          /* the half-width its box needs at the image */
+    double u_lo[3], u_hi[3];/* the velocity range it can advance at, in both frames (sidx_image_velocity_union) */
+    double rho;             /* its residual speed */
+    double r, r_drifted;    /* its reach at its own clock, and the most it can be once drifted */
+    int type;
+    int current;            /* already at ti_ref */
+    int folds_up, folds_down;
+};
+
+/* The one rule for what the index holds about member j.  Returns 1 when no search can bound it. */
+KOKKOS_INLINE_FUNCTION
+int sidx_describe_member(int j, struct particle_data *P, const struct gas_cell_data *cells,
+                         mode_b_radius_policy_t policy, integertime ti_ref,
+                         const struct DriftKickTableView &tables, double growth, double kernel_floor,
+                         struct SidxMember &m)
+{
+    if(sidx_member_position(j, P, cells, ti_ref, tables, m.center, &m.hw, &m.current)) {return 1;}
+    if(sfc_member_motion_range(j, P, cells, m.u_lo, m.u_hi, &m.rho)) {return 1;}
+    sidx_member_image(m.center, m.hw, m.image, &m.box_hw, &m.folds_up, &m.folds_down);
+    sidx_image_velocity_union(m.u_lo, m.u_hi, m.folds_up, m.folds_down);
+    m.r = nlr_particle_symmetric_radius(P[j], policy);
+    m.r_drifted = nlr_particle_symmetric_radius_after_drift_P(j, P, growth, kernel_floor, policy);
+    if(m.r_drifted < m.r) {m.r_drifted = m.r;}
+    m.type = (int)P[j].Type;
+    return 0;
+}
+
+/* Widen a box (a tile or a node) to cover `s`, its position bounds as well as what sidx_widen covers. */
+template <class Box, class Src>
+KOKKOS_INLINE_FUNCTION
+void sidx_union_into(Box *b, const Src &s)
+{
+    for(int k = 0; k < 3; k++) {
+        if(s.lo[k] < b->lo[k]) {Kokkos::atomic_min(&b->lo[k], s.lo[k]);}
+        if(s.hi[k] > b->hi[k]) {Kokkos::atomic_max(&b->hi[k], s.hi[k]);}
+    }
+    sidx_widen(b, s);
+}
+
+/* A tile or node that covers nothing: bounds inverted, so a union is neutral and a gap test always fails. */
+template <class Box>
+KOKKOS_INLINE_FUNCTION
+void sidx_box_empty(Box *b)
+{
+    for(int k = 0; k < 3; k++) {
+        b->lo[k] = MAX_REAL_NUMBER; b->hi[k] = -MAX_REAL_NUMBER;
+        b->u_min[k] = MAX_REAL_NUMBER; b->u_max[k] = -MAX_REAL_NUMBER;
+    }
+    b->rho = 0; b->hmax = 0;
+    for(int t = 0; t < TILE_NUM_PTYPES; t++) {b->hmax_by_type[t] = 0;}
+}
+
+/* One member's contribution to its tile, in the form sidx_union_into reads. */
+struct SidxMemberBox {
+    double lo[3], hi[3], u_min[3], u_max[3], rho, hmax, hmax_by_type[TILE_NUM_PTYPES];
+};
+
+/* The class bit: members outside the key extent sort after every member inside it. */
+static constexpr uint64_t SIDX_KEY_OUTSIDE = (uint64_t)1 << 63;
+
+/* The extent keys are measured against: a cube from `corner` with side `len`. */
+struct SidxKeyFrame {
+    double corner[3];
+    double len;
+};
+
+/* A member's key, from its primary-box image.  In a periodic box every image lies inside the box, so no
+ * member is outside; otherwise outside means outside the extent the domain was built on, by the same
+ * test the drift and the decomposition use (position_outside_domain_extent). */
+KOKKOS_INLINE_FUNCTION
+Morton128 sidx_member_key(const double image[3], const struct SidxKeyFrame &frame)
+{
+#if defined(BOX_PERIODIC)
+    const int outside = 0;
+#else
+    const int outside = position_outside_domain_extent(image[0], image[1], image[2],
+                                                       frame.corner[0], frame.corner[1], frame.corner[2], frame.len);
+#endif
+    uint64_t q[3];
+    for(int k = 0; k < 3; k++) {
+        double u = (frame.len > 0) ? (image[k] - frame.corner[k]) / frame.len + 1.0 : 1.0;
+        if(!(u >= 1.0)) {u = 1.0;}
+        if(!(u < 2.0))  {u = 1.9999999999999998;}
+        q[k] = gpu_morton_double_to_int42(u);
+    }
+    Morton128 key = gpu_morton_encode128(q[0], q[1], q[2]);
+    if(outside) {key.hi |= SIDX_KEY_OUTSIDE;}
+    return key;
+}
+
+/* The shape of the BVH over ntiles tiles: a midpoint split of the tile range, nodes numbered children
+ * first so the root is last.  Depends only on ntiles, so it is set out on the host as integers. */
+struct SidxBvhShape {
+    std::vector<int> left, right, parent, leaf_of_tile, level_nodes, level_offsets;
+    int nnodes = 0, nlevels = 0;
+};
+
+static int sidx_bvh_shape_recursive(SidxBvhShape &s, int t0, int t1, std::vector<int> &height)
+{
+    if(t1 - t0 == 1) {
+        const int nd = s.nnodes++;
+        s.left[nd] = -(t0 + 1); s.right[nd] = -(t0 + 1); s.parent[nd] = -1; height[nd] = 0;
+        s.leaf_of_tile[t0] = nd;
+        return nd;
+    }
+    const int mid = (t0 + t1) / 2;
+    const int l = sidx_bvh_shape_recursive(s, t0, mid, height);
+    const int r = sidx_bvh_shape_recursive(s, mid, t1, height);
+    const int nd = s.nnodes++;
+    s.left[nd] = l; s.right[nd] = r; s.parent[nd] = -1;
+    s.parent[l] = nd; s.parent[r] = nd;
+    height[nd] = 1 + std::max(height[l], height[r]);
+    return nd;
+}
+
+static void sidx_bvh_shape(SidxBvhShape &s, int ntiles)
+{
+    const int cap = 2 * ntiles - 1;
+    s.left.assign(cap, 0); s.right.assign(cap, 0); s.parent.assign(cap, -1); s.leaf_of_tile.assign(ntiles, -1);
+    std::vector<int> height(cap, 0);
+    s.nnodes = 0;
+    sidx_bvh_shape_recursive(s, 0, ntiles, height);
+    s.nlevels = 0;
+    for(int nd = 0; nd < s.nnodes; nd++) {if(height[nd] + 1 > s.nlevels) {s.nlevels = height[nd] + 1;}}
+    s.level_offsets.assign(s.nlevels + 1, 0);
+    s.level_nodes.assign(s.nnodes, 0);
+    for(int nd = 0; nd < s.nnodes; nd++) {s.level_offsets[height[nd] + 1]++;}
+    for(int L = 0; L < s.nlevels; L++) {s.level_offsets[L + 1] += s.level_offsets[L];}
+    std::vector<int> cursor(s.level_offsets.begin(), s.level_offsets.end() - 1);
+    for(int nd = 0; nd < s.nnodes; nd++) {s.level_nodes[cursor[height[nd]]++] = nd;}
+}
+
+/* What a build reports besides the index itself. */
+struct SidxBuildReport {
+    int refused;          /* a member no search can bound: the index is left unbuilt */
+    int all_current;      /* every member was at ti_ref: the rows are positions, not predictions */
+    int n_outside;        /* members outside the key extent */
+    int n_outside_owned;  /* of those, the rank's own particles */
+    size_t bytes_failed;  /* the request that could not be had, when one could not */
+    char failure[160];    /* what failed, when it was not a request of known size */
+};
+
+/* The build's working space, released when the build returns, on every path.  On the host it comes from
+ * the memory arena (so the memory ledger and the arena sizing see it, as they saw the host build this
+ * replaces) and is released in reverse; on the device, from the device allocator. */
+template <bool kStageOnHost>
+struct SidxScratch {
+    static constexpr int CAPACITY = 16;   /* more than the build ever holds at once */
+    void *held[CAPACITY];
+    int n = 0;
+    void *take(size_t bytes, const char *label) {
+        if(n >= CAPACITY) {throw std::runtime_error("index build working space: more blocks than it holds");}
+        void *p;
+        if(kStageOnHost) {p = mymalloc(label, bytes > 0 ? bytes : 1);}
+        else {p = Kokkos::kokkos_malloc<GIZMO_KOKKOS_DEVICE_SPACE>(label, bytes > 0 ? bytes : 1);}
+        held[n++] = p;
+        return p;
+    }
+    int mark() const {return n;}
+    void release_to(int m) {
+        while(n > m) {
+            void *p = held[--n];
+            if(kStageOnHost) {myfree(p);} else {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(p);}
+        }
+    }
+    ~SidxScratch() {release_to(0);}
+};
+
+/* Allocate the arrays the index keeps, on the device.  Returns 0; 1 when one could not be had (the index
+ * is then released and the report names the request). */
+static int sidx_alloc_kept(gpu_spatial_index_t *idx, int ntiles, int nnodes, int nslots, size_t n_slot_of,
+                           int nlevels, struct SidxBuildReport *report)
+{
+    struct {void **dst; size_t bytes; const char *label;} kept[] = {
+        {(void **)&idx->d_tiles, (size_t)ntiles * sizeof(sfc_tile_t), "ngl_sidx_dev_tiles"},
+        {(void **)&idx->d_bvh, (size_t)nnodes * sizeof(tile_bvh_node_t), "ngl_sidx_dev_bvh"},
+        {(void **)&idx->d_pool, (size_t)nslots * sizeof(int), "ngl_sidx_dev_pool"},
+        {(void **)&idx->d_compact_xyzh, (size_t)nslots * SIDX_ROW_WIDTH * sizeof(double), "ngl_sidx_dev_rows"},
+        {(void **)&idx->d_slot_of, n_slot_of * sizeof(int), "ngl_sidx_dev_slot_of"},
+        {(void **)&idx->d_level_nodes, (size_t)nnodes * sizeof(int), "ngl_sidx_dev_level_nodes"}};
+    for(auto &k : kept) {
+        *k.dst = gizmo_gpu_alloc_device(k.bytes, k.label);
+        if(!*k.dst) {report->bytes_failed = k.bytes; gpu_spatial_index_free(idx); return 1;}
+    }
+#if defined(BOX_SHEARING) && (BOX_SHEARING > 1)
+    idx->d_shear_folds = (int *) gizmo_gpu_alloc_device((size_t)nslots * 2 * sizeof(int), "ngl_sidx_dev_shear_folds");
+    if(!idx->d_shear_folds) {report->bytes_failed = (size_t)nslots * 2 * sizeof(int); gpu_spatial_index_free(idx); return 1;}
+#endif
+    idx->h_level_offsets = (int *) gizmo_gpu_alloc_host((size_t)(nlevels + 1) * sizeof(int), "ngl_sidx_host_level_offsets");
+    if(!idx->h_level_offsets) {report->bytes_failed = (size_t)(nlevels + 1) * sizeof(int); gpu_spatial_index_free(idx); return 1;}
+    idx->looseness = (double *) gizmo_gpu_alloc_shared(sizeof(double), "ngl_sidx_looseness");
+    if(!idx->looseness) {report->bytes_failed = sizeof(double); gpu_spatial_index_free(idx); return 1;}
+    return 0;
+}
+
+/* Build the index over particles [0, num_total) into idx.  kStageOnHost: run on the host with the working
+ * space in the memory arena, then copy the index to the device once; otherwise run on the device and build
+ * the index in place.  Returns 0; 1 when a member cannot be bounded; 2 when memory could not be had; 3 when
+ * the build failed otherwise (report->failure says how).  On 1, 2 or 3 the index is left invalid. */
+template <class Exec, bool kStageOnHost>
+static int sidx_build_segment(struct particle_data *P, struct gas_cell_data *cells, int num_total, int num_owned,
+                              int type_bitmask, mode_b_radius_policy_t policy, integertime ti_ref,
+                              const struct DriftKickTableView &tables, const struct SidxKeyFrame &frame,
+                              gpu_spatial_index_t *idx, struct SidxBuildReport *report)
+{
+    using Mem = typename std::conditional<kStageOnHost, Kokkos::HostSpace, GIZMO_KOKKOS_DEVICE_SPACE>::type;
+    using UV = Kokkos::MemoryTraits<Kokkos::Unmanaged>;
+    const double growth = kernel_radius_drift_max_growth_factor(), kernel_floor = All.MinKernelRadius;
+    report->refused = 0; report->all_current = 1; report->n_outside = 0; report->n_outside_owned = 0;
+    report->bytes_failed = 0; report->failure[0] = 0;
+    SidxScratch<kStageOnHost> scratch;
+    try {
+        /* The member count first, so that on the host the index can be staged at its largest possible size
+         * BEFORE the build's transients: the arena is a stack, and the transients (above the stage) are then
+         * released before the index is allocated on the device. */
+        int members_counted = 0;
+        Kokkos::parallel_reduce("sidx_build_count", Kokkos::RangePolicy<Exec>(0, num_total),
+                                KOKKOS_LAMBDA(int i, int &c) {if(sfc_pool_member(&P[i], type_bitmask)) {c++;}}, members_counted);
+        const int ntiles_max = (members_counted + TILE_TARGET_SIZE - 1) / TILE_TARGET_SIZE + 1;   /* + the fresh tile outliers start */
+        const int nslots_max = ntiles_max * TILE_TARGET_SIZE, nnodes_max = 2 * ntiles_max - 1;
+        const size_t n_slot_of = (size_t)(num_total > 0 ? num_total : 1);
+        const size_t n_folds_max = (size_t)nslots_max * 2;
+        void *p_tiles = NULL, *p_bvh = NULL, *p_pool = NULL, *p_rows = NULL, *p_slot = NULL, *p_level = NULL, *p_folds = NULL;
+        if(kStageOnHost) {
+            p_tiles = scratch.take((size_t)ntiles_max * sizeof(sfc_tile_t), "ngl_sidx_stage_tiles");
+            p_bvh = scratch.take((size_t)nnodes_max * sizeof(tile_bvh_node_t), "ngl_sidx_stage_bvh");
+            p_pool = scratch.take((size_t)nslots_max * sizeof(int), "ngl_sidx_stage_pool");
+            p_rows = scratch.take((size_t)nslots_max * SIDX_ROW_WIDTH * sizeof(double), "ngl_sidx_stage_rows");
+            p_slot = scratch.take(n_slot_of * sizeof(int), "ngl_sidx_stage_slot_of");
+            p_level = scratch.take((size_t)nnodes_max * sizeof(int), "ngl_sidx_stage_level_nodes");
+#if defined(BOX_SHEARING) && (BOX_SHEARING > 1)
+            p_folds = scratch.take(n_folds_max * sizeof(int), "ngl_sidx_stage_shear_folds");
+#endif
+        }
+        const int transients = scratch.mark();
+        /* 1. members, compacted in particle order */
+        const size_t n_scan = (size_t)num_total + 1;
+        Kokkos::View<int*, Mem, UV> first_member((int *)scratch.take(n_scan * sizeof(int), "ngl_sidx_build_scan"), n_scan);
+        Kokkos::View<int*, Mem, UV> tally((int *)scratch.take(4 * sizeof(int), "ngl_sidx_build_tally"), 4);   /* refused, not current, outside, outside owned */
+        Kokkos::deep_copy(tally, 0);
+        Kokkos::parallel_scan("sidx_build_members", Kokkos::RangePolicy<Exec>(0, num_total),
+                              KOKKOS_LAMBDA(int i, int &acc, const bool final) {
+            if(final) {first_member(i) = acc;}
+            if(sfc_pool_member(&P[i], type_bitmask)) {acc++;}
+            if(final && i == num_total - 1) {first_member(num_total) = acc;}
+        });
+        int num_members = 0;
+        if(num_total > 0) {Kokkos::deep_copy(num_members, Kokkos::subview(first_member, (size_t)num_total));}
+        if(num_members != members_counted) {throw std::runtime_error("index build: membership changed between its passes");}
+        const size_t n_mem = (size_t)(num_members > 0 ? num_members : 1);
+        Kokkos::View<int*, Mem, UV> member((int *)scratch.take(n_mem * sizeof(int), "ngl_sidx_build_members"), n_mem);
+        Kokkos::View<Morton128*, Mem, UV> key((Morton128 *)scratch.take(n_mem * sizeof(Morton128), "ngl_sidx_build_keys"), n_mem);
+        /* 2. keys: only the position is needed here */
+        Kokkos::parallel_for("sidx_build_keys", Kokkos::RangePolicy<Exec>(0, num_total), KOKKOS_LAMBDA(int i) {
+            if(!sfc_pool_member(&P[i], type_bitmask)) {return;}
+            const int s = first_member(i);
+            member(s) = i;
+            double center[3], hw = 0.0, image[3], box_hw;
+            int current = 0, folds_up = 0, folds_down = 0;
+            if(sidx_member_position(i, P, cells, ti_ref, tables, center, &hw, &current)) {
+                Kokkos::atomic_add(&tally(0), 1); key(s).hi = 0; key(s).lo = 0; return;
+            }
+            if(!current) {Kokkos::atomic_add(&tally(1), 1);}
+            sidx_member_image(center, hw, image, &box_hw, &folds_up, &folds_down);
+            key(s) = sidx_member_key(image, frame);
+            if(key(s).hi & SIDX_KEY_OUTSIDE) {Kokkos::atomic_add(&tally(2), 1); if(i < num_owned) {Kokkos::atomic_add(&tally(3), 1);}}
+        });
+        Exec().fence();
+        gizmo_gpu_check_last_error("sidx_build_keys", num_total);
+        int tally_h[4];
+        {
+            auto t = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), tally);
+            for(int q = 0; q < 4; q++) {tally_h[q] = t(q);}
+        }
+        report->all_current = (tally_h[1] == 0);
+        report->n_outside = tally_h[2]; report->n_outside_owned = tally_h[3];
+        if(tally_h[0] > 0) {report->refused = 1; gpu_spatial_index_free(idx); return 1;}
+        /* 3. sort: only the key and the member index move */
+        if(num_members > 1) {
+            Kokkos::Experimental::sort_by_key(Exec(), Kokkos::subview(key, std::make_pair(0, num_members)),
+                                              Kokkos::subview(member, std::make_pair(0, num_members)), Morton128Less{});
+            Exec().fence();
+        }
+        /* 4. tiles: members inside the extent fill tiles from slot 0; the rest start at a fresh tile */
+        const int n_inside = num_members - report->n_outside;
+        const int tiles_inside = (n_inside + TILE_TARGET_SIZE - 1) / TILE_TARGET_SIZE;
+        const int tiles_outside = (report->n_outside + TILE_TARGET_SIZE - 1) / TILE_TARGET_SIZE;
+        const int ntiles = (tiles_inside + tiles_outside > 0) ? tiles_inside + tiles_outside : 1;
+        const int nslots = ntiles * TILE_TARGET_SIZE;
+        SidxBvhShape shape;
+        sidx_bvh_shape(shape, ntiles);
+        const size_t n_folds = (size_t)nslots * 2;
+        /* What the index keeps: on the device route allocated now and built in place; on the host route
+         * already staged above, and copied once below. */
+        if(!kStageOnHost) {
+            if(sidx_alloc_kept(idx, ntiles, shape.nnodes, nslots, n_slot_of, shape.nlevels, report)) {return 2;}
+            p_tiles = idx->d_tiles; p_bvh = idx->d_bvh; p_pool = idx->d_pool; p_rows = idx->d_compact_xyzh;
+            p_slot = idx->d_slot_of; p_level = idx->d_level_nodes; p_folds = idx->d_shear_folds;
+        }
+        Kokkos::View<sfc_tile_t*, Mem, UV> tiles((sfc_tile_t *)p_tiles, (size_t)ntiles);
+        Kokkos::View<tile_bvh_node_t*, Mem, UV> bvh((tile_bvh_node_t *)p_bvh, (size_t)shape.nnodes);
+        Kokkos::View<int*, Mem, UV> pool((int *)p_pool, (size_t)nslots);
+        Kokkos::View<double*, Mem, UV> rows((double *)p_rows, (size_t)nslots * SIDX_ROW_WIDTH);
+        Kokkos::View<int*, Mem, UV> slot_of((int *)p_slot, n_slot_of);
+        Kokkos::View<int*, Mem, UV> level_nodes((int *)p_level, (size_t)shape.nnodes);
+        Kokkos::View<int*, Mem, UV> shear_folds((int *)p_folds, p_folds ? n_folds : 0);
+        Kokkos::deep_copy(pool, -1);
+        Kokkos::deep_copy(slot_of, -1);
+        Kokkos::parallel_for("sidx_build_tiles_empty", Kokkos::RangePolicy<Exec>(0, ntiles), KOKKOS_LAMBDA(int t) {
+            sfc_tile_t *tile = &tiles(t);
+            sidx_box_empty(tile);
+            tile->first = t * TILE_TARGET_SIZE; tile->count = 0; tile->bvh_leaf = -1; tile->hw = 0;
+        });
+        Exec().fence();
+        Kokkos::parallel_for("sidx_build_fold", Kokkos::TeamPolicy<Exec>(ntiles, Kokkos::AUTO),
+                             KOKKOS_LAMBDA(const typename Kokkos::TeamPolicy<Exec>::member_type &team) {
+            const int t = team.league_rank();
+            const int k0 = (t < tiles_inside) ? t * TILE_TARGET_SIZE : n_inside + (t - tiles_inside) * TILE_TARGET_SIZE;
+            const int k_end = (t < tiles_inside) ? n_inside : num_members;
+            const int k1 = (k0 + TILE_TARGET_SIZE < k_end) ? k0 + TILE_TARGET_SIZE : k_end;
+            sfc_tile_t *tile = &tiles(t);
+            Kokkos::single(Kokkos::PerTeam(team), [&]() {tile->count = (k1 > k0) ? k1 - k0 : 0;});
+            Kokkos::parallel_for(Kokkos::TeamThreadRange(team, k0, (k1 > k0) ? k1 : k0), [&](int k) {
+                const int j = member(k), slot = t * TILE_TARGET_SIZE + (k - k0);
+                struct SidxMember m;
+                sidx_describe_member(j, P, cells, policy, ti_ref, tables, growth, kernel_floor, m);
+                double *row = &rows((size_t)slot * SIDX_ROW_WIDTH);
+                row[0] = m.center[0]; row[1] = m.center[1]; row[2] = m.center[2]; row[3] = m.r; row[4] = m.r_drifted;
+                pool(slot) = j; slot_of(j) = slot;
+                if(shear_folds.extent(0) > 0) {
+                    shear_folds(2 * (size_t)slot) = m.folds_up; shear_folds(2 * (size_t)slot + 1) = m.folds_down;
+                }
+                struct SidxMemberBox b;
+                for(int d = 0; d < 3; d++) {
+                    b.lo[d] = m.image[d] - m.box_hw; b.hi[d] = m.image[d] + m.box_hw;
+                    b.u_min[d] = m.u_lo[d]; b.u_max[d] = m.u_hi[d];
+                }
+                b.rho = m.rho; b.hmax = m.r_drifted;
+                for(int q = 0; q < TILE_NUM_PTYPES; q++) {b.hmax_by_type[q] = 0;}
+                if(m.type >= 0 && m.type < TILE_NUM_PTYPES) {b.hmax_by_type[m.type] = m.r_drifted;}
+                sidx_union_into(tile, b);
+                if(m.hw > tile->hw) {Kokkos::atomic_max(&tile->hw, m.hw);}
+            });
+        });
+        Exec().fence();
+        gizmo_gpu_check_last_error("sidx_build_fold", ntiles);
+        /* 5. the BVH: its shape from the host, its bounds level by level from the leaves */
+        {
+            std::vector<tile_bvh_node_t> h_bvh((size_t)shape.nnodes);
+            for(int nd = 0; nd < shape.nnodes; nd++) {
+                sidx_box_empty(&h_bvh[nd]);
+                h_bvh[nd].left = shape.left[nd]; h_bvh[nd].right = shape.right[nd]; h_bvh[nd].parent = shape.parent[nd];
+            }
+            Kokkos::deep_copy(bvh, Kokkos::View<const tile_bvh_node_t*, Kokkos::HostSpace, UV>(h_bvh.data(), (size_t)shape.nnodes));
+            Kokkos::deep_copy(level_nodes, Kokkos::View<const int*, Kokkos::HostSpace, UV>(shape.level_nodes.data(), (size_t)shape.nnodes));
+            Kokkos::View<int*, Mem, UV> leaf_of_tile((int *)scratch.take((size_t)ntiles * sizeof(int), "ngl_sidx_build_leaf_of_tile"), (size_t)ntiles);
+            Kokkos::deep_copy(leaf_of_tile, Kokkos::View<const int*, Kokkos::HostSpace, UV>(shape.leaf_of_tile.data(), (size_t)ntiles));
+            Kokkos::parallel_for("sidx_build_tile_leaf", Kokkos::RangePolicy<Exec>(0, ntiles), KOKKOS_LAMBDA(int t) {
+                tiles(t).bvh_leaf = leaf_of_tile(t);
+            });
+            Exec().fence();
+        }
+        for(int L = 0; L < shape.nlevels; L++) {
+            Kokkos::parallel_for("sidx_build_bvh_level",
+                                 Kokkos::RangePolicy<Exec>(shape.level_offsets[L], shape.level_offsets[L + 1]),
+                                 KOKKOS_LAMBDA(int q) {
+                tile_bvh_node_t *node = &bvh(level_nodes(q));
+                if(node->left < 0) {sidx_union_into(node, tiles(-(node->left + 1)));}
+                else {sidx_union_into(node, bvh(node->left)); sidx_union_into(node, bvh(node->right));}
+            });
+            Exec().fence();
+        }
+        gizmo_gpu_check_last_error("sidx_build_bvh_level", shape.nlevels);
+        double looseness = 0;
+        Kokkos::parallel_reduce("sidx_build_looseness", Kokkos::RangePolicy<Exec>(0, ntiles),
+                                KOKKOS_LAMBDA(int t, double &w) {const double x = sidx_tile_looseness(tiles(t)); if(x > w) {w = x;}},
+                                Kokkos::Max<double>(looseness));
+        Exec().fence();
+        /* The build's transients go now; on the host route, before the index is allocated on the device and
+         * the stage copied to it once (the stage goes when this returns). */
+        scratch.release_to(transients);
+        if(kStageOnHost) {
+            if(sidx_alloc_kept(idx, ntiles, shape.nnodes, nslots, n_slot_of, shape.nlevels, report)) {return 2;}
+            Kokkos::deep_copy(Kokkos::View<sfc_tile_t*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(idx->d_tiles, (size_t)ntiles), tiles);
+            Kokkos::deep_copy(Kokkos::View<tile_bvh_node_t*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(idx->d_bvh, (size_t)shape.nnodes), bvh);
+            Kokkos::deep_copy(Kokkos::View<int*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(idx->d_pool, (size_t)nslots), pool);
+            Kokkos::deep_copy(Kokkos::View<double*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(idx->d_compact_xyzh, (size_t)nslots * SIDX_ROW_WIDTH), rows);
+            Kokkos::deep_copy(Kokkos::View<int*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(idx->d_slot_of, n_slot_of), slot_of);
+            Kokkos::deep_copy(Kokkos::View<int*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(idx->d_level_nodes, (size_t)shape.nnodes), level_nodes);
+            if(idx->d_shear_folds) {
+                Kokkos::deep_copy(Kokkos::View<int*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(idx->d_shear_folds, n_folds), shear_folds);
+            }
+        }
+        memcpy(idx->h_level_offsets, shape.level_offsets.data(), (size_t)(shape.nlevels + 1) * sizeof(int));
+        *idx->looseness = looseness;
+        Kokkos::fence();
+        idx->ntiles = ntiles;
+        idx->bvh_nnodes = shape.nnodes;
+        idx->bvh_root = shape.nnodes - 1;
+        idx->nlevels = shape.nlevels;
+        idx->num_pool = nslots;
+    } catch(const std::exception &e) {
+        /* Kokkos throws rather than returning null: an allocation of the device route's working space, or a
+         * failure inside the sort or a copy.  Its own text says which. */
+        snprintf(report->failure, sizeof(report->failure), "%s", e.what());
+        gpu_spatial_index_free(idx);
+        return 3;
+    }
+    return 0;
+}
+
+/* Build the gas (or any type-masked) index over particles [0, num_total), described at the current time.
+ * Built on the host and copied to the device once; the device build is the same function run on the
+ * device, to be chosen by the memory each would need once the owned and imported segments are separate. */
+void gpu_spatial_index_build(struct particle_data *P_shared, int num_total,
+                             int type_bitmask, gpu_spatial_index_t *idx,
+                             const char *caller_label,
+                             mode_b_radius_policy_t radius_policy)
+{
+    GIZMO_GPU_ENSURE_ALL_FRESH();
+
+#if defined(BOX_PERIODIC)
+    /* Hard guard on the box lengths the wrap depends on.  The device predicates
+     * image through the canonical macros, which read the boxSize_ and boxHalf_
+     * lengths from
+     * this TU's AllDeviceMirror; if that mirror is unsynced they read zero,
+     * every wrapped separation collapses, the per-axis prunes go dead and the
+     * BVH silently degenerates into an exhaustive scan.  Fail loud at the call
+     * site so a regression in the mirror sync can never quietly cost the index.
+     * (Previously this checked the per-axis flags/box_sizes copies; those are
+     * gone with that API, but the failure mode belongs to the globals and is
+     * unchanged, so the guard now reads them directly.) */
+    {
+        const double box_len[3] = { boxSize_X, boxSize_Y, boxSize_Z };
+        const int    wraps[3]   = { TILE_PERIODIC_X, TILE_PERIODIC_Y, TILE_PERIODIC_Z };
+        for(int k = 0; k < 3; k++) {
+            if(wraps[k] && !(box_len[k] > 0.0)) {
+                printf("gpu_spatial_index_build: axis %d is periodic but its box length is %g "
+                       "(caller='%s'). Likely cause: this TU's AllDeviceMirror not synced from "
+                       "host All. Confirm gizmo_gpu_sync_all() has run for this timestep.\n",
+                       k, box_len[k], caller_label ? caller_label : "?");
+                fflush(stdout);
+                endrun(913004);
+            }
+        }
+    }
+#endif
+    const integertime ti_ref = gizmo_host_ti_current();
+    const struct DriftKickTableView host_tables = drift_kick_table_view_host();
+    /* The extent keys are measured against: the box when periodic (every image lies inside it), else the
+     * padded extent of the last domain decomposition. */
+    struct SidxKeyFrame frame;
+#if defined(BOX_PERIODIC)
+    frame.corner[0] = frame.corner[1] = frame.corner[2] = 0.0;
+    frame.len = DMAX(boxSize_X, DMAX(boxSize_Y, boxSize_Z));
+#else
+    for(int k = 0; k < 3; k++) {frame.corner[k] = DomainCorner[k];}
+    frame.len = DomainLen;
+#endif
+    struct SidxBuildReport report;
+    const int rc = sidx_build_segment<Kokkos::DefaultHostExecutionSpace, true>(
+        P_shared, CellP, num_total, ghost_get_num_local(), type_bitmask, radius_policy, ti_ref, host_tables, frame,
+        idx, &report);
+    if(rc != 0) {
+        char msg[400];
+        const char *who = caller_label ? caller_label : "?";
+        if(rc == 1) {
+            snprintf(msg, sizeof(msg), "gpu_spatial_index_build (caller '%s'): a member's clock is outside [0, now] or its "
+                     "position or velocity is not finite, so no search can bound where it is; spatial index left unbuilt", who);
+            gizmo_request_controlled_stop(7740, msg, __FILE__, __LINE__, __FUNCTION__);
+        } else if(rc == 2) {
+            snprintf(msg, sizeof(msg), "gpu_spatial_index_build (caller '%s'): could not allocate %.1f MB for %d particles; "
+                     "spatial index left unbuilt", who, (double)report.bytes_failed / (1024.0 * 1024.0), num_total);
+            gizmo_request_controlled_stop(7712, msg, __FILE__, __LINE__, __FUNCTION__);
+        } else {
+            snprintf(msg, sizeof(msg), "gpu_spatial_index_build (caller '%s'): the build failed (%s) for %d particles; "
+                     "spatial index left unbuilt", who, report.failure, num_total);
+            gizmo_request_controlled_stop(7712, msg, __FILE__, __LINE__, __FUNCTION__);
+        }
+        return;
+    }
+    /* A member of the rank's own outside the extent the domain was built on: the next step decomposes
+     * (the drift latch), and meanwhile its own tile bounds it exactly. */
+    if(report.n_outside_owned > 0) {DomainExtentOutgrownLocal = 1;}
+
+    idx->num_total = num_total;
+    idx->cache_tbm = type_bitmask;
+    idx->cache_radius_policy = radius_policy;
+    idx->ghost_live_when_built       = ghost_pool_is_live();
+    idx->ghost_provenance_when_built = ghost_provenance_epoch();
+    idx->owned_epoch_when_built      = g_sidx_owned_epoch;
+    idx->ti_ref = ti_ref;
+    idx->rows_are_positions = report.all_current;
+    idx->rebuild_needed = 0;
+    idx->valid = 1;
+    /* Register this cache with the dirty tracker over [0, num_total). The rows
+     * were written from the live P[] under this cache's radius policy, and
+     * nothing between there and here can mutate it, so the range starts clean:
+     * the first refresh would recompute values it already holds. */
+    if(idx->dirty_handle >= 0) gpu_dirty_tracker_unregister(idx->dirty_handle);
+    idx->dirty_handle = gpu_dirty_tracker_register(0, num_total, 1);
+}
+
+
 enum { SIDX_RAISE_MOTION = 1, SIDX_RAISE_REACH = 2 };
 
 /* The ratio of the two ways to widen the nodes above n touched members: walking each member's path, or
@@ -536,7 +935,7 @@ static int sidx_raise_members(gpu_spatial_index_t *idx, const int *list, int n, 
         for(int d = 0; d < 3; d++) {r.u_min[d] = MAX_REAL_NUMBER; r.u_max[d] = -MAX_REAL_NUMBER;}
         if(j < 0 || j >= num_total) {continue;}
         const int type = (int)P[j].Type;
-        if(type < 0 || type >= TILE_NUM_PTYPES || !((1 << type) & type_bitmask) || !(P[j].Mass > 0)) {continue;}
+        if(type < 0 || type >= TILE_NUM_PTYPES || !sfc_pool_member(&P[j], type_bitmask)) {continue;}
         if((what & SIDX_RAISE_MOTION) && sfc_member_motion_range(j, P, CellP, r.u_min, r.u_max, &r.rho)) {fault |= 1; continue;}
         if(what & SIDX_RAISE_REACH) {
             r.r = nlr_particle_symmetric_radius(P[j], policy);
@@ -566,6 +965,7 @@ static int sidx_raise_members(gpu_spatial_index_t *idx, const int *list, int n, 
     const int *slot_of = idx->d_slot_of;
     double *rows = idx->d_compact_xyzh;
     double *looseness = idx->looseness;
+    const int *shear_folds = idx->d_shear_folds;
     Kokkos::parallel_for("sidx_raise_members", n, KOKKOS_LAMBDA(int k) {
         const SidxRaiseRecord &r = d_rec[k];
         if(r.j < 0) {return;}
@@ -573,6 +973,8 @@ static int sidx_raise_members(gpu_spatial_index_t *idx, const int *list, int n, 
         if(slot < 0) {return;}
         struct SidxRaise m;
         for(int d = 0; d < 3; d++) {m.u_min[d] = r.u_min[d]; m.u_max[d] = r.u_max[d];}
+        /* the range must hold the member's motion in its tile's image frame as well (sidx_image_velocity_union) */
+        if(shear_folds && m.u_min[0] <= m.u_max[0]) {sidx_image_velocity_union(m.u_min, m.u_max, shear_folds[2 * (size_t)slot], shear_folds[2 * (size_t)slot + 1]);}
         m.rho = r.rho; m.hmax = 0;
         for(int t = 0; t < TILE_NUM_PTYPES; t++) {m.hmax_by_type[t] = 0;}
         if(r.type >= 0) {

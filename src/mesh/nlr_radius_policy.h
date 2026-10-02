@@ -89,7 +89,7 @@ typedef unsigned int mode_b_radius_policy_t;
 /* Legacy aggregation policy for sfc_tiles + ghost_exchange tile cache.
  * Returns P[j].KernelRadius for every type — byte-equivalent to the
  * pre-policy-threading code paths that read P[j].KernelRadius unconditionally.
- * This is the DEFAULT for build_sfc_tiles / gpu_spatial_index_build /
+ * This is the DEFAULT for gpu_spatial_index_build /
  * gpu_ngb_list_build so non-runner (ghost-exchange) callers see no behavior
  * change.  Runner Mode A passes Spec::radius_policy explicitly instead. */
 #define MODE_B_RADIUS_LEGACY_KERNEL_ALLTYPES \
@@ -218,7 +218,7 @@ double nlr_symmetric_radius_after_drift_from_fields(int type, double kernel_radi
 /* The same for particle j, its inputs read from P_arr, with the growth and floor passed in.  Reads only.
  * One body for host and device.  It is a template so that it can live here, where neither proto.h (which
  * has no include guard) nor ags_functions.h is in scope: its calls take P_arr, so the accessors are found
- * where it is used, and every caller has both. */
+ * where it is used.  Every file that uses it must include both. */
 template <class ParticleArray>
 KOKKOS_INLINE_FUNCTION
 double nlr_particle_symmetric_radius_after_drift_P(int j, ParticleArray *P_arr, double growth, double kernel_floor,

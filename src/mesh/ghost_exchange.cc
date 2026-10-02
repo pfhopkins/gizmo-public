@@ -37,7 +37,7 @@
 #include "../core/proto.h"
 #include "../system/mpi_alltoallv_typed.h"
 #include "gpu_neighbor_list.h" /* gpu_compact_xyzh_mark_h_dirty_range */
-#include "sfc_tiles.h"           /* build_sfc_tiles, build_tile_bvh, sfc_tile_t, tile_bvh_node_t */
+#include "sfc_tiles.h"           /* build_sfc_supply_pool, sfc_tile_t, tile_bvh_node_t */
 #include "neighbor_list.h"       /* NGB_SEARCH_ONEWAY, NGB_SEARCH_SYMMETRIC */
 #include "ghost_exchange_functions.h" /* gx_pair_accept_wrap_and_test: shared accept, wraps via the canonical macros */
 #include "ghost_writeback.h"     /* ghost_get_num_local (bounded fine-tree walk) */
