@@ -762,12 +762,16 @@ gpu_grav_member_init(const gpu_grav_walk_ctx_t &ctx, int target, gpu_grav_member
  * mass predicted to the walk time by the step bodies the drift itself runs (predict_particle_motion,
  * core/timestep_functions.h); a source already at the walk time is read as stored. A source AHEAD of
  * the walk time, which no drift produces, is read as stored and reported. */
-static KOKKOS_INLINE_FUNCTION void
-gpu_grav_particle_source_at(const struct particle_data *P_dev, int no, integertime ti, const struct DriftKickTableView &tables,
-                            struct gpu_grav_time_fault_t *time_fault, struct particle_motion_prediction &motion)
+struct gpu_grav_particle_now_t { Vec3<double> pos, vel; double mass; };   /* what a walk keeps of a particle source */
+static KOKKOS_INLINE_FUNCTION gpu_grav_particle_now_t
+gpu_grav_particle_source_at(struct particle_data *P_dev, struct gas_cell_data *CellP_dev, int no, integertime ti,
+                            const struct DriftKickTableView &tables, struct gpu_grav_time_fault_t *time_fault)
 {
     if(P_dev[no].Ti_current > ti) {gpu_grav_note_source_ahead(time_fault, 0, no, P_dev[no].Ti_current);}
+    struct particle_motion_prediction motion(P_dev, CellP_dev, no);
     predict_particle_motion(motion, ti, &tables);   /* leaves a source at or past ti as stored */
+    gpu_grav_particle_now_t out; out.pos = motion.pos_; out.vel = motion.vel_; out.mass = motion.mass_;
+    return out;
 }
 
 /* A node's motion as a walk at `ti` reads it, with nothing written back: the state the drift would
@@ -1123,10 +1127,9 @@ gpu_grav_evaluate_leaf(const gpu_grav_walk_ctx_t &ctx, int no, const gpu_grav_me
     src.r_source = 0.0;
 #endif
 
-    struct particle_motion_prediction motion(P_dev, ctx.CellP_dev, no);
-    gpu_grav_particle_source_at(P_dev, no, ctx.ti, ctx.tables, ctx.time_fault, motion);
-    Vec3<double> src_pos = motion.pos_;
-    Vec3<double> src_vel = motion.vel_;   /* unconditional, mirroring forcetree.cc: the sink-proximity block reads it under SINK_CALC_DISTANCES, which several flags reach without the jerk or dynamical-friction terms */
+    const gpu_grav_particle_now_t motion = gpu_grav_particle_source_at(P_dev, ctx.CellP_dev, no, ctx.ti, ctx.tables, ctx.time_fault);
+    Vec3<double> src_pos = motion.pos;
+    Vec3<double> src_vel = motion.vel;   /* unconditional, mirroring forcetree.cc: the sink-proximity block reads it under SINK_CALC_DISTANCES, which several flags reach without the jerk or dynamical-friction terms */
 #ifdef HERMITE_INTEGRATION
     /* On a Hermite pass a source the Hermite integrator owns but is not advancing this
        step is second-order wrong where it stands; evaluate it from its own start-of-step
@@ -1139,7 +1142,7 @@ gpu_grav_evaluate_leaf(const gpu_grav_walk_ctx_t &ctx, int no, const gpu_grav_me
     src.dr = src_pos - in.open.pos;
     gravity_box_nearest_image(src.dr[0], src.dr[1], src.dr[2], -1);
     src.r2 = src.dr.norm_sq();
-    src.mass = motion.mass_;
+    src.mass = motion.mass;
 #if defined(GRAVTREE_SOURCE_DEVICE_TU)
     /* Lazy source payload for this local leaf: evaluate the SSOT helper on-device
      * (identical gates/formula to the eager prefill) instead of reading the dense
@@ -1180,7 +1183,7 @@ gpu_grav_evaluate_leaf(const gpu_grav_walk_ctx_t &ctx, int no, const gpu_grav_me
     src.zeta_sec = gpu_get_ags_zeta(P_dev, no);
 #endif
 #ifdef GRAVTREE_CALCULATE_GAS_MASS_IN_NODE
-    pl.gasmass = (P_dev[no].Type == 0) ? motion.mass_ : 0.0;
+    pl.gasmass = (P_dev[no].Type == 0) ? motion.mass : 0.0;
 #if defined(SINK_ALPHADISK_ACCRETION) && defined(RT_USE_TREECOL_FOR_NH)
     /* gas at the inner edge of a sink's alpha-disk should not see a hole due to
      * the sink (mirrors forcetree.cc leaf branch + the node-moment kernel). */
@@ -1262,7 +1265,7 @@ gpu_grav_evaluate_leaf(const gpu_grav_walk_ctx_t &ctx, int no, const gpu_grav_me
 #if defined(SINGLE_STAR_TIMESTEPPING)
         prox_target.vel = in.vel;
 #endif
-        grav_sink_prox_leaf_src_t prox_src = {}; prox_src.src_type = P_dev[no].Type; prox_src.src_mass = motion.mass_; prox_src.motion.vel = src_vel;   /* the state this interaction was evaluated at, mirroring forcetree.cc, so (dr, vel) stays a consistent pair on a Hermite pass */
+        grav_sink_prox_leaf_src_t prox_src = {}; prox_src.src_type = P_dev[no].Type; prox_src.src_mass = motion.mass; prox_src.motion.vel = src_vel;   /* the state this interaction was evaluated at, mirroring forcetree.cc, so (dr, vel) stays a consistent pair on a Hermite pass */
 #if defined(SPECIAL_POINT_MOTION) || defined(SPECIAL_POINT_WEIGHTED_MOTION)
         prox_src.motion.acc = P_dev[no].Acc_Total_PrevStep;
 #endif
@@ -3569,12 +3572,11 @@ gpu_ewald_walk_one(int target,
         if(no >= treeParticleSlots && no < treeBase) {return 0;} /* gap: malformed tree -- defer; the CPU Ewald walk's guard stops loudly */
         if(no < treeParticleSlots) /* particle leaf */
         {
-            struct particle_motion_prediction motion(P_dev, CellP_dev, no);
-            gpu_grav_particle_source_at(P_dev, no, ti, tables, time_fault, motion);
-            dr[0] = motion.pos_[0] - pos[0];
-            dr[1] = motion.pos_[1] - pos[1];
-            dr[2] = motion.pos_[2] - pos[2];
-            mass  = motion.mass_;
+            const gpu_grav_particle_now_t motion = gpu_grav_particle_source_at(P_dev, CellP_dev, no, ti, tables, time_fault);
+            dr[0] = motion.pos[0] - pos[0];
+            dr[1] = motion.pos[1] - pos[1];
+            dr[2] = motion.pos[2] - pos[2];
+            mass  = motion.mass;
             is_leaf = 1;
         }
         else if(no >= treeBase + maxNodes + maxForeignNodes) /* pseudo-particle — defer to CPU (foreign-node range below) */
