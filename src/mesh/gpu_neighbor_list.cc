@@ -473,6 +473,79 @@ struct SidxParticleSource {
     {return sidx_describe_member(base + o, P, cells, policy, ti_ref, tables, growth, kernel_floor, exact, m);}
 };
 
+/* The most tiles num_members members can fill: the members inside the key extent fill tiles from the first,
+ * and those outside start a fresh one. */
+static int sidx_tiles_bound(int num_members)
+{
+    return num_members / TILE_TARGET_SIZE + (num_members % TILE_TARGET_SIZE != 0) + 1;
+}
+
+/* A BVH over at most INT_MAX tiles has at most this many levels (sidx_bvh_levels). */
+static constexpr int SIDX_BVH_MAX_LEVELS = 32;
+
+/* The levels of the BVH over ntiles tiles (sidx_bvh_shape: a midpoint split, so ceil(log2(ntiles)) + 1). */
+static int sidx_bvh_levels(int ntiles)
+{
+    int levels = 1;
+    while(((long long)1 << (levels - 1)) < (long long)ntiles) {levels++;}
+    return levels;
+}
+
+/* The compact records of count imported particles (SidxRecordSource), at least one: rows, types, states. */
+static void sidx_record_bytes(int count, size_t *rows, size_t *types, size_t *states)
+{
+    const size_t n = (size_t)(count > 0 ? count : 1);
+    *rows = n * SIDX_ROW_WIDTH * sizeof(double); *types = n * sizeof(signed char); *states = n * sizeof(signed char);
+}
+
+/* Every allocation one index build makes, in bytes: what the segment keeps (on the device), the build's
+ * working space, and the compact records of a build that reads the imported particles away from the particle
+ * arrays.  The builder takes each size from here, so what is projected is what is taken.  Sized for ntiles
+ * tiles: sidx_tiles_bound(num_members) before the members are sorted into tiles, the exact count after. */
+struct SidxBuildMemoryPlan {
+    int fits;   /* 0: the counts exceed what one segment can index, and no size below is set */
+    int ntiles, nnodes, nslots, nlevels;
+    /* kept by the segment: what a walk reads, then what keeps a maintained segment's bounds true */
+    size_t tiles, bvh, pool, rows, level_nodes, slot_of, shear_folds, level_offsets, looseness;
+    /* the build's working space; bvh_shape is on the host on either route (sidx_bvh_shape) */
+    size_t scan, members, keys, leaf_of_tile, bvh_shape;
+    /* one record per imported particle: its row, its type, its state */
+    size_t record_rows, record_types, record_states;
+};
+
+static struct SidxBuildMemoryPlan sidx_build_memory_plan(int num_source, int num_members, int ntiles,
+                                                         int maintained, int presorted)
+{
+    struct SidxBuildMemoryPlan m = {};
+    const size_t n_source = (size_t)(num_source > 0 ? num_source : 1);
+    const size_t n_mem = (size_t)(num_members > 0 ? num_members : 1);
+    /* Node and slot counts are ints throughout the index; every size below is such a count, or the source
+     * count, times a structure size, so none overflows once these fit. */
+    if(ntiles < 1 || 2LL * ntiles - 1 > INT_MAX || (long long)ntiles * TILE_TARGET_SIZE > INT_MAX) {return m;}
+    m.fits = 1;
+    m.ntiles = ntiles; m.nnodes = 2 * ntiles - 1; m.nslots = ntiles * TILE_TARGET_SIZE; m.nlevels = sidx_bvh_levels(ntiles);
+    m.tiles = (size_t)m.ntiles * sizeof(sfc_tile_t);
+    m.bvh = (size_t)m.nnodes * sizeof(tile_bvh_node_t);
+    m.pool = (size_t)m.nslots * sizeof(int);
+    m.rows = (size_t)m.nslots * SIDX_ROW_WIDTH * sizeof(double);
+    m.level_nodes = (size_t)m.nnodes * sizeof(int);
+    if(maintained) {
+        m.slot_of = n_source * sizeof(int);
+#if defined(BOX_SHEARING) && (BOX_SHEARING > 1)
+        m.shear_folds = (size_t)m.nslots * 2 * sizeof(int);
+#endif
+        m.level_offsets = (size_t)(m.nlevels + 1) * sizeof(int);
+        m.looseness = sizeof(double);
+    }
+    m.scan = ((size_t)num_source + 1) * sizeof(int);
+    m.members = n_mem * sizeof(int);
+    m.keys = presorted ? 0 : n_mem * sizeof(Morton128);
+    m.leaf_of_tile = (size_t)m.ntiles * sizeof(int);
+    m.bvh_shape = (size_t)m.nnodes * sizeof(tile_bvh_node_t) + ((size_t)m.ntiles + 2 * (size_t)m.nnodes + (size_t)m.nlevels) * sizeof(int);
+    sidx_record_bytes(num_source, &m.record_rows, &m.record_types, &m.record_states);
+    return m;
+}
+
 /* The imported particles [base, base + count) as compact records, for a build that runs where the particle
  * arrays are not.  Per particle a row (position at the reference time, reach, drifted reach), its type (-1: not
  * a member under the index's mask) and its state, all packed on the host by the particle source's own rule
@@ -507,8 +580,42 @@ struct SidxRecordSource {
     }
 };
 
-/* The records of SidxRecordSource, on the device: pack() reads P[] on the host and copies once; the memory is
- * given back by release() or when the object goes.  pack returns 0; 1 when the device memory could not be had. */
+/* Thrown by the build when a request of its own could not be had; the build then stops cleanly (returns 2). */
+struct SidxOutOfMemory {size_t bytes;};
+
+/* The build's working space, released when the build returns, on every path.  On the host it comes from
+ * the memory arena (so the memory ledger and the arena sizing see it, as they saw the host build this
+ * replaces) and is released in reverse; on the device, from the device allocator. */
+template <bool kStageOnHost>
+struct SidxScratch {
+    static constexpr int CAPACITY = 16;   /* more than the build ever holds at once */
+    void *held[CAPACITY];
+    int n = 0;
+    void *take(size_t bytes, const char *label) {
+        if(n >= CAPACITY) {throw std::runtime_error("index build working space: more blocks than it holds");}
+        if(bytes == 0) {bytes = 1;}
+        void *p;
+        /* Every request asks the arena first, so a build that does not fit stops cleanly instead of failing
+         * inside the allocator; what it already holds is given back on the way out. */
+        if(kStageOnHost && !gizmo_alloc_fits_this_rank(gizmo_mymalloc_rounded_size(bytes), 1)) {throw SidxOutOfMemory{bytes};}
+        if(kStageOnHost) {p = mymalloc(label, bytes);}
+        else {p = Kokkos::kokkos_malloc<GIZMO_KOKKOS_DEVICE_SPACE>(label, bytes);}
+        held[n++] = p;
+        return p;
+    }
+    int mark() const {return n;}
+    void release_to(int m) {
+        while(n > m) {
+            void *p = held[--n];
+            if(kStageOnHost) {myfree(p);} else {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(p);}
+        }
+    }
+    ~SidxScratch() {release_to(0);}
+};
+
+/* The records of SidxRecordSource, on the device: pack() reads P[] on the host, staging the records in the
+ * memory arena, and copies them once; the device memory is given back by release() or when the object goes.
+ * pack returns 0; 1 when a request could not be had (*bytes_failed: its size). */
 struct SidxGhostRecords {
     double *d_row = NULL;
     signed char *d_type = NULL, *d_state = NULL;
@@ -518,36 +625,47 @@ struct SidxGhostRecords {
     SidxGhostRecords &operator=(const SidxGhostRecords &) = delete;
     ~SidxGhostRecords() {release();}
     int pack(const struct SidxParticleSource &src, mode_b_radius_policy_t policy, integertime ti_ref,
-             const struct DriftKickTableView &tables)
+             const struct DriftKickTableView &tables, size_t *bytes_failed)
     {
         release();
         base = src.base; count = src.count;
-        const size_t n = (size_t)(count > 0 ? count : 1);
-        std::vector<double> h_row(n * SIDX_ROW_WIDTH, 0.0);
-        std::vector<signed char> h_type(n, (signed char)-1), h_state(n, (signed char)SIDX_RECORD_REFUSED);
-        const double growth = kernel_radius_drift_max_growth_factor(), kernel_floor = All.MinKernelRadius;
+        const size_t n = (size_t)(count > 0 ? count : 1);   /* one record per particle, at least one */
+        size_t row_bytes, type_bytes, state_bytes;
+        sidx_record_bytes(count, &row_bytes, &type_bytes, &state_bytes);
+        try {
+            SidxScratch<true> stage;   /* given back to the arena, in reverse, on every way out */
+            double *h_row = (double *) stage.take(row_bytes, "ngl_sidx_ghost_stage_rows");
+            signed char *h_type = (signed char *) stage.take(type_bytes, "ngl_sidx_ghost_stage_types");
+            signed char *h_state = (signed char *) stage.take(state_bytes, "ngl_sidx_ghost_stage_states");
+            const double growth = kernel_radius_drift_max_growth_factor(), kernel_floor = All.MinKernelRadius;
 #pragma omp parallel for
-        for(int o = 0; o < count; o++) {
-            const int j = src.base + o;
-            if(!sfc_pool_member(&src.P[j], src.type_bitmask)) {continue;}
-            h_type[o] = (signed char)src.P[j].Type;
-            struct SidxMember m;
-            if(sidx_describe_member(j, src.P, src.cells, policy, ti_ref, tables, growth, kernel_floor, 1, m)) {continue;}
-            double *x = &h_row[(size_t)o * SIDX_ROW_WIDTH];
-            x[0] = m.center[0]; x[1] = m.center[1]; x[2] = m.center[2]; x[3] = m.r; x[4] = m.r_drifted;
-            h_state[o] = (signed char)(m.current ? SIDX_RECORD_CURRENT : SIDX_RECORD_NOT_CURRENT);
+            for(size_t o = 0; o < n; o++) {
+                double *x = &h_row[o * SIDX_ROW_WIDTH];
+                for(int k = 0; k < SIDX_ROW_WIDTH; k++) {x[k] = 0.0;}
+                h_type[o] = (signed char)-1; h_state[o] = (signed char)SIDX_RECORD_REFUSED;
+                const int j = src.base + (int)o;
+                if((int)o >= count || !sfc_pool_member(&src.P[j], src.type_bitmask)) {continue;}
+                h_type[o] = (signed char)src.P[j].Type;
+                struct SidxMember m;
+                if(sidx_describe_member(j, src.P, src.cells, policy, ti_ref, tables, growth, kernel_floor, 1, m)) {continue;}
+                x[0] = m.center[0]; x[1] = m.center[1]; x[2] = m.center[2]; x[3] = m.r; x[4] = m.r_drifted;
+                h_state[o] = (signed char)(m.current ? SIDX_RECORD_CURRENT : SIDX_RECORD_NOT_CURRENT);
+            }
+            using UV = Kokkos::MemoryTraits<Kokkos::Unmanaged>;
+            if(!(d_row = (double *) gizmo_gpu_alloc_device(row_bytes, "ngl_sidx_ghost_record_rows"))) {throw SidxOutOfMemory{row_bytes};}
+            if(!(d_type = (signed char *) gizmo_gpu_alloc_device(type_bytes, "ngl_sidx_ghost_record_types"))) {throw SidxOutOfMemory{type_bytes};}
+            if(!(d_state = (signed char *) gizmo_gpu_alloc_device(state_bytes, "ngl_sidx_ghost_record_states"))) {throw SidxOutOfMemory{state_bytes};}
+            Kokkos::deep_copy(Kokkos::View<double*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(d_row, n * SIDX_ROW_WIDTH),
+                              Kokkos::View<const double*, Kokkos::HostSpace, UV>(h_row, n * SIDX_ROW_WIDTH));
+            Kokkos::deep_copy(Kokkos::View<signed char*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(d_type, n),
+                              Kokkos::View<const signed char*, Kokkos::HostSpace, UV>(h_type, n));
+            Kokkos::deep_copy(Kokkos::View<signed char*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(d_state, n),
+                              Kokkos::View<const signed char*, Kokkos::HostSpace, UV>(h_state, n));
+        } catch(const SidxOutOfMemory &e) {
+            *bytes_failed = e.bytes;
+            release();
+            return 1;
         }
-        using UV = Kokkos::MemoryTraits<Kokkos::Unmanaged>;
-        d_row = (double *) gizmo_gpu_alloc_device(n * SIDX_ROW_WIDTH * sizeof(double), "ngl_sidx_ghost_record_rows");
-        d_type = (signed char *) gizmo_gpu_alloc_device(n * sizeof(signed char), "ngl_sidx_ghost_record_types");
-        d_state = (signed char *) gizmo_gpu_alloc_device(n * sizeof(signed char), "ngl_sidx_ghost_record_states");
-        if(!d_row || !d_type || !d_state) {release(); return 1;}
-        Kokkos::deep_copy(Kokkos::View<double*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(d_row, n * SIDX_ROW_WIDTH),
-                          Kokkos::View<const double*, Kokkos::HostSpace, UV>(h_row.data(), n * SIDX_ROW_WIDTH));
-        Kokkos::deep_copy(Kokkos::View<signed char*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(d_type, n),
-                          Kokkos::View<const signed char*, Kokkos::HostSpace, UV>(h_type.data(), n));
-        Kokkos::deep_copy(Kokkos::View<signed char*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(d_state, n),
-                          Kokkos::View<const signed char*, Kokkos::HostSpace, UV>(h_state.data(), n));
         return 0;
     }
     struct SidxRecordSource source() const {return {d_row, d_type, d_state, base, count};}
@@ -683,45 +801,57 @@ Morton128 sidx_member_key(const double image[3], const struct SidxKeyFrame &fram
 }
 
 /* The shape of the BVH over ntiles tiles: a midpoint split of the tile range, nodes numbered children
- * first so the root is last.  Depends only on ntiles, so it is set out on the host as integers. */
+ * first so the root is last.  Depends only on ntiles, so it is set out on the host: the nodes with their
+ * links and empty bounds, which tile each leaf holds, and the nodes level by level.  Its arrays live in one
+ * block (SidxBuildMemoryPlan::bvh_shape) laid out by sidx_bvh_shape; its level offsets are held here, since
+ * the build reads them after the block is given back. */
 struct SidxBvhShape {
-    std::vector<int> left, right, parent, leaf_of_tile, level_nodes, level_offsets;
-    int nnodes = 0, nlevels = 0;
+    tile_bvh_node_t *nodes;
+    int *leaf_of_tile, *level_nodes, *height, *cursor;
+    int level_offsets[SIDX_BVH_MAX_LEVELS + 1];
+    int nnodes, nlevels;
 };
 
-static int sidx_bvh_shape_recursive(SidxBvhShape &s, int t0, int t1, std::vector<int> &height)
+static int sidx_bvh_shape_recursive(SidxBvhShape &s, int t0, int t1)
 {
     if(t1 - t0 == 1) {
         const int nd = s.nnodes++;
-        s.left[nd] = -(t0 + 1); s.right[nd] = -(t0 + 1); s.parent[nd] = -1; height[nd] = 0;
+        sidx_box_empty(&s.nodes[nd]);
+        s.nodes[nd].left = -(t0 + 1); s.nodes[nd].right = -(t0 + 1); s.nodes[nd].parent = -1; s.height[nd] = 0;
         s.leaf_of_tile[t0] = nd;
         return nd;
     }
     const int mid = (t0 + t1) / 2;
-    const int l = sidx_bvh_shape_recursive(s, t0, mid, height);
-    const int r = sidx_bvh_shape_recursive(s, mid, t1, height);
+    const int l = sidx_bvh_shape_recursive(s, t0, mid);
+    const int r = sidx_bvh_shape_recursive(s, mid, t1);
     const int nd = s.nnodes++;
-    s.left[nd] = l; s.right[nd] = r; s.parent[nd] = -1;
-    s.parent[l] = nd; s.parent[r] = nd;
-    height[nd] = 1 + std::max(height[l], height[r]);
+    sidx_box_empty(&s.nodes[nd]);
+    s.nodes[nd].left = l; s.nodes[nd].right = r; s.nodes[nd].parent = -1;
+    s.nodes[l].parent = nd; s.nodes[r].parent = nd;
+    s.height[nd] = 1 + std::max(s.height[l], s.height[r]);
     return nd;
 }
 
-static void sidx_bvh_shape(SidxBvhShape &s, int ntiles)
+/* Set out the shape for plan.ntiles tiles in block, of plan.bvh_shape bytes. */
+static_assert(sizeof(tile_bvh_node_t) % alignof(int) == 0, "the shape's int arrays follow its nodes in one block");
+static void sidx_bvh_shape(SidxBvhShape &s, const struct SidxBuildMemoryPlan &plan, void *block)
 {
-    const int cap = 2 * ntiles - 1;
-    s.left.assign(cap, 0); s.right.assign(cap, 0); s.parent.assign(cap, -1); s.leaf_of_tile.assign(ntiles, -1);
-    std::vector<int> height(cap, 0);
+    const int ntiles = plan.ntiles, nnodes = plan.nnodes;
+    s.nodes = (tile_bvh_node_t *)block;
+    s.leaf_of_tile = (int *)(s.nodes + nnodes);
+    s.level_nodes = s.leaf_of_tile + ntiles;
+    s.height = s.level_nodes + nnodes;
+    s.cursor = s.height + nnodes;
     s.nnodes = 0;
-    sidx_bvh_shape_recursive(s, 0, ntiles, height);
+    sidx_bvh_shape_recursive(s, 0, ntiles);
     s.nlevels = 0;
-    for(int nd = 0; nd < s.nnodes; nd++) {if(height[nd] + 1 > s.nlevels) {s.nlevels = height[nd] + 1;}}
-    s.level_offsets.assign(s.nlevels + 1, 0);
-    s.level_nodes.assign(s.nnodes, 0);
-    for(int nd = 0; nd < s.nnodes; nd++) {s.level_offsets[height[nd] + 1]++;}
+    for(int nd = 0; nd < s.nnodes; nd++) {if(s.height[nd] + 1 > s.nlevels) {s.nlevels = s.height[nd] + 1;}}
+    if(s.nnodes != nnodes || s.nlevels != plan.nlevels) {throw std::runtime_error("index build: BVH shape differs from its memory plan");}
+    for(int L = 0; L <= s.nlevels; L++) {s.level_offsets[L] = 0;}
+    for(int nd = 0; nd < s.nnodes; nd++) {s.level_offsets[s.height[nd] + 1]++;}
     for(int L = 0; L < s.nlevels; L++) {s.level_offsets[L + 1] += s.level_offsets[L];}
-    std::vector<int> cursor(s.level_offsets.begin(), s.level_offsets.end() - 1);
-    for(int nd = 0; nd < s.nnodes; nd++) {s.level_nodes[cursor[height[nd]]++] = nd;}
+    for(int L = 0; L < s.nlevels; L++) {s.cursor[L] = s.level_offsets[L];}
+    for(int nd = 0; nd < s.nnodes; nd++) {s.level_nodes[s.cursor[s.height[nd]]++] = nd;}
 }
 
 /* What a build reports besides the index itself. */
@@ -734,59 +864,33 @@ struct SidxBuildReport {
     char failure[160];    /* what failed, when it was not a request of known size */
 };
 
-/* The build's working space, released when the build returns, on every path.  On the host it comes from
- * the memory arena (so the memory ledger and the arena sizing see it, as they saw the host build this
- * replaces) and is released in reverse; on the device, from the device allocator. */
-template <bool kStageOnHost>
-struct SidxScratch {
-    static constexpr int CAPACITY = 16;   /* more than the build ever holds at once */
-    void *held[CAPACITY];
-    int n = 0;
-    void *take(size_t bytes, const char *label) {
-        if(n >= CAPACITY) {throw std::runtime_error("index build working space: more blocks than it holds");}
-        void *p;
-        if(kStageOnHost) {p = mymalloc(label, bytes > 0 ? bytes : 1);}
-        else {p = Kokkos::kokkos_malloc<GIZMO_KOKKOS_DEVICE_SPACE>(label, bytes > 0 ? bytes : 1);}
-        held[n++] = p;
-        return p;
-    }
-    int mark() const {return n;}
-    void release_to(int m) {
-        while(n > m) {
-            void *p = held[--n];
-            if(kStageOnHost) {myfree(p);} else {Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(p);}
-        }
-    }
-    ~SidxScratch() {release_to(0);}
-};
-
 /* Allocate the arrays the segment keeps, on the device: what every segment needs to be walked, and, for a
  * maintained segment, what keeps its bounds true while it is kept.  Returns 0; 1 when one could not be had
  * (the segment is then released and the report names the request). */
-static int sidx_alloc_kept(gpu_index_segment_t *seg, int maintained, int ntiles, int nnodes, int nslots,
-                           size_t n_slot_of, int nlevels, struct SidxBuildReport *report)
+static int sidx_alloc_kept(gpu_index_segment_t *seg, int maintained, const struct SidxBuildMemoryPlan &m,
+                           struct SidxBuildReport *report)
 {
     struct {void **dst; size_t bytes; const char *label; int maintenance;} kept[] = {
-        {(void **)&seg->d_tiles, (size_t)ntiles * sizeof(sfc_tile_t), "ngl_sidx_dev_tiles", 0},
-        {(void **)&seg->d_bvh, (size_t)nnodes * sizeof(tile_bvh_node_t), "ngl_sidx_dev_bvh", 0},
-        {(void **)&seg->d_pool, (size_t)nslots * sizeof(int), "ngl_sidx_dev_pool", 0},
-        {(void **)&seg->d_compact_xyzh, (size_t)nslots * SIDX_ROW_WIDTH * sizeof(double), "ngl_sidx_dev_rows", 0},
-        {(void **)&seg->d_slot_of, n_slot_of * sizeof(int), "ngl_sidx_dev_slot_of", 1},
-        {(void **)&seg->d_level_nodes, (size_t)nnodes * sizeof(int), "ngl_sidx_dev_level_nodes", 1}};
+        {(void **)&seg->d_tiles, m.tiles, "ngl_sidx_dev_tiles", 0},
+        {(void **)&seg->d_bvh, m.bvh, "ngl_sidx_dev_bvh", 0},
+        {(void **)&seg->d_pool, m.pool, "ngl_sidx_dev_pool", 0},
+        {(void **)&seg->d_compact_xyzh, m.rows, "ngl_sidx_dev_rows", 0},
+        {(void **)&seg->d_slot_of, m.slot_of, "ngl_sidx_dev_slot_of", 1},
+        {(void **)&seg->d_level_nodes, m.level_nodes, "ngl_sidx_dev_level_nodes", 1}};
     for(auto &k : kept) {
         if(k.maintenance && !maintained) {continue;}
         *k.dst = gizmo_gpu_alloc_device(k.bytes, k.label);
         if(!*k.dst) {report->bytes_failed = k.bytes; sidx_segment_free(seg); return 1;}
     }
     if(!maintained) {return 0;}
-#if defined(BOX_SHEARING) && (BOX_SHEARING > 1)
-    seg->d_shear_folds = (int *) gizmo_gpu_alloc_device((size_t)nslots * 2 * sizeof(int), "ngl_sidx_dev_shear_folds");
-    if(!seg->d_shear_folds) {report->bytes_failed = (size_t)nslots * 2 * sizeof(int); sidx_segment_free(seg); return 1;}
-#endif
-    seg->h_level_offsets = (int *) gizmo_gpu_alloc_host((size_t)(nlevels + 1) * sizeof(int), "ngl_sidx_host_level_offsets");
-    if(!seg->h_level_offsets) {report->bytes_failed = (size_t)(nlevels + 1) * sizeof(int); sidx_segment_free(seg); return 1;}
-    seg->looseness = (double *) gizmo_gpu_alloc_shared(sizeof(double), "ngl_sidx_looseness");
-    if(!seg->looseness) {report->bytes_failed = sizeof(double); sidx_segment_free(seg); return 1;}
+    if(m.shear_folds > 0) {
+        seg->d_shear_folds = (int *) gizmo_gpu_alloc_device(m.shear_folds, "ngl_sidx_dev_shear_folds");
+        if(!seg->d_shear_folds) {report->bytes_failed = m.shear_folds; sidx_segment_free(seg); return 1;}
+    }
+    seg->h_level_offsets = (int *) gizmo_gpu_alloc_host(m.level_offsets, "ngl_sidx_host_level_offsets");
+    if(!seg->h_level_offsets) {report->bytes_failed = m.level_offsets; sidx_segment_free(seg); return 1;}
+    seg->looseness = (double *) gizmo_gpu_alloc_shared(m.looseness, "ngl_sidx_looseness");
+    if(!seg->looseness) {report->bytes_failed = m.looseness; sidx_segment_free(seg); return 1;}
     return 0;
 }
 
@@ -818,26 +922,25 @@ static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, 
         int members_counted = 0;
         Kokkos::parallel_reduce("sidx_build_count", Kokkos::RangePolicy<Exec>(0, num_source),
                                 KOKKOS_LAMBDA(int o, int &c) {if(src.is_member(o)) {c++;}}, members_counted);
-        const int ntiles_max = (members_counted + TILE_TARGET_SIZE - 1) / TILE_TARGET_SIZE + 1;   /* + the fresh tile outliers start */
-        const int nslots_max = ntiles_max * TILE_TARGET_SIZE, nnodes_max = 2 * ntiles_max - 1;
-        const size_t n_slot_of = maintained ? (size_t)(num_source > 0 ? num_source : 1) : 0;
-        const size_t n_folds_max = maintained ? (size_t)nslots_max * 2 : 0;
+        /* Sized for the most tiles the members can fill until they are sorted into tiles, exactly after. */
+        const struct SidxBuildMemoryPlan bound = sidx_build_memory_plan(num_source, members_counted,
+                                                                        sidx_tiles_bound(members_counted), maintained, presorted);
+        if(!bound.fits) {throw std::runtime_error("index build: more members than one segment can index");}
+        const size_t n_slot_of = bound.slot_of / sizeof(int);
         void *p_tiles = NULL, *p_bvh = NULL, *p_pool = NULL, *p_rows = NULL, *p_slot = NULL, *p_level = NULL, *p_folds = NULL;
         if(kStageOnHost) {
-            p_tiles = scratch.take((size_t)ntiles_max * sizeof(sfc_tile_t), "ngl_sidx_stage_tiles");
-            p_bvh = scratch.take((size_t)nnodes_max * sizeof(tile_bvh_node_t), "ngl_sidx_stage_bvh");
-            p_pool = scratch.take((size_t)nslots_max * sizeof(int), "ngl_sidx_stage_pool");
-            p_rows = scratch.take((size_t)nslots_max * SIDX_ROW_WIDTH * sizeof(double), "ngl_sidx_stage_rows");
-            if(maintained) {p_slot = scratch.take(n_slot_of * sizeof(int), "ngl_sidx_stage_slot_of");}
-            p_level = scratch.take((size_t)nnodes_max * sizeof(int), "ngl_sidx_stage_level_nodes");
-#if defined(BOX_SHEARING) && (BOX_SHEARING > 1)
-            if(maintained) {p_folds = scratch.take(n_folds_max * sizeof(int), "ngl_sidx_stage_shear_folds");}
-#endif
+            p_tiles = scratch.take(bound.tiles, "ngl_sidx_stage_tiles");
+            p_bvh = scratch.take(bound.bvh, "ngl_sidx_stage_bvh");
+            p_pool = scratch.take(bound.pool, "ngl_sidx_stage_pool");
+            p_rows = scratch.take(bound.rows, "ngl_sidx_stage_rows");
+            if(bound.slot_of > 0) {p_slot = scratch.take(bound.slot_of, "ngl_sidx_stage_slot_of");}
+            p_level = scratch.take(bound.level_nodes, "ngl_sidx_stage_level_nodes");
+            if(bound.shear_folds > 0) {p_folds = scratch.take(bound.shear_folds, "ngl_sidx_stage_shear_folds");}
         }
         const int transients = scratch.mark();
         /* 1. members, compacted in source order, as ordinals */
-        const size_t n_scan = (size_t)num_source + 1;
-        Kokkos::View<int*, Mem, UV> first_member((int *)scratch.take(n_scan * sizeof(int), "ngl_sidx_build_scan"), n_scan);
+        const size_t n_scan = bound.scan / sizeof(int);
+        Kokkos::View<int*, Mem, UV> first_member((int *)scratch.take(bound.scan, "ngl_sidx_build_scan"), n_scan);
         Kokkos::parallel_scan("sidx_build_members", Kokkos::RangePolicy<Exec>(0, num_source),
                               KOKKOS_LAMBDA(int o, int &acc, const bool final) {
             if(final) {first_member(o) = acc;}
@@ -847,15 +950,15 @@ static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, 
         int num_members = 0;
         if(num_source > 0) {Kokkos::deep_copy(num_members, Kokkos::subview(first_member, (size_t)num_source));}
         if(num_members != members_counted) {throw std::runtime_error("index build: membership changed between its passes");}
-        const size_t n_mem = (size_t)(num_members > 0 ? num_members : 1);
-        Kokkos::View<int*, Mem, UV> member((int *)scratch.take(n_mem * sizeof(int), "ngl_sidx_build_members"), n_mem);
+        const size_t n_mem = bound.members / sizeof(int);
+        Kokkos::View<int*, Mem, UV> member((int *)scratch.take(bound.members, "ngl_sidx_build_members"), n_mem);
         Kokkos::parallel_for("sidx_build_member_list", Kokkos::RangePolicy<Exec>(0, num_source), KOKKOS_LAMBDA(int o) {
             if(src.is_member(o)) {member(first_member(o)) = o;}
         });
         Exec().fence();
         gizmo_gpu_check_last_error("sidx_build_member_list", num_source);
         if(!presorted) {
-            Kokkos::View<Morton128*, Mem, UV> key((Morton128 *)scratch.take(n_mem * sizeof(Morton128), "ngl_sidx_build_keys"), n_mem);
+            Kokkos::View<Morton128*, Mem, UV> key((Morton128 *)scratch.take(bound.keys, "ngl_sidx_build_keys"), n_mem);
             /* 2. keys: only the position is needed here */
             SidxBuildTally keys_tally;
             Kokkos::parallel_reduce("sidx_build_keys", Kokkos::RangePolicy<Exec>(0, num_members),
@@ -886,26 +989,25 @@ static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, 
         const int tiles_inside = (n_inside + TILE_TARGET_SIZE - 1) / TILE_TARGET_SIZE;
         const int tiles_outside = (report->n_outside + TILE_TARGET_SIZE - 1) / TILE_TARGET_SIZE;
         const int ntiles = (tiles_inside + tiles_outside > 0) ? tiles_inside + tiles_outside : 1;
-        const int nslots = ntiles * TILE_TARGET_SIZE;
-        SidxBvhShape shape;
-        sidx_bvh_shape(shape, ntiles);
-        const size_t n_folds = (size_t)nslots * 2;
+        const struct SidxBuildMemoryPlan plan = sidx_build_memory_plan(num_source, num_members, ntiles, maintained, presorted);
+        if(!plan.fits) {throw std::runtime_error("index build: more members than one segment can index");}
+        const int nslots = plan.nslots;
+        const size_t n_folds = plan.shear_folds / sizeof(int);
         /* What the index keeps: on the device route allocated now and built in place; on the host route
          * already staged above, and copied once below. */
         if(!kStageOnHost) {
-            if(sidx_alloc_kept(seg, maintained, ntiles, shape.nnodes, nslots, n_slot_of, shape.nlevels, report)) {return 2;}
+            if(sidx_alloc_kept(seg, maintained, plan, report)) {return 2;}
             p_tiles = seg->d_tiles; p_bvh = seg->d_bvh; p_pool = seg->d_pool; p_rows = seg->d_compact_xyzh;
             p_slot = seg->d_slot_of; p_folds = seg->d_shear_folds;
             /* the level schedule is kept by a maintained segment, a working array of the build otherwise */
-            p_level = maintained ? (void *)seg->d_level_nodes
-                                 : scratch.take((size_t)shape.nnodes * sizeof(int), "ngl_sidx_build_level_nodes");
+            p_level = maintained ? (void *)seg->d_level_nodes : scratch.take(plan.level_nodes, "ngl_sidx_build_level_nodes");
         }
         Kokkos::View<sfc_tile_t*, Mem, UV> tiles((sfc_tile_t *)p_tiles, (size_t)ntiles);
-        Kokkos::View<tile_bvh_node_t*, Mem, UV> bvh((tile_bvh_node_t *)p_bvh, (size_t)shape.nnodes);
+        Kokkos::View<tile_bvh_node_t*, Mem, UV> bvh((tile_bvh_node_t *)p_bvh, (size_t)plan.nnodes);
         Kokkos::View<int*, Mem, UV> pool((int *)p_pool, (size_t)nslots);
         Kokkos::View<double*, Mem, UV> rows((double *)p_rows, (size_t)nslots * SIDX_ROW_WIDTH);
         Kokkos::View<int*, Mem, UV> slot_of((int *)p_slot, n_slot_of);
-        Kokkos::View<int*, Mem, UV> level_nodes((int *)p_level, (size_t)shape.nnodes);
+        Kokkos::View<int*, Mem, UV> level_nodes((int *)p_level, (size_t)plan.nnodes);
         Kokkos::View<int*, Mem, UV> shear_folds((int *)p_folds, p_folds ? n_folds : 0);
         Kokkos::deep_copy(pool, -1);
         Kokkos::deep_copy(slot_of, -1);
@@ -955,17 +1057,16 @@ static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, 
         /* whether every member was already at ti_ref, and any member the fold could not bound */
         report->all_current = (fold_tally.not_current == 0);
         if(fold_tally.refused > 0) {report->refused = 1; sidx_segment_free(seg); return 1;}
-        /* 5. the BVH: its shape from the host, its bounds level by level from the leaves */
+        /* 5. the BVH: its shape set out on the host, its bounds level by level from the leaves.  The shape's
+         * block is taken last and given back at the end of this block, so the arena stays a stack. */
+        SidxBvhShape shape;
         {
-            std::vector<tile_bvh_node_t> h_bvh((size_t)shape.nnodes);
-            for(int nd = 0; nd < shape.nnodes; nd++) {
-                sidx_box_empty(&h_bvh[nd]);
-                h_bvh[nd].left = shape.left[nd]; h_bvh[nd].right = shape.right[nd]; h_bvh[nd].parent = shape.parent[nd];
-            }
-            Kokkos::deep_copy(bvh, Kokkos::View<const tile_bvh_node_t*, Kokkos::HostSpace, UV>(h_bvh.data(), (size_t)shape.nnodes));
-            Kokkos::deep_copy(level_nodes, Kokkos::View<const int*, Kokkos::HostSpace, UV>(shape.level_nodes.data(), (size_t)shape.nnodes));
-            Kokkos::View<int*, Mem, UV> leaf_of_tile((int *)scratch.take((size_t)ntiles * sizeof(int), "ngl_sidx_build_leaf_of_tile"), (size_t)ntiles);
-            Kokkos::deep_copy(leaf_of_tile, Kokkos::View<const int*, Kokkos::HostSpace, UV>(shape.leaf_of_tile.data(), (size_t)ntiles));
+            Kokkos::View<int*, Mem, UV> leaf_of_tile((int *)scratch.take(plan.leaf_of_tile, "ngl_sidx_build_leaf_of_tile"), (size_t)ntiles);
+            SidxScratch<true> host_side;
+            sidx_bvh_shape(shape, plan, host_side.take(plan.bvh_shape, "ngl_sidx_build_bvh_shape"));
+            Kokkos::deep_copy(bvh, Kokkos::View<const tile_bvh_node_t*, Kokkos::HostSpace, UV>(shape.nodes, (size_t)shape.nnodes));
+            Kokkos::deep_copy(level_nodes, Kokkos::View<const int*, Kokkos::HostSpace, UV>(shape.level_nodes, (size_t)shape.nnodes));
+            Kokkos::deep_copy(leaf_of_tile, Kokkos::View<const int*, Kokkos::HostSpace, UV>(shape.leaf_of_tile, (size_t)ntiles));
             Kokkos::parallel_for("sidx_build_tile_leaf", Kokkos::RangePolicy<Exec>(0, ntiles), KOKKOS_LAMBDA(int t) {
                 tiles(t).bvh_leaf = leaf_of_tile(t);
             });
@@ -994,7 +1095,7 @@ static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, 
          * the stage copied to it once (the stage goes when this returns). */
         scratch.release_to(transients);
         if(kStageOnHost) {
-            if(sidx_alloc_kept(seg, maintained, ntiles, shape.nnodes, nslots, n_slot_of, shape.nlevels, report)) {return 2;}
+            if(sidx_alloc_kept(seg, maintained, plan, report)) {return 2;}
             Kokkos::deep_copy(Kokkos::View<sfc_tile_t*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(seg->d_tiles, (size_t)ntiles), tiles);
             Kokkos::deep_copy(Kokkos::View<tile_bvh_node_t*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(seg->d_bvh, (size_t)shape.nnodes), bvh);
             Kokkos::deep_copy(Kokkos::View<int*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(seg->d_pool, (size_t)nslots), pool);
@@ -1008,7 +1109,7 @@ static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, 
             }
         }
         if(maintained) {
-            memcpy(seg->h_level_offsets, shape.level_offsets.data(), (size_t)(shape.nlevels + 1) * sizeof(int));
+            memcpy(seg->h_level_offsets, shape.level_offsets, (size_t)(shape.nlevels + 1) * sizeof(int));
             *seg->looseness = looseness;
             seg->nlevels = shape.nlevels;
         }
@@ -1019,6 +1120,10 @@ static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, 
         seg->num_pool = nslots;
         seg->source_base = src.base;
         seg->source_count = num_source;
+    } catch(const SidxOutOfMemory &e) {
+        report->bytes_failed = e.bytes;
+        sidx_segment_free(seg);
+        return 2;
     } catch(const std::exception &e) {
         /* Kokkos throws rather than returning null: an allocation of the device route's working space, or a
          * failure inside the sort or a copy.  Its own text says which. */
