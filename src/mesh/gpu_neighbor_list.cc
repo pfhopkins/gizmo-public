@@ -1951,18 +1951,23 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
     /* Each query's radius and position.  A caller may supply either (a loop with a
      * different kernel than the particle's own, e.g. KernelRadiusDM or AGS_Hsml; a
      * source not backed by a P[] entry, e.g. a grid cell).  Otherwise they are the
-     * query particle's own at the time of the search -- its reach under the loop's
-     * policy, its position once drifted to now (a query is normally an active
-     * particle and current already) -- and never the index's rows, which describe
-     * members at the index's reference time.  Positions: [aa*3 + k] for axis k. */
+     * query particle's own -- its reach under the loop's policy, its stored position,
+     * which must be at the time of the search (checked below) -- and never the index's
+     * rows, which describe members at the index's reference time.  Positions:
+     * [aa*3 + k] for axis k. */
     size_t radii_bytes = (size_t)((num_active > 0) ? num_active : 1) * sizeof(double);
     double *d_radii = (double *) ngl_alloc_shared(radii_bytes, "ngl_pairs_radii");
     if(!d_radii) {ngl_build_leave_empty(gnl, num_active, NULL, NULL, NULL, NULL, "the per-active search radii", radii_bytes); return;}
     size_t srcpos_bytes = (size_t)((num_active > 0) ? num_active : 1) * 3 * sizeof(double);
     double *d_source_pos = (double *) ngl_alloc_shared(srcpos_bytes, "ngl_pairs_source_pos");
     if(!d_source_pos) {ngl_build_leave_empty(gnl, num_active, d_radii, NULL, NULL, NULL, "the per-active source positions", srcpos_bytes); return;}
+    /* A query named by its particle index is searched from where that particle is, so it must be at the time of
+     * the search: the import that brought its neighbours, the walk on the other route and the pair kernels all
+     * read its stored position, and a prediction here would put the list in a frame of its own.  A source at
+     * any other position passes it (source_positions_host). */
+    long queries_not_current = 0;
 #ifdef _OPENMP
-    #pragma omp parallel for schedule(static)
+    #pragma omp parallel for schedule(static) reduction(+:queries_not_current)
 #endif
     for(int aa = 0; aa < num_active; aa++) {
         const int i = active_indices_host[aa];
@@ -1970,12 +1975,17 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
         if(source_positions_host) {
             for(int k = 0; k < 3; k++) {d_source_pos[aa*3 + k] = source_positions_host[aa*3 + k];}
         } else {
-            double c[3], hw = 0.0;
-            if(particle_motion_envelope(i, P_shared, CellP, t_now, &host_tables, c, &hw) == PARTICLE_MOTION_UNBOUNDED) {
-                for(int k = 0; k < 3; k++) {c[k] = (double)P_shared[i].Pos[k];}
-            }
-            for(int k = 0; k < 3; k++) {d_source_pos[aa*3 + k] = c[k];}
+            if(P_shared[i].Ti_current != t_now) {queries_not_current++;}
+            for(int k = 0; k < 3; k++) {d_source_pos[aa*3 + k] = (double)P_shared[i].Pos[k];}
         }
+    }
+    if(queries_not_current > 0) {
+        Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(d_source_pos);
+        Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(d_radii);
+        ngl_stop_empty(gnl, num_active, 7743, __LINE__, "gpu_ngb_list_build (caller '%s'): %ld of %d queries named by "
+                       "particle index are not at the time of the search, so they have no position the rest of the step "
+                       "agrees on; neighbour list left empty", caller_label ? caller_label : "?", queries_not_current, num_active);
+        return;
     }
 
     /* Allocate CSR offsets (64-bit row pointers) */

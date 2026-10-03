@@ -189,9 +189,9 @@ void gizmo_mark_kernel_radius_dirty_range(int start, int end);
    P_shared must be accessible from GPU (SharedSpace or managed memory).
    active_indices_host: host-side array of source identifiers, size num_active.
      Default mode (source_positions_host == NULL): these are P[] indices, and each
-     source's position is the particle's own at the time of the search (where the
-     drift puts it; a current particle's own Pos) -- never the index's rows, which
-     describe members at the index's reference time.
+     source's position is the particle's own Pos, which must be at the time of the
+     search (a source that is not stops the run, controlled stop 7743) -- never the
+     index's rows, which describe members at the index's reference time.
      Override mode (source_positions_host != NULL): these are caller-defined
      opaque IDs; pass any sentinel (e.g. 0..num_active-1) since the kernel
      reads positions from source_positions_host instead.

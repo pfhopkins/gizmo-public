@@ -815,86 +815,6 @@ template <typename Spec>
 constexpr bool nlr_spec_mode_a_rebuild_csr_every_iter_v =
     nlr_spec_mode_a_rebuild_csr_every_iter<Spec>::value;
 
-/* ------------------------------------------------------------------------- *
- * Active-source-in-pool declaration.
- *
- * gpu_ngb_list_build takes a query's position and radius, when the caller
- * supplies none, from the query particle's own current state -- never from the
- * cached SIDX rows, which describe pool members at the index's reference time --
- * so an active source that is not a pool member (e.g. a Type-5 sink doing a
- * gas-neighbor search in a GasOnly density loop) is searched from where it is.
- *
- * Every cached-SIDX Spec (sidx_cache_kind != None) declares
- *   static constexpr bool mode_a_active_sources_in_sidx_pool = <bool>;
- *     true  -> every active source is a pool member (gas-gas, or AllTypes pool).
- *     false -> active sources may be non-pool (e.g. sink/star in a GasOnly loop):
- *              the runner stages explicit P[active_i].Pos itself (radii are
- *              already passed explicitly by the runner).
- * The static_assert in the runner bodies makes omission a COMPILE ERROR.
- * ------------------------------------------------------------------------- */
-
-/* "declared": does the Spec declare mode_a_active_sources_in_sidx_pool at all? */
-template <typename Spec, typename = void>
-struct nlr_spec_active_sources_in_sidx_pool_declared : std::false_type {};
-template <typename Spec>
-struct nlr_spec_active_sources_in_sidx_pool_declared<
-    Spec, std::void_t<decltype(Spec::mode_a_active_sources_in_sidx_pool)>>
-    : std::true_type {};
-template <typename Spec>
-constexpr bool nlr_spec_active_sources_in_sidx_pool_declared_v =
-    nlr_spec_active_sources_in_sidx_pool_declared<Spec>::value;
-
-/* "value": the declared value, or a safe default (true) when absent. The default
- * is only ever reached for sidx_cache_kind==None specs (cached specs are required
- * to declare, enforced by the static_assert), and it is gated out by the cache-kind
- * check below, so it is never actually consumed for an undeclared spec. Reading
- * this trait (not Spec::member directly) avoids hard-instantiating a missing member. */
-template <typename Spec, typename = void>
-struct nlr_spec_active_sources_in_sidx_pool_value : std::true_type {};
-template <typename Spec>
-struct nlr_spec_active_sources_in_sidx_pool_value<
-    Spec, std::void_t<decltype(Spec::mode_a_active_sources_in_sidx_pool)>>
-    : std::integral_constant<bool, Spec::mode_a_active_sources_in_sidx_pool> {};
-template <typename Spec>
-constexpr bool nlr_spec_active_sources_in_sidx_pool_v =
-    nlr_spec_active_sources_in_sidx_pool_value<Spec>::value;
-
-/* Compile-time contract: a cached-SIDX spec must declare the active-in-pool trait. */
-template <typename Spec>
-constexpr bool nlr_spec_satisfies_source_pool_contract_v =
-    (Spec::sidx_cache_kind == SidxCacheKind::None) ||
-    nlr_spec_active_sources_in_sidx_pool_declared_v<Spec>;
-
-/* Does this spec need the runner to stage explicit source positions for Mode A? */
-template <typename Spec>
-constexpr bool nlr_spec_needs_explicit_source_positions_v =
-    (Spec::sidx_cache_kind != SidxCacheKind::None) &&
-    !nlr_spec_active_sources_in_sidx_pool_v<Spec>;
-
-/* Stage current P[active_i].Pos into `storage` and return it as a source_positions
- * array (layout pos[k*3+axis]) for specs that need explicit positions; returns
- * nullptr (the list builder takes each source's own position) otherwise.
- * ~3 doubles/active, host-side. */
-template <typename Spec>
-static inline const double* nlr_stage_explicit_source_positions(
-    const struct particle_data* P_host, const int* active_indices, int num_active,
-    std::vector<double>& storage)
-{
-    if (nlr_spec_needs_explicit_source_positions_v<Spec> && num_active > 0) {
-        storage.resize((size_t)num_active * 3);
-        for (int k = 0; k < num_active; k++) {
-            const int i = active_indices[k];
-            storage[(size_t)k * 3 + 0] = (double)P_host[i].Pos[0];
-            storage[(size_t)k * 3 + 1] = (double)P_host[i].Pos[1];
-            storage[(size_t)k * 3 + 2] = (double)P_host[i].Pos[2];
-        }
-        return storage.data();
-    }
-    (void)P_host; (void)active_indices;
-    return nullptr;
-}
-
-
 /* ============================================================================
  * Iteration driver contract
  *
@@ -1024,10 +944,6 @@ enum class DispatchPath : int {
  *     // (3) Writeback policy
  *     static constexpr WritePattern   write_pattern   = WritePattern::ActiveReduceOnly;
  *     static constexpr SidxCacheKind  sidx_cache_kind = SidxCacheKind::AllTypes;
- *     // REQUIRED for cached-SIDX specs (sidx_cache_kind != None): are all active
- *     // sources pool members? true = keep compact fast-path; false = runner stages
- *     // explicit P[].Pos (non-pool actives, e.g. a sink in a GasOnly loop).
- *     static constexpr bool mode_a_active_sources_in_sidx_pool = true;
  *
  *     // (4) Active-particle predicate. Caller passes this to nlr_build_active_list.
  *     static bool is_active(int particle_index);
