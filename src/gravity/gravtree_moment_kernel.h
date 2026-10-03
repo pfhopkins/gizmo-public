@@ -831,21 +831,20 @@ KOKKOS_INLINE_FUNCTION static void node_motion_advance(const Node &n, double dt_
     n.len() = (MyFloat)((double) n.len() + TREE_NODE_WIDENING_DELTA(n.vmax(), dt_widen));
 }
 
-/* The gas kernel lengths a node bounds follow the flow's divergence over the drift, by the particle
- * drift's capped factor (kernel_radius_drift_factor). The scalar hmax decays or grows with it (its
- * legacy semantics); the per-type bands only ever grow here, because they include sources that do not
- * shrink under drift (e.g. a particle's force softening), so decaying them could under-bound a node
- * prune -- force_update_hmax re-grows them per particle each call. divVmax is gathered from gas members
+/* The kernel lengths a node bounds grow over a drift by the particle drift's capped factor
+ * (kernel_radius_drift_factor) applied to the largest member divergence.  Each member grows on its own
+ * dilated interval; a dilation factor is at most one, so the undilated interval dt_widen is at least as
+ * long as any member's, and the node's own (centre-of-mass) interval would not be.  divVmax is a maximum
+ * taken from zero, so the factor is never below one: the scalar hmax and the per-type bands only grow
+ * here, and force_update_hmax re-tightens them from the members.  divVmax is gathered from gas members
  * only, so a band holding non-gas radii (adaptive softening) is grown by the gas divergence, not its
  * own members'. */
-KOKKOS_INLINE_FUNCTION static void node_hmax_drift(struct extNODE &ext, double dt_drift_hmax)
+KOKKOS_INLINE_FUNCTION static void node_hmax_drift(struct extNODE &ext, double dt_widen)
 {
-    const double decay_fac = kernel_radius_drift_factor((double) ext.divVmax * dt_drift_hmax);
-    if(ext.hmax > 0) {ext.hmax = (MyFloat)((double) ext.hmax * decay_fac);}
-    if(decay_fac > 1.0) {
-        for(int t = 0; t < 6; t++) {
-            if(ext.hmax_per_type[t] > 0) {ext.hmax_per_type[t] = (MyFloat)((double) ext.hmax_per_type[t] * decay_fac);}
-        }
+    const double growth = kernel_radius_drift_factor((double) ext.divVmax * dt_widen);
+    if(ext.hmax > 0) {ext.hmax = (MyFloat)((double) ext.hmax * growth);}
+    for(int t = 0; t < 6; t++) {
+        if(ext.hmax_per_type[t] > 0) {ext.hmax_per_type[t] = (MyFloat)((double) ext.hmax_per_type[t] * growth);}
     }
 }
 
