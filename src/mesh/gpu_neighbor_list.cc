@@ -580,6 +580,10 @@ struct SidxRecordSource {
     }
 };
 
+/* The sort's own working space, per member sorted (measured with the OpenMP backend).  An allowance for
+ * projecting a build's peak, and the size reported, as an estimate, when the sort is refused its memory. */
+static constexpr size_t SIDX_SORT_BYTES_PER_MEMBER = 20;
+
 /* What a build reports besides the index itself. */
 struct SidxBuildReport {
     int refused;          /* a member no search can bound: the index is left unbuilt */
@@ -588,6 +592,7 @@ struct SidxBuildReport {
     int n_outside_owned;  /* of those, the rank's own particles */
     size_t bytes_failed;  /* the request that could not be had, when one could not */
     int failed_memory;    /* where that request was made (SidxMemory) */
+    int failed_estimated; /* bytes_failed is an estimate (the sort sizes its own request) */
     int failed_kept;      /* that request was for the arrays the segment keeps, which every route places on the device */
     char failure[160];    /* what failed, when it was not a request of known size */
 };
@@ -608,10 +613,10 @@ static const char *sidx_memory_name(int memory)
 
 /* Thrown by the build when a request of its own is refused; the build then returns SIDX_ALLOCATION_REFUSED. */
 struct SidxAllocationRefused {
-    size_t bytes; int memory;
+    size_t bytes; int memory; int estimated = 0;
     /* constructed, not brace-initialised: nvcc's front end fails an internal assertion on a two-member aggregate
      * thrown here */
-    SidxAllocationRefused(size_t b, int mem) : bytes(b), memory(mem) {}
+    SidxAllocationRefused(size_t b, int mem, int est = 0) : bytes(b), memory(mem), estimated(est) {}
 };
 
 /* The build's working space, released when the build returns, on every path.  On the host it comes from
@@ -694,7 +699,7 @@ struct SidxGhostRecords {
             Kokkos::deep_copy(Kokkos::View<signed char*, GIZMO_KOKKOS_DEVICE_SPACE, UV>(d_state, n),
                               Kokkos::View<const signed char*, Kokkos::HostSpace, UV>(h_state, n));
         } catch(const SidxAllocationRefused &e) {
-            report->bytes_failed = e.bytes; report->failed_memory = e.memory;
+            report->bytes_failed = e.bytes; report->failed_memory = e.memory; report->failed_estimated = e.estimated;
             release();
             return 1;
         }
@@ -886,6 +891,12 @@ static void sidx_bvh_shape(SidxBvhShape &s, const struct SidxBuildMemoryPlan &pl
     for(int nd = 0; nd < s.nnodes; nd++) {s.level_nodes[s.cursor[s.height[nd]]++] = nd;}
 }
 
+/* Device memory the segment a build keeps takes, on either route (sidx_alloc_kept allocates exactly this). */
+static size_t sidx_kept_device_bytes(const struct SidxBuildMemoryPlan &m, int maintained)
+{
+    return m.tiles + m.bvh + m.pool + m.rows + (maintained ? m.slot_of + m.level_nodes + m.shear_folds : 0);
+}
+
 /* Allocate the arrays the segment keeps, on the device: what every segment needs to be walked, and, for a
  * maintained segment, what keeps its bounds true while it is kept.  Returns 0; 1 when one could not be had
  * (the segment is then released and the report names the request). */
@@ -899,16 +910,21 @@ static int sidx_alloc_kept(gpu_index_segment_t *seg, int maintained, const struc
         {(void **)&seg->d_compact_xyzh, m.rows, "ngl_sidx_dev_rows", 0},
         {(void **)&seg->d_slot_of, m.slot_of, "ngl_sidx_dev_slot_of", 1},
         {(void **)&seg->d_level_nodes, m.level_nodes, "ngl_sidx_dev_level_nodes", 1}};
+    size_t device_bytes = 0;
     for(auto &k : kept) {
         if(k.maintenance && !maintained) {continue;}
         *k.dst = gizmo_gpu_alloc_device(k.bytes, k.label);
         if(!*k.dst) {report->bytes_failed = k.bytes; report->failed_memory = SIDX_MEM_DEVICE; report->failed_kept = 1; sidx_segment_free(seg); return 1;}
+        device_bytes += k.bytes;
     }
-    if(!maintained) {return 0;}
-    if(m.shear_folds > 0) {
+    if(maintained && m.shear_folds > 0) {
         seg->d_shear_folds = (int *) gizmo_gpu_alloc_device(m.shear_folds, "ngl_sidx_dev_shear_folds");
         if(!seg->d_shear_folds) {report->bytes_failed = m.shear_folds; report->failed_memory = SIDX_MEM_DEVICE; report->failed_kept = 1; sidx_segment_free(seg); return 1;}
+        device_bytes += m.shear_folds;
     }
+    /* what the route selector projects for the kept segment is what is allocated here */
+    if(device_bytes != sidx_kept_device_bytes(m, maintained)) {throw std::logic_error("index build: kept segment differs from its projection");}
+    if(!maintained) {return 0;}
     seg->h_level_offsets = (int *) gizmo_gpu_alloc_host(m.level_offsets, "ngl_sidx_host_level_offsets");
     if(!seg->h_level_offsets) {report->bytes_failed = m.level_offsets; report->failed_memory = SIDX_MEM_HOST; report->failed_kept = 1; sidx_segment_free(seg); return 1;}
     seg->looseness = (double *) gizmo_gpu_alloc_shared(m.looseness, "ngl_sidx_looseness");
@@ -999,9 +1015,16 @@ static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, 
             if(keys_tally.refused > 0) {report->refused = 1; sidx_segment_free(seg); return SIDX_REFUSED_MEMBER;}
             /* 3. sort: only the key and the member ordinal move */
             if(num_members > 1) {
-                Kokkos::Experimental::sort_by_key(Exec(), Kokkos::subview(key, std::make_pair(0, num_members)),
-                                                  Kokkos::subview(member, std::make_pair(0, num_members)), Morton128Less{});
-                Exec().fence();
+                /* The sort allocates its own working space; a refusal of it is a refused allocation like any other
+                 * (a typed one, std::bad_alloc), its size known only by the allowance. */
+                try {
+                    Kokkos::Experimental::sort_by_key(Exec(), Kokkos::subview(key, std::make_pair(0, num_members)),
+                                                      Kokkos::subview(member, std::make_pair(0, num_members)), Morton128Less{});
+                    Exec().fence();
+                } catch(const std::bad_alloc &) {
+                    throw SidxAllocationRefused((size_t)num_members * SIDX_SORT_BYTES_PER_MEMBER,
+                                                kStageOnHost ? SIDX_MEM_HOST : SIDX_MEM_DEVICE, 1);
+                }
             }
         }
         /* 4. tiles: members inside the extent fill tiles from slot 0; the rest start at a fresh tile */
@@ -1141,7 +1164,7 @@ static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, 
         seg->source_base = src.base;
         seg->source_count = num_source;
     } catch(const SidxAllocationRefused &e) {
-        report->bytes_failed = e.bytes; report->failed_memory = e.memory;
+        report->bytes_failed = e.bytes; report->failed_memory = e.memory; report->failed_estimated = e.estimated;
         sidx_segment_free(seg);
         return SIDX_ALLOCATION_REFUSED;
     } catch(const std::exception &e) {
@@ -1159,29 +1182,88 @@ static int sidx_build_segment(const Source &src, mode_b_radius_policy_t policy, 
  * particle storage is shared with the device), the imported ones from compact records. */
 enum SidxBuildRoute {SIDX_ROUTE_HOST = 0, SIDX_ROUTE_DEVICE = 1};
 
-/* The route a build takes.  Every build takes the host route: the device route is not chosen until its
- * builder has been checked on a device. */
-static int sidx_build_route(const struct SidxParticleSource &)
+/* The shapes of build whose device cost differs: the rank's own members already in order (no keys, no sort),
+ * the rank's own members sorted, and the imported members, sorted, from their compact records. */
+enum SidxBuildShape {SIDX_SHAPE_OWNED_PRESORTED = 0, SIDX_SHAPE_OWNED_SORTED = 1, SIDX_SHAPE_IMPORTED = 2, SIDX_NUM_SHAPES = 3};
+
+/* The fewest members for which a build of each shape takes the device route.  No build takes it until its
+ * builder has been checked on a device; these are then set from the measured crossover of the two routes. */
+static constexpr int SIDX_DEVICE_ROUTE_MIN_MEMBERS[SIDX_NUM_SHAPES] = {INT_MAX, INT_MAX, INT_MAX};
+
+/* The share of the device's free memory a build may plan on: ranks sharing a device allocate between the query
+ * and the build.  The projection does not count the particle storage, which the device route reads where it lives
+ * and whose placement is decided where it is allocated (gpu_particles_arena). */
+static constexpr double SIDX_DEVICE_FREE_FRACTION = 0.8;
+
+/* At most how many members a build of src has, without reading a particle: for the gas index over all of the
+ * rank's own particles, its gas cells -- the gas block, and any grains promoted to gas since it was last
+ * rearranged (an import never changes N_gas) -- else the particles in the source. */
+static int sidx_member_bound(const struct SidxParticleSource &src)
 {
-    return SIDX_ROUTE_HOST;
+    if(src.P == P && src.type_bitmask == 1 && src.base == 0 && src.count == src.owned_end) {
+        long long gas = N_gas;
+#if defined(GRAIN_FLUID) && defined(GRAIN_FLUID_PROMOTION)
+        gas += Grains_promoted;
+#endif
+        return (gas < src.count) ? (int)gas : src.count;
+    }
+    return src.count;
 }
 
-/* Whether the device route can build src: it reads the particles where they live, so only from the particle
- * storage the device shares (not an array of a caller's own), and with the drift tables mirrored to the device. */
-static int sidx_device_route_eligible(const struct SidxParticleSource &src)
+/* The device route's peak in device memory: while sorting, the working space, the sort's own and the records;
+ * after it, the working space, the records and the kept segment. */
+static size_t sidx_device_route_peak(const struct SidxBuildMemoryPlan &m, int num_members, int maintained, int presorted,
+                                     int imported)
 {
-    if(src.P != P) {return 0;}
+    const size_t records = imported ? m.record_rows + m.record_types + m.record_states : 0;
+    const size_t working = m.scan + m.members + m.keys + records;
+    const size_t sorting = working + (presorted ? 0 : (size_t)num_members * SIDX_SORT_BYTES_PER_MEMBER);
+    const size_t building = working + m.leaf_of_tile + (maintained ? 0 : m.level_nodes) + sidx_kept_device_bytes(m, maintained);
+    return (sorting > building) ? sorting : building;
+}
+
+/* Whether bytes fit within fraction of the device's free memory: 1 when they do, or when that memory is not
+ * known (a refused allocation is then the backstop). */
+static int sidx_device_has_room(size_t bytes, double fraction)
+{
+    size_t free_bytes = 0, total_bytes = 0;
+    if(!gizmo_gpu_device_memory(&free_bytes, &total_bytes)) {return 1;}
+    return (double)bytes <= fraction * (double)free_bytes;
+}
+
+/* The route a build takes: the device route when there is a device apart from the host, the source is the
+ * particle storage the device shares (the device route reads members where they live, so never an array of a
+ * caller's own), the build is of a size at which that route is the faster, its projected peak fits the device's
+ * free memory, and the drift tables are on the device; otherwise the host route.  O(1); below the size, no query
+ * of the device at all.  An unknown free memory does not refuse the route: a refused allocation then sends the
+ * build to the host. */
+static int sidx_build_route(const struct SidxParticleSource &src, int maintained, int presorted)
+{
+    if(std::is_same<Kokkos::DefaultExecutionSpace, Kokkos::DefaultHostExecutionSpace>::value) {return SIDX_ROUTE_HOST;}
+    if(src.P != P) {return SIDX_ROUTE_HOST;}
+    const int shape = src.exact ? SIDX_SHAPE_IMPORTED : (presorted ? SIDX_SHAPE_OWNED_PRESORTED : SIDX_SHAPE_OWNED_SORTED);
+    const int members = sidx_member_bound(src);
+    if(members < SIDX_DEVICE_ROUTE_MIN_MEMBERS[shape]) {return SIDX_ROUTE_HOST;}
+    const struct SidxBuildMemoryPlan m = sidx_build_memory_plan(src.count, members, sidx_tiles_bound(members), maintained, presorted);
+    if(!m.fits) {return SIDX_ROUTE_HOST;}
+    if(!sidx_device_has_room(sidx_device_route_peak(m, members, maintained, presorted, src.exact), SIDX_DEVICE_FREE_FRACTION)) {
+        return SIDX_ROUTE_HOST;
+    }
     gx_walk_drift_tables_refresh();
-    return g_walk_drift_tables_ok;
+    return g_walk_drift_tables_ok ? SIDX_ROUTE_DEVICE : SIDX_ROUTE_HOST;
 }
 
 /* Whether the host route has room for a build of src: its peak in the memory arena -- the staged segment, the
- * working space and the BVH shape, held together -- for as many members as src has particles.  A projection
- * for choosing a route only; every request the build makes is checked again when it is made. */
+ * working space and the BVH shape, held together -- and, where the device's free memory is known, all of that
+ * memory still covers the segment it keeps (which the host route places on the device too; no margin here,
+ * since a no is final).  A projection only; every request the build makes is checked again when it is made. */
 static int sidx_host_route_fits(const struct SidxParticleSource &src, int maintained, int presorted)
 {
-    const struct SidxBuildMemoryPlan m = sidx_build_memory_plan(src.count, src.count, sidx_tiles_bound(src.count), maintained, presorted);
+    const int members = sidx_member_bound(src);
+    const struct SidxBuildMemoryPlan m = sidx_build_memory_plan(src.count, members, sidx_tiles_bound(members), maintained, presorted);
     if(!m.fits) {return 0;}
+    if(!std::is_same<Kokkos::DefaultExecutionSpace, Kokkos::DefaultHostExecutionSpace>::value &&
+       !sidx_device_has_room(sidx_kept_device_bytes(m, maintained), 1.0)) {return 0;}
     const size_t always[] = {m.tiles, m.bvh, m.pool, m.rows, m.level_nodes, m.scan, m.members, m.leaf_of_tile, m.bvh_shape};
     const size_t when_sized[] = {m.slot_of, m.shear_folds, m.keys};
     size_t bytes = 0; int blocks = 0;
@@ -1268,8 +1350,7 @@ static int sidx_build_segment_now(const struct SidxParticleSource &src, int main
     for(int k = 0; k < 3; k++) {frame.corner[k] = DomainCorner[k];}
     frame.len = DomainLen;
 #endif
-    int route = sidx_build_route(src);
-    if(route == SIDX_ROUTE_DEVICE && !sidx_device_route_eligible(src)) {route = SIDX_ROUTE_HOST;}
+    const int route = sidx_build_route(src, maintained, presorted);
     int rc = sidx_build_attempt(route, src, radius_policy, ti_ref, host_tables, frame, maintained, presorted, seg, report);
     /* A device build refused an allocation is tried on the host -- unless what was refused is the segment
      * itself, which every route needs, or the host route has no room, or a stop is already asked. */
@@ -1278,7 +1359,7 @@ static int sidx_build_segment_now(const struct SidxParticleSource &src, int main
     int retried = 0;
     if(rc == SIDX_ALLOCATION_REFUSED && route == SIDX_ROUTE_DEVICE) {
         if(first.failed_kept) {no_retry = "what was refused is the index itself, which the host route needs too";}
-        else if(!sidx_host_route_fits(src, maintained, presorted)) {no_retry = "the memory arena has no room for the host route";}
+        else if(!sidx_host_route_fits(src, maintained, presorted)) {no_retry = "the host route has no room (the memory arena, or the device for the index it keeps)";}
         else if(gizmo_controlled_stop_local_reason()) {no_retry = "a stop is already requested";}
         else {
             retried = 1;
@@ -1289,7 +1370,7 @@ static int sidx_build_segment_now(const struct SidxParticleSource &src, int main
         char msg[520], earlier[200] = "";
         const char *who = caller_label ? caller_label : "?";
         const char *where = retried ? "on the host route (after the device route)" : (route == SIDX_ROUTE_DEVICE ? "on the device route" : "on the host route");
-        if(retried) {snprintf(earlier, sizeof(earlier), "; the device route had been refused %.1f MB of %s",
+        if(retried) {snprintf(earlier, sizeof(earlier), "; the device route had been refused %s%.1f MB of %s", first.failed_estimated ? "about " : "",
                               (double)first.bytes_failed / (1024.0 * 1024.0), sidx_memory_name(first.failed_memory));}
         else if(no_retry) {snprintf(earlier, sizeof(earlier), "; not tried on the host route: %s", no_retry);}
         if(rc == SIDX_REFUSED_MEMBER) {
@@ -1297,8 +1378,8 @@ static int sidx_build_segment_now(const struct SidxParticleSource &src, int main
                      "position or velocity is not finite, so no search can bound where it is%s; spatial index left unbuilt", who, where, earlier);
             gizmo_request_controlled_stop(7740, msg, __FILE__, __LINE__, __FUNCTION__);
         } else if(rc == SIDX_ALLOCATION_REFUSED) {
-            snprintf(msg, sizeof(msg), "spatial index build (caller '%s'): %s was refused %.1f MB of %s for %d particles%s; "
-                     "spatial index left unbuilt", who, where, (double)report->bytes_failed / (1024.0 * 1024.0),
+            snprintf(msg, sizeof(msg), "spatial index build (caller '%s'): %s was refused %s%.1f MB of %s for %d particles%s; "
+                     "spatial index left unbuilt", who, where, report->failed_estimated ? "about " : "", (double)report->bytes_failed / (1024.0 * 1024.0),
                      sidx_memory_name(report->failed_memory), src.count, earlier);
             gizmo_request_controlled_stop(7712, msg, __FILE__, __LINE__, __FUNCTION__);
         } else {
