@@ -67,23 +67,25 @@ integertime force_host_lazy_drift_ti(void)
  *  is the one whose kicks have just been closed out — the correct set for this point in
  *  the KDK sequence, and the quantity that sizes the work here.
  *
- *  The route therefore keys on the COMING step's count, not on how many kicks are being
- *  propagated: it is the count the gravity walk itself routes on, taken before the walk's own
- *  candidacy filter and so an upper bound on it. A host update drifts nodes lazily and claims
- *  them; a device gravity walk that follows answers those claims before it reads the mirror,
- *  so the two routes need not agree. When this says host, the device sweep would only cost
- *  drifting every node in the tree to serve however few elements are active. */
+ *  The route therefore keys on the COMING step's count (All.TreeUpdateHostBelowActive), not
+ *  on how many kicks are being propagated. It is independent of the gravity walk's own
+ *  routing: a host update drifts nodes lazily and claims them, and a device gravity walk that
+ *  follows answers those claims before it reads the mirror, so the two routes need not agree.
+ *  When this says host, the device sweep would only cost drifting every node in the tree to
+ *  serve however few elements are active. */
 void force_update_tree(void)
 {
     /* Two tests.  The count: the device path must drift every node in the tree before its
      * parallel kick walk is race-free, and that sweep is sized by the tree, not by how much work
      * this call has to do.  And once any node has been drifted lazily at this time the update
-     * stays on the host: the device path's full-tree sweep skips nodes already at its target
-     * time, so it cannot bring their mirror up to date and refuses to run (gpu_force_drift_nodes).
-     * A tree built after that drift is exempt: the build rewrote every node and every mirror. */
+     * stays on the host whatever the count says: the device path's full-tree sweep skips nodes
+     * already at its target time, so it cannot bring their mirror up to date and refuses to run
+     * (gpu_force_drift_nodes). A tree built after that drift is exempt: the build rewrote every
+     * node and every mirror. */
     const int host_drifted_nodes_now = !gpu_gravity_tree_nodes_current_at(All.Ti_Current)
                                        && (force_host_lazy_drift_ti() == All.Ti_Current);
-    const int to_host = host_drifted_nodes_now || gravity_walk_route_to_host(NumForceUpdateAtSyncPoint);
+    const int few_updates = All.TreeUpdateHostBelowActive > 0 && NumForceUpdateAtSyncPoint < All.TreeUpdateHostBelowActive;
+    const int to_host = host_drifted_nodes_now || few_updates;
 
     if(!to_host) {gpu_force_update_tree();}
     else

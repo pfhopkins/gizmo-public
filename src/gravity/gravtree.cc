@@ -17,17 +17,11 @@
 #include "../mesh/kernel.h"
 #include "./analytic_gravity.h"
 
-/*! Host-vs-device routing for the gravity walk and the dynamic tree update, keyed on the
- *  RANK-LOCAL count of active gravity candidates. The device tree update must drift every
- *  node in the tree before its parallel kick walk can be race-free, so its floor is set by
- *  the tree size rather than by the active set; the host paths drift each node only when
- *  they reach it.
- *
- *  The threshold is conservative against a crossover measured near 6e4 rank-local
- *  candidates on 16-rank FIRE, where routing the whole tree walk to the host cut the
- *  cost of steps with fewer than 1e4 global active elements by a third -- measured when
- *  the device gravity walk also drifted every node it could reach before walking, which
- *  it no longer does (it reads each source at the walk time). */
+/*! Host-vs-device routing for the gravity walk, keyed on the RANK-LOCAL count of active
+ *  gravity candidates. With few candidates the host walk is the cheaper route; with many
+ *  the device walk is. The dynamic tree update routes separately (force_update_tree,
+ *  TreeUpdateHostBelowActive): its cost is set by different work, so the two crossovers
+ *  need not coincide. */
 int gravity_walk_route_to_host(long long n_local_active)
 {
     return (All.GravityHostWalkBelowActive > 0 && n_local_active < (long long)All.GravityHostWalkBelowActive) ? 1 : 0;
