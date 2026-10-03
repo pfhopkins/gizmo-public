@@ -642,7 +642,7 @@ The GIZMO code package includes various .c and .h files, folders with different 
 
     If you add a new system, add a block like the above description for Frontera to the Makefile, then add a line with the matching machine name to Makefile.systype. Then you and other users only need to comment/uncomment one line to control compilations!
 
-    To save yourself the hassle of modifying Makefile.systype by-hand anytime you freshly clone the code, you can now create a file `~/.gizmo` containing `SYSTYPE="MySystem"`, and that will take precedence over whatever is in Makefile.systype.
+    To save yourself the hassle of modifying Makefile.systype by-hand anytime you freshly clone the code, you can now create a file `~/.gizmo` containing `SYSTYPE="MySystem"`, and that will take precedence over whatever is in Makefile.systype. An environment variable `SYSTYPE` (e.g. exported in your `.bashrc`) takes precedence over both, so if a build picks up the wrong machine block, check `echo $SYSTYPE` first.
 
 + **Config.sh**: This file contains a number of compile-time options, which determine the type of simulations, physics included -- most everything you need to control at compile time. Once you've got the libraries linked and Makefile.systype set for your machine, all different types of simulations will just amount to changing settings in Config.sh (as well as the run-time initial conditions and paramterfiles, of course). On another page, we explain these options. 
 

@@ -509,7 +509,7 @@ int sink_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int num_al
     double total_mass_in_winds = *unspawned_mass_ptr;
 
     int n_particles_split   = (int) floor( total_mass_in_winds / target_mass_for_wind_spawning(i) ); /* if we set SINK_WIND_SPAWN we presumably wanted to do this in an exactly-conservative manner, which means we want to have an even number here. */
-    int k=0, j;   /* j is a particle index bounded by NumPart (int); was 'long' here pre-port — mismatched gizmo_mark_kernel_radius_dirty_indices(const int*) signature, masked by the sink_env1 #error until that was lifted. */
+    int k=0, j;   /* j is a particle index bounded by NumPart, so int, matching gizmo_mark_kernel_radius_dirty_indices(const int*) */
 
 #if defined(SINGLE_STAR_FB_SNE) && defined(SINGLE_STAR_STARFORGE_PROTOSTELLAR_EVOLUTION)
     if(P[i].Type==5) {

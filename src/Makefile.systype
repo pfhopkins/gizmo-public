@@ -16,3 +16,5 @@ SYSTYPE="MacBookCellar_Kokkos"
 #SYSTYPE="RUSTY"
 #SYSTYPE="Frontier"       # OLCF, MI250X via the Kokkos HIP backend
 #SYSTYPE="Frontier_CPU"   # OLCF, same source dispatched to the Kokkos OpenMP backend
+#SYSTYPE="Lonestar6"      # TACC, A100 via the Kokkos CUDA backend (Kokkos built per user: see Makefile)
+#SYSTYPE="Lonestar6_CPU"  # TACC, same source dispatched to the Kokkos OpenMP backend
