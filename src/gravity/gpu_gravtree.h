@@ -47,7 +47,8 @@ int gpu_gravtree_walk_primary(int *host_candidates_left);
  * zeros is a call that took the ordinary one-lane-per-target walk.
  */
 /* Which device schedule ran. 0 = one lane per target, the target's own serial walk (the ordinary
- * schedule, and what a call takes whenever the device has a target for every lane); 1 = one walker
+ * schedule: a dense call whose targets reach about half the device's lanes, a call whose packet row
+ * cannot be launched, and the replay of a packet that gives up); 1 = one walker
  * per team with the members sharing its traversal; 2 = one target per team with the team's lanes
  * sharing that target's traversal. -1 when no device walk ran at all.
  *
