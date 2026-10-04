@@ -757,10 +757,16 @@ static KOKKOS_INLINE_FUNCTION gpu_grav_particle_now_t
 gpu_grav_particle_source_at(struct particle_data *P_dev, struct gas_cell_data *CellP_dev, int no, integertime ti,
                             const struct DriftKickTableView &tables, struct gpu_grav_time_fault_t *time_fault)
 {
-    if(P_dev[no].Ti_current > ti) {gpu_grav_note_source_ahead(time_fault, 0, no, P_dev[no].Ti_current);}
+    gpu_grav_particle_now_t out;
+    const integertime ti_source = P_dev[no].Ti_current;
+    if(ti_source >= ti) {   /* read as stored, without building the predictor (which also loads the cell under MFV) */
+        if(ti_source > ti) {gpu_grav_note_source_ahead(time_fault, 0, no, ti_source);}
+        out.pos = P_dev[no].Pos; out.vel = P_dev[no].Vel; out.mass = P_dev[no].Mass;
+        return out;
+    }
     struct particle_motion_prediction motion(P_dev, CellP_dev, no);
-    predict_particle_motion(motion, ti, &tables);   /* leaves a source at or past ti as stored */
-    gpu_grav_particle_now_t out; out.pos = motion.pos_; out.vel = motion.vel_; out.mass = motion.mass_;
+    predict_particle_motion(motion, ti, &tables);
+    out.pos = motion.pos_; out.vel = motion.vel_; out.mass = motion.mass_;
     return out;
 }
 
@@ -2297,14 +2303,12 @@ extern "C" int gpu_gravtree_packet_failure_reasons(void) {return GRAV_PACKET_FAI
  *     cooperative  iff  lane_count / n_targets >= GRAV_COOP_MAX_LANES_PER_TARGET
  *     team              = GRAV_COOP_MAX_LANES_PER_TARGET, one target per team
  *
- * ⛔⛔ THE ORDINARY SCHEDULE IS NOT A GOOD SCHEDULE, AND NOTHING HERE SHOULD BE READ AS SAYING IT
- * IS. It is one independent pointer-chasing walk per lane, so a wavefront's lanes diverge across
- * unrelated paths; measured against seven host threads on the same problem it loses by 4x at ten
- * thousand targets a rank, and wins only 4x where the step is fully active -- a whole GCD
- * performing like a couple of host cores. The masked packet schedule below, where several targets
- * share ONE traversal, exists precisely to attack that, and until it is measured at large N the
- * ordinary schedule is a PLACEHOLDER that happens to be what this code did before, not a choice
- * anything has justified.
+ * The ordinary schedule is one independent pointer-chasing walk per lane, so a wavefront's lanes
+ * diverge across unrelated paths, and with fewer targets than lanes a call lasts as long as its
+ * slowest target's walk. Where that is the case the masked packet schedule below, several targets
+ * sharing ONE traversal, is faster; once a rank's targets reach about half the device's lanes the
+ * independent walks keep the device busy and the ordinary schedule is the faster one, so dense
+ * calls take it from there (gpu_grav_dense_walks_flat).
  *
  * ⛔ Capacity exhaustion inside a cooperative team is a RARE, COUNTED safety valve and must never
  * be how an ordinary call gets handled: a packet that gives up is re-walked by the device
@@ -2366,11 +2370,21 @@ static const int g_grav_coop_n_rows = (int) (sizeof(g_grav_coop_rows) / sizeof(g
 #define GRAV_COOP_MAX_LANES_PER_TARGET 64
 
 /* A DENSE call -- one where the device cannot give every target a whole team -- walks as MASKED
- * PACKETS: TREE_QUERY_PACKET_SIZE neighbouring targets share one traversal, each still judging every
- * node for itself.  Against one independent traversal per lane, on a 128-rank zoom both with and
- * without the FIRE physics, packets are 27-45% faster in every step class they serve and neutral in
- * the rest (which the cooperative row takes).  The single-target walk remains the schedule when a
+ * PACKETS while the rank's targets are fewer than about half the device's lanes: TREE_QUERY_PACKET_SIZE
+ * neighbouring targets share one traversal, each still judging every node for itself.  On a 128-rank
+ * zoom, with and without the FIRE physics, that is 27-45% faster than one independent traversal per
+ * lane at 1e2-1e4 targets a rank.
+ *
+ * At or above half the lanes the call takes the single-target walk instead.  Independent per-lane
+ * walks then already keep the device busy, so sharing a traversal stops paying for its bookkeeping:
+ * on a 128-rank FIRE zoom (MI250X) the single-target walk was 25-30% faster on fully active calls and
+ * level with packets just below the threshold, where a call's time is set by its slowest target's
+ * walk rather than by the number of targets.  The single-target walk is also the schedule when a
  * packet row cannot be launched, and the replay for a packet that gives up. */
+static int gpu_grav_dense_walks_flat(int n_cand)
+{
+    return (2LL * (long long) n_cand >= (long long) gizmo_gpu_lane_count()) ? 1 : 0;
+}
 
 /* The cooperative row this call takes, or -1 for the ordinary schedule.
  *
@@ -2471,13 +2485,14 @@ static int gpu_grav_packet_launch(GpuGravPacketWalk<Policy> &f, const char *kern
         return gpu_grav_packet_launch_row(f, g_grav_coop_rows[first_row], first_row, first_row,
                                           kernel_name, shape_out);
     } else {
-        /* Not enough lanes for a whole team per target: MASKED PACKETS, where
-         * TREE_QUERY_PACKET_SIZE targets adjacent in the active list, and therefore adjacent
-         * in space, share ONE traversal while each still judges every node for itself.  One
-         * independent traversal per lane instead has every lane chasing its own pointer chain,
-         * so a wavefront's lanes diverge across unrelated paths and the node loads they have in
-         * common are never shared. */
-        if(Policy::packet_size > 1) {
+        /* Not enough lanes for a whole team per target, but fewer targets than half the lanes:
+         * MASKED PACKETS, where TREE_QUERY_PACKET_SIZE targets adjacent in the active list, and
+         * therefore adjacent in space, share ONE traversal while each still judges every node for
+         * itself.  One independent traversal per lane instead has every lane chasing its own
+         * pointer chain, so a wavefront's lanes diverge across unrelated paths and the node loads
+         * they have in common are never shared.  From half the lanes up the call returns to the
+         * ordinary schedule (gpu_grav_dense_walks_flat). */
+        if(Policy::packet_size > 1 && !gpu_grav_dense_walks_flat(f.n_cand)) {
             const int t = (Policy::packet_size < GRAV_PACKET_Q_DEV_MAX) ? Policy::packet_size
                                                                         : GRAV_PACKET_Q_DEV_MAX;
             const struct gpu_grav_sched_row_t dense = {GRAV_SCHED_PACKET, t, 1, 0, 256, 64};

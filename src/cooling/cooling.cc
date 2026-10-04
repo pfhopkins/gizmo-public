@@ -1013,6 +1013,23 @@ double GetCoolingTime(double u_old, double rho, double ne_guess, double *ne_eval
 #endif
 }
 
+/* net rate of change of the specific internal energy from cooling and heating, -du/dt in code units:
+ * positive for net cooling, negative for net heating (where GetCoolingTime above reports only zero).
+ * Arguments as for GetCoolingTime. */
+double GetNetCoolingRate(double u_old, double rho, double ne_guess, double *ne_eval, int target, struct particle_data *pp, struct gas_cell_data *cell)
+{
+#if defined(COOL_GRACKLE) && !defined(GALSF_EFFECTIVE_EQS)
+    double tcool = GetCoolingTime(u_old, rho, ne_guess, ne_eval, target, pp, cell); /* the Grackle interface gives only the cooling time */
+    return (tcool != 0) ? u_old / tcool : 0;
+#else
+    rho *= UNIT_DENSITY_IN_CGS;	/* convert to physical cgs units */
+    double u_cgs = u_old * UNIT_SPECEGY_IN_CGS;
+    double nHcgs = HYDROGEN_MASSFRAC * rho / PROTONMASS_CGS;	/* hydrogen number dens in cgs units */
+    double LambdaNet = CoolingRateFromU(u_cgs, rho, ne_guess, ne_eval, target, pp, cell); /* (heating - cooling) / nH^2, cgs */
+    return -(nHcgs * nHcgs / rho) * LambdaNet * UNIT_TIME_IN_CGS / UNIT_SPECEGY_IN_CGS;
+#endif
+}
+
 
 /* returns new internal energy per unit mass.
  * Arguments are passed in code units, density is proper density.

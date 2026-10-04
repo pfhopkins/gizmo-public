@@ -249,7 +249,9 @@
  * targets SHARE a traversal, not how many threads PERFORM one: a step with very few active elements still
  * puts a whole team on each of them. The team size is chosen per call from the rank's own candidate count,
  * and the shape actually launched -- team, members, walkers and the capacities behind them -- is written
- * into each call's timings record. */
+ * into each call's timings record. A device call whose targets reach about half the device's lanes walks
+ * one target per lane instead (independent walks then keep the device busy and are faster), so on the
+ * device this value matters only below that. The host walk's packets are unaffected. */
 #ifndef TREE_QUERY_PACKET_SIZE
 #define TREE_QUERY_PACKET_SIZE 8
 #endif
