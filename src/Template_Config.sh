@@ -6,9 +6,9 @@
 #       options that apply to your run. If you modify any of these options,
 #       make sure that you recompile the whole code by typing "make clean; make".
 #
-#  Consult the User Guide before enabling any option. Some modules are proprietary -- access to them
-#    must be granted separately by the code authors (just having the code does NOT grant permission).
-#    Even public modules have citations which must be included if the module is used for published work,
+#  Consult the User Guide before enabling any option. Modules still in development name their developers:
+#    please contact them before using one, or it may be broken or not behave as intended.
+#    Modules have citations which must be included if the module is used for published work,
 #    these are all given in the User Guide.
 #
 # This file was originally part of the GADGET3 code developed by Volker Springel. It has been modified
@@ -255,7 +255,7 @@
 #GALSF_FB_FIRE_AGE_TRACERS=16   # model for arbitrary tracers of different age-bins of stellar yields (number here = number of log-spaced bins), which can be re-convolved in post-processing. developed by A. Emerick, paper in prep by A. Wetzel, meantime cite arXiv:2203.00040
 ## ----------------------------------------------------------------------------------------------------
 # ----- FIRE simulation modules for mechanical+radiative FB with full evolution+yield tracks (Hopkins et al. 2014, Hopkins et al., 2017a, arXiv:1702.06148 and 2203.00040) ------ ##
-# -------- Use of these modules as part of the public code is now allowed with appropriate citations to the specific methods papers above. These should be referred to as using the methods "from the FIRE public code (as in citations)", not as FIRE collaboration papers or FIRE simulations. FIRE simulations/papers follow FIRE collaboration guidelines, and you should reach out to members of the collaboration if you wish to write FIRE papers or access still in-development (non-public) FIRE codes/outputs/etc.
+# -------- Use of these modules as part of the public code is now allowed with appropriate citations to the specific methods papers above. These should be referred to as using the methods "from the FIRE public code (as in citations)", not as FIRE collaboration papers or FIRE simulations. FIRE simulations/papers follow FIRE collaboration guidelines, and you should reach out to members of the collaboration if you wish to write FIRE papers or use still in-development FIRE codes/outputs/etc.
 #FIRE_PHYSICS_DEFAULTS=3        # enable standard set of FIRE physics packages (number=fire version). note use policy above. convenience flags for MHD (FIRE_MHD), BHs (FIRE_BHS), and CRs (FIRE_CRS=X, where X=-2 is toy-model sub-grid LEBRON-approximation CRs; -1=single-bin CRs (defaults to constant scattering rate); 0=full-spectrum p+e, constant (power-law) scattering rate; 1=full-spectrum p+e, variable scattering rate 2509.07104; 2=full-spectrum 10-species treatment)
 #FIRE_SUPERLAGRANGIAN_JEANS_REFINEMENT # super-lagrangian refinement based on jeans mass or other criteria. this is a generic flag to be used for high-resolution massive-galaxy simulations using hyper-refinement to achieve 'standard' high-resolution FIRE quality in galaxies, without trillion-particle loads
 #GALSF_FB_FIRE_RT_HIIHEATING    # enable the generic stochastic HII-region model when HII regions are not extremely well-resolved, ionize and heat to local equilibrium temperature in immediate vicinity of O-stars probabilistically so they can be semi-resolved in a statistical sense. cite FIRE methods papers. do not use if enabling FIRE defaults flags OR any explicit RHD modules of your own (FIRE modules will work with any other RHD modules/bands where they are enabled)
@@ -269,7 +269,7 @@
 ## ----------------------------------------------------------------------------------------------------
 # --------------- Star+Planet+Compact Object Formation (Sink Particle + Explicit/Keplerian N-Body Dynamics)
 # -------------------- (unlike GALSF options, these sinks are individual accretors, not populations). Much in common with sink particle modules below.
-# -------------------- Most of the 'core' modules here are now public. Some specific stellar evolution tracks and modifications to the public modules made for the STARFORGE project remain in development, and permissions from the authors (Mike Grudic) is required for their use if they are only in the development code and -not- in the public code: please contact Mike Grudic or Stella Offner or Claude-Andre Faucher-Giguere or Phil Hopkins if you wish to run simulations as part of the STARFORGE project/suite/collaboration
+# -------------------- Most of the 'core' modules here are now public. Some specific stellar evolution tracks and modifications to the public modules made for the STARFORGE project remain in development: please contact their developers before using them, and please contact Mike Grudic or Stella Offner or Claude-Andre Faucher-Giguere or Phil Hopkins if you wish to run simulations as part of the STARFORGE project/suite/collaboration
 ## ----------------------------------------------------------------------------------------------------
 #SINGLE_STAR_SINK_DYNAMICS      # top-level switch to enable any other modules in this section
 ## ----------------------------------------------------------------------------------------------------
@@ -311,7 +311,7 @@
 #SINK_RETURN_ANGMOM_TO_GAS      # BH/sink particles return accreted angular momentum to surrounding gas (following Hubber+13) to represent AM transfer (loss in accreting material)
 #SINGLE_STAR_FIND_BINARIES      # manually enable identification of close binaries (normally enabled automatically if actually used for e.g. hermite timestepping). cite Grudic et al. arXiv:2010.11254
 #SINGLE_STAR_FB_LOCAL_RP        # approximate local radiation pressure from single-star sources, using the same LEBRON-type approximation as in FIRE - useage follows the FIRE collaboration policies
-#SINGLE_STAR_FB_RT_HEATING      # proto-stellar heating: luminosity determined by SinkRadiativeEfficiency (typical ~5e-7). This particular module used without radiation-hydrodynamics uses FIRE modules, so permissions follow those. But by enabling explicit radiation-hydrodynamics, this is not needed, and the user can treat full radiative feedback in the public code.
+#SINGLE_STAR_FB_RT_HEATING      # proto-stellar heating: luminosity determined by SinkRadiativeEfficiency (typical ~5e-7). This particular module used without radiation-hydrodynamics uses FIRE modules, so citations follow those. But by enabling explicit radiation-hydrodynamics, this is not needed, and the user can treat full radiative feedback in the public code.
 #SINGLE_STAR_FB_SNE_N_EJECTA_QUADRANT=2  # determines the maximum number of ejecta particles spawned per timestep in the supernova shell approximation for spawning. only needs to be modified for testing purposes.
 ############################################################################################################################
 
@@ -398,8 +398,8 @@
 ## ----------------------------------------------------------------------------------------------------
 #CHIMES                         # top-level switch to enable CHIMES. Requires COOLING above. Also, requires COOL_METAL_LINES_BY_SPECIES to include metals.
 #CHIMES_SOBOLEV_SHIELDING       # enables local self-shielding for different species, using a Sobolev-like length scale
-#CHIMES_HII_REGIONS             # disables shielding withing HII region (requires FIRE modules for radiation transport/coupling: uses GALSF_FB_FIRE_RT_HIIHEATING, and permissions follow those modules)
-#CHIMES_STELLAR_FLUXES          # couple UV fluxes from the luminosity tree to CHIMES (requires FIRE modules for radiation transport/coupling: use permissions follow those modules)
+#CHIMES_HII_REGIONS             # disables shielding withing HII region (requires FIRE modules for radiation transport/coupling: uses GALSF_FB_FIRE_RT_HIIHEATING, and citations follow those modules)
+#CHIMES_STELLAR_FLUXES          # couple UV fluxes from the luminosity tree to CHIMES (requires FIRE modules for radiation transport/coupling: citations follow those modules)
 #CHIMES_TURB_DIFF_IONS          # turbulent diffusions of CHIMES abundances. Requires TURB_DIFF_METALS and TURB_DIFF_METALS_LOWORDER (see modules for metal diffusion above: use/citation policy follows those)
 #CHIMES_METAL_DEPLETION         # uses density-dependent metal depletion factors (Jenkins 2009, De Cia et al. 2016) to obtain gas-phase abundances for chemical network
 ## ------------ CHIMES de-bugging and special behaviors ------------------------------------------------------------------------
@@ -535,7 +535,7 @@
 #OUTPUT_POWERSPEC               # compute and output cosmological power spectra. requires BOX_PERIODIC and PMGRID.
 #OUTPUT_RECOMPUTE_POTENTIAL     # update potential every output even it EVALPOTENTIAL is set
 #OUTPUT_DENS_AROUND_NONGAS      # output gas density in neighborhood of stars [collisionless particle types], not just gas
-#OUTPUT_DELAY_TIME_HII          # output DelayTimeHII. Requires GALSF_FB_FIRE_RT_HIIHEATING (and corresponding flags/permissions set)
+#OUTPUT_DELAY_TIME_HII          # output DelayTimeHII. Requires GALSF_FB_FIRE_RT_HIIHEATING (and corresponding flags set)
 #OUTPUT_MOLECULAR_FRACTION      # output the code-estimated molecular mass fraction [needs COOLING], for e.g. approximate molecular fraction estimators (as opposed to detailed chemistry modules, which already output this)
 #OUTPUT_TEMPERATURE             # output the in-code gas temperature
 #OUTPUT_SINK_ACCRETION_HIST     # save full accretion histories of sink (BH/star/etc) particles
