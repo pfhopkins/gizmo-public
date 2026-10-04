@@ -645,6 +645,11 @@ enum particle_motion_bound_state {
     PARTICLE_MOTION_UNBOUNDED = 2
 };
 
+/* Whether particle i is already at ti_now, so its stored position is where it is: the one definition of a
+   current particle for the motion envelope and the searches that skip it. */
+KOKKOS_INLINE_FUNCTION
+int particle_is_current(int i, const struct particle_data *pp, integertime ti_now) {return pp[i].Ti_current == ti_now;}
+
 KOKKOS_INLINE_FUNCTION
 int particle_motion_envelope(int i, const struct particle_data *pp, const struct gas_cell_data *cell,
                              integertime ti_now, const struct DriftKickTableView *view,
@@ -652,8 +657,8 @@ int particle_motion_envelope(int i, const struct particle_data *pp, const struct
 {
     center[0] = (double)pp[i].Pos[0]; center[1] = (double)pp[i].Pos[1]; center[2] = (double)pp[i].Pos[2];
     *half_width = 0.0;
+    if(particle_is_current(i, pp, ti_now)) {return PARTICLE_MOTION_CURRENT;}
     const integertime ti_i = pp[i].Ti_current;
-    if(ti_i == ti_now) {return PARTICLE_MOTION_CURRENT;}
     if(ti_i < 0 || ti_i > ti_now) {return PARTICLE_MOTION_UNBOUNDED;}
     const double dt_drift = get_drift_factor_impl(ti_i, ti_now, timestep_dilation_factor(i, pp), view);
     const Vec3<MyDouble> pos0 = pp[i].Pos;
