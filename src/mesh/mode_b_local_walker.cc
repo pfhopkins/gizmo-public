@@ -94,7 +94,8 @@ double nlr_particle_symmetric_radius_after_drift(int j, struct particle_data *P_
 }
 
 /* The leaf test: whether P[j] can satisfy the query once drifted to the current time.  A particle
- * already current is tested exactly.  For one behind, the position the drift will give it is known
+ * already current (particle_is_current) is tested exactly, before anything else is computed for it, so the
+ * envelope below never sees one.  For one behind, the position the drift will give it is known
  * up to a small residual (particle_motion_envelope): that box is tested against the sphere its radius
  * can reach after the drift.  A particle whose motion cannot be bounded is kept: this test may only
  * over-include, and the drift that follows either handles it or stops on the invalid clock, rather
@@ -109,10 +110,11 @@ static inline int particle_may_pass(int j,
                                     integertime ti_now,
                                     const struct DriftKickTableView *drift_tables)
 {
+    /* most leaves are current, and the envelope would only copy the position before saying so */
+    if(particle_is_current(j, P, ti_now)) return particle_passes(j, pos, h_q, type_mask, search_mode, radius_policy, j_reach_scale);
     if(!particle_is_eligible(j, type_mask)) return 0;
     double center[3], hw = 0.0;
     const int motion = particle_motion_envelope(j, P, CellP, ti_now, drift_tables, center, &hw);
-    if(motion == PARTICLE_MOTION_CURRENT) return particle_passes(j, pos, h_q, type_mask, search_mode, radius_policy, j_reach_scale);
     if(motion == PARTICLE_MOTION_UNBOUNDED) return 1;
     double reach = h_q;
     if(search_mode == MODE_B_SEARCH_SYMMETRIC) {
