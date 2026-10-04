@@ -637,7 +637,11 @@ static void collect_candidates_for_remote_queries(
  * current positions (mode_b_drift_and_filter_candidates).  query_at(aa, pos, h_q) must give the query
  * that list was walked with; every query is read before any candidate is drifted, since a query's own
  * particle may be another query's candidate.  Serial, as drift_particle requires; drift_particle
- * returns at once for a particle already current, so one reached by several queries is drifted once. */
+ * returns at once for a particle already current, so one reached by several queries is drifted once.
+ * It runs only after every walk has finished (the walks' OpenMP loop ends in its barrier), so no particle
+ * is drifted while a walk reads its clock and position -- which is why the walker's leaf reads them
+ * plainly.  Drifting candidates while walks are still running would need deduplication across threads
+ * and a synchronised clock and position, not just a different load in the leaf. */
 template <typename Spec, typename QueryAt>
 static void drift_and_filter_candidates(std::vector<std::vector<int>>& per_active_cands,
                                         unsigned int neighbor_type_mask,

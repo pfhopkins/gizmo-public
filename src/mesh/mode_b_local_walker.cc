@@ -445,7 +445,8 @@ void mode_b_walk_from_start_nodes(const double pos[3],
 }
 
 /* Drift a walk's candidates to the current time, then keep exactly those that satisfy the query at
- * their current position and radius, in walk order. */
+ * their current position and radius, in walk order.  Called only once no walk is running (callers run
+ * their walks to completion first), since the walker reads a particle's clock and position plainly. */
 void mode_b_drift_and_filter_candidates(const double pos[3],
                                         double h_q,
                                         unsigned int type_mask,
