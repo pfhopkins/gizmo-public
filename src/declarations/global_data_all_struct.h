@@ -246,7 +246,7 @@ struct global_data_all_processes
 					   only if the rank-local fraction of elements being updated is at least this; below it, it brings current just the chains of nodes the kick touches. 0 = always sweep every node; above 1 = chains only, with the sweep kept as the answer to a chain list that overflows. Default 2. */
   int TreeUpdateHostBelowActive;	/*!< below this many RANK-LOCAL elements due a force update at the sync point, the dynamic tree update runs on the host, which drifts nodes lazily as it
 					   touches them instead of sweeping every node up front. 0 disables the count-based routing; the host still owns the rest of any time step in which a node has already been drifted lazily, since the device sweep
-					   cannot refresh those nodes' mirror. Default 1e4. */
+					   cannot refresh those nodes' mirror. Default 1000. */
   double CourantFac;		/*!< Courant factor */
 #ifdef CBE_INTEGRATOR
   double CBEMassEffFloor;	/*!< CBE timestep m_eff floor fraction: m_eff = max(m_b, CBEMassEffFloor*m_cell) in the per-basis mass-depletion + moment-accel timestep criteria, so near-empty placeholder/free-slot bases cannot force an absurdly small step. Timestep-only (does not touch flux/update). Default 0.1. */
