@@ -37,7 +37,6 @@
 #include "../declarations/gpu_error_check.h"
 #include "../system/gpu_particles_arena.h"
 #include "gpu_gravity_tree.h"
-#include "../declarations/gpu_recorder_claim.h"   /* the node dirty set's view, shared with its device claim */
 #include "forcetree.h"
 #include "gravtree_moment_kernel.h"   /* the shared node-motion arithmetic */
 
@@ -324,78 +323,59 @@ extern "C" int gpu_force_drift_nodes_ex(integertime time1, int refresh_mirrors_a
  * Both branches go through the two shared units above, so the field set cannot drift apart from
  * the sweep's: a field added to the publisher is published here in the same edit.
  *
+ * It runs on the HOST.  The host claimed these nodes because it had just drifted them, so their
+ * node records are in host memory; a device kernel over the list would fault those pages across
+ * one at a time, every step the host walk runs, and the host's next drift would fault them back.
+ * The list is short and each node is O(1), and the units below are the same ones the device
+ * sweep runs, so the values written are the same.
+ *
  * Returns 0 when every listed node stands at `ti` with its mirror published, and 1 when the
  * caller must fall back to the full sweep -- the recorder's fail-safe fired, it overflowed, or
  * an index is outside the mirror.  There is no partial success: a nonzero return means nothing
  * here may be relied on, and the caller sweeps before any walk reads the tree. */
 extern "C" int gpu_node_dirty_bring_gravity_current(integertime time1)
 {
-    GIZMO_GPU_ENSURE_ALL_FRESH();
-
     /* ACQUIRE the claim phase before reading what it published, pairing with the fence inside
      * the claim itself. */
     Kokkos::memory_fence();
     const struct gpu_node_dirty_view_t v = gpu_node_dirty_view();
-    if(!v.seen || !v.list || !v.ctl) {return 1;}
-    if(Kokkos::atomic_load(&v.ctl->unsafe)) {return 1;}
+    if(!v.usable) {return 1;}
 
     struct gpu_gravity_tree_soa_t *soa = gpu_gravity_tree_soa();
     if(!soa || !soa->len || !soa->node_ti || !soa->s || !soa->node_vs
             || !soa->bitflags || !soa->hmax || !soa->vmax) {return 1;}
 
-    const int n = Kokkos::atomic_load(&v.ctl->count);
+    const int n = v.count;
     if(n < 0 || n > v.cap) {return 1;}   /* an overflowed list names fewer nodes than were claimed */
-
-    int       *list = v.list;
-    const int  base = v.base;
-    const int  cap  = v.cap;
     for(int i = 0; i < n; i++) {
-        const int k = list[i] - base;
-        if(k < 0 || k >= cap) {return 1;}
+        const int k = v.list[i] - v.base;
+        if(k < 0 || k >= v.cap) {return 1;}
     }
 
     if(n > 0) {
-        /* The same interpolator and the same table view the sweep uses. */
-        struct DriftKickTableView table_view;
-        if(drift_kick_table_mirror_refresh(&drift_kick_table_dev_, &table_view) != 0) {return 1;}
-
-#ifdef USE_TIMESTEP_DILATION_FOR_ZOOMS
-        /* Per-node dilation, host-computed as the sweep does it -- but for the LISTED nodes
-         * only, which is the whole point of this path. */
-        double *dilation_dev = (double *) gizmo_gpu_alloc_shared((size_t) n * sizeof(double), NULL);
-        if(!dilation_dev) {return 1;}
-#pragma omp parallel for schedule(static)
-        for(int i = 0; i < n; i++) {dilation_dev[i] = return_node_timestep_dilation_factor(list[i]);}
-#endif
-
-        struct NODE    *Nodes_uvm    = Nodes;
-        struct extNODE *Extnodes_uvm = Extnodes;
+        /* The host now writes node records and mirror slots a kernel launched earlier may still
+         * be writing; the device must be idle first. */
+        Kokkos::fence();
+        /* The same interpolator the sweep uses, over the host copy of the same tables. */
+        const struct DriftKickTableView table_view = drift_kick_table_view_host();
         const struct gpu_node_mirror_ptrs_t mirror = gpu_node_mirror_ptrs(soa);
-        const integertime ti_target = time1;
 
-        /* One lane per listed node: independent O(1) work, no serial chain, so the second level
-         * of parallelism this loop is asked for is over the list itself. */
-        Kokkos::parallel_for("gpu_node_subset_bring_current", n, KOKKOS_LAMBDA(int i) {
-            const int no = list[i];
-            const int k  = no - base;
-            if(Nodes_uvm[no].Ti_current != ti_target) {
+        /* Each listed node is independent O(1) work, so the threads split the list. */
+#pragma omp parallel for schedule(static)
+        for(int i = 0; i < n; i++) {
+            const int no = v.list[i];
+            if(Nodes[no].Ti_current != time1) {
 #ifdef USE_TIMESTEP_DILATION_FOR_ZOOMS
-                const double dilation = dilation_dev[i];
+                const double dilation = return_node_timestep_dilation_factor(no);
 #else
                 const double dilation = 1.0;
 #endif
                 double dt_drift, dt_widen;
-                node_motion_intervals(Nodes_uvm[no].Ti_current, ti_target, dilation, &table_view, dt_drift, dt_widen);
-                gpu_node_drift_apply(Nodes_uvm, Extnodes_uvm, no, ti_target,
-                                     dt_drift, dt_widen, /*fold_kick=*/1);
+                node_motion_intervals(Nodes[no].Ti_current, time1, dilation, &table_view, dt_drift, dt_widen);
+                gpu_node_drift_apply(Nodes, Extnodes, no, time1, dt_drift, dt_widen, /*fold_kick=*/1);
             }
-            gpu_node_mirror_publish(mirror, k, no, Nodes_uvm, Extnodes_uvm);
-        });
-        Kokkos::fence();
-        gizmo_gpu_check_last_error("gpu_node_subset_bring_current", n);
-#ifdef USE_TIMESTEP_DILATION_FOR_ZOOMS
-        Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(dilation_dev);
-#endif
+            gpu_node_mirror_publish(mirror, no - v.base, no, Nodes, Extnodes);
+        }
     }
 
     /* The claims are answered, so close the epoch: the generation bump invalidates every stamp

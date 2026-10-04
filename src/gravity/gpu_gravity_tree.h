@@ -247,7 +247,7 @@ void gpu_gravity_tree_invalidate_currency(void);
 int gpu_gravity_tree_nodes_current_at(integertime ti);
 
 /* ============================================================================
- * THE NODE DIRTY SET (landing 4) — class-(a) mirror repair, O(Ndirty).
+ * THE NODE DIRTY SET — class-(a) mirror repair, O(Ndirty).
  *
  * `force_drift_node` advances a node's AoS geometry WITHOUT writing its device
  * mirror, so every such call leaves one node whose mirror is behind its own AoS.
@@ -270,16 +270,22 @@ int gpu_gravity_tree_nodes_current_at(integertime ti);
  * MaxForeignNodes (the worst rank's import, deliberately generous). Foreign nodes
  * ARE dirtied in practice: 274 per rank per span, present in 91.5% of spans.
  * ========================================================================== */
-/* Epoch ownership.  Claims are legal only from the phase that owns the open epoch, and a
- * claim from any other phase is a stopped invariant (it trips the fail-safe and the caller
- * sweeps) rather than a race to be reasoned about.  The host is the one claiming phase: the
- * host lazy drift and Mode-D claim into it, and the claims are answered before each device
- * gravity walk. */
-enum gpu_node_dirty_owner_t {
-    GPU_NODE_DIRTY_OWNER_HOST   = 0    /* force_drift_node and every other host claimer */
+/* HOST ONLY, storage and both sides of it: the host lazy drift claims, and the claims are
+ * answered on the host before each device gravity walk.  No kernel may read the set; its
+ * pages then never migrate, every step the host walk runs.
+ *
+ * What the answer reads, snapshotted once the claim phase is over.  `usable` is 0 when the
+ * fail-safe fired this epoch or the storage is missing, and the caller must then sweep. */
+struct gpu_node_dirty_view_t {
+    const int *list;    /* [count] claimed node indices */
+    int        count;
+    int        cap;     /* the stamp range: index - base must lie in [0, cap) */
+    int        base;    /* All.TreeNodeIndexBase */
+    int        usable;
 };
-void gpu_node_dirty_begin_epoch(void);              /* the claims are ANSWERED: fresh HOST-owned epoch */
-void gpu_node_dirty_claim(int no);                  /* host claim; owner must be HOST */
+struct gpu_node_dirty_view_t gpu_node_dirty_view(void);
+void gpu_node_dirty_begin_epoch(void);              /* the claims are ANSWERED: fresh epoch */
+void gpu_node_dirty_claim(int no);                  /* host claim, from force_drift_node */
 int  gpu_node_dirty_count(void);                    /* claims outstanding in this epoch */
 /* Bring every listed node current at `ti` -- drifting the ones behind it and publishing every
  * mirror field the gravity walk reads -- instead of sweeping the whole tree.  Defined beside
@@ -288,8 +294,8 @@ int  gpu_node_dirty_count(void);                    /* claims outstanding in thi
 int  gpu_node_dirty_bring_gravity_current(integertime time1);
 void gpu_node_dirty_grow_to(int cap);   /* keep the set as large as the mirror when foreign storage grows */
 void gpu_node_dirty_release(void);
-long long gpu_node_dirty_unsafe_events(void);   /* fail-safe firings; a silent permanent
-                                                   revert to sweeping must be visible */
+long long gpu_node_dirty_unsafe_events(void);   /* fail-safe firings, run-total; a silent
+                                                   permanent revert to sweeping must be visible */
 
 /* Is the device-visible geometry safe for a ONEWAY walk that WIDENS ON OPEN?
  *

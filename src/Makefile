@@ -369,6 +369,105 @@ endif
 
 
 #----------------------------------------------------------------------------------------------
+ifeq ($(SYSTYPE),"Lonestar6")
+## Lonestar6 (TACC), NVIDIA A100 GPU nodes (sm_80; 3 per node on 2x AMD EPYC 7763 "Milan"), Kokkos
+## CUDA backend. Device TUs (GPU_OBJS) are compiled by nvcc_wrapper with gcc as host compiler,
+## reached through mpicxx so the MPI headers come with it; host TUs and the link use mpicxx.
+## Load modules: gcc/13.2.0 impi/21.12 cuda/12.8 hdf5/1.14.6 fftw3/3.3.10
+##               (+ hypre/2.31.0 for MHD_MODIFIED_GRADIENT, sundials/7.3.0 for CHIMES)
+## TACC's only CUDA Kokkos module (kokkos/4.1.00-cuda) predates sort_by_key with a comparator
+## (Kokkos 4.3), so each user builds Kokkos 4.6.01 for this machine once, into $WORK (login node,
+## ~10 minutes); LS6_KOKKOS_CUDA_DIR below is its install prefix:
+##   module purge; module load TACC gcc/13.2.0 cuda/12.8 cmake
+##   KV=4.6.01; mkdir -p $WORK/src && cd $WORK/src
+##   git clone --branch $KV --depth 1 https://github.com/kokkos/kokkos.git kokkos-$KV
+##   cmake -S kokkos-$KV -B kokkos-$KV/build-cuda-a100 -DCMAKE_BUILD_TYPE=Release \
+##     -DCMAKE_INSTALL_PREFIX=$WORK/apps/kokkos/$KV-cuda-a100 \
+##     -DCMAKE_CXX_COMPILER=$WORK/src/kokkos-$KV/bin/nvcc_wrapper -DCMAKE_CXX_STANDARD=17 \
+##     -DKokkos_ENABLE_SERIAL=ON -DKokkos_ENABLE_CUDA=ON -DKokkos_ARCH_AMPERE80=ON
+##   cmake --build kokkos-$KV/build-cuda-a100 -j 8 && cmake --install kokkos-$KV/build-cuda-a100
+## Login nodes have no GPU driver, so libcuda is linked from the toolkit's stub directory, which is
+## deliberately not on the run-time path: the compute nodes supply the real driver.
+## The H100 nodes (sm_90) need a Kokkos built for HOPPER90 and are not covered by this block.
+## submit to gpu-a100, gpu-a100-dev or gpu-a100-small
+CC       =  mpicc
+CXX      =  mpicxx -std=c++17
+FC       =  mpif90
+OPTIMIZE = -O2 -g -march=znver3 -Wall
+ifeq (OPENMP,$(findstring OPENMP,$(CONFIGVARS)))
+OPTIMIZE += -fopenmp
+endif
+LS6_KOKKOS_CUDA_DIR ?= $(WORK)/apps/kokkos/4.6.01-cuda-a100
+KOKKOS_PATH     = $(LS6_KOKKOS_CUDA_DIR)
+KOKKOS_CPPFLAGS = -I$(LS6_KOKKOS_CUDA_DIR)/include
+KOKKOS_CXXFLAGS = --expt-relaxed-constexpr --expt-extended-lambda -arch=sm_80
+KOKKOS_LDFLAGS  = -L$(LS6_KOKKOS_CUDA_DIR)/lib64 -L$(TACC_CUDA_LIB) -Wl,-rpath,$(TACC_CUDA_LIB) -L$(TACC_CUDA_LIB)/stubs
+KOKKOS_LIBS     = -lkokkoscore -lkokkoscontainers -lcudart -lcuda
+export NVCC_WRAPPER_DEFAULT_COMPILER = mpicxx
+GPU_CXX     = $(LS6_KOKKOS_CUDA_DIR)/bin/nvcc_wrapper --std=c++17
+GPU_CFLAGS  = $(KOKKOS_CPPFLAGS) $(KOKKOS_CXXFLAGS)
+GPU_LDFLAGS = $(KOKKOS_LDFLAGS)
+ifeq (CHIMES,$(findstring CHIMES,$(CONFIGVARS)))
+CHIMESINCL = -I$(TACC_SUNDIALS_INC)
+CHIMESLIBS = -L$(TACC_SUNDIALS_LIB) -lsundials_cvode -lsundials_nvecserial -lsundials_core
+endif
+ifeq (MHD_MODIFIED_GRADIENT,$(findstring MHD_MODIFIED_GRADIENT,$(CONFIGVARS)))
+HYPRE_INCL = -I$(TACC_HYPRE_INC)
+HYPRE_LIBS = -L$(TACC_HYPRE_LIB) -lHYPRE
+endif
+MKL_INCL =
+MKL_LIBS =
+FFTW_INCL= -I$(TACC_FFTW3_INC)
+FFTW_LIBS= -L$(TACC_FFTW3_LIB)
+HDF5INCL = -I$(TACC_HDF5_INC) -DH5_USE_16_API
+HDF5LIB  = -L$(TACC_HDF5_LIB) -lhdf5 -lz
+MPICHLIB = #
+OPT     += -DHDF5_DISABLE_VERSION_CHECK
+endif
+
+#----------------------------------------------------------------------------------------------
+ifeq ($(SYSTYPE),"Lonestar6_CPU")
+## Lonestar6 with the Kokkos OpenMP backend: the same Kokkos source path as "Lonestar6", dispatched
+## to CPU threads. Host compiler, MPI, libraries and flags are identical to "Lonestar6" and the Kokkos
+## version is the same (4.6.01), so the pair differs only in the Kokkos backend (as Frontier and
+## Frontier_CPU do). Runs on the CPU nodes (normal, development) or on the GPU nodes as a CPU control.
+## No nvcc, so GIZMO_GPU_COMPILER is undefined and the per-TU AllDeviceMirror blocks are skipped.
+## Load modules: gcc/13.2.0 impi/21.12 kokkos/4.6.01-omp hdf5/1.14.6 fftw3/3.3.10
+##               (+ hypre/2.31.0 for MHD_MODIFIED_GRADIENT, sundials/7.3.0 for CHIMES)
+## i.e. the "Lonestar6" set with kokkos/4.6.01-omp in place of cuda and the self-built CUDA Kokkos.
+CC       =  mpicc
+CXX      =  mpicxx -std=c++17
+FC       =  mpif90
+OPTIMIZE = -O2 -g -march=znver3 -Wall
+## the Kokkos OpenMP backend needs OpenMP whatever the Config says
+OPTIMIZE += -fopenmp
+KOKKOS_PATH     = $(TACC_KOKKOS_DIR)
+KOKKOS_CPPFLAGS = -I$(TACC_KOKKOS_INC)
+KOKKOS_LDFLAGS  = -L$(TACC_KOKKOS_LIB) -Wl,-rpath,$(TACC_KOKKOS_LIB)
+KOKKOS_LIBS     = -lkokkoscore -lkokkoscontainers
+GPU_CXX     = mpicxx -std=c++17
+GPU_CFLAGS  = $(KOKKOS_CPPFLAGS)
+GPU_LDFLAGS = $(KOKKOS_LDFLAGS)
+ifeq (CHIMES,$(findstring CHIMES,$(CONFIGVARS)))
+CHIMESINCL = -I$(TACC_SUNDIALS_INC)
+CHIMESLIBS = -L$(TACC_SUNDIALS_LIB) -lsundials_cvode -lsundials_nvecserial -lsundials_core
+endif
+ifeq (MHD_MODIFIED_GRADIENT,$(findstring MHD_MODIFIED_GRADIENT,$(CONFIGVARS)))
+HYPRE_INCL = -I$(TACC_HYPRE_INC)
+HYPRE_LIBS = -L$(TACC_HYPRE_LIB) -lHYPRE
+endif
+MKL_INCL =
+MKL_LIBS =
+FFTW_INCL= -I$(TACC_FFTW3_INC)
+FFTW_LIBS= -L$(TACC_FFTW3_LIB)
+HDF5INCL = -I$(TACC_HDF5_INC) -DH5_USE_16_API
+HDF5LIB  = -L$(TACC_HDF5_LIB) -lhdf5 -lz
+MPICHLIB = #
+OPT     += -DHDF5_DISABLE_VERSION_CHECK
+endif
+
+
+#----------------------------------------------------------------------------------------------
 ifeq ($(SYSTYPE),"Frontera_Kokkos")
 ## Frontera (CPU-only, Cascade Lake) with Kokkos OpenMP backend.
 ## Same Kokkos source path as Vista_CPU (CPU dispatch), Intel compiler + TACC libs.
