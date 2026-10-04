@@ -757,10 +757,16 @@ static KOKKOS_INLINE_FUNCTION gpu_grav_particle_now_t
 gpu_grav_particle_source_at(struct particle_data *P_dev, struct gas_cell_data *CellP_dev, int no, integertime ti,
                             const struct DriftKickTableView &tables, struct gpu_grav_time_fault_t *time_fault)
 {
-    if(P_dev[no].Ti_current > ti) {gpu_grav_note_source_ahead(time_fault, 0, no, P_dev[no].Ti_current);}
+    gpu_grav_particle_now_t out;
+    const integertime ti_source = P_dev[no].Ti_current;
+    if(ti_source >= ti) {   /* read as stored, without building the predictor (which also loads the cell under MFV) */
+        if(ti_source > ti) {gpu_grav_note_source_ahead(time_fault, 0, no, ti_source);}
+        out.pos = P_dev[no].Pos; out.vel = P_dev[no].Vel; out.mass = P_dev[no].Mass;
+        return out;
+    }
     struct particle_motion_prediction motion(P_dev, CellP_dev, no);
-    predict_particle_motion(motion, ti, &tables);   /* leaves a source at or past ti as stored */
-    gpu_grav_particle_now_t out; out.pos = motion.pos_; out.vel = motion.vel_; out.mass = motion.mass_;
+    predict_particle_motion(motion, ti, &tables);
+    out.pos = motion.pos_; out.vel = motion.vel_; out.mass = motion.mass_;
     return out;
 }
 
