@@ -1,17 +1,14 @@
-/* declarations/gpu_recorder_claim.h -- how a generation-stamped recorder is claimed from a kernel.
+/* declarations/gpu_recorder_claim.h -- how the particle touched set is claimed from a kernel.
  *
- * Two recorders in this code follow the same idiom: a stamp array as long as the things that
- * can be recorded, a compacted list, a cursor, and a generation that invalidates every stamp in
- * O(1).  The node dirty set records nodes whose mirror needs attention before the next device
- * gravity walk; the touched set records the local particles a walk reached, so only those are
- * drifted.  Each has two claimers -- a host phase and a device kernel -- and exactly ONE claim
- * belongs to each, or the two claimers drift apart.
+ * The touched set records the local particles a walk reached, so only those are drifted: a
+ * stamp array as long as the local particles, a compacted list, a cursor, and a generation that
+ * invalidates every stamp in O(1).  It has two claimers -- a host phase and a device kernel --
+ * and exactly ONE claim belongs to it, or the two drift apart.
  *
- * Both claims live here rather than beside their recorders because the bodies need Kokkos
- * atomics, and neither recorder's own public header can carry Kokkos: gpu_gravity_tree.h is a
- * declarations header pulled in by sixteen translation units, several of them host-only, and
- * mesh/neighbor_list.h is plain data read by host units no device compiler ever sees.  One
- * header for the claims keeps the shared idiom visible and stops a third copy growing.
+ * The claim lives here rather than beside its recorder because its body needs Kokkos atomics,
+ * and mesh/neighbor_list.h is plain data read by host units no device compiler ever sees.
+ * (The gravity tree's node dirty set follows the same idiom but is claimed and answered on the
+ * host only, so its claim lives with its storage in gravity/gpu_gravity_tree.cc.)
  *
  * Include after Kokkos and allvars.h; every includer already has both.
  */
@@ -19,70 +16,6 @@
 #define GPU_RECORDER_CLAIM_H
 
 #include "../mesh/neighbor_list.h"   /* struct GxTouchedSet, gx_touched_owner_t, the GX_WALK_ANOMALY_* codes -- plain data, no Kokkos */
-
-
-/* ============================================================================
- * THE NODE DIRTY SET
- * ========================================================================== */
-
-struct gpu_node_dirty_ctl_t {
-    unsigned int generation;     /* stamps equal to this are claimed in the current epoch */
-    int          count;          /* append cursor into list[] */
-    int          unsafe;         /* sticky: out-of-range, overflow, or a claim out of phase */
-    int          owner;          /* which phase may claim right now (see gpu_node_dirty_owner_t) */
-    long long    unsafe_events;  /* how often the fail-safe fired, run-total */
-};
-
-/* Everything a claimer needs, and nothing it does not: copied BY VALUE into a kernel, so
- * the claim never dereferences a host pointer from device code. */
-struct gpu_node_dirty_view_t {
-    unsigned int                *seen;   /* [cap] generation stamps, never cleared */
-    int                         *list;   /* [cap] compacted node indices */
-    struct gpu_node_dirty_ctl_t *ctl;
-    int                          cap;
-    int                          base;   /* All.TreeNodeIndexBase at the epoch's start */
-};
-
-
-/* Ordering.  The claim publishes geometry the claimer wrote just before it, and the
- * consumer must observe that geometry once it observes the claim.  The shipped host-only
- * version rode release/acquire on the stamp itself; one claim now serves host and device,
- * where a per-object memory order is not portably expressible, so the pairing is carried
- * by explicit fences instead -- a full fence before the stamp exchange, and one in the
- * consumer before it reads the list.  This is sufficient under the epoch's phase
- * separation -- every producer phase complete before the consuming one begins, host
- * writers joined, the device kernel fenced -- and it is that separation, not the fences
- * alone, that the cross-boundary runtime gate validates. */
-/* Device-callable: the claim below runs in a kernel, and a host-only helper reached from a
- * KOKKOS_INLINE_FUNCTION is a device-annotation defect no host compiler can see. */
-KOKKOS_INLINE_FUNCTION void nd_mark_unsafe_ctl_(struct gpu_node_dirty_ctl_t *ctl)
-{
-    if(!ctl) {return;}
-    Kokkos::atomic_store(&ctl->unsafe, 1);
-    Kokkos::atomic_fetch_add(&ctl->unsafe_events, 1LL);
-}
-
-/* THE claim, and the only one.  `owner` is the phase the caller believes it is in; a
- * mismatch is a stopped invariant rather than a tolerated race, because the whole point of
- * naming an epoch owner is that host and device claims never interleave. */
-KOKKOS_INLINE_FUNCTION void
-gpu_node_dirty_claim_in(const struct gpu_node_dirty_view_t &v, int no, int owner)
-{
-    if(!v.seen || !v.list || !v.ctl) {nd_mark_unsafe_ctl_(v.ctl); return;}
-    if(v.ctl->owner != owner)       {nd_mark_unsafe_ctl_(v.ctl); return;}
-    const int k = no - v.base;
-    if(k < 0 || k >= v.cap)         {nd_mark_unsafe_ctl_(v.ctl); return;}
-    Kokkos::memory_fence();   /* the geometry this claim refers to is published before the claim is */
-    const unsigned int gen  = v.ctl->generation;   /* constant within an epoch */
-    const unsigned int prev = Kokkos::atomic_exchange(&v.seen[k], gen);
-    if(prev == gen) {return;}                      /* one claim per node per epoch */
-    const int slot = Kokkos::atomic_fetch_add(&v.ctl->count, 1);
-    if(slot < v.cap) {v.list[slot] = no;}
-    else             {nd_mark_unsafe_ctl_(v.ctl);}
-}
-
-/* Fill from the recorder's own storage; defined beside that storage, in gpu_gravity_tree.cc. */
-struct gpu_node_dirty_view_t gpu_node_dirty_view(void);
 
 
 /* ============================================================================
