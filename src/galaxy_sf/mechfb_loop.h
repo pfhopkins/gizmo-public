@@ -161,7 +161,6 @@ struct MechFBSpec {
      * (orthogonal to write_pattern per WritePattern enum docstring). */
     static constexpr WritePattern   write_pattern   = WritePattern::ActiveReduceOnly;
     static constexpr SidxCacheKind  sidx_cache_kind = SidxCacheKind::GasOnly;   /* tbm = 1 */
-    static constexpr bool mode_a_active_sources_in_sidx_pool = false; /* non-pool active sources (sink/star/grain) -> runner stages explicit P[].Pos */
     static constexpr bool           uses_ghost_writeback      = true;
     static constexpr bool           uses_ghost_write_detector = false;
 

@@ -267,7 +267,6 @@ struct DensitySpec {
      * abort 'no prediction into past allowed' at SP4 hydro. gpu_ngb_list_build
      * now hard-aborts on cache_tbm vs caller tbm mismatch. */
     static constexpr SidxCacheKind  sidx_cache_kind = SidxCacheKind::GasOnly;
-    static constexpr bool mode_a_active_sources_in_sidx_pool = false; /* non-pool active sources (sink/star/grain) -> runner stages explicit P[].Pos */
     static constexpr bool           uses_ghost_writeback      = false;
     static constexpr bool           uses_ghost_write_detector = false;
 

@@ -1415,4 +1415,5 @@ void DMGrad_gradient_calc(void);
 void gizmo_kokkos_initialize(int argc, char *argv[]);
 void gizmo_kokkos_finalize(void);
 void gizmo_kokkos_fence(void);   /* best-effort device drain for normal (non-fatal) sync points */
+int  gizmo_gpu_device_memory(size_t *free_bytes, size_t *total_bytes);   /* advisory free/total device memory; 0 = unknown */
 void gizmo_gpu_sync_all(void);

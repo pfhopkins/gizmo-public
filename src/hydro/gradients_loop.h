@@ -181,7 +181,6 @@ struct GradientsSpec
      * CellP[i].Gradients / GasGradDataPasser[i]). No ghost-writeback. */
     static constexpr WritePattern   write_pattern              = WritePattern::ActiveReduceOnly;
     static constexpr SidxCacheKind  sidx_cache_kind            = SidxCacheKind::GasOnly;
-    static constexpr bool mode_a_active_sources_in_sidx_pool = true; /* gas-only active (Type 0) == pool member */
     static constexpr bool           uses_ghost_writeback       = false;
     static constexpr bool           uses_ghost_write_detector  = false;
 
@@ -592,7 +591,6 @@ struct GradientsIterSpec
     static constexpr mode_b_radius_policy_t  radius_policy      = MODE_B_RADIUS_DEFAULT;
     static constexpr WritePattern   write_pattern              = WritePattern::ActiveReduceOnly;
     static constexpr SidxCacheKind  sidx_cache_kind            = SidxCacheKind::GasOnly;
-    static constexpr bool mode_a_active_sources_in_sidx_pool = true;
     static constexpr bool           uses_ghost_writeback       = false;
     static constexpr bool           uses_ghost_write_detector  = false;
 

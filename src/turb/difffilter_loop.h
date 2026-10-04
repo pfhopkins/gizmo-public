@@ -85,7 +85,6 @@ struct DiffFilterSpec {
 
     static constexpr WritePattern  write_pattern             = WritePattern::ActiveReduceOnly;
     static constexpr SidxCacheKind sidx_cache_kind           = SidxCacheKind::GasOnly;
-    static constexpr bool mode_a_active_sources_in_sidx_pool = true; /* gas-only active (Type 0) == pool member */
     static constexpr bool          uses_ghost_writeback      = false;
     static constexpr bool          uses_ghost_write_detector = false;
 
@@ -312,7 +311,6 @@ struct DynDiffSpec {
 
     static constexpr WritePattern  write_pattern             = WritePattern::ActiveReduceOnly;
     static constexpr SidxCacheKind sidx_cache_kind           = SidxCacheKind::GasOnly;
-    static constexpr bool mode_a_active_sources_in_sidx_pool = true; /* gas-only active (Type 0) == pool member */
     static constexpr bool          uses_ghost_writeback      = false;
     static constexpr bool          uses_ghost_write_detector = false;
 

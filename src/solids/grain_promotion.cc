@@ -5,6 +5,7 @@
  * Written by Phil Hopkins (phopkins@caltech.edu) for GIZMO. */
 
 #include "../declarations/allvars.h"
+#include "../core/proto.h"
 #include "../core/wakeup_sidecar.h"
 #include "grain_promotion.h"
 

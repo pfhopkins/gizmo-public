@@ -2839,6 +2839,20 @@ void gizmo_kokkos_initialize(int argc, char *argv[]) {
      else {printf("[GPU] HIP thread stack size set to %zu bytes\n", stack_size); fflush(stdout);}}
 #endif
 }
+/* Free and total memory of this rank's device, as the runtime reports them.  Returns 1 when it reports them;
+   0 when there is no separate device or the query fails, which callers read as unknown.  Advisory: ranks
+   sharing a device can allocate between this query and their own use of the memory. */
+int gizmo_gpu_device_memory(size_t *free_bytes, size_t *total_bytes)
+{
+#if defined(__CUDACC__)
+    return (cudaMemGetInfo(free_bytes, total_bytes) == cudaSuccess) ? 1 : 0;
+#elif defined(__HIPCC__)
+    return (hipMemGetInfo(free_bytes, total_bytes) == hipSuccess) ? 1 : 0;
+#else
+    (void) free_bytes; (void) total_bytes;
+    return 0;
+#endif
+}
 void gizmo_kokkos_finalize(void)
 {
     /* Persistent device-side state is handed back before Kokkos is torn down;
