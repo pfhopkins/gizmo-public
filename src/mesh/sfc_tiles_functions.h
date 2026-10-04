@@ -102,6 +102,7 @@ int check_tile_particles_gpu(const double *rows, const double pos_i[3], double h
         if(cnt_candidates_tested) (*cnt_candidates_tested)++;
         const int slot = tile->first + s;
         int j = pool[slot];
+        if(j < 0) continue;   /* a member that left the pool in place since the build (gpu_sidx_notify_member_lost) */
         /* Per-type supply filter at leaf. No-op when supply_mask == 0x3f (default).
          * Constant-propagated away when caller passes default args. */
         if(P_gpu) {

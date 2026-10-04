@@ -52,7 +52,8 @@ gpu_dirty_handle_t gpu_dirty_tracker_register(int base, int count, int start_cle
             g_caches[h].base = base;
             g_caches[h].count = count;
             g_caches[h].bits = (bword_t *) malloc((size_t)n_words_(count) * sizeof(bword_t));
-            memset(g_caches[h].bits, 0, (size_t)n_words_(count) * sizeof(bword_t));
+            if(!g_caches[h].bits && n_words_(count) > 0) {g_caches[h].base = 0; g_caches[h].count = 0; return -1;}   /* the slot stays free */
+            if(g_caches[h].bits) {memset(g_caches[h].bits, 0, (size_t)n_words_(count) * sizeof(bword_t));}
             /* A caller that has just written every row from the live P[] passes
              * start_clean=1, so the first consume refreshes nothing. Anyone else
              * starts all-dirty, which refreshes the whole range once. */
@@ -174,6 +175,12 @@ void gpu_dirty_tracker_consume(gpu_dirty_handle_t handle,
         }
     }
     clear_cache_state_(c);
+}
+
+void gpu_dirty_tracker_clear(gpu_dirty_handle_t handle)
+{
+    if(handle < 0 || handle >= GPU_DIRTY_MAX_CACHES || !g_caches[handle].valid) return;
+    clear_cache_state_(&g_caches[handle]);
 }
 
 int gpu_dirty_tracker_popcount(gpu_dirty_handle_t handle)

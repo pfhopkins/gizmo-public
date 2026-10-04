@@ -70,9 +70,11 @@ struct gpu_index_segment_t {
     int rebuild_needed = 0;    /* a raise could not be applied: the next list build rebuilds the segment */
     int dirty_handle = -1;     /* gpu_dirty_tracker handle over the source range; -1 when not registered */
     /* What the segment was built over, beyond its range: the owned segment the owned epoch (a change of
-       membership or a position written outside a drift, which no count can show); the imported segment
+       membership gained or a position written outside a drift, which no count can show; a membership lost is
+       retired slot by slot through the dirty tracker, gpu_sidx_notify_member_lost); the imported segment
        the ghost exchange's import (a cleanup-and-reimport can land the same count with other contents). */
     uint64_t owned_epoch_when_built = 0;
+    uint64_t member_loss_epoch_when_built = 0;   /* the all-types owned segment: the member-loss count it was built at */
     unsigned long long ghost_provenance_when_built = 0;
 };
 
@@ -153,15 +155,20 @@ void gpu_sidx_ghost_pool_cleanup(void);
 /* The owned particles changed in a way a kept index's rows cannot show and the
  * particle count does not reveal: the decomposition re-laid them out
  * (domain_particle_layout_changed), particles were rearranged (merge/split), a
- * particle's type changed in place (force_tree_note_type_presence: star or sink
- * formation from gas, grain promotion to gas), or a member's position was written
- * outside a drift (the Hermite corrector).  Bumps the owned epoch, so an index
+ * particle became gas in place (force_tree_note_type_presence: grain promotion),
+ * or a member's position was written outside a drift (the Hermite corrector).  Bumps the owned epoch, so an index
  * built before it is rebuilt on its next use.  A member that loses its mass is not
  * announced: the pair kernel owns the Mass > 0 test, and
  * rearrange_particle_sequence, which removes the slot, announces it then.
  * Ghost import and cleanup need no call: the index keys its imported particles on
  * the ghost exchange's own record (ghost_pool_is_live, ghost_provenance_epoch). */
 void gpu_sidx_notify_owned_changed(void);
+/* Particle `particle` changed type in place to a type other than gas (star or sink formation from gas; a
+ * star becoming a sink is announced the same way and costs only a no-op slot lookup).
+ * The gas index keeps the segment: the particle is marked like a changed radius, and the next maintenance
+ * retires its slot, so no walk returns it, while the bounds it widened stay conservative until a rebuild.
+ * The all-types index, whose per-type reach bands it no longer matches, is rebuilt on its next use. */
+void gpu_sidx_notify_member_lost(int particle);
 /* The same layout change, made by a full decomposition that also ordered the particles along the
  * space-filling curve: a gas segment built over them at this time, before anything changes them, takes
  * that order instead of sorting. */

@@ -64,6 +64,10 @@ void gpu_dirty_tracker_consume(gpu_dirty_handle_t handle,
                                void (*callback)(int j, void *userdata),
                                void *userdata);
 
+/* Clear one cache's bitset and all_dirty without visiting anything, for a
+ * caller that refreshes the whole range itself. */
+void gpu_dirty_tracker_clear(gpu_dirty_handle_t handle);
+
 /* Number of unique dirty indices for one cache. Returns count if
  * all_dirty is set; otherwise the popcount of the bitset. Used by callers
  * to decide whether to take a fast all-refresh path. */

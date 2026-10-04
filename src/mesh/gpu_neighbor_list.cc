@@ -105,6 +105,15 @@ void gpu_sidx_notify_owned_changed(void)
     g_sidx_owned_epoch++;
 }
 
+/* Particles that stopped being gas in place, counted; see gpu_sidx_notify_member_lost. */
+static uint64_t g_sidx_member_loss_epoch = 0;
+
+void gpu_sidx_notify_member_lost(int particle)
+{
+    g_sidx_member_loss_epoch++;
+    gpu_dirty_tracker_mark_indices(&particle, 1);   /* the gas index retires its slot at its next maintenance */
+}
+
 /* The order peano_hilbert_order last left the rank's particles in, recorded with the layout change that
  * followed it (gpu_sidx_notify_owned_changed): it holds while the owned epoch, the time and the particle
  * count are the ones recorded, and the next layout change of any kind advances the epoch. */
@@ -152,6 +161,14 @@ void gpu_step_sidx_invalidate_full(void)
  * index costs more than rebuilding it.  Performance only: a value that lags a raise delays a rebuild and
  * never admits a wrong answer. */
 static constexpr double SIDX_MAX_BOX_GROWTH = 1.0;
+
+/* The search size, as a fraction of the segment's source particles (the rank's own particles it is built
+ * over, owned_end; the 1% was measured with this denominator), above which a segment whose members are all
+ * current is rebuilt rather than read in its drifted frame.  A drifted-frame walk costs several times an
+ * exact one per query (a motion envelope per node and per candidate), while a build costs per member;
+ * measured, the two balance near a search of one percent of the source range.  An internal performance
+ * heuristic: either choice gives the same list. */
+static constexpr double SIDX_FRESH_SEARCH_FRACTION = 0.01;
 
 KOKKOS_INLINE_FUNCTION
 double sidx_tile_looseness(const sfc_tile_t &tile)
@@ -1401,12 +1418,19 @@ static int sidx_build_segment_now(const struct SidxParticleSource &src, int main
      * the live P[] under this index's radius policy, and nothing between there and
      * here can mutate it, so the range starts clean: the first refresh would
      * recompute values it already holds. */
-    if(maintained) {seg->dirty_handle = gpu_dirty_tracker_register(src.base, src.count, 1);}
+    if(maintained) {
+        seg->dirty_handle = gpu_dirty_tracker_register(src.base, src.count, 1);
+        if(seg->dirty_handle < 0) {seg->rebuild_needed = 1;}   /* untracked, it cannot be kept: rebuilt on its next use */
+    }
     return SIDX_BUILT;
 }
 
 
-enum { SIDX_RAISE_MOTION = 1, SIDX_RAISE_REACH = 2 };
+enum { SIDX_RAISE_MOTION = 1, SIDX_RAISE_REACH = 2, SIDX_REFIT_REACH = 4 };
+/* A raise record's type for a particle that left the pool in place: its slot is retired. */
+static constexpr int SIDX_RAISE_LEFT_POOL = -2;
+/* Raise records staged per round: a bounded buffer beside the segment, whatever the member count. */
+static constexpr int SIDX_RAISE_CHUNK = 1 << 16;
 
 /* The ratio of the two ways to widen the nodes above n touched members: walking each member's path, or
  * one sweep of the index.  The walk is taken while it costs at most this times the sweep. */
@@ -1425,9 +1449,11 @@ struct SidxRaiseRecord {
  * source range when list is null).  Only an owned segment is raised: an imported particle's motion and
  * radius do not change while it is imported.
  * MOTION re-reads each member's velocity range, after its velocity changed; REACH rewrites its row's reaches
- * from its current radius and raises the reach bands, after its radius changed.  A particle that is not a
- * member now -- another type (the index is then rebuilt), or no mass (no pair kernel takes it) -- is
- * skipped.
+ * from its current radius and raises the reach bands, after its radius changed.  REFIT (with REACH, over the
+ * whole source range: list null) recomputes the reach bands of every tile and node from its members instead
+ * of raising them, after every radius changed; the boxes, motion ranges and membership stay as they are.  A
+ * particle that left the pool in place (another type now; gpu_sidx_notify_member_lost) has its slot retired,
+ * so no walk returns it; one with no mass (no pair kernel takes it) is skipped.
  * Returns 0; 1 when a member's motion is not finite, so nothing can bound it (the run is stopped); 2 when
  * the raise could not be staged.  Either way the segment no longer bounds its members and is marked to be
  * rebuilt by the next list build, which releases it. */
@@ -1435,81 +1461,115 @@ static int sidx_raise_members(gpu_spatial_index_t *idx, const int *list, int n, 
 {
     gpu_index_segment_t *seg = &idx->owned;
     if(n <= 0 || !seg->valid) {return 0;}
+    if((what & SIDX_REFIT_REACH) && (list || n != seg->source_count)) {seg->rebuild_needed = 1; return 2;}   /* a refit takes every member */
     const int source_base = seg->source_base, source_end = seg->source_base + seg->source_count;
     const int type_bitmask = idx->cache_tbm;
     const mode_b_radius_policy_t policy = idx->cache_radius_policy;
-    std::vector<SidxRaiseRecord> rec((size_t)n);
-    int fault = 0;
-#ifdef _OPENMP
-    #pragma omp parallel for schedule(static) reduction(|:fault)
-#endif
-    for(int k = 0; k < n; k++) {
-        SidxRaiseRecord &r = rec[(size_t)k];
-        const int j = list ? list[k] : source_base + k;
-        r.j = -1; r.type = -1; r.r = 0; r.r_drifted = 0; r.rho = 0;
-        for(int d = 0; d < 3; d++) {r.u_min[d] = MAX_REAL_NUMBER; r.u_max[d] = -MAX_REAL_NUMBER;}
-        if(j < source_base || j >= source_end) {continue;}
-        const int type = (int)P[j].Type;
-        if(type < 0 || type >= TILE_NUM_PTYPES || !sfc_pool_member(&P[j], type_bitmask)) {continue;}
-        if((what & SIDX_RAISE_MOTION) && sfc_member_motion_range(j, P, CellP, r.u_min, r.u_max, &r.rho)) {fault |= 1; continue;}
-        if(what & SIDX_RAISE_REACH) {
-            r.r = nlr_particle_symmetric_radius(P[j], policy);
-            r.r_drifted = nlr_particle_symmetric_radius_after_drift(j, P, policy);
-            if(r.r_drifted < r.r) {r.r_drifted = r.r;}
-            r.type = type;
-        }
-        r.j = j;
-    }
-    if(fault) {
-        seg->rebuild_needed = 1;
-        gizmo_request_controlled_stop(7740, "a particle kept in the neighbour index has a velocity that is not finite, "
-                                      "so no search can bound where it is", __FILE__, __LINE__, __FUNCTION__);
-        return 1;
-    }
-    SidxRaiseRecord *d_rec = (SidxRaiseRecord *) ngl_alloc_device((size_t) n * sizeof(SidxRaiseRecord), "sidx_raise_records");
-    if(!d_rec) {seg->rebuild_needed = 1; return 2;}
-    {
-        Kokkos::View<const SidxRaiseRecord*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>> hv(rec.data(), (size_t) n);
-        Kokkos::View<SidxRaiseRecord*, GIZMO_KOKKOS_DEVICE_SPACE, Kokkos::MemoryTraits<Kokkos::Unmanaged>> dv(d_rec, (size_t) n);
-        Kokkos::deep_copy(dv, hv);
-    }
+    const int refit = (what & SIDX_REFIT_REACH) != 0;
     const double touched_tiles = (n < seg->ntiles) ? (double) n : (double) seg->ntiles;
-    const int walk_paths = (touched_tiles * seg->nlevels <= SIDX_PATH_WALK_FACTOR * (double)(seg->ntiles + seg->bvh_nnodes));
+    const int walk_paths = !refit && (touched_tiles * seg->nlevels <= SIDX_PATH_WALK_FACTOR * (double)(seg->ntiles + seg->bvh_nnodes));
+    /* The records are staged in chunks through one host and one device buffer, so a raise or refit over
+     * every member costs a bounded amount of memory beside the segment, whatever the member count. */
+    const int chunk = (n < SIDX_RAISE_CHUNK) ? n : SIDX_RAISE_CHUNK;
+    std::vector<SidxRaiseRecord> rec;
+    try {rec.resize((size_t)chunk);} catch(const std::bad_alloc &) {seg->rebuild_needed = 1; return 2;}
+    SidxRaiseRecord *d_rec = (SidxRaiseRecord *) ngl_alloc_device((size_t) chunk * sizeof(SidxRaiseRecord), "sidx_raise_records");
+    if(!d_rec) {seg->rebuild_needed = 1; return 2;}
     sfc_tile_t *tiles = seg->d_tiles;
     tile_bvh_node_t *bvh = seg->d_bvh;
     const int *slot_of = seg->d_slot_of;
     double *rows = seg->d_compact_xyzh;
     double *looseness = seg->looseness;
     const int *shear_folds = seg->d_shear_folds;
-    Kokkos::parallel_for("sidx_raise_members", n, KOKKOS_LAMBDA(int k) {
-        const SidxRaiseRecord &r = d_rec[k];
-        if(r.j < 0) {return;}
-        const int slot = slot_of[r.j - source_base];
-        if(slot < 0) {return;}
-        struct SidxRaise m;
-        for(int d = 0; d < 3; d++) {m.u_min[d] = r.u_min[d]; m.u_max[d] = r.u_max[d];}
-        /* the range must hold the member's motion in its tile's image frame as well (sidx_image_velocity_union) */
-        if(shear_folds && m.u_min[0] <= m.u_max[0]) {sidx_image_velocity_union(m.u_min, m.u_max, shear_folds[2 * (size_t)slot], shear_folds[2 * (size_t)slot + 1]);}
-        m.rho = r.rho; m.hmax = 0;
-        for(int t = 0; t < TILE_NUM_PTYPES; t++) {m.hmax_by_type[t] = 0;}
-        if(r.type >= 0) {
-            /* the row holds the reaches themselves, which may fall; the bands only rise */
-            rows[(size_t)slot * SIDX_ROW_WIDTH + 3] = r.r;
-            rows[(size_t)slot * SIDX_ROW_WIDTH + 4] = r.r_drifted;
-            m.hmax = r.r_drifted; m.hmax_by_type[r.type] = r.r_drifted;
+    int *pool = seg->d_pool;
+    if(refit) {
+        /* every member is about to contribute its reach again, so the bands start from nothing */
+        Kokkos::parallel_for("sidx_refit_tiles", seg->ntiles, KOKKOS_LAMBDA(int t) {
+            tiles[t].hmax = 0;
+            for(int y = 0; y < TILE_NUM_PTYPES; y++) {tiles[t].hmax_by_type[y] = 0;}
+        });
+        Kokkos::parallel_for("sidx_refit_nodes", seg->bvh_nnodes, KOKKOS_LAMBDA(int q) {
+            bvh[q].hmax = 0;
+            for(int y = 0; y < TILE_NUM_PTYPES; y++) {bvh[q].hmax_by_type[y] = 0;}
+        });
+        Kokkos::fence();
+    }
+    for(int k0 = 0; k0 < n; k0 += chunk) {
+        const int nk = (n - k0 < chunk) ? n - k0 : chunk;
+        int fault = 0;
+#ifdef _OPENMP
+        #pragma omp parallel for schedule(static) reduction(|:fault)
+#endif
+        for(int k = 0; k < nk; k++) {
+            SidxRaiseRecord &r = rec[(size_t)k];
+            const int j = list ? list[k0 + k] : source_base + k0 + k;
+            r.j = -1; r.type = -1; r.r = 0; r.r_drifted = 0; r.rho = 0;
+            for(int d = 0; d < 3; d++) {r.u_min[d] = MAX_REAL_NUMBER; r.u_max[d] = -MAX_REAL_NUMBER;}
+            if(j < source_base || j >= source_end) {continue;}
+            const int type = (int)P[j].Type;
+            if(type < 0 || type >= TILE_NUM_PTYPES || !((1 << type) & type_bitmask)) {r.j = j; r.type = SIDX_RAISE_LEFT_POOL; continue;}
+            if(!sfc_pool_member(&P[j], type_bitmask)) {continue;}
+            if((what & SIDX_RAISE_MOTION) && sfc_member_motion_range(j, P, CellP, r.u_min, r.u_max, &r.rho)) {fault |= 1; continue;}
+            if(what & SIDX_RAISE_REACH) {
+                r.r = nlr_particle_symmetric_radius(P[j], policy);
+                r.r_drifted = nlr_particle_symmetric_radius_after_drift(j, P, policy);
+                if(r.r_drifted < r.r) {r.r_drifted = r.r;}
+                r.type = type;
+            }
+            r.j = j;
         }
-        sfc_tile_t *tile = &tiles[slot / TILE_TARGET_SIZE];
-        /* A tile that already covers the member needs nothing above it either: whoever raised it is
-         * raising its ancestors too, or they were covering it already. */
-        if(!sidx_widen(tile, m)) {return;}
-        Kokkos::atomic_max(looseness, sidx_tile_looseness(*tile));
-        if(!walk_paths) {return;}
-        for(int node = tile->bvh_leaf; node >= 0 && sidx_widen(&bvh[node], m); node = bvh[node].parent) {}
-    });
-    Kokkos::fence();
-    gizmo_gpu_check_last_error("sidx_raise_members", n);
+        if(fault) {
+            Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(d_rec);
+            seg->rebuild_needed = 1;
+            gizmo_request_controlled_stop(7740, "a particle kept in the neighbour index has a velocity that is not finite, "
+                                          "so no search can bound where it is", __FILE__, __LINE__, __FUNCTION__);
+            return 1;
+        }
+        {
+            Kokkos::View<const SidxRaiseRecord*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>> hv(rec.data(), (size_t) nk);
+            Kokkos::View<SidxRaiseRecord*, GIZMO_KOKKOS_DEVICE_SPACE, Kokkos::MemoryTraits<Kokkos::Unmanaged>> dv(d_rec, (size_t) nk);
+            Kokkos::deep_copy(dv, hv);
+        }
+        Kokkos::parallel_for("sidx_raise_members", nk, KOKKOS_LAMBDA(int k) {
+            const SidxRaiseRecord &r = d_rec[k];
+            if(r.j < 0) {return;}
+            const int slot = slot_of[r.j - source_base];
+            if(slot < 0) {return;}
+            if(r.type == SIDX_RAISE_LEFT_POOL) {pool[slot] = -1; return;}
+            struct SidxRaise m;
+            for(int d = 0; d < 3; d++) {m.u_min[d] = r.u_min[d]; m.u_max[d] = r.u_max[d];}
+            /* the range must hold the member's motion in its tile's image frame as well (sidx_image_velocity_union) */
+            if(shear_folds && m.u_min[0] <= m.u_max[0]) {sidx_image_velocity_union(m.u_min, m.u_max, shear_folds[2 * (size_t)slot], shear_folds[2 * (size_t)slot + 1]);}
+            m.rho = r.rho; m.hmax = 0;
+            for(int t = 0; t < TILE_NUM_PTYPES; t++) {m.hmax_by_type[t] = 0;}
+            if(r.type >= 0) {
+                /* the row holds the reaches themselves, which may fall; the bands only rise */
+                rows[(size_t)slot * SIDX_ROW_WIDTH + 3] = r.r;
+                rows[(size_t)slot * SIDX_ROW_WIDTH + 4] = r.r_drifted;
+                m.hmax = r.r_drifted; m.hmax_by_type[r.type] = r.r_drifted;
+            }
+            sfc_tile_t *tile = &tiles[slot / TILE_TARGET_SIZE];
+            /* A tile that already covers the member needs nothing above it either: whoever raised it is
+             * raising its ancestors too, or they were covering it already. */
+            if(!sidx_widen(tile, m)) {return;}
+            if(refit) {return;}
+            Kokkos::atomic_max(looseness, sidx_tile_looseness(*tile));
+            if(!walk_paths) {return;}
+            for(int node = tile->bvh_leaf; node >= 0 && sidx_widen(&bvh[node], m); node = bvh[node].parent) {}
+        });
+        Kokkos::fence();
+        gizmo_gpu_check_last_error("sidx_raise_members", nk);
+    }
     Kokkos::kokkos_free<GIZMO_KOKKOS_DEVICE_SPACE>(d_rec);
     if(!walk_paths) {sidx_widen_all_levels(seg);}
+    if(refit) {
+        /* a band that fell makes a tile's size floor smaller, so its looseness is taken again */
+        double w = 0;
+        Kokkos::parallel_reduce("sidx_refit_looseness", seg->ntiles,
+                                KOKKOS_LAMBDA(int t, double &x) {const double y = sidx_tile_looseness(tiles[t]); if(y > x) {x = y;}},
+                                Kokkos::Max<double>(w));
+        *looseness = w;
+    }
     return 0;
 }
 
@@ -1825,28 +1885,41 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
     const int owned_follows_import = (idx == &g_step_sidx_alltypes);
     if(own->valid && (own->source_count != owned_end || own->owned_epoch_when_built != g_sidx_owned_epoch ||
                       own->ti_ref > t_now || own->rebuild_needed ||
-                      (owned_follows_import && own->ghost_provenance_when_built != ghost_provenance_epoch()))) {
+                      (owned_follows_import && (own->ghost_provenance_when_built != ghost_provenance_epoch() ||
+                                                own->member_loss_epoch_when_built != g_sidx_member_loss_epoch)))) {
         sidx_segment_free(own);
     }
-    /* A kept segment is rebuilt instead when a fresh one is the better search: every
-     * member is current, so a fresh segment reads exactly and its list needs no trim;
-     * or its boxes can have grown by more than their own size. */
+    /* A kept segment is rebuilt instead when its boxes can have grown by more than their
+     * own size, or when every member is current and the search is large enough to repay a
+     * fresh segment, which it reads exactly.  A small search reads the kept one in its
+     * drifted frame and the trim makes its list exact, for far less than a build. */
     if(own->valid && own->ti_ref < t_now) {
         const double D_kept = get_drift_factor_impl(own->ti_ref, t_now, 1.0, &host_tables);
-        if(owned_current || !(*own->looseness * D_kept <= SIDX_MAX_BOX_GROWTH)) {
+        const int fresh_repays = owned_current && (double)num_active >= SIDX_FRESH_SEARCH_FRACTION * (double)owned_end;
+        if(fresh_repays || !(*own->looseness * D_kept <= SIDX_MAX_BOX_GROWTH)) {
             sidx_segment_free(own);
         }
     }
     /* Bring a kept segment's reaches up to date.  Every particle whose radius changed
      * since was marked dirty (gizmo_mark_kernel_radius_dirty_*); its row takes its
-     * current reach and the bands above it are raised to cover it.  All-dirty, or
-     * a refresh that cannot be staged, rebuilds the segment instead: a fresh segment
-     * starts current.  Per-segment state means consuming-and-clearing this segment's
-     * bits leaves the other registered segments' bitsets untouched. */
+     * current reach and the bands above it are raised to cover it.  All-dirty refits
+     * every reach and band in place: the boxes, motion ranges and membership do not
+     * depend on the radii.  A refresh that cannot be staged rebuilds the segment
+     * instead: a fresh segment starts current.  Per-segment state means consuming-and-
+     * clearing this segment's bits leaves the other registered segments' bitsets untouched. */
     if(own->valid && own->dirty_handle >= 0) {
         const int handle = own->dirty_handle;
-        if(gpu_dirty_tracker_is_all_dirty(handle)) {
-            sidx_segment_free(own);
+        if(2 * (long)gpu_dirty_tracker_popcount(handle) >= (long)own->source_count && own->source_count > 0) {
+            /* most members changed: one refit, whose bands may also fall, rather than a raise per member */
+            if(sidx_raise_members(idx, NULL, own->source_count, SIDX_RAISE_REACH | SIDX_REFIT_REACH) == 0) {
+                gpu_dirty_tracker_clear(handle);
+                /* a fallen band shrinks a tile's size floor, so the box growth is judged again */
+                if(own->ti_ref < t_now && !(*own->looseness * get_drift_factor_impl(own->ti_ref, t_now, 1.0, &host_tables) <= SIDX_MAX_BOX_GROWTH)) {
+                    sidx_segment_free(own);
+                }
+            } else {
+                sidx_segment_free(own);
+            }
         } else if(gpu_dirty_tracker_popcount(handle) > 0) {
             /* Drain bitset -> host list -> raise. */
             std::vector<int> dirty_host;
@@ -1866,13 +1939,15 @@ void gpu_ngb_list_build(struct particle_data *P_shared, int num_total,
          * exhausted allocation here produces. */
         const struct SidxParticleSource src = {P_shared, CellP, 0, owned_end, owned_end, type_bitmask, 0};
         /* Only the gas index takes the order as it stands: every in-place write of a gas particle's
-         * position or membership advances the owned epoch, which is not so for the other types. */
+         * position, and every particle that becomes gas, advances the owned epoch, which is not so for the
+         * other types.  (A particle that stops being gas leaves its slot to be retired, not the order.) */
         const int presorted = (P_shared == P) && (type_bitmask == 1) && sidx_particles_still_ordered(owned_end, t_now);
         if(sidx_build_segment_now(src, maintained, presorted, radius_policy, caller_label, own, &report)) {
             ngl_leave_csr_empty(gnl, num_active);
             return;
         }
         own->owned_epoch_when_built = g_sidx_owned_epoch;
+        own->member_loss_epoch_when_built = g_sidx_member_loss_epoch;
         own->ghost_provenance_when_built = ghost_provenance_epoch();
         idx->cache_tbm = type_bitmask;
         idx->cache_radius_policy = radius_policy;
