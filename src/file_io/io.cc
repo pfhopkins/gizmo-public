@@ -204,7 +204,7 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
     int *ip_int;
     float *fp_single;
 #ifdef OUTPUT_COOLRATE
-    double tcool, u;
+    double u;
 #endif
 #ifdef MAGNETIC /* NOTE: we always work -internally- in code units where MU_0 = 1; hence the 4pi here; [much simpler, but be sure of your conversions!] */
     double gizmo2gauss = UNIT_B_IN_GAUSS / All.UnitMagneticField_in_gauss;
@@ -1258,9 +1258,8 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
                 {
-                    double ne = CellP[pindex].Ne, ne_out=ne; u = CellP[pindex].InternalEnergyPred; tcool = GetCoolingTime(u, CellP[pindex].Density * All.cf_a3inv, ne, &ne_out, pindex, P, CellP); /* get cooling time */
-                    double coolrate_to_output = 0; if(tcool != 0) {coolrate_to_output = u / tcool;} /* convert cooling time with current thermal energy to du/dt */
-                    *fp++ = (MyOutputFloat) coolrate_to_output;
+                    double ne = CellP[pindex].Ne, ne_out=ne; u = CellP[pindex].InternalEnergyPred;
+                    *fp++ = (MyOutputFloat) GetNetCoolingRate(u, CellP[pindex].Density * All.cf_a3inv, ne, &ne_out, pindex, P, CellP); /* net -du/dt: positive cooling, negative heating */
                     n++;
                 }
 #endif
