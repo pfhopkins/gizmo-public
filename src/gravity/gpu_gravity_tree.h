@@ -292,6 +292,11 @@ int  gpu_node_dirty_count(void);                    /* claims outstanding in thi
  * the sweep (gpu_force_drift.cc) because it runs the sweep's own per-node units.
  * 0 = the listed set stands at `ti`; 1 = the caller must take the full sweep. */
 int  gpu_node_dirty_bring_gravity_current(integertime time1);
+/* The per-node work of the sweep for an explicit list of node indices (mirror slot = index - base,
+ * slot < cap): drift each listed node behind `time1` and publish its mirror.  0 = done, 1 = the
+ * caller must sweep instead.  Called only by the device tree update, with the claim list it wrote on the
+ * device in its own scratch block -- never with the host's node dirty set, which the host answers above. */
+int  gpu_device_node_list_bring_current(const int *list, int n, int base, int cap, integertime time1);
 void gpu_node_dirty_grow_to(int cap);   /* keep the set as large as the mirror when foreign storage grows */
 void gpu_node_dirty_release(void);
 long long gpu_node_dirty_unsafe_events(void);   /* fail-safe firings, run-total; a silent

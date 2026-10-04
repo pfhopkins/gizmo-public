@@ -53,6 +53,7 @@
  * lives in the arena so this path and the batched particle drift build the view the
  * same way. See drift_kick_table_mirror_refresh. */
 static double *drift_kick_table_dev_ = NULL;   /* SharedSpace, 2 * DRIFT_TABLE_LENGTH doubles */
+static int *list_index_outside_mirror_dev_ = NULL;   /* SharedSpace, one flag for gpu_device_node_list_bring_current */
 
 /* --- dispatcher ---------------------------------------------------------- */
 
@@ -306,6 +307,83 @@ extern "C" int gpu_force_drift_nodes_ex(integertime time1, int refresh_mirrors_a
        would stay behind with nothing left to say so. */
     if(refresh_mirrors_already_current) {gpu_node_dirty_begin_epoch();}
     return 0;
+}
+
+/* Bring every node in `list` current at `time1` and publish its mirror -- the per-node work of the
+ * full sweep, for the listed nodes only.  A node behind `time1` is drifted (folding a pending kick,
+ * as the sweep does); one already at `time1` keeps any pending kick and only has its mirror
+ * rewritten.  `base` and `cap` describe the mirror the indices address.  Returns 0 when every
+ * listed node stands at `time1` with its mirror published, 1 when nothing may be relied on (an
+ * index outside the mirror, a missing mirror or table) and the caller must sweep instead.
+ * Its one caller is the device tree update, which brings current exactly the nodes its kick is about
+ * to touch: `list` must be the claim list that update wrote on the device, in its own scratch block.
+ * It must never be handed the host's node dirty set, which is answered on the host
+ * (gpu_node_dirty_bring_gravity_current) so that no kernel ever touches it.  It publishes no
+ * whole-tree certificate: what it brings current is the listed set. */
+extern "C" int gpu_device_node_list_bring_current(const int *list, int n, int base, int cap, integertime time1)
+{
+    GIZMO_GPU_ENSURE_ALL_FRESH();
+
+    struct gpu_gravity_tree_soa_t *soa = gpu_gravity_tree_soa();
+    if(!soa || !soa->len || !soa->node_ti || !soa->s || !soa->node_vs
+            || !soa->bitflags || !soa->hmax || !soa->vmax) {return 1;}
+    if(n < 0 || (n > 0 && !list)) {return 1;}
+    if(n == 0) {return 0;}
+    /* Whether every index lies inside the mirror is checked by the lanes themselves: the list was
+       written on the device, and reading it back on the host first would move it there and back. */
+    if(!list_index_outside_mirror_dev_) {
+        list_index_outside_mirror_dev_ = (int *) gizmo_gpu_alloc_shared(sizeof(int), "node_list_index_flag");
+        if(!list_index_outside_mirror_dev_) {return 1;}
+    }
+    int *index_outside = list_index_outside_mirror_dev_;
+    *index_outside = 0;
+
+    /* The same interpolator and the same table view the sweep uses. */
+    struct DriftKickTableView table_view;
+    if(drift_kick_table_mirror_refresh(&drift_kick_table_dev_, &table_view) != 0) {return 1;}
+
+#ifdef USE_TIMESTEP_DILATION_FOR_ZOOMS
+    /* Per-node dilation, host-computed as the sweep does it -- but for the LISTED nodes
+     * only, which is the whole point of this path. */
+    double *dilation_dev = (double *) gizmo_gpu_alloc_shared((size_t) n * sizeof(double), NULL);
+    if(!dilation_dev) {return 1;}
+#pragma omp parallel for schedule(static)
+    for(int i = 0; i < n; i++) {   /* an index outside the mirror is reported by the kernel below, never read here */
+        const int k = list[i] - base;
+        dilation_dev[i] = (k >= 0 && k < cap) ? return_node_timestep_dilation_factor(list[i]) : 1.0;
+    }
+#endif
+
+    struct NODE    *Nodes_uvm    = Nodes;
+    struct extNODE *Extnodes_uvm = Extnodes;
+    const struct gpu_node_mirror_ptrs_t mirror = gpu_node_mirror_ptrs(soa);
+    const integertime ti_target = time1;
+
+    /* One lane per listed node: independent O(1) work, no serial chain, so the second level
+     * of parallelism this loop is asked for is over the list itself. */
+    Kokkos::parallel_for("gpu_node_subset_bring_current", n, KOKKOS_LAMBDA(int i) {
+        const int no = list[i];
+        const int k  = no - base;
+        if(k < 0 || k >= cap) {Kokkos::atomic_store(index_outside, 1); return;}
+        if(Nodes_uvm[no].Ti_current != ti_target) {
+#ifdef USE_TIMESTEP_DILATION_FOR_ZOOMS
+            const double dilation = dilation_dev[i];
+#else
+            const double dilation = 1.0;
+#endif
+            double dt_drift, dt_widen;
+            node_motion_intervals(Nodes_uvm[no].Ti_current, ti_target, dilation, &table_view, dt_drift, dt_widen);
+            gpu_node_drift_apply(Nodes_uvm, Extnodes_uvm, no, ti_target,
+                                 dt_drift, dt_widen, /*fold_kick=*/1);
+        }
+        gpu_node_mirror_publish(mirror, k, no, Nodes_uvm, Extnodes_uvm);
+    });
+    Kokkos::fence();
+    gizmo_gpu_check_last_error("gpu_node_subset_bring_current", n);
+#ifdef USE_TIMESTEP_DILATION_FOR_ZOOMS
+    Kokkos::kokkos_free<GIZMO_KOKKOS_SHARED_SPACE>(dilation_dev);
+#endif
+    return (*index_outside) ? 1 : 0;   /* an index outside the mirror: nothing listed may be relied on */
 }
 
 /* Bring just the nodes a recorder listed current at `ti`, instead of sweeping every node.

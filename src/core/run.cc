@@ -379,9 +379,9 @@ void run(void)
         else
         {
             /* update tree dynamically with kicks of last step so that it can be
-             * reused. Charged to its own bucket: the node drift inside it is
-             * O(tree nodes) and independent of how many particles are active,
-             * and it only runs on reused-tree steps, so a residual bucket both
+             * reused. Charged to its own bucket: it only runs on reused-tree
+             * steps, and on some of them its node drift covers the whole tree
+             * whatever the number of active particles, so a residual bucket both
              * hides it and mixes it with unrelated per-step work. Same
              * child-charge argument as the spatial-index refresh above. */
             {

@@ -242,6 +242,8 @@ struct global_data_all_processes
   int NeighborLoopModeBThresholdSum;	/*!< optional Mode-A/B dispatch threshold on the summed active-neighbor count; -1 = unset (use each loop's Spec::modeb_threshold_sum) */
   int NeighborLoopModeBThresholdMax;	/*!< optional Mode-A/B dispatch threshold on the max-rank active-neighbor count; -1 = unset (use each loop's Spec::modeb_threshold_max) */
   int GravityHostWalkBelowActive;	/*!< below this many RANK-LOCAL active gravity candidates the gravity tree walk runs on the host instead of the device. 0 disables the count-based routing. Default 1000. */
+  double TreeUpdateFullSweep_ActiveFraction;	/*!< when the device runs the dynamic tree update, it drifts every node in the tree first (which also certifies the whole tree current for the walks that follow)
+					   only if the rank-local fraction of elements being updated is at least this; below it, it brings current just the chains of nodes the kick touches. 0 = always sweep every node; above 1 = chains only, with the sweep kept as the answer to a chain list that overflows. Default 2. */
   int TreeUpdateHostBelowActive;	/*!< below this many RANK-LOCAL elements due a force update at the sync point, the dynamic tree update runs on the host, which drifts nodes lazily as it
 					   touches them instead of sweeping every node up front. 0 disables the count-based routing; the host still owns the rest of any time step in which a node has already been drifted lazily, since the device sweep
 					   cannot refresh those nodes' mirror. Default 1e4. */

@@ -58,10 +58,13 @@ integertime force_host_lazy_drift_ti(void)
  *
  *  host: walk the chain and drift each parent node at the moment it is touched, so the
  *        cost is set by how many nodes the active set actually reaches.
- *  device: drift every node in one parallel sweep first, then walk the chains in a
- *        kernel. The sweep is what makes the parallel walk race-free (force_drift_node
- *        is serial by construction), and it costs O(all nodes) whether or not the step
- *        touches them, which is why small steps take the host path.
+ *  device: bring current, in parallel, exactly the nodes on those chains (and the top-level
+ *        tree), then walk the chains in a kernel; when the update is a large fraction of the
+ *        rank (TreeUpdateFullSweep_ActiveFraction) it instead drifts every node in one sweep,
+ *        which also certifies the whole tree current for the walks that follow. Bringing the
+ *        nodes current first is what makes the parallel walk race-free (force_drift_node is
+ *        serial by construction). Each device call still carries fixed launch costs, which is
+ *        why the smallest steps take the host path.
  *
  *  This runs before the active list is rebuilt for the coming step, so the list it walks
  *  is the one whose kicks have just been closed out — the correct set for this point in
