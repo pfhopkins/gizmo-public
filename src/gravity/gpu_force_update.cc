@@ -4,8 +4,10 @@
  * Propagates per-particle momentum kicks (P[i].dp) through the tree via three
  * GPU-accelerated stages + host-side MPI:
  *
- *   Stage 1  gpu_force_drift_nodes()    — reuse the existing drift kernel; drifts all
- *                                         stale nodes to All.Ti_Current in one pass.
+ *   Stage 1  bring current the nodes the kick will touch: the chains above the
+ *            kicked elements (claim pass + gpu_device_node_list_bring_current), or every
+ *            node (gpu_force_drift_nodes) when the update is a large fraction of
+ *            the rank (TreeUpdateFullSweep_ActiveFraction).
  *   Stage 2  gpu_force_kick_kernel      — per-active-particle Father-chain walk;
  *                                         atomic-accumulates dp into Extnodes[no].dp,
  *                                         atomic-maxes vmax, sets NODEHASBEENKICKED,
@@ -45,6 +47,7 @@
 #include "../declarations/gpu_error_check.h"
 #include "../system/gpu_particles_arena.h"
 #include "gpu_gravity_tree.h"
+#include "../mesh/ghost_writeback.h"   /* ghost_get_num_local: the rank's own element count */
 #include "forcetree.h"
 #include "../core/timestep_functions.h"   /* dilation, for the motion bound */
 
@@ -111,12 +114,49 @@ extern "C" void gpu_force_update_tree(void)
     const int ntop = (NTopleaves > 0) ? NTopleaves : 1;
     const int n_active_cap = (int) ActiveParticleList.size();
     const int n_active_alloc = (n_active_cap > 0) ? n_active_cap : 1;
+    const integertime ti_now = gizmo_host_ti_current();
+
+    /* Stage 1 has two forms.  The kick below touches only the chains of parent nodes above the
+     * elements whose kicks it propagates, so only those nodes have to be current before it runs:
+     * bringing exactly them current costs O(chains), where sweeping every node costs O(tree) on
+     * every call however few elements are active.  The full sweep is still taken when this rank's
+     * update is a large fraction of its elements: then the chains reach much of the tree anyway,
+     * and a full sweep also certifies the whole tree current for the walks that follow, which
+     * otherwise each bring current whatever they open.  The fraction takes the larger of the
+     * kicks propagated here (the step just closed) and the coming step's count, because the first
+     * sizes this call's work and the second the work of the walks that would use the certificate.
+     * A tree already current at this time (built at it, or swept) needs neither.
+     *
+     * The chain form also brings every top-level node current.  The top tree is shared with the
+     * other ranks: after the kick, force_finish_kick_nodes adds their changes to it and drifts
+     * each node it touches on the host.  A host drift at this time would mark the step as one in
+     * which the host has advanced nodes, which turns the device sweep and the device receiver walk
+     * away for the rest of it; with the whole top tree already current, those drifts do nothing. */
+    const int tree_current = gpu_gravity_tree_nodes_current_at(ti_now) ? 1 : 0;
+    const int n_local_elements = ghost_get_num_local();
+    const long long n_update = (n_active_cap > NumForceUpdateAtSyncPoint) ? (long long) n_active_cap : (long long) NumForceUpdateAtSyncPoint;
+    const double update_fraction = (double) n_update / (double) ((n_local_elements > 0) ? n_local_elements : 1);
+    const int bring_chains_only = (!tree_current && update_fraction < All.TreeUpdateFullSweep_ActiveFraction) ? 1 : 0;
+    /* The claim list: each node is claimed at most once, so it can never need more than the
+     * local node count; below that it is sized from the active count times a depth that ordinary
+     * trees stay under.  That depth is not a bound -- a longer chain overflows the list, which is
+     * detected and answered by the full sweep -- so it decides only how often the cheap form is
+     * used, never whether the result is right. */
+    const size_t claim_depth = 48;
+    const int n_top = bring_chains_only ? NTopnodes : 0;
+    size_t claim_cap = 0;
+    if(bring_chains_only) {
+        const size_t by_chains = (size_t) n_active_cap * claim_depth + (size_t) n_top;
+        claim_cap = (by_chains < (size_t) Numnodestree) ? by_chains : (size_t) Numnodestree;
+    }
 #ifdef RT_SEPARATELY_TRACK_LUMPOS
     const size_t rt_bytes = (size_t) n_active_alloc * 3 * sizeof(MyDouble);
 #else
     const size_t rt_bytes = 0;
 #endif
-    const size_t int_bytes = ((size_t) ntop + 1 + (size_t) n_active_alloc) * sizeof(int);
+    /* flags: claim cursor, claim overflow, a kicked node found not current; then the claim list and
+     * the top-level node indices it starts from */
+    const size_t int_bytes = ((size_t) ntop + 1 + (size_t) n_active_alloc + 3 + claim_cap + (size_t) n_top) * sizeof(int);
     char *scratch_dev = (char *) gizmo_gpu_alloc_shared(rt_bytes + int_bytes, "force_update_scratch");
     /* Refused scratch is handled the way a failed node drift already is below:
      * this rank reports zero changed nodes and still enters the all-rank
@@ -143,10 +183,17 @@ extern "C" void gpu_force_update_tree(void)
     int *domain_list_dev  = scratch_ok ? (int *) (scratch_dev + rt_bytes) : NULL;
     int *domain_count_dev = scratch_ok ? domain_list_dev + ntop : NULL;
     int *active_dev       = scratch_ok ? domain_count_dev + 1 : NULL;
+    int *flags_dev        = scratch_ok ? active_dev + n_active_alloc : NULL;
+    int *claim_list_dev   = scratch_ok ? flags_dev + 3 : NULL;
+    int *top_nodes_dev    = scratch_ok ? claim_list_dev + claim_cap : NULL;
 
     if(scratch_ok) {
         domain_count_dev[0] = 0;
+        flags_dev[0] = flags_dev[1] = flags_dev[2] = 0;
         DomainList = domain_list_dev;   /* redirect global ptr to UVM buffer */
+        /* Copy active-particle index list into its slice of the scratch buffer. */
+        if(n_active_cap > 0) {memcpy(active_dev, ActiveParticleList.data(), n_active_cap * sizeof(int));}
+        if(n_top > 0) {memcpy(top_nodes_dev, TopNodeNodeIndex, n_top * sizeof(int));}
     }
 
     /* Re-acquire particles arena (invalidated at end of gpu_gravtree_walk_primary).
@@ -154,8 +201,9 @@ extern "C" void gpu_force_update_tree(void)
     gpu_particles_arena_set_site("gpu_force_update_domainlist");
     gpu_particles_arena_acquire(NumPart, P, CellP);
 
-    /* Stage 1: drift all stale nodes to Ti_Current (reuse the existing drift kernel).
-     * Uses an out-of-line host accessor for the host-side Ti_Current read. */
+    /* Stage 1: bring the nodes the kick will touch current at Ti_Current -- the kick chains alone,
+     * or every node (see the choice above).  Uses an out-of-line host accessor for the host-side
+     * Ti_Current read. */
     /* Soft bad-stop on node-drift failure: flag it, then route through the
      * existing num_active<=0 -> finish_mpi path. This keeps the failing rank on
      * the SAME all-rank force_finish_kick_nodes() Allgatherv as its peers
@@ -163,9 +211,56 @@ extern "C" void gpu_force_update_tree(void)
      * un-drifted node state, and drains at the next phase-boundary poll -- with
      * NO MPI_Abort. (A direct `goto finish_mpi` from here is ill-formed: it would
      * jump over the t_fut_drift_nodes initialization, which finish_mpi uses.) */
-    const bool drift_ok = scratch_ok
-                          && (gpu_gravity_tree_nodes_current_at(gizmo_host_ti_current())
-                              || gpu_force_drift_nodes(gizmo_host_ti_current()) == 0);
+    int drift_rc = 0;
+    if(scratch_ok && !tree_current) {
+        if(bring_chains_only) {
+            /* Claim each chain node once.  The lane that stamps a node first lists it and goes on
+             * upward; a lane reaching a node already stamped stops, since the node and everything
+             * above it is the stamper's.  The lanes past the active elements each claim one
+             * top-level node the same way, so the top tree joins the list without duplicates.  A
+             * fresh stamp value, so no earlier use of the flag can read as a claim, and the kick
+             * below takes another for its own top-level claims. */
+            GlobFlag++;
+            const int gclaim = GlobFlag;
+            const int claim_cap_i = (int) claim_cap;
+            int            *Fa = Father;
+            struct NODE    *No = Nodes;
+            struct extNODE *Ex = Extnodes;
+            int *claim_cursor = flags_dev, *claim_overflow = flags_dev + 1, *claim_list = claim_list_dev;
+            const int *act = active_dev, *top = top_nodes_dev;
+            const int n_chains = n_active_cap;
+            Kokkos::parallel_for("gpu_force_claim_kick_chains", n_active_cap + n_top, KOKKOS_LAMBDA(const int idx) {
+                if(idx >= n_chains) {
+                    const int no = top[idx - n_chains];
+                    if(no < 0 || Kokkos::atomic_exchange(&Ex[no].Flag, gclaim) == gclaim) {return;}
+                    const int slot = Kokkos::atomic_fetch_add(claim_cursor, 1);
+                    if(slot < claim_cap_i) {claim_list[slot] = no;}
+                    else {Kokkos::atomic_store(claim_overflow, 1);}
+                    return;
+                }
+                int no = Fa[act[idx]];
+                while(no >= 0) {
+                    if(Kokkos::atomic_exchange(&Ex[no].Flag, gclaim) == gclaim) {break;}
+                    const int slot = Kokkos::atomic_fetch_add(claim_cursor, 1);
+                    if(slot < claim_cap_i) {claim_list[slot] = no;}
+                    else {Kokkos::atomic_store(claim_overflow, 1);}
+                    if(No[no].u.d.bitflags & (1 << BITFLAG_TOPLEVEL)) {break;}
+                    no = No[no].u.d.father;
+                }
+            });
+            Kokkos::fence();
+            gizmo_gpu_check_last_error("gpu_force_claim_kick_chains", n_active_cap + n_top);
+            /* A chain that outran the list, or a list the drift could not take, is answered by the
+               full sweep, which brings every node the list would have and more. */
+            if(flags_dev[1] || gpu_device_node_list_bring_current(claim_list_dev, flags_dev[0], All.TreeNodeIndexBase,
+                                                           gpu_gravity_tree_capacity(), ti_now) != 0) {
+                drift_rc = gpu_force_drift_nodes(ti_now);
+            }
+        } else {
+            drift_rc = gpu_force_drift_nodes(ti_now);
+        }
+    }
+    const bool drift_ok = scratch_ok && (drift_rc == 0);
     if(scratch_ok && !drift_ok) { endrun(929703); }
     double t_fut_drift_nodes = my_second();
 
@@ -177,9 +272,6 @@ extern "C" void gpu_force_update_tree(void)
     }
 
     {
-        /* Copy active-particle index list into its slice of the scratch buffer. */
-        memcpy(active_dev, ActiveParticleList.data(), num_active * sizeof(int));
-
         struct particle_data *Pp   = gpu_particles_arena_P();
         struct gas_cell_data *Cp   = gpu_particles_arena_CellP();
         int                  *Fa   = Father;    /* UVM pointer */
@@ -193,11 +285,12 @@ extern "C" void gpu_force_update_tree(void)
         const int             tree_base_soa = All.TreeNodeIndexBase;
         const int             soa_vmax_n    = gpu_gravity_tree_capacity();   /* the ALLOCATION, not the index range */
         unsigned int         *soa_bitflags  = (soa_u ? soa_u->bitflags : NULL);
+        integertime          *soa_node_ti   = (soa_u ? soa_u->node_ti : NULL);
+        int                  *kick_not_current = flags_dev + 2;
         const unsigned int    kicked_bit    = (1u << BITFLAG_NODEHASBEENKICKED);
+        if(bring_chains_only) {GlobFlag++;}   /* the claim pass used the previous value */
         int                   gflag = GlobFlag;
-        /* Out-of-line host accessor, called host-side here and captured
-         * by value into the device lambda. */
-        integertime           ti_cur = gizmo_host_ti_current();
+        integertime           ti_cur = ti_now;   /* captured by value into the device lambda */
 
 #ifdef RT_SEPARATELY_TRACK_LUMPOS
         /* Pre-compute rt_source_lum_dp per active particle on CPU (not GPU-callable). */
@@ -242,6 +335,18 @@ extern "C" void gpu_force_update_tree(void)
                 /* Walk Father chain, accumulating kicks. */
                 int no = Fa[i];
                 while(no >= 0) {
+                    /* Every node this walk kicks must stand at the kick time, in its canonical copy
+                       and in the mirror the device walks read: a kick added to a node behind it
+                       would later be folded in over the wrong interval. Stage 1 guarantees it;
+                       this is the check that it did. */
+                    {
+                        const int kk_now = no - tree_base_soa;
+                        if(No[no].Ti_current != ti_cur ||
+                           !soa_node_ti || kk_now < 0 || kk_now >= soa_vmax_n || soa_node_ti[kk_now] != ti_cur) {
+                            Kokkos::atomic_store(kick_not_current, 1);
+                            break;
+                        }
+                    }
                     /* dp accumulation (atomic since multiple particles share ancestors). */
                     for(int k = 0; k < 3; k++) {
                         Kokkos::atomic_add(&Ex[no].dp[k], dp[k]);
@@ -295,6 +400,11 @@ extern "C" void gpu_force_update_tree(void)
             });
         Kokkos::fence();
         gizmo_gpu_check_last_error("gpu_force_kick", num_active);
+        if(flags_dev[2]) {
+            printf("Task=%d gpu_force_update_tree: a node on a kick chain was not current at the kick time; its kick would be folded over the wrong interval\n", ThisTask);
+            fflush(stdout);
+            endrun(929705);
+        }
 
         /* Zero P[i].dp on the host.  On UVM systems Pp==P so the kernel zero above
          * already did this; on non-UVM (Mac CPU Kokkos) the arena is a separate

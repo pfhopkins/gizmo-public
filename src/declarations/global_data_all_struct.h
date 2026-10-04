@@ -241,10 +241,12 @@ struct global_data_all_processes
   int WorkingMemoryPoolSize;		/*!< Per-MPI-task size in MB of the working memory pool, the scoped last-in-first-out arena mymalloc hands blocks out of.  NOT a total memory budget: the particle arrays, the tree, device scratch and the transport buffers are allocated outside it and accounted separately.  Worked out by the code from the tenants that actually draw on it, unless the parameter file asks for a size, in which case that size is used untouched. */
   int NeighborLoopModeBThresholdSum;	/*!< optional Mode-A/B dispatch threshold on the summed active-neighbor count; -1 = unset (use each loop's Spec::modeb_threshold_sum) */
   int NeighborLoopModeBThresholdMax;	/*!< optional Mode-A/B dispatch threshold on the max-rank active-neighbor count; -1 = unset (use each loop's Spec::modeb_threshold_max) */
-  int GravityHostWalkBelowActive;	/*!< below this many RANK-LOCAL active gravity candidates the gravity tree walk runs on the host instead of the device. 0 disables the count-based routing. Default 1e4. */
+  int GravityHostWalkBelowActive;	/*!< below this many RANK-LOCAL active gravity candidates the gravity tree walk runs on the host instead of the device. 0 disables the count-based routing. Default 1000. */
+  double TreeUpdateFullSweep_ActiveFraction;	/*!< when the device runs the dynamic tree update, it drifts every node in the tree first (which also certifies the whole tree current for the walks that follow)
+					   only if the rank-local fraction of elements being updated is at least this; below it, it brings current just the chains of nodes the kick touches. 0 = always sweep every node; above 1 = chains only, with the sweep kept as the answer to a chain list that overflows. Default 2. */
   int TreeUpdateHostBelowActive;	/*!< below this many RANK-LOCAL elements due a force update at the sync point, the dynamic tree update runs on the host, which drifts nodes lazily as it
 					   touches them instead of sweeping every node up front. 0 disables the count-based routing; the host still owns the rest of any time step in which a node has already been drifted lazily, since the device sweep
-					   cannot refresh those nodes' mirror. Default 1e4. */
+					   cannot refresh those nodes' mirror. Default 1000. */
   double CourantFac;		/*!< Courant factor */
 #ifdef CBE_INTEGRATOR
   double CBEMassEffFloor;	/*!< CBE timestep m_eff floor fraction: m_eff = max(m_b, CBEMassEffFloor*m_cell) in the per-basis mass-depletion + moment-accel timestep criteria, so near-empty placeholder/free-slot bases cannot force an absurdly small step. Timestep-only (does not touch flux/update). Default 0.1. */
