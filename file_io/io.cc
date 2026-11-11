@@ -4605,7 +4605,7 @@ void write_header_attributes_in_hdf5(hid_t handle)
     {double tmp=UNIT_B_IN_GAUSS; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Internal_UnitB_In_Gauss", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
         H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &tmp); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
 #endif
-    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Gravitational_Constant_In_Code_Inits", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
+    hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Gravitational_Constant_In_Code_Units", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
     H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.G); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 
     hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Minimum_Mass_For_Cell_Merge", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
